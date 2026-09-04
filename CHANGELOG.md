@@ -4,6 +4,20 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.35 — 2026-09-04
+
+Three redundant C509 spellings are refused, so a certificate has one encoding and an issuer signature cannot cover two different C509 byte strings.
+
+### Fixed
+
+- pki.schema.c509.encode refuses a serialNumberHex that is not an even-length hexadecimal string instead of decoding a prefix of it. An odd-length or partly non-hexadecimal value previously became a different, valid serial number without any error, which the encoder's own re-parse could not catch. The check applies whether the result is re-emitted from its preserved field bytes or built field by field, so a caller is told the value is malformed rather than having it quietly ignored.
+
+### Security
+
+- pki.schema.c509.parse refuses an unsigned bignum whose first octet is 0x00, including a value that is only that octet, so every number has exactly one C509 encoding (draft sec. 3.1.2). A zero serial previously had two spellings that reconstructed byte-identical DER, letting one issuer signature cover two distinct C509 certificates. The rule covers the certificate serial number, the authorityKeyIdentifier serial, and the RSA modulus and exponent.
+- pki.schema.c509.parse refuses an RSA subjectPublicKey written as [modulus, 65537] instead of the bare modulus. Draft sec. 3.1.9 omits the array and the exponent when the exponent is 65537, so the array spelling of such a key is a second encoding of one certificate, reconstructing byte-identical DER. An RSA key with any other exponent still uses the array form.
+- pki.schema.c509.parse refuses a notAfter written as the epoch 253402300799 rather than the CBOR simple value null. Draft sec. 3.1.5 encodes the no-expiration time 99991231235959Z as null, so the explicit epoch is a second spelling that reconstructs the same GeneralizedTime and therefore the same DER. A notBefore is unaffected, and pki.schema.c509.encode refuses that Date on notAfter instead of emitting a form the decoder rejects.
+
 ## v0.6.34 — 2026-09-04
 
 An injected transport that does not return a promise is reported as a typed option error naming the option, in every client that accepts one.

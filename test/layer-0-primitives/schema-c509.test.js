@@ -59,6 +59,133 @@ async function run() {
   // ==== field-encoding reject vectors (fail-closed, typed) ====
   check("21. non-minimal serial (leading 0x00) -> c509/non-minimal-serial", codeSync(function () { return pki.schema.c509.parse(V.mk({ 1: "4300f50d" })); }) === "c509/non-minimal-serial");
   check("22. serial not a byte string -> c509/bad-serial", codeSync(function () { return pki.schema.c509.parse(V.mk({ 1: "1a0001f50d" })); }) === "c509/bad-serial");
+  // Draft sec. 3.1.2: "Any leading 0x00 byte (to indicate that the number is not negative) is
+  // therefore omitted." ANY leading zero, including a lone one, so zero encodes as h'' and h'00' is
+  // a second spelling of it. Both reconstruct byte-identical DER, so accepting both would let one
+  // issuer signature cover two distinct C509 encodings of the same certificate.
+  check("21b. a lone 0x00 serial (h'00') -> c509/non-minimal-serial", codeSync(function () { return pki.schema.c509.parse(V.mk({ 1: "4100" })); }) === "c509/non-minimal-serial");
+  check("21c. the empty byte string stays the one canonical zero serial", (function () {
+    var r = pki.schema.c509.parse(V.mk({ 1: "40" }));
+    return r.serialNumberHex === "" && Buffer.isBuffer(r.reconstructedDer);
+  })());
+  check("21d. a lone 0x00 RSA modulus is refused by the same rule", codeSync(function () { return pki.schema.c509.parse(V.mk({ 7: "00", 8: "4100" })); }) === "c509/non-minimal-serial");
+  // Draft sec. 3.1.9: "If the exponent is 65537, the array and the exponent are omitted and
+  // subjectPublicKey consists of only the modulus." The array spelling of that same key is therefore
+  // not a valid encoding, and accepting it would reconstruct DER identical to the compact form -- the
+  // same one-signature-over-two-encodings hazard as a non-minimal serial.
+  check("21da. an RSA key written as [modulus, 65537] rather than the compact modulus is refused",
+    codeSync(function () {
+      return pki.schema.c509.parse(V.mk({ 7: "00", 8: pki.cbor.build.array([pki.cbor.build.byteString(Buffer.from("03", "hex")), pki.cbor.build.byteString(Buffer.from("010001", "hex"))]).toString("hex") }));
+    }) === "c509/bad-spki");
+  check("21db. an RSA key with any other exponent still uses the array form",
+    codeSync(function () {
+      return pki.schema.c509.parse(V.mk({ 7: "00", 8: pki.cbor.build.array([pki.cbor.build.byteString(Buffer.from("03", "hex")), pki.cbor.build.byteString(Buffer.from("03", "hex"))]).toString("hex") }));
+    }) === "NO-THROW");
+
+  // ---- reject arms of the extension and field decoders, driven as real encodings -----------------
+  // These are the refusal half of the parser: the arms that decide a malformed C509 is not a
+  // certificate. Each builds the hostile shape with the shipped CBOR builders and drives the public
+  // parse verb, so the assertion is the operator-visible verdict rather than an internal return.
+  var CBLD = pki.cbor.build;
+  function parseWith(field, node) {
+    var o = {}; o[field] = node.toString("hex");
+    return codeSync(function () { return pki.schema.c509.parse(V.mk(o)); });
+  }
+  check("21e. a ~biguint over the byte cap -> c509/bad-serial",
+    parseWith(1, CBLD.byteString(Buffer.alloc(16385, 0xff))) === "c509/bad-serial");
+  check("21f. a ~oid slot that is not an unwrapped byte string -> c509/unknown-algorithm",
+    parseWith(2, CBLD.array([CBLD.textString("x"), CBLD.byteString(Buffer.from("0500", "hex"))])) === "c509/unknown-algorithm");
+  check("21g. a DistributionPoint fullName array of fewer than two names -> c509/bad-extensions",
+    parseWith(9, CBLD.array([CBLD.uint(5n), CBLD.array([CBLD.array([CBLD.array([CBLD.textString("http://a")]), CBLD.nullValue(), CBLD.nullValue()])])])) === "c509/bad-extensions");
+  check("21h. an IPAddressFamily mixing the byte-string and int address forms -> c509/bad-extensions",
+    parseWith(9, CBLD.array([CBLD.uint(32n), CBLD.array([CBLD.uint(2n), CBLD.nullValue(),
+      CBLD.array([CBLD.uint(0x0120010db8123456n), CBLD.byteString(Buffer.from("0020010db8", "hex"))])])])) === "c509/bad-extensions");
+  check("21i. an IPAddress range whose low bound exceeds its high bound -> c509/bad-extensions",
+    parseWith(9, CBLD.array([CBLD.uint(32n), CBLD.array([CBLD.uint(1n), CBLD.nullValue(),
+      CBLD.array([CBLD.array([CBLD.uint(68160n), CBLD.int(-32n)])])])])) === "c509/bad-extensions");
+  // The EUI-64 text shortcut is a SELECTION probe, not a reject: a 23-character value is only a MAC
+  // when every separator and hex digit fits, and otherwise stays an ordinary common name.
+  check("21j. a colon-separated 23-character CN is not taken as an EUI-64 MAC", (function () {
+    var r = pki.schema.c509.parse(V.mk({ 6: CBLD.textString("01:23:45:67:89:AB:CD:EF").toString("hex") }));
+    return r.subject.dn === "CN=01:23:45:67:89:AB:CD:EF";
+  })());
+  check("21k. a 23-character CN carrying a non-hex digit is not taken as an EUI-64 MAC", (function () {
+    var r = pki.schema.c509.parse(V.mk({ 6: CBLD.textString("01-23-45-67-89-AB-CD-EG").toString("hex") }));
+    return r.subject.dn === "CN=01-23-45-67-89-AB-CD-EG";
+  })());
+  check("21l. an attribute carrying a hex value renders through the hex arm", (function () {
+    var r = pki.schema.c509.parse(V.mk({ 6: CBLD.array([CBLD.int(8n), CBLD.byteString(Buffer.from("abcd", "hex"))]).toString("hex") }));
+    return r.subject.dn === "O=abcd";
+  })());
+
+  // ---- extension-decoder refusals, one per decoder --------------------------------------------
+  // Each of these is the arm that decides a structurally well-formed CBOR item is still not the
+  // extension it claims to be, so a malformed value cannot reach the X.509 reconstruction.
+  function extReject(node) { return parseWith(9, node); }
+  check("21m. an authorityKeyIdentifier keyIdentifier that is not a byte string",
+    extReject(CBLD.array([CBLD.uint(7n), CBLD.array([CBLD.uint(1n), CBLD.array([CBLD.uint(2n), CBLD.textString("a.example")]), CBLD.byteString(Buffer.from("01", "hex"))])])) === "c509/bad-extensions");
+  check("21n. a nameConstraints carrying neither permitted nor excluded subtrees",
+    extReject(CBLD.array([CBLD.uint(26n), CBLD.array([CBLD.nullValue(), CBLD.nullValue()])])) === "c509/bad-extensions");
+  check("21o. an authorityInfoAccess value that is not an array",
+    extReject(CBLD.array([CBLD.uint(9n), CBLD.uint(5n)])) === "c509/bad-extensions");
+  check("21p. an empty authorityInfoAccess array",
+    extReject(CBLD.array([CBLD.uint(9n), CBLD.array([])])) === "c509/bad-extensions");
+  check("21q. an authorityInfoAccess array leaving a dangling accessMethod",
+    extReject(CBLD.array([CBLD.uint(9n), CBLD.array([CBLD.uint(1n)])])) === "c509/bad-extensions");
+  check("21r. a cRLDistributionPoints value that is neither a bare URI nor an array",
+    extReject(CBLD.array([CBLD.uint(5n), CBLD.uint(5n)])) === "c509/bad-extensions");
+  check("21s. an empty cRLDistributionPoints array",
+    extReject(CBLD.array([CBLD.uint(5n), CBLD.array([])])) === "c509/bad-extensions");
+  check("21t. an ipAddrBlocks value that is not an array",
+    extReject(CBLD.array([CBLD.uint(32n), CBLD.uint(5n)])) === "c509/bad-extensions");
+  check("21u. an ipAddrBlocks SAFI wider than the one octet RFC 3779 allots it",
+    extReject(CBLD.array([CBLD.uint(32n), CBLD.array([CBLD.uint(1n), CBLD.uint(256n), CBLD.nullValue()])])) === "c509/bad-extensions");
+  check("21v. an ASIdentifiers range that is not exactly [min, max]",
+    extReject(CBLD.array([CBLD.uint(33n), CBLD.array([CBLD.array([CBLD.uint(1n)])])])) === "c509/bad-extensions");
+  check("21w. ASIdentifiers members that are not maximally merged",
+    extReject(CBLD.array([CBLD.uint(33n), CBLD.array([CBLD.uint(64500n), CBLD.array([CBLD.uint(1n), CBLD.uint(5n)])])])) === "c509/bad-extensions");
+  // Two accept arms the reject vectors above never reach.
+  check("21x. a subjectAltName registeredID rebuilds its compact OID value", (function () {
+    var r = pki.schema.c509.parse(V.mk({ 9: CBLD.array([CBLD.int(3n), CBLD.array([CBLD.int(8n), CBLD.byteString(pki.asn1.encodeOidContent("1.3.6.1.4.1"))])]).toString("hex") }));
+    return r.extensions[0].name === "subjectAltName" && r.extensions[0].value.toString("hex") === "300788052b06010401";
+  })());
+  check("21y. a zero authorityKeyIdentifier serial reconstructs as a single 0x00 octet", (function () {
+    var r = pki.schema.c509.parse(V.mk({ 9: CBLD.array([CBLD.uint(7n), CBLD.array([CBLD.byteString(Buffer.from("aabb", "hex")), CBLD.array([CBLD.uint(2n), CBLD.textString("a.example")]), CBLD.byteString(Buffer.alloc(0))])]).toString("hex") }));
+    return r.extensions[0].name === "authorityKeyIdentifier" && r.extensions[0].value.toString("hex").indexOf("820100") !== -1;
+  })());
+  check("21z. an uncompressed EC point whose length does not match the curve -> c509/non-invertible",
+    codeSync(function () { return pki.schema.c509.parse(V.mk({ 8: "5821" + "04" + "00".repeat(32) })); }) === "c509/non-invertible");
+
+  // ---- the result-shape contract encode holds a caller to ---------------------------------------
+  // A caller may hand encode a structured result rather than one this module parsed, so every field
+  // the emitter dereferences is checked first. Without these the fault would surface as a TypeError
+  // from inside the emitter rather than as a typed statement of what the result is missing.
+  function encReject(mutate) {
+    var r = pki.schema.c509.parse(V.A1.type3); delete r._fieldBytes; mutate(r);
+    return codeSync(function () { return pki.schema.c509.encode(r); });
+  }
+  check("21aa. a result carrying neither serialNumber nor serialNumberHex",
+    encReject(function (r) { delete r.serialNumber; delete r.serialNumberHex; }) === "c509/bad-input");
+  check("21ab. a result whose signatureAlgorithm has no name",
+    encReject(function (r) { r.signatureAlgorithm = {}; }) === "c509/bad-input");
+  check("21ac. a result whose subjectPublicKeyAlgorithm has no name",
+    encReject(function (r) { r.subjectPublicKeyAlgorithm = {}; }) === "c509/bad-input");
+  check("21ad. a result whose validity.notBefore is not a Date",
+    encReject(function (r) { r.validity = { notBefore: "2026-01-01", notAfter: null }; }) === "c509/bad-input");
+  check("21ae. a result whose validity.notAfter is neither a Date nor null",
+    encReject(function (r) { r.validity = { notBefore: new Date("2023-01-01T00:00:00Z"), notAfter: "2027-01-01" }; }) === "c509/bad-input");
+  check("21af. a result whose extensions field is not an array",
+    encReject(function (r) { r.extensions = {}; }) === "c509/bad-input");
+  // The no-expiry form survives a structured round trip: notAfter stays null rather than becoming a date.
+  check("21ag. a null notAfter survives a structured re-encode", (function () {
+    var r = pki.schema.c509.parse(V.mk({ 5: "f6" })); delete r._fieldBytes;
+    return pki.schema.c509.parse(pki.schema.c509.encode(r)).validity.notAfter === null;
+  })());
+  // A zero authorityCertSerialNumber travels as the empty ~biguint and reconstructs as 02 01 00.
+  check("21ah. an empty ~biguint AKI serial reconstructs as a single zero octet", (function () {
+    var r = pki.schema.c509.parse(V.mk({ 9: CBLD.array([CBLD.uint(7n), CBLD.array([CBLD.byteString(Buffer.from("0102", "hex")), CBLD.array([CBLD.uint(2n), CBLD.textString("x.com")]), CBLD.byteString(Buffer.alloc(0))])]).toString("hex") }));
+    return r.extensions[0].value.toString("hex").indexOf("820100") !== -1;
+  })());
   check("23. notBefore a negative (major-type-1) ~time -> c509/bad-validity", codeSync(function () { return pki.schema.c509.parse(V.mk({ 4: "3a63b0cd00" })); }) === "c509/bad-validity");
   check("24. an unknown signatureAlgorithm int -> c509/unknown-algorithm", codeSync(function () { return pki.schema.c509.parse(V.mk({ 2: "18ff" })); }) === "c509/unknown-algorithm");
   check("25. an unknown subjectPublicKeyAlgorithm int -> c509/unknown-algorithm", codeSync(function () { return pki.schema.c509.parse(V.mk({ 7: "18ff" })); }) === "c509/unknown-algorithm");
@@ -95,6 +222,22 @@ async function run() {
   var noExpiry = pki.schema.c509.parse(V.mk({ 5: "f6" }));
   check("35. notAfter == null decodes to null (no expiry)", noExpiry.validity.notAfter === null);
   check("36. no-expiry reconstruction uses the 99991231235959Z sentinel", pki.schema.x509.parse(noExpiry.reconstructedDer).validity.notAfter.getUTCFullYear() === 9999);
+  // Draft sec. 3.1.5 states 99991231235959Z is encoded as null, so the explicit epoch is a second
+  // spelling of one value: it reconstructs the identical DER, letting one signature cover two
+  // C509 byte strings.
+  check("36a. an explicit 253402300799 notAfter is refused as the no-expiry sentinel's second spelling",
+    codeSync(function () { return pki.schema.c509.parse(V.mk({ 5: "1b0000003afff4417f" })); }) === "c509/bad-validity");
+  check("36b. a notBefore of 253402300799 is unaffected; only notAfter carries the sentinel",
+    (function () { var r = pki.schema.c509.parse(V.mk({ 4: "1b0000003afff4417f", 5: "f6" })); return r.validity.notBefore.getUTCFullYear() === 9999; })());
+  check("36c. a notAfter one second below the sentinel still decodes",
+    pki.schema.c509.parse(V.mk({ 5: "1b0000003afff4417e" })).validity.notAfter.getUTCFullYear() === 9999);
+  check("36d. encode refuses a notAfter Date on the sentinel rather than emitting the form decode rejects",
+    (function () {
+      var r = pki.schema.c509.parse(V.mk({ 5: "f6" }));
+      delete r._fieldBytes;
+      r.validity.notAfter = new Date(253402300799000);
+      return codeSync(function () { return pki.schema.c509.encode(r); }) === "c509/bad-validity";
+    })());
 
   // ==== RSA subjectPublicKey (rsaEncryption; the modulus-only exponent-65537 short form) ====
   var rsaMod = "50c0000000000000000000000000000001";   // byte string(16) modulus, high bit set (~biguint)
@@ -276,6 +419,30 @@ async function run() {
   // C509 (a non-minimal serial) fails closed via the structured-path self-verify, as the verbatim path does.
   var hbBad = pki.schema.c509.parse(V.A1.type3); delete hbBad._fieldBytes; hbBad.serialNumberHex = "0001";
   check("85d. a structured re-emit that cannot parse -> a typed c509/*", codeSync(function () { return pki.schema.c509.encode(hbBad); }) === "c509/non-minimal-serial");
+  // A malformed serialNumberHex must be refused rather than truncated. The self-verify above cannot
+  // catch these: "0f5" decodes to the perfectly valid serial 0x0f, so the emitted certificate parses
+  // and the caller silently receives a serial it never asked for.
+  [ "0f5", "zz", "0102zzab", "0x0102", 4901, "00 01" ].forEach(function (bad, i) {
+    var hb = pki.schema.c509.parse(V.A1.type3); delete hb._fieldBytes; hb.serialNumberHex = bad;
+    check("85e." + i + " serialNumberHex " + JSON.stringify(bad) + " is refused, not silently re-serialized",
+      codeSync(function () { return pki.schema.c509.encode(hb); }) === "c509/bad-serial");
+  });
+  // The rule holds on the verbatim path too: a result still carrying its preserved field bytes is
+  // re-emitted from those bytes, so a malformed serialNumberHex would otherwise pass unexamined and
+  // the caller would never learn the value they set was neither used nor valid.
+  ["0f5", "zz"].forEach(function (bad, i) {
+    var hbv = pki.schema.c509.parse(V.A1.type3); hbv.serialNumberHex = bad;
+    check("85g." + i + " a malformed serialNumberHex is refused on the verbatim path too",
+      codeSync(function () { return pki.schema.c509.encode(hbv); }) === "c509/bad-serial");
+  });
+  // Both hex letter cases are accepted, so the validator tests the digit range rather than one spelling.
+  [["0a0b0c", "lower case"], ["0A0B0C", "upper case"]].forEach(function (t, i) {
+    var hbOk = pki.schema.c509.parse(V.A1.type3); delete hbOk._fieldBytes; hbOk.serialNumberHex = t[0];
+    check("85f." + i + " a well-formed " + t[1] + " serialNumberHex still round-trips", (function () {
+      if (codeSync(function () { return pki.schema.c509.encode(hbOk); }) !== "NO-THROW") return false;
+      return pki.schema.c509.parse(pki.schema.c509.encode(hbOk)).serialNumberHex === "0a0b0c";
+    })());
+  });
 
   // ==== the X.509 version this format covers, and the omitted-extensions case ====================
   // Both C509 certificate types are defined over X.509 v3 and the encoding carries no version
@@ -406,6 +573,20 @@ async function run() {
     var sk = signing.makeSigner("ec-p256");
     return Buffer.from(await pki.x509.sign({ subject: [{ commonName: "ext-test" }], subjectPublicKey: sk.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"), extensions: extsArray }, { key: sk.key }));
   }
+  // Mint a certificate carrying an extension value THIS toolkit's x509 builder refuses to emit, which
+  // is how such a certificate reaches us in the first place: from another implementation. The value is
+  // signed under an unallocated OID (2.5.29.99, so the builder passes it through opaquely) and the
+  // three OID content octets are then patched to the real extension, leaving the value untouched.
+  var DECOY_OID_BYTES = Buffer.from("551d63", "hex");
+  async function certWithForeignExt(realOidDotted, valueDer) {
+    var der = await certWithExts([b.sequence([b.oid("2.5.29.99"), b.octetString(valueDer)])]);
+    var at = der.indexOf(DECOY_OID_BYTES);
+    var real = pki.asn1.encodeOidContent(realOidDotted);
+    if (at < 0 || real.length !== DECOY_OID_BYTES.length) return null;
+    var patched = Buffer.from(der);
+    real.copy(patched, at);
+    return patched;
+  }
   // The [extID, value] pair for an int extID of magnitude absId in an encoded C509's extensions node.
   function extPair(enc, absId) {
     var kids = CB.decode(enc).children[9].children || [];
@@ -524,6 +705,40 @@ async function run() {
     scPatched[scPatched.indexOf(scEnt.value)] = 0x02;   // the extnValue SEQUENCE tag -> INTEGER (non-compact)
     var scEnc = pki.schema.c509.encode(scPatched, { issuerCurve: "P-256" });
     check("130." + si + " a non-SEQUENCE " + structCerts[si][0] + " value falls back to ~oid and double-inverts", extPair(scEnc, structCerts[si][1]) == null && pki.schema.c509.parse(scEnc).reconstructedDer.equals(scPatched));
+  }
+
+  // ---- foreign extension values the compact forms cannot carry ----------------------------------
+  // Every one of these is a shape this toolkit's own x509 builder refuses to emit, so it can only
+  // arrive from another implementation. None may be squeezed into a compact form: the encoder has to
+  // notice it cannot represent the value, fall back to the generic ~oid form, and still invert to the
+  // original bytes. A wrong compaction here would silently rewrite a signed certificate.
+  var foreignCases = [
+    ["a DistributionPoint that is not a SEQUENCE", "2.5.29.31",
+      b.sequence([b.contextConstructed(0, Buffer.alloc(0))])],
+    ["a distributionPoint [0] wrapping two names", "2.5.29.31",
+      b.sequence([b.sequence([b.explicit(0, Buffer.concat([
+        b.contextConstructed(0, b.contextPrimitive(6, Buffer.from("http://a", "latin1"))),
+        b.contextConstructed(0, b.contextPrimitive(6, Buffer.from("http://b", "latin1")))]))])])],
+    ["a reasons bit string with an impossible unused-bit count", "2.5.29.31",
+      b.sequence([b.sequence([
+        b.contextConstructed(0, b.contextConstructed(0, b.contextPrimitive(6, Buffer.from("http://a", "latin1")))),
+        b.contextPrimitive(1, Buffer.from([0x09, 0x80]))])])],
+    ["a DistributionPoint field tagged outside [0..2]", "2.5.29.31",
+      b.sequence([b.sequence([
+        b.contextConstructed(0, b.contextConstructed(0, b.contextPrimitive(6, Buffer.from("http://a", "latin1")))),
+        b.contextPrimitive(3, Buffer.from([0x01]))])])],
+    ["a nameConstraints subtree list holding no GeneralSubtree", "2.5.29.30",
+      b.sequence([b.contextConstructed(0, Buffer.alloc(0))])],
+    ["a GeneralSubtree carrying more than the base name", "2.5.29.30",
+      b.sequence([b.contextConstructed(0, b.sequence([
+        b.contextPrimitive(2, Buffer.from("a.example", "latin1")),
+        b.contextPrimitive(0, Buffer.from([0x01]))]))])],
+  ];
+  for (var fi = 0; fi < foreignCases.length; fi++) {
+    var fDer = await certWithForeignExt(foreignCases[fi][1], foreignCases[fi][2]);
+    var fEnc = fDer && pki.schema.c509.encode(fDer, { issuerCurve: "P-256" });
+    check("131." + fi + " " + foreignCases[fi][0] + " falls back to ~oid and inverts byte-exactly",
+      !!fDer && pki.schema.c509.parse(fEnc).reconstructedDer.equals(fDer));
   }
 
   // a conformant single-dNSName subjectAltName is a BARE text string (draft-20 sec. 3.3): [3, "example.com"];
