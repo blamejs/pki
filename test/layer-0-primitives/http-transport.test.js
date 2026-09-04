@@ -676,6 +676,31 @@ async function testBodyFunctionChannelBinding() {
     check("CB-5 a throwing body callback rejects with a typed transport error", threw === "transport/transport-error");
     var badret = await codeOf(t({ method: "POST", url: urlFor(s.port), body: function () { return 123; }, tls: anchors }));
     check("CB-6 a body callback returning a non-byte, non-string value is refused", badret === "transport/bad-input");
+
+    var nullret = await codeOf(t({ method: "POST", url: urlFor(s.port), body: function () { return null; }, tls: anchors }));
+    check("CB-8 a body callback returning null is refused, never sent to the CA as an empty enrollment", nullret === "transport/bad-input");
+    var noret = await codeOf(t({ method: "POST", url: urlFor(s.port), body: function () { Buffer.from("forgot-to-return"); }, tls: anchors }));
+    check("CB-9 a body callback with a missing return is refused rather than posting an empty body", noret === "transport/bad-input");
+    received = null;
+    var rEmpty = await t({ method: "POST", url: urlFor(s.port), body: function () { return ""; }, tls: anchors });
+    check("CB-10 an explicit empty-string return is still an intentional empty body",
+      rEmpty.status === 200 && Buffer.isBuffer(received) && received.length === 0);
+
+    received = null;
+    var rAsync = await t({ method: "POST", url: urlFor(s.port),
+      body: function (info) { return Promise.resolve().then(function () { return Buffer.concat([Buffer.from("ASYNC:"), info.tlsUnique]); }); },
+      tls: anchors });
+    check("CB-12 the callback may return a promise, so a caller can sign a CSR with the toolkit's async signer",
+      rAsync.status === 200 && Buffer.isBuffer(received) && received.equals(Buffer.concat([Buffer.from("ASYNC:"), rAsync.tls.tlsUnique])));
+    var rejCode = await codeOf(t({ method: "POST", url: urlFor(s.port), body: function () { return Promise.reject(new Error("async boom")); }, tls: anchors }));
+    check("CB-13 a callback whose promise rejects fails the request closed", rejCode === "transport/transport-error");
+
+    var detachedAb = new ArrayBuffer(8);
+    var detachedView = new Uint8Array(detachedAb);
+    structuredClone(detachedAb, { transfer: [detachedAb] });
+    var detachedCode = await codeOf(t({ method: "POST", url: urlFor(s.port), body: function () { return detachedView; }, tls: anchors }));
+    check("CB-11 an unusable byte source from the callback keeps its typed bad-input verdict, not a write failure",
+      detachedCode === "transport/bad-input");
   } finally { s.srv.close(); }
 }
 
