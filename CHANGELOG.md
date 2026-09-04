@@ -21,7 +21,7 @@ Reference documentation is corrected across the toolkit: a mistyped signed-attri
 - The pki.acme.client method list documents updateAccount and listOrders, which the client returns.
 - pki.tsp.verify now includes policyName on a failure verdict; it already returned the resolved policy name on a valid verdict and the raw policy on both, so a refused token carries the same descriptive fields as a valid one.
 
-## v0.6.29 — 2026-09-02
+## v0.6.29 — 2026-09-03
 
 The EST, ACME, and CMP clients reach a CA through a forward HTTP proxy, with the same opts.proxy the SCEP client already accepts.
 
