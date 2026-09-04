@@ -87,7 +87,7 @@
   "lib/scep.js": "2026-09-04",
   "lib/schema-all.js": "2026-09-03",
   "lib/schema-attrcert.js": "2026-09-03",
-  "lib/schema-c509.js": "2026-09-01",
+  "lib/schema-c509.js": "2026-09-04",
   "lib/schema-cmc.js": "2026-09-03",
   "lib/schema-cmp.js": "2026-09-03",
   "lib/schema-cms.js": "2026-09-03",

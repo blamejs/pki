@@ -69,6 +69,18 @@ async function run() {
     return r.serialNumberHex === "" && Buffer.isBuffer(r.reconstructedDer);
   })());
   check("21d. a lone 0x00 RSA modulus is refused by the same rule", codeSync(function () { return pki.schema.c509.parse(V.mk({ 7: "06", 8: "4100" })); }) !== "NO-THROW");
+  // Draft sec. 3.1.9: "If the exponent is 65537, the array and the exponent are omitted and
+  // subjectPublicKey consists of only the modulus." The array spelling of that same key is therefore
+  // not a valid encoding, and accepting it would reconstruct DER identical to the compact form -- the
+  // same one-signature-over-two-encodings hazard as a non-minimal serial.
+  check("21da. an RSA key written as [modulus, 65537] rather than the compact modulus is refused",
+    codeSync(function () {
+      return pki.schema.c509.parse(V.mk({ 7: "00", 8: pki.cbor.build.array([pki.cbor.build.byteString(Buffer.from("03", "hex")), pki.cbor.build.byteString(Buffer.from("010001", "hex"))]).toString("hex") }));
+    }) === "c509/bad-spki");
+  check("21db. an RSA key with any other exponent still uses the array form",
+    codeSync(function () {
+      return pki.schema.c509.parse(V.mk({ 7: "00", 8: pki.cbor.build.array([pki.cbor.build.byteString(Buffer.from("03", "hex")), pki.cbor.build.byteString(Buffer.from("03", "hex"))]).toString("hex") }));
+    }) === "NO-THROW");
 
   // ---- reject arms of the extension and field decoders, driven as real encodings -----------------
   // These are the refusal half of the parser: the arms that decide a malformed C509 is not a
@@ -210,6 +222,22 @@ async function run() {
   var noExpiry = pki.schema.c509.parse(V.mk({ 5: "f6" }));
   check("35. notAfter == null decodes to null (no expiry)", noExpiry.validity.notAfter === null);
   check("36. no-expiry reconstruction uses the 99991231235959Z sentinel", pki.schema.x509.parse(noExpiry.reconstructedDer).validity.notAfter.getUTCFullYear() === 9999);
+  // Draft sec. 3.1.5 states 99991231235959Z is encoded as null, so the explicit epoch is a second
+  // spelling of one value: it reconstructs the identical DER, letting one signature cover two
+  // C509 byte strings.
+  check("36a. an explicit 253402300799 notAfter is refused as the no-expiry sentinel's second spelling",
+    codeSync(function () { return pki.schema.c509.parse(V.mk({ 5: "1b0000003afff4417f" })); }) === "c509/bad-validity");
+  check("36b. a notBefore of 253402300799 is unaffected; only notAfter carries the sentinel",
+    (function () { var r = pki.schema.c509.parse(V.mk({ 4: "1b0000003afff4417f", 5: "f6" })); return r.validity.notBefore.getUTCFullYear() === 9999; })());
+  check("36c. a notAfter one second below the sentinel still decodes",
+    pki.schema.c509.parse(V.mk({ 5: "1b0000003afff4417e" })).validity.notAfter.getUTCFullYear() === 9999);
+  check("36d. encode refuses a notAfter Date on the sentinel rather than emitting the form decode rejects",
+    (function () {
+      var r = pki.schema.c509.parse(V.mk({ 5: "f6" }));
+      delete r._fieldBytes;
+      r.validity.notAfter = new Date(253402300799000);
+      return codeSync(function () { return pki.schema.c509.encode(r); }) === "c509/bad-validity";
+    })());
 
   // ==== RSA subjectPublicKey (rsaEncryption; the modulus-only exponent-65537 short form) ====
   var rsaMod = "50c0000000000000000000000000000001";   // byte string(16) modulus, high bit set (~biguint)
@@ -398,6 +426,14 @@ async function run() {
     var hb = pki.schema.c509.parse(V.A1.type3); delete hb._fieldBytes; hb.serialNumberHex = bad;
     check("85e." + i + " serialNumberHex " + JSON.stringify(bad) + " is refused, not silently re-serialized",
       codeSync(function () { return pki.schema.c509.encode(hb); }).indexOf("c509/") === 0);
+  });
+  // The rule holds on the verbatim path too: a result still carrying its preserved field bytes is
+  // re-emitted from those bytes, so a malformed serialNumberHex would otherwise pass unexamined and
+  // the caller would never learn the value they set was neither used nor valid.
+  ["0f5", "zz"].forEach(function (bad, i) {
+    var hbv = pki.schema.c509.parse(V.A1.type3); hbv.serialNumberHex = bad;
+    check("85g." + i + " a malformed serialNumberHex is refused on the verbatim path too",
+      codeSync(function () { return pki.schema.c509.encode(hbv); }).indexOf("c509/") === 0);
   });
   // Both hex letter cases are accepted, so the validator tests the digit range rather than one spelling.
   [["0a0b0c", "lower case"], ["0A0B0C", "upper case"]].forEach(function (t, i) {
