@@ -69,6 +69,42 @@ async function run() {
     return r.serialNumberHex === "" && Buffer.isBuffer(r.reconstructedDer);
   })());
   check("21d. a lone 0x00 RSA modulus is refused by the same rule", codeSync(function () { return pki.schema.c509.parse(V.mk({ 7: "06", 8: "4100" })); }) !== "NO-THROW");
+
+  // ---- reject arms of the extension and field decoders, driven as real encodings -----------------
+  // These are the refusal half of the parser: the arms that decide a malformed C509 is not a
+  // certificate. Each builds the hostile shape with the shipped CBOR builders and drives the public
+  // parse verb, so the assertion is the operator-visible verdict rather than an internal return.
+  var CBLD = pki.cbor.build;
+  function parseWith(field, node) {
+    var o = {}; o[field] = node.toString("hex");
+    return codeSync(function () { return pki.schema.c509.parse(V.mk(o)); });
+  }
+  check("21e. a ~biguint over the byte cap -> c509/bad-serial",
+    parseWith(1, CBLD.byteString(Buffer.alloc(16385, 0xff))) === "c509/bad-serial");
+  check("21f. a ~oid slot that is not an unwrapped byte string -> c509/unknown-algorithm",
+    parseWith(2, CBLD.array([CBLD.textString("x"), CBLD.byteString(Buffer.from("0500", "hex"))])) === "c509/unknown-algorithm");
+  check("21g. a DistributionPoint fullName array of fewer than two names -> c509/bad-extensions",
+    parseWith(9, CBLD.array([CBLD.uint(5n), CBLD.array([CBLD.array([CBLD.array([CBLD.textString("http://a")]), CBLD.nullValue(), CBLD.nullValue()])])])) === "c509/bad-extensions");
+  check("21h. an IPAddressFamily mixing the byte-string and int address forms -> c509/bad-extensions",
+    parseWith(9, CBLD.array([CBLD.uint(32n), CBLD.array([CBLD.uint(2n), CBLD.nullValue(),
+      CBLD.array([CBLD.uint(0x0120010db8123456n), CBLD.byteString(Buffer.from("0020010db8", "hex"))])])])) === "c509/bad-extensions");
+  check("21i. an IPAddress range whose low bound exceeds its high bound -> c509/bad-extensions",
+    parseWith(9, CBLD.array([CBLD.uint(32n), CBLD.array([CBLD.uint(1n), CBLD.nullValue(),
+      CBLD.array([CBLD.array([CBLD.uint(68160n), CBLD.int(-32n)])])])])) === "c509/bad-extensions");
+  // The EUI-64 text shortcut is a SELECTION probe, not a reject: a 23-character value is only a MAC
+  // when every separator and hex digit fits, and otherwise stays an ordinary common name.
+  check("21j. a colon-separated 23-character CN is not taken as an EUI-64 MAC", (function () {
+    var r = pki.schema.c509.parse(V.mk({ 6: CBLD.textString("01:23:45:67:89:AB:CD:EF").toString("hex") }));
+    return r.subject.dn === "CN=01:23:45:67:89:AB:CD:EF";
+  })());
+  check("21k. a 23-character CN carrying a non-hex digit is not taken as an EUI-64 MAC", (function () {
+    var r = pki.schema.c509.parse(V.mk({ 6: CBLD.textString("01-23-45-67-89-AB-CD-EG").toString("hex") }));
+    return r.subject.dn === "CN=01-23-45-67-89-AB-CD-EG";
+  })());
+  check("21l. an attribute carrying a hex value renders through the hex arm", (function () {
+    var r = pki.schema.c509.parse(V.mk({ 6: CBLD.array([CBLD.int(8n), CBLD.byteString(Buffer.from("abcd", "hex"))]).toString("hex") }));
+    return r.subject.dn === "O=abcd";
+  })());
   check("23. notBefore a negative (major-type-1) ~time -> c509/bad-validity", codeSync(function () { return pki.schema.c509.parse(V.mk({ 4: "3a63b0cd00" })); }) === "c509/bad-validity");
   check("24. an unknown signatureAlgorithm int -> c509/unknown-algorithm", codeSync(function () { return pki.schema.c509.parse(V.mk({ 2: "18ff" })); }) === "c509/unknown-algorithm");
   check("25. an unknown subjectPublicKeyAlgorithm int -> c509/unknown-algorithm", codeSync(function () { return pki.schema.c509.parse(V.mk({ 7: "18ff" })); }) === "c509/unknown-algorithm");
