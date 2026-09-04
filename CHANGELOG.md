@@ -4,6 +4,22 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.32 — 2026-09-04
+
+pki.est.simpleenroll and pki.est.simplereenroll accept a CSR builder, so an enrollment is signed over the tls-unique of the connection it is sent on (RFC 7030 sec. 3.5 channel binding).
+
+### Added
+
+- pki.est.simpleenroll(baseUrl, builder, opts?) and pki.est.simplereenroll(baseUrl, builder, opts?) accept a CSR builder (tls) -> csr | Promise<csr> for RFC 7030 sec. 3.5 channel binding. The builder receives the connection's { protocol, cipher, peerCertificate, tlsUnique } after the handshake and returns the certification request to POST on it, so pki.csr.sign can embed the base64 tls-unique as spec.challengePassword. A redirect or authentication retry re-runs the builder against the new connection (RFC 7030 sec. 3.2.1). Existing calls that pass a DER or PEM request are unchanged.
+
+### Changed
+
+- pki.est.simplereenroll performs its RFC 7030 sec. 4.2.2 subject and SubjectAltName identity check on each CSR a builder produces, inside the post-handshake callback and before that CSR is written. With a pre-built request the check still runs before the transport is called at all.
+
+### Security
+
+- A CSR builder combined with Digest authentication is refused (est/channel-binding-digest-unsupported) instead of sending an enrollment whose binding and Authorization header cannot both be correct: the Digest header is computed over the request body before the handshake the body must be bound to. A builder that throws fails the request (est/csr-builder-failed, with the cause attached) and a typed toolkit error it raises, such as requesting a binding on a TLS 1.3 connection where none exists, keeps its own code. No certification request is written to the wire in any of these cases, so an unbound or mis-bound enrollment is never sent. When an enrollment is retried across connections, the reported failure is the one that actually ended the attempt: a builder error is surfaced only where it caused the failure, so a later connection that fails on its own, for instance during TLS setup before the builder runs, reports that fault rather than an earlier builder error.
+
 ## v0.6.31 — 2026-09-04
 
 pki.transport reports the RFC 5929 tls-unique of a TLS 1.2 connection and accepts a request body built from it, so a caller can bind an EST enrollment to the TLS session it posts over (RFC 7030 sec. 3.5).
