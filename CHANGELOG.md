@@ -4,6 +4,18 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.31 — 2026-09-04
+
+pki.transport reports the RFC 5929 tls-unique of a TLS 1.2 connection and accepts a request body built from it, so a caller can bind an EST enrollment to the TLS session it posts over (RFC 7030 sec. 3.5).
+
+### Added
+
+- pki.transport.https reports tls.tlsUnique on its response (the RFC 5929 tls-unique of a TLS 1.2 connection; null on TLS 1.3, where RFC 5929 defines none) and accepts a request body given as a function (tls) -> bytes, invoked after the handshake and before the body is written. A caller builds a channel-bound CSR from tls.tlsUnique inside the callback and posts it on the same connection (RFC 7030 sec. 3.5), passing the binding to pki.csr.sign as spec.challengePassword. The callback may return a promise, so the CSR can be signed with pki.csr.sign while the connection is held open. A callback that throws, rejects, omits its return, or returns any value that is not bytes or a string fails the request closed rather than posting an empty enrollment; an explicit empty string remains an intentional empty body.
+
+### Fixed
+
+- pki.est.challengePasswordFromTlsUnique now carries reference documentation. It returns a pre-encoded DER challengePassword Attribute, which pki.csr.sign refuses in spec.attributes (csr/bad-input); to sign a channel-bound request, pass the base64 binding as spec.challengePassword, which produces the identical attribute. The two forms are alternatives, and the reference now says so rather than leaving the composition to be discovered.
+
 ## v0.6.30 — 2026-09-04
 
 Reference documentation is corrected across the toolkit: a mistyped signed-attribute field name, and options and return fields the code accepts or returns that the reference had omitted.

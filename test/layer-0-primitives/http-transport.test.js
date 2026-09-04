@@ -595,6 +595,115 @@ async function testProxyConnect() {
   check("PX-16 a DNS failure to a TLS-named proxy is proxy-connect-failed, not misread as proxy-tls-failed", (await codeOf(t({ method: "GET", url: "https://example.com/x", proxy: { url: "https://tls.invalid:9", auth: { scheme: "basic", username: "u", password: "p" }, tls: { useSystemStore: true } } }))) === "transport/proxy-connect-failed");
 }
 
+// ---- TU: tls-unique channel binding surfaced from the transport (RFC 7030 sec. 3.5 / RFC 5929) ----
+// RFC 5929 tls-unique is the first Finished on the handshake: on a full handshake the CLIENT's Finished,
+// which the server observes as its peer-Finished. The transport surfaces that value for TLS 1.2 and null
+// on TLS 1.3 (RFC 5929 is undefined there). It feeds pki.est.challengePasswordFromTlsUnique end to end.
+// The transport does one request per connection (agent: false), so no TLS session is resumed through it;
+// the getPeerFinished (resumed abbreviated-handshake) branch is RFC 5929 behavior kept for correctness but
+// not reachable via the shipped transport, so only the full-handshake getFinished path is driven here.
+async function testTlsUnique() {
+  var tlsFx = await selfSigned("Loopback CB");
+  var acceptId = function () { return undefined; };
+
+  var serverPeerFinished = null;
+  var s12 = await startServer(tlsFx, function (req, res) {
+    try { serverPeerFinished = req.socket.getPeerFinished ? req.socket.getPeerFinished() : null; } catch (_e) { serverPeerFinished = null; }
+    res.end("ok");
+  }, { minVersion: "TLSv1.2", maxVersion: "TLSv1.2" });
+  try {
+    var t = pki.transport.https({});
+    var r = await t({ method: "GET", url: urlFor(s12.port), tls: { anchors: [tlsFx.certPem], servername: "localhost", checkServerIdentity: acceptId } });
+    check("TU-1 tls-unique is surfaced on a TLS 1.2 handshake", r.tls.protocol === "TLSv1.2" && Buffer.isBuffer(r.tls.tlsUnique) && r.tls.tlsUnique.length > 0);
+    check("TU-1b the surfaced tls-unique is the client Finished (the server's peer-Finished, RFC 5929)",
+      Buffer.isBuffer(serverPeerFinished) && serverPeerFinished.length > 0 && r.tls.tlsUnique.equals(serverPeerFinished));
+    var attr = pki.est.challengePasswordFromTlsUnique(r.tls.tlsUnique);
+    var expectB64 = Buffer.from(r.tls.tlsUnique).toString("base64");
+    check("TU-2 challengePasswordFromTlsUnique consumes the surfaced tls-unique end to end",
+      Buffer.isBuffer(attr) && attr.indexOf(Buffer.from(expectB64, "ascii")) !== -1);
+  } finally { s12.srv.close(); }
+
+  var s13 = await startServer(tlsFx, function (req, res) { res.end("ok"); }, { minVersion: "TLSv1.3", maxVersion: "TLSv1.3" });
+  try {
+    var t3 = pki.transport.https({});
+    var r3 = await t3({ method: "GET", url: urlFor(s13.port), tls: { anchors: [tlsFx.certPem], servername: "localhost", checkServerIdentity: acceptId } });
+    check("TU-3 tls-unique is null on TLS 1.3 (RFC 5929 is undefined there, never substituted)",
+      r3.tls.protocol === "TLSv1.3" && r3.tls.tlsUnique === null);
+  } finally { s13.srv.close(); }
+}
+
+// A request body given as a function is the post-handshake / pre-body hook for RFC 7030 sec. 3.5
+// channel binding: it is invoked after the TLS handshake with the connection's tls object, so the
+// caller builds the request body (a channel-bound CSR) from tls-unique on the same connection it
+// posts over. The value the callback saw equals what the response reports and what the server saw.
+async function testBodyFunctionChannelBinding() {
+  var tlsFx = await selfSigned("Loopback CBhook");
+  var acceptId = function () { return undefined; };
+  var received = null;
+  var serverPeerFinished = null;
+  var s = await startServer(tlsFx, function (req, res) {
+    try { serverPeerFinished = req.socket.getPeerFinished ? req.socket.getPeerFinished() : null; } catch (_e) { serverPeerFinished = null; }
+    var chunks = [];
+    req.on("data", function (c) { chunks.push(c); });
+    req.on("end", function () { received = Buffer.concat(chunks); res.end("ok"); });
+  }, { minVersion: "TLSv1.2", maxVersion: "TLSv1.2" });
+  try {
+    var t = pki.transport.https({});
+    var anchors = { anchors: [tlsFx.certPem], servername: "localhost", checkServerIdentity: acceptId };
+    var seenBinding = null;
+    var r = await t({ method: "POST", url: urlFor(s.port), headers: { "content-type": "application/octet-stream" },
+      body: function (info) { seenBinding = info.tlsUnique; return Buffer.concat([Buffer.from("CSR:"), info.tlsUnique]); },
+      tls: anchors });
+    check("CB-1 the body callback ran post-handshake with the connection tls-unique",
+      Buffer.isBuffer(seenBinding) && seenBinding.length > 0 && Buffer.isBuffer(serverPeerFinished) && seenBinding.equals(serverPeerFinished));
+    check("CB-2 the server received exactly the body built from that binding",
+      Buffer.isBuffer(received) && received.equals(Buffer.concat([Buffer.from("CSR:"), seenBinding])));
+    check("CB-3 the response tls-unique matches the binding the body used (one connection)",
+      Buffer.isBuffer(r.tls.tlsUnique) && r.tls.tlsUnique.equals(seenBinding));
+
+    received = null;
+    var r2 = await t({ method: "POST", url: urlFor(s.port), body: function () { return "plain-string-body"; }, tls: anchors });
+    check("CB-4 a string returned by the body callback is sent as the body",
+      r2.status === 200 && Buffer.isBuffer(received) && received.toString("ascii") === "plain-string-body");
+
+    received = null;
+    var rExpect = await t({ method: "POST", url: urlFor(s.port), headers: { "content-type": "application/octet-stream", "Expect": "100-continue" },
+      body: function () { return Buffer.from("expect-body"); }, tls: anchors });
+    check("CB-7 a function body still works when the caller set Expect: 100-continue (headers are not flushed before the deferred write)",
+      rExpect.status === 200 && Buffer.isBuffer(received) && received.toString("ascii") === "expect-body");
+
+    var threw = await codeOf(t({ method: "POST", url: urlFor(s.port), body: function () { throw new Error("boom"); }, tls: anchors }));
+    check("CB-5 a throwing body callback rejects with a typed transport error", threw === "transport/transport-error");
+    var badret = await codeOf(t({ method: "POST", url: urlFor(s.port), body: function () { return 123; }, tls: anchors }));
+    check("CB-6 a body callback returning a non-byte, non-string value is refused", badret === "transport/bad-input");
+
+    var nullret = await codeOf(t({ method: "POST", url: urlFor(s.port), body: function () { return null; }, tls: anchors }));
+    check("CB-8 a body callback returning null is refused, never sent to the CA as an empty enrollment", nullret === "transport/bad-input");
+    var noret = await codeOf(t({ method: "POST", url: urlFor(s.port), body: function () { Buffer.from("forgot-to-return"); }, tls: anchors }));
+    check("CB-9 a body callback with a missing return is refused rather than posting an empty body", noret === "transport/bad-input");
+    received = null;
+    var rEmpty = await t({ method: "POST", url: urlFor(s.port), body: function () { return ""; }, tls: anchors });
+    check("CB-10 an explicit empty-string return is still an intentional empty body",
+      rEmpty.status === 200 && Buffer.isBuffer(received) && received.length === 0);
+
+    received = null;
+    var rAsync = await t({ method: "POST", url: urlFor(s.port),
+      body: function (info) { return Promise.resolve().then(function () { return Buffer.concat([Buffer.from("ASYNC:"), info.tlsUnique]); }); },
+      tls: anchors });
+    check("CB-12 the callback may return a promise, so a caller can sign a CSR with the toolkit's async signer",
+      rAsync.status === 200 && Buffer.isBuffer(received) && received.equals(Buffer.concat([Buffer.from("ASYNC:"), rAsync.tls.tlsUnique])));
+    var rejCode = await codeOf(t({ method: "POST", url: urlFor(s.port), body: function () { return Promise.reject(new Error("async boom")); }, tls: anchors }));
+    check("CB-13 a callback whose promise rejects fails the request closed", rejCode === "transport/transport-error");
+
+    var detachedAb = new ArrayBuffer(8);
+    var detachedView = new Uint8Array(detachedAb);
+    structuredClone(detachedAb, { transfer: [detachedAb] });
+    var detachedCode = await codeOf(t({ method: "POST", url: urlFor(s.port), body: function () { return detachedView; }, tls: anchors }));
+    check("CB-11 an unusable byte source from the callback keeps its typed bad-input verdict, not a write failure",
+      detachedCode === "transport/bad-input");
+  } finally { s.srv.close(); }
+}
+
 async function main() {
   await testConfigGates();
   await testResolutionFilterUnits();
@@ -614,6 +723,8 @@ async function main() {
   await testSizeCap();
   await testTimeout();
   await testTlsFloor();
+  await testTlsUnique();
+  await testBodyFunctionChannelBinding();
   await testSystemStore();
   await testErrorFactoryParam();
   await testProxyConnect();

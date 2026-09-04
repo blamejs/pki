@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.6.30",
+  "packageVersion": "0.6.31",
   "surface": {
     "C": {
       "kind": "object",
@@ -3572,6 +3572,7 @@
     "pki.est.parseCertsOnly": "0.1.24",
     "pki.est.classifyResponse": "0.1.24",
     "pki.est.paths": "0.1.24",
+    "pki.est.challengePasswordFromTlsUnique": "0.6.31",
     "pki.est.fullcmc": "0.4.16",
     "pki.est.cacerts": "0.3.16",
     "pki.est.simpleenroll": "0.3.16",

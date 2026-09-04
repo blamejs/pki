@@ -54,17 +54,29 @@ function _norm(p) {
 // ---- static: enumerate catch swallows --------------------------------------
 // Strip line comments + block comments + string/regex literals so a `throw`/`return`
 // inside a comment or string never counts. (A light strip: enough for catch bodies.)
+// Every replacement is LINE-PRESERVING: swallow lines are reported to the operator and
+// looked up in the coverage map by line, so losing a newline here misreports a line and
+// can mark a covered swallow unverified. A quoted string cannot contain a raw newline in
+// JavaScript, so excluding it from the character class also stops a stray quote from
+// running the match across lines; a template literal may span lines and is blanked in
+// place instead.
 function _strip(src) {
   return src
     .replace(/\/\*[\s\S]*?\*\//g, function (m) { return m.replace(/[^\n]/g, " "); })
     .replace(/\/\/[^\n]*/g, "")
-    .replace(/"(?:[^"\\]|\\.)*"/g, '""')
-    .replace(/'(?:[^'\\]|\\.)*'/g, "''")
-    .replace(/`(?:[^`\\]|\\.)*`/g, "``");
+    .replace(/"(?:[^"\\\n]|\\.)*"/g, '""')
+    .replace(/'(?:[^'\\\n]|\\.)*'/g, "''")
+    .replace(/`(?:[^`\\]|\\.)*`/g, function (m) { return m.replace(/[^\n]/g, " "); });
 }
 
 function findSwallows(rel, src) {
   var stripped = _strip(src);
+  // The `_rej` propagation form below is honored ONLY in a file that itself defines `_rej` as
+  // the one-line `return Promise.reject(<its own argument>)` wrapper. A file that defines the
+  // name to resolve, log, or otherwise absorb the error, or that never defines it at all, gets
+  // no exemption: the name alone can never buy a catch past this gate, and redefining it to
+  // swallow makes the pattern stop matching rather than silently widening the exemption.
+  var rejWraps = /function\s+_rej\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*\{\s*return\s+Promise\.reject\(\s*\1\s*\)\s*;?\s*\}/.test(stripped);
   var out = [];
   var re = /catch\s*\(([^)]*)\)\s*\{/g, m;
   while ((m = re.exec(stripped))) {
@@ -78,9 +90,17 @@ function findSwallows(rel, src) {
     // A catch that propagates the fault is fail-closed, not a swallow. It propagates via a
     // literal `throw`, a returned rejected promise, or a call to the schema `fail(...)`
     // throw-helper (the `fail(msg, cause?)` convention always throws the caller's typed code).
-    var noValueReturn = !/\breturn\s+(?!Promise\.reject)/.test(body);
+    // A rejected promise counts whether it is built inline as `Promise.reject(...)` or through
+    // the one-line `_rej(e)` helper, which is defined as `return Promise.reject(e)`: an async
+    // entry point rejects rather than throws, and returning that rejection propagates the
+    // fault exactly as a throw does.
+    var noValueReturn = rejWraps
+      ? !/\breturn\s+(?!Promise\.reject\b|_rej\s*\()/.test(body)
+      : !/\breturn\s+(?!Promise\.reject\b)/.test(body);
     var reThrows = /\bthrow\b/.test(body) && noValueReturn;
-    var rejectsOnly = /return\s+Promise\.reject\b/.test(body) && noValueReturn;
+    var rejectsOnly = (rejWraps
+      ? /return\s+(?:Promise\.reject\b|_rej\s*\()/.test(body)
+      : /return\s+Promise\.reject\b/.test(body)) && noValueReturn;
     var throwsViaHelper = /\bfail\s*\(/.test(body) && noValueReturn;
     if (reThrows || rejectsOnly || throwsViaHelper) continue;   // safe: propagates the fault
     // Otherwise it is a swallow: it must be exercised (covered) or explicitly marked.
