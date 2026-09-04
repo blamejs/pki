@@ -15,6 +15,7 @@ var pki = helpers.pki;
 var check = helpers.check;
 var signing = require("../helpers/signing");
 var https = require("node:https");
+var nodeTls = require("node:tls");
 var dns = require("node:dns");
 
 async function codeOf(p) { try { await p; return "NO-THROW"; } catch (e) { return (e && e.code) || ("RAW:" + (e && e.message)); } }
@@ -636,6 +637,96 @@ async function testTlsUnique() {
 // channel binding: it is invoked after the TLS handshake with the connection's tls object, so the
 // caller builds the request body (a channel-bound CSR) from tls-unique on the same connection it
 // posts over. The value the callback saw equals what the response reports and what the server saw.
+// RFC 9266 tls-exporter, the TLS 1.3 channel binding, complementary to RFC 5929 tls-unique (TLS <= 1.2).
+// Section 2 fixes the label "EXPORTER-Channel-Binding", a 32-byte output, and a zero-length context, and
+// makes the binding unconditionally defined on TLS 1.3. On TLS 1.2 it additionally requires the RFC 7627
+// extended master secret, which node exposes no way to confirm, so the value is withheld there rather
+// than surfaced unproven. Both peers must derive the same bytes, so the server computes its own.
+var EXPORTER_LABEL = "EXPORTER-Channel-Binding";
+var EXPORTER_LEN = 32;
+
+async function testTlsExporter() {
+  var tlsFx = await selfSigned("Loopback EXP");
+  var acceptId = function () { return undefined; };
+  var anchors = function () { return { anchors: [tlsFx.certPem], servername: "localhost", checkServerIdentity: acceptId }; };
+
+  var serverExporter = null;
+  var s13 = await startServer(tlsFx, function (req, res) {
+    try { serverExporter = req.socket.exportKeyingMaterial(EXPORTER_LEN, EXPORTER_LABEL, Buffer.alloc(0)); }
+    catch (_e) { serverExporter = null; }
+    res.end("ok");
+  }, { minVersion: "TLSv1.3", maxVersion: "TLSv1.3" });
+  try {
+    var t = pki.transport.https({});
+    var r = await t({ method: "GET", url: urlFor(s13.port), tls: anchors() });
+    check("TE-1 tls-exporter is surfaced on a TLS 1.3 connection as 32 bytes (RFC 9266 sec. 2)",
+      r.tls.protocol === "TLSv1.3" && Buffer.isBuffer(r.tls.tlsExporter) && r.tls.tlsExporter.length === EXPORTER_LEN);
+    check("TE-2 both peers derive the same binding, computed independently by the server",
+      Buffer.isBuffer(serverExporter) && r.tls.tlsExporter.equals(serverExporter));
+    check("TE-3 tls-unique stays null on TLS 1.3, so exactly one binding is defined per version",
+      r.tls.tlsUnique === null);
+  } finally { s13.srv.close(); }
+
+  var received = null;
+  var s13b = await startServer(tlsFx, function (req, res) {
+    var chunks = [];
+    req.on("data", function (c) { chunks.push(c); });
+    req.on("end", function () { received = Buffer.concat(chunks); res.end("ok"); });
+  }, { minVersion: "TLSv1.3", maxVersion: "TLSv1.3" });
+  try {
+    var t2 = pki.transport.https({});
+    var seen = null;
+    var r2 = await t2({ method: "POST", url: urlFor(s13b.port),
+      body: function (info) { seen = info.tlsExporter; return Buffer.from("bound"); }, tls: anchors() });
+    check("TE-4 the pre-body callback carries the same tls-exporter the response reports",
+      Buffer.isBuffer(seen) && seen.length === EXPORTER_LEN && Buffer.isBuffer(r2.tls.tlsExporter) && seen.equals(r2.tls.tlsExporter));
+    check("TE-5 and the request still completed normally", Buffer.isBuffer(received) && received.toString("ascii") === "bound");
+  } finally { s13b.srv.close(); }
+
+  var s12 = await startServer(tlsFx, function (req, res) { res.end("ok"); }, { minVersion: "TLSv1.2", maxVersion: "TLSv1.2" });
+  try {
+    var t3 = pki.transport.https({});
+    var r3 = await t3({ method: "GET", url: urlFor(s12.port), tls: anchors() });
+    check("TE-6 tls-exporter is withheld on TLS 1.2, where its uniqueness condition cannot be confirmed",
+      r3.tls.protocol === "TLSv1.2" && r3.tls.tlsExporter === null);
+    check("TE-7 and tls-unique is still the binding defined for that version",
+      Buffer.isBuffer(r3.tls.tlsUnique) && r3.tls.tlsUnique.length > 0);
+  } finally { s12.srv.close(); }
+
+  // Drop-safe: a socket whose exporter throws yields null rather than failing the request. The stub is
+  // restored in the finally so no later vector observes it.
+  var s13c = await startServer(tlsFx, function (req, res) { res.end("ok"); }, { minVersion: "TLSv1.3", maxVersion: "TLSv1.3" });
+  var realExport = nodeTls.TLSSocket.prototype.exportKeyingMaterial;
+  try {
+    nodeTls.TLSSocket.prototype.exportKeyingMaterial = function () { throw new Error("exporter unavailable"); };
+    var t4 = pki.transport.https({});
+    var r4 = await t4({ method: "GET", url: urlFor(s13c.port), tls: anchors() });
+    check("TE-8 an exporter that throws yields null and does not fail the request",
+      r4.status === 200 && r4.tls.tlsExporter === null);
+  } finally {
+    nodeTls.TLSSocket.prototype.exportKeyingMaterial = realExport;
+    s13c.srv.close();
+  }
+
+  // The binding is a fixed 32 octets (RFC 9266 sec. 2). Anything else is not that value, so it is
+  // withheld rather than surfaced under its name.
+  var s13d = await startServer(tlsFx, function (req, res) { res.end("ok"); }, { minVersion: "TLSv1.3", maxVersion: "TLSv1.3" });
+  var realExport2 = nodeTls.TLSSocket.prototype.exportKeyingMaterial;
+  try {
+    nodeTls.TLSSocket.prototype.exportKeyingMaterial = function () { return Buffer.alloc(16, 7); };
+    var t5 = pki.transport.https({});
+    var r5 = await t5({ method: "GET", url: urlFor(s13d.port), tls: anchors() });
+    check("TE-9 an export of the wrong length is not surfaced as the binding",
+      r5.status === 200 && r5.tls.tlsExporter === null);
+    nodeTls.TLSSocket.prototype.exportKeyingMaterial = function () { return "not-bytes"; };
+    var r6 = await t5({ method: "GET", url: urlFor(s13d.port), tls: anchors() });
+    check("TE-10 nor is a non-byte export", r6.status === 200 && r6.tls.tlsExporter === null);
+  } finally {
+    nodeTls.TLSSocket.prototype.exportKeyingMaterial = realExport2;
+    s13d.srv.close();
+  }
+}
+
 async function testBodyFunctionChannelBinding() {
   var tlsFx = await selfSigned("Loopback CBhook");
   var acceptId = function () { return undefined; };
@@ -724,6 +815,7 @@ async function main() {
   await testTimeout();
   await testTlsFloor();
   await testTlsUnique();
+  await testTlsExporter();
   await testBodyFunctionChannelBinding();
   await testSystemStore();
   await testErrorFactoryParam();
