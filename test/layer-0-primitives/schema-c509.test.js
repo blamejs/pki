@@ -143,6 +143,37 @@ async function run() {
   })());
   check("21z. an uncompressed EC point whose length does not match the curve -> c509/non-invertible",
     codeSync(function () { return pki.schema.c509.parse(V.mk({ 8: "5821" + "04" + "00".repeat(32) })); }) === "c509/non-invertible");
+
+  // ---- the result-shape contract encode holds a caller to ---------------------------------------
+  // A caller may hand encode a structured result rather than one this module parsed, so every field
+  // the emitter dereferences is checked first. Without these the fault would surface as a TypeError
+  // from inside the emitter rather than as a typed statement of what the result is missing.
+  function encReject(mutate) {
+    var r = pki.schema.c509.parse(V.A1.type3); delete r._fieldBytes; mutate(r);
+    return codeSync(function () { return pki.schema.c509.encode(r); });
+  }
+  check("21aa. a result carrying neither serialNumber nor serialNumberHex",
+    encReject(function (r) { delete r.serialNumber; delete r.serialNumberHex; }) === "c509/bad-input");
+  check("21ab. a result whose signatureAlgorithm has no name",
+    encReject(function (r) { r.signatureAlgorithm = {}; }) === "c509/bad-input");
+  check("21ac. a result whose subjectPublicKeyAlgorithm has no name",
+    encReject(function (r) { r.subjectPublicKeyAlgorithm = {}; }) === "c509/bad-input");
+  check("21ad. a result whose validity.notBefore is not a Date",
+    encReject(function (r) { r.validity = { notBefore: "2026-01-01", notAfter: null }; }) === "c509/bad-input");
+  check("21ae. a result whose validity.notAfter is neither a Date nor null",
+    encReject(function (r) { r.validity = { notBefore: new Date("2023-01-01T00:00:00Z"), notAfter: "2027-01-01" }; }) === "c509/bad-input");
+  check("21af. a result whose extensions field is not an array",
+    encReject(function (r) { r.extensions = {}; }) === "c509/bad-input");
+  // The no-expiry form survives a structured round trip: notAfter stays null rather than becoming a date.
+  check("21ag. a null notAfter survives a structured re-encode", (function () {
+    var r = pki.schema.c509.parse(V.mk({ 5: "f6" })); delete r._fieldBytes;
+    return pki.schema.c509.parse(pki.schema.c509.encode(r)).validity.notAfter === null;
+  })());
+  // A zero authorityCertSerialNumber travels as the empty ~biguint and reconstructs as 02 01 00.
+  check("21ah. an empty ~biguint AKI serial reconstructs as a single zero octet", (function () {
+    var r = pki.schema.c509.parse(V.mk({ 9: CBLD.array([CBLD.uint(7n), CBLD.array([CBLD.byteString(Buffer.from("0102", "hex")), CBLD.array([CBLD.uint(2n), CBLD.textString("x.com")]), CBLD.byteString(Buffer.alloc(0))])]).toString("hex") }));
+    return r.extensions[0].value.toString("hex").indexOf("820100") !== -1;
+  })());
   check("23. notBefore a negative (major-type-1) ~time -> c509/bad-validity", codeSync(function () { return pki.schema.c509.parse(V.mk({ 4: "3a63b0cd00" })); }) === "c509/bad-validity");
   check("24. an unknown signatureAlgorithm int -> c509/unknown-algorithm", codeSync(function () { return pki.schema.c509.parse(V.mk({ 2: "18ff" })); }) === "c509/unknown-algorithm");
   check("25. an unknown subjectPublicKeyAlgorithm int -> c509/unknown-algorithm", codeSync(function () { return pki.schema.c509.parse(V.mk({ 7: "18ff" })); }) === "c509/unknown-algorithm");
