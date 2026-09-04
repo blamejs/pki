@@ -59,6 +59,16 @@ async function run() {
   // ==== field-encoding reject vectors (fail-closed, typed) ====
   check("21. non-minimal serial (leading 0x00) -> c509/non-minimal-serial", codeSync(function () { return pki.schema.c509.parse(V.mk({ 1: "4300f50d" })); }) === "c509/non-minimal-serial");
   check("22. serial not a byte string -> c509/bad-serial", codeSync(function () { return pki.schema.c509.parse(V.mk({ 1: "1a0001f50d" })); }) === "c509/bad-serial");
+  // Draft sec. 3.1.2: "Any leading 0x00 byte (to indicate that the number is not negative) is
+  // therefore omitted." ANY leading zero, including a lone one, so zero encodes as h'' and h'00' is
+  // a second spelling of it. Both reconstruct byte-identical DER, so accepting both would let one
+  // issuer signature cover two distinct C509 encodings of the same certificate.
+  check("21b. a lone 0x00 serial (h'00') -> c509/non-minimal-serial", codeSync(function () { return pki.schema.c509.parse(V.mk({ 1: "4100" })); }) === "c509/non-minimal-serial");
+  check("21c. the empty byte string stays the one canonical zero serial", (function () {
+    var r = pki.schema.c509.parse(V.mk({ 1: "40" }));
+    return r.serialNumberHex === "" && Buffer.isBuffer(r.reconstructedDer);
+  })());
+  check("21d. a lone 0x00 RSA modulus is refused by the same rule", codeSync(function () { return pki.schema.c509.parse(V.mk({ 7: "06", 8: "4100" })); }) !== "NO-THROW");
   check("23. notBefore a negative (major-type-1) ~time -> c509/bad-validity", codeSync(function () { return pki.schema.c509.parse(V.mk({ 4: "3a63b0cd00" })); }) === "c509/bad-validity");
   check("24. an unknown signatureAlgorithm int -> c509/unknown-algorithm", codeSync(function () { return pki.schema.c509.parse(V.mk({ 2: "18ff" })); }) === "c509/unknown-algorithm");
   check("25. an unknown subjectPublicKeyAlgorithm int -> c509/unknown-algorithm", codeSync(function () { return pki.schema.c509.parse(V.mk({ 7: "18ff" })); }) === "c509/unknown-algorithm");
@@ -276,6 +286,22 @@ async function run() {
   // C509 (a non-minimal serial) fails closed via the structured-path self-verify, as the verbatim path does.
   var hbBad = pki.schema.c509.parse(V.A1.type3); delete hbBad._fieldBytes; hbBad.serialNumberHex = "0001";
   check("85d. a structured re-emit that cannot parse -> a typed c509/*", codeSync(function () { return pki.schema.c509.encode(hbBad); }) === "c509/non-minimal-serial");
+  // A malformed serialNumberHex must be refused rather than truncated. The self-verify above cannot
+  // catch these: "0f5" decodes to the perfectly valid serial 0x0f, so the emitted certificate parses
+  // and the caller silently receives a serial it never asked for.
+  [ "0f5", "zz", "0102zzab", "0x0102", 4901, "00 01" ].forEach(function (bad, i) {
+    var hb = pki.schema.c509.parse(V.A1.type3); delete hb._fieldBytes; hb.serialNumberHex = bad;
+    check("85e." + i + " serialNumberHex " + JSON.stringify(bad) + " is refused, not silently re-serialized",
+      codeSync(function () { return pki.schema.c509.encode(hb); }).indexOf("c509/") === 0);
+  });
+  // Both hex letter cases are accepted, so the validator tests the digit range rather than one spelling.
+  [["0a0b0c", "lower case"], ["0A0B0C", "upper case"]].forEach(function (t, i) {
+    var hbOk = pki.schema.c509.parse(V.A1.type3); delete hbOk._fieldBytes; hbOk.serialNumberHex = t[0];
+    check("85f." + i + " a well-formed " + t[1] + " serialNumberHex still round-trips", (function () {
+      if (codeSync(function () { return pki.schema.c509.encode(hbOk); }) !== "NO-THROW") return false;
+      return pki.schema.c509.parse(pki.schema.c509.encode(hbOk)).serialNumberHex === "0a0b0c";
+    })());
+  });
 
   // ==== the X.509 version this format covers, and the omitted-extensions case ====================
   // Both C509 certificate types are defined over X.509 v3 and the encoding carries no version
