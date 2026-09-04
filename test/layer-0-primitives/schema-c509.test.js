@@ -68,7 +68,7 @@ async function run() {
     var r = pki.schema.c509.parse(V.mk({ 1: "40" }));
     return r.serialNumberHex === "" && Buffer.isBuffer(r.reconstructedDer);
   })());
-  check("21d. a lone 0x00 RSA modulus is refused by the same rule", codeSync(function () { return pki.schema.c509.parse(V.mk({ 7: "06", 8: "4100" })); }) !== "NO-THROW");
+  check("21d. a lone 0x00 RSA modulus is refused by the same rule", codeSync(function () { return pki.schema.c509.parse(V.mk({ 7: "00", 8: "4100" })); }) === "c509/non-minimal-serial");
   // Draft sec. 3.1.9: "If the exponent is 65537, the array and the exponent are omitted and
   // subjectPublicKey consists of only the modulus." The array spelling of that same key is therefore
   // not a valid encoding, and accepting it would reconstruct DER identical to the compact form -- the
@@ -425,7 +425,7 @@ async function run() {
   [ "0f5", "zz", "0102zzab", "0x0102", 4901, "00 01" ].forEach(function (bad, i) {
     var hb = pki.schema.c509.parse(V.A1.type3); delete hb._fieldBytes; hb.serialNumberHex = bad;
     check("85e." + i + " serialNumberHex " + JSON.stringify(bad) + " is refused, not silently re-serialized",
-      codeSync(function () { return pki.schema.c509.encode(hb); }).indexOf("c509/") === 0);
+      codeSync(function () { return pki.schema.c509.encode(hb); }) === "c509/bad-serial");
   });
   // The rule holds on the verbatim path too: a result still carrying its preserved field bytes is
   // re-emitted from those bytes, so a malformed serialNumberHex would otherwise pass unexamined and
@@ -433,7 +433,7 @@ async function run() {
   ["0f5", "zz"].forEach(function (bad, i) {
     var hbv = pki.schema.c509.parse(V.A1.type3); hbv.serialNumberHex = bad;
     check("85g." + i + " a malformed serialNumberHex is refused on the verbatim path too",
-      codeSync(function () { return pki.schema.c509.encode(hbv); }).indexOf("c509/") === 0);
+      codeSync(function () { return pki.schema.c509.encode(hbv); }) === "c509/bad-serial");
   });
   // Both hex letter cases are accepted, so the validator tests the digit range rather than one spelling.
   [["0a0b0c", "lower case"], ["0A0B0C", "upper case"]].forEach(function (t, i) {
