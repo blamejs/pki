@@ -1027,6 +1027,25 @@ async function testInjectedTransportMustReturnAPromise() {
   var r = await pki.est.cacerts(BASE, { transport: thenable });
   check("IT-3 a non-native thenable is accepted and adopted, not rejected for lacking Promise identity",
     r.certificates.length === 1 && r.certificates[0].equals(S.cert));
+
+  // The `then` property is read exactly once. A getter that is stateful or one-shot is legitimate, and
+  // ordinary promise assimilation reads it once, so probing it and then assimilating separately would
+  // read it twice and break a transport that is behaving correctly.
+  var reads = 0;
+  var oneShot = function () {
+    var obj = {};
+    Object.defineProperty(obj, "then", {
+      get: function () {
+        reads += 1;
+        if (reads > 1) throw new Error("the then getter is one-shot");
+        return function (resolve) { resolve(ok); };
+      },
+    });
+    return obj;
+  };
+  var r2 = await pki.est.cacerts(BASE, { transport: oneShot });
+  check("IT-4 a thenable whose then is a one-shot getter still works, so it is read exactly once",
+    reads === 1 && r2.certificates.length === 1 && r2.certificates[0].equals(S.cert));
 }
 
 async function main() {
