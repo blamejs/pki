@@ -6,11 +6,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## v0.6.31 — 2026-09-04
 
-pki.transport surfaces the RFC 5929 tls-unique channel binding of a TLS 1.2 connection, so an EST client can bind its enrollment request to the authenticated TLS session (RFC 7030 sec. 3.5).
+pki.transport reports the RFC 5929 tls-unique of a TLS 1.2 connection and accepts a request body built from it, so a caller can bind an EST enrollment to the TLS session it posts over (RFC 7030 sec. 3.5).
 
 ### Added
 
-- pki.transport.https surfaces tls.tlsUnique on its response: the RFC 5929 tls-unique of a TLS 1.2 connection (the first TLS Finished, getPeerFinished on a resumed session), which pki.est.challengePasswordFromTlsUnique base64-encodes into the RFC 7030 sec. 3.5 challenge-password for EST channel binding. On TLS 1.3 it is null (RFC 5929 defines no tls-unique there). The RFC 9266 tls-exporter for TLS 1.3 remains a later increment.
+- pki.transport.https reports tls.tlsUnique on its response (the RFC 5929 tls-unique of a TLS 1.2 connection; null on TLS 1.3, where RFC 5929 defines none) and accepts a request body given as a function (tls) -> bytes, invoked after the handshake and before the body is written. A caller builds a channel-bound CSR from tls.tlsUnique inside the callback and posts it on the same connection (RFC 7030 sec. 3.5), which pki.est.challengePasswordFromTlsUnique encodes into the challenge-password. A callback that throws or returns a non-bytes, non-string value fails the request closed.
 
 ## v0.6.30 — 2026-09-04
 

@@ -632,6 +632,53 @@ async function testTlsUnique() {
   } finally { s13.srv.close(); }
 }
 
+// A request body given as a function is the post-handshake / pre-body hook for RFC 7030 sec. 3.5
+// channel binding: it is invoked after the TLS handshake with the connection's tls object, so the
+// caller builds the request body (a channel-bound CSR) from tls-unique on the same connection it
+// posts over. The value the callback saw equals what the response reports and what the server saw.
+async function testBodyFunctionChannelBinding() {
+  var tlsFx = await selfSigned("Loopback CBhook");
+  var acceptId = function () { return undefined; };
+  var received = null;
+  var serverPeerFinished = null;
+  var s = await startServer(tlsFx, function (req, res) {
+    try { serverPeerFinished = req.socket.getPeerFinished ? req.socket.getPeerFinished() : null; } catch (_e) { serverPeerFinished = null; }
+    var chunks = [];
+    req.on("data", function (c) { chunks.push(c); });
+    req.on("end", function () { received = Buffer.concat(chunks); res.end("ok"); });
+  }, { minVersion: "TLSv1.2", maxVersion: "TLSv1.2" });
+  try {
+    var t = pki.transport.https({});
+    var anchors = { anchors: [tlsFx.certPem], servername: "localhost", checkServerIdentity: acceptId };
+    var seenBinding = null;
+    var r = await t({ method: "POST", url: urlFor(s.port), headers: { "content-type": "application/octet-stream" },
+      body: function (info) { seenBinding = info.tlsUnique; return Buffer.concat([Buffer.from("CSR:"), info.tlsUnique]); },
+      tls: anchors });
+    check("CB-1 the body callback ran post-handshake with the connection tls-unique",
+      Buffer.isBuffer(seenBinding) && seenBinding.length > 0 && Buffer.isBuffer(serverPeerFinished) && seenBinding.equals(serverPeerFinished));
+    check("CB-2 the server received exactly the body built from that binding",
+      Buffer.isBuffer(received) && received.equals(Buffer.concat([Buffer.from("CSR:"), seenBinding])));
+    check("CB-3 the response tls-unique matches the binding the body used (one connection)",
+      Buffer.isBuffer(r.tls.tlsUnique) && r.tls.tlsUnique.equals(seenBinding));
+
+    received = null;
+    var r2 = await t({ method: "POST", url: urlFor(s.port), body: function () { return "plain-string-body"; }, tls: anchors });
+    check("CB-4 a string returned by the body callback is sent as the body",
+      r2.status === 200 && Buffer.isBuffer(received) && received.toString("ascii") === "plain-string-body");
+
+    received = null;
+    var rExpect = await t({ method: "POST", url: urlFor(s.port), headers: { "content-type": "application/octet-stream", "Expect": "100-continue" },
+      body: function () { return Buffer.from("expect-body"); }, tls: anchors });
+    check("CB-7 a function body still works when the caller set Expect: 100-continue (headers are not flushed before the deferred write)",
+      rExpect.status === 200 && Buffer.isBuffer(received) && received.toString("ascii") === "expect-body");
+
+    var threw = await codeOf(t({ method: "POST", url: urlFor(s.port), body: function () { throw new Error("boom"); }, tls: anchors }));
+    check("CB-5 a throwing body callback rejects with a typed transport error", threw === "transport/transport-error");
+    var badret = await codeOf(t({ method: "POST", url: urlFor(s.port), body: function () { return 123; }, tls: anchors }));
+    check("CB-6 a body callback returning a non-byte, non-string value is refused", badret === "transport/bad-input");
+  } finally { s.srv.close(); }
+}
+
 async function main() {
   await testConfigGates();
   await testResolutionFilterUnits();
@@ -652,6 +699,7 @@ async function main() {
   await testTimeout();
   await testTlsFloor();
   await testTlsUnique();
+  await testBodyFunctionChannelBinding();
   await testSystemStore();
   await testErrorFactoryParam();
   await testProxyConnect();
