@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.31 — 2026-09-04
+
+pki.transport surfaces the RFC 5929 tls-unique channel binding of a TLS 1.2 connection, so an EST client can bind its enrollment request to the authenticated TLS session (RFC 7030 sec. 3.5).
+
+### Added
+
+- pki.transport.https surfaces tls.tlsUnique on its response: the RFC 5929 tls-unique of a TLS 1.2 connection (the first TLS Finished, getPeerFinished on a resumed session), which pki.est.challengePasswordFromTlsUnique base64-encodes into the RFC 7030 sec. 3.5 challenge-password for EST channel binding. On TLS 1.3 it is null (RFC 5929 defines no tls-unique there). The RFC 9266 tls-exporter for TLS 1.3 remains a later increment.
+
 ## v0.6.30 — 2026-09-04
 
 Reference documentation is corrected across the toolkit: a mistyped signed-attribute field name, and options and return fields the code accepts or returns that the reference had omitted.

@@ -1,0 +1,11 @@
+{
+  "version": "0.6.31",
+  "date": "2026-09-04",
+  "headline": "pki.transport surfaces the RFC 5929 tls-unique channel binding of a TLS 1.2 connection, so an EST client can bind its enrollment request to the authenticated TLS session (RFC 7030 sec. 3.5).",
+  "summary": "The shared node:https transport now reports the RFC 5929 tls-unique value of a TLS 1.2 connection on its response tls object, as tls.tlsUnique, alongside protocol, cipher, and peerCertificate. tls-unique is the first TLS Finished message of the handshake, the channel binding RFC 7030 sec. 3.5 links to an EST enrollment: pki.est.challengePasswordFromTlsUnique base64-encodes it into the certification request challenge-password, proving the request was signed over the same authenticated TLS session the client is enrolling on. A caller now sources tls-unique from the connection the toolkit opened rather than reaching into the socket. On a TLS 1.3 connection tls.tlsUnique is null, since RFC 5929 defines no tls-unique for TLS 1.3; surfacing the RFC 9266 tls-exporter for TLS 1.3 is a later increment. An injected transport that returns its own tls object should include tlsUnique to keep channel binding available.",
+  "sections": {
+    "Added": [
+      "pki.transport.https surfaces tls.tlsUnique on its response: the RFC 5929 tls-unique of a TLS 1.2 connection (the first TLS Finished, getPeerFinished on a resumed session), which pki.est.challengePasswordFromTlsUnique base64-encodes into the RFC 7030 sec. 3.5 challenge-password for EST channel binding. On TLS 1.3 it is null (RFC 5929 defines no tls-unique there). The RFC 9266 tls-exporter for TLS 1.3 remains a later increment."
+    ]
+  }
+}

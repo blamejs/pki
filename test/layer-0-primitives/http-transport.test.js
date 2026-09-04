@@ -595,6 +595,43 @@ async function testProxyConnect() {
   check("PX-16 a DNS failure to a TLS-named proxy is proxy-connect-failed, not misread as proxy-tls-failed", (await codeOf(t({ method: "GET", url: "https://example.com/x", proxy: { url: "https://tls.invalid:9", auth: { scheme: "basic", username: "u", password: "p" }, tls: { useSystemStore: true } } }))) === "transport/proxy-connect-failed");
 }
 
+// ---- TU: tls-unique channel binding surfaced from the transport (RFC 7030 sec. 3.5 / RFC 5929) ----
+// RFC 5929 tls-unique is the first Finished on the handshake: on a full handshake the CLIENT's Finished,
+// which the server observes as its peer-Finished. The transport surfaces that value for TLS 1.2 and null
+// on TLS 1.3 (RFC 5929 is undefined there). It feeds pki.est.challengePasswordFromTlsUnique end to end.
+// The transport does one request per connection (agent: false), so no TLS session is resumed through it;
+// the getPeerFinished (resumed abbreviated-handshake) branch is RFC 5929 behavior kept for correctness but
+// not reachable via the shipped transport, so only the full-handshake getFinished path is driven here.
+async function testTlsUnique() {
+  var tlsFx = await selfSigned("Loopback CB");
+  var acceptId = function () { return undefined; };
+
+  var serverPeerFinished = null;
+  var s12 = await startServer(tlsFx, function (req, res) {
+    try { serverPeerFinished = req.socket.getPeerFinished ? req.socket.getPeerFinished() : null; } catch (_e) { serverPeerFinished = null; }
+    res.end("ok");
+  }, { minVersion: "TLSv1.2", maxVersion: "TLSv1.2" });
+  try {
+    var t = pki.transport.https({});
+    var r = await t({ method: "GET", url: urlFor(s12.port), tls: { anchors: [tlsFx.certPem], servername: "localhost", checkServerIdentity: acceptId } });
+    check("TU-1 tls-unique is surfaced on a TLS 1.2 handshake", r.tls.protocol === "TLSv1.2" && Buffer.isBuffer(r.tls.tlsUnique) && r.tls.tlsUnique.length > 0);
+    check("TU-1b the surfaced tls-unique is the client Finished (the server's peer-Finished, RFC 5929)",
+      Buffer.isBuffer(serverPeerFinished) && serverPeerFinished.length > 0 && r.tls.tlsUnique.equals(serverPeerFinished));
+    var attr = pki.est.challengePasswordFromTlsUnique(r.tls.tlsUnique);
+    var expectB64 = Buffer.from(r.tls.tlsUnique).toString("base64");
+    check("TU-2 challengePasswordFromTlsUnique consumes the surfaced tls-unique end to end",
+      Buffer.isBuffer(attr) && attr.indexOf(Buffer.from(expectB64, "ascii")) !== -1);
+  } finally { s12.srv.close(); }
+
+  var s13 = await startServer(tlsFx, function (req, res) { res.end("ok"); }, { minVersion: "TLSv1.3", maxVersion: "TLSv1.3" });
+  try {
+    var t3 = pki.transport.https({});
+    var r3 = await t3({ method: "GET", url: urlFor(s13.port), tls: { anchors: [tlsFx.certPem], servername: "localhost", checkServerIdentity: acceptId } });
+    check("TU-3 tls-unique is null on TLS 1.3 (RFC 5929 is undefined there, never substituted)",
+      r3.tls.protocol === "TLSv1.3" && r3.tls.tlsUnique === null);
+  } finally { s13.srv.close(); }
+}
+
 async function main() {
   await testConfigGates();
   await testResolutionFilterUnits();
@@ -614,6 +651,7 @@ async function main() {
   await testSizeCap();
   await testTimeout();
   await testTlsFloor();
+  await testTlsUnique();
   await testSystemStore();
   await testErrorFactoryParam();
   await testProxyConnect();
