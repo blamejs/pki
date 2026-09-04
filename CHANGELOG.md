@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.33 — 2026-09-04
+
+pki.transport reports the RFC 9266 tls-exporter channel binding of a TLS 1.3 connection, so every connection the toolkit opens now carries the binding its protocol version defines.
+
+### Added
+
+- pki.transport.https reports tls.tlsExporter, the RFC 9266 channel binding of a TLS 1.3 connection (32 bytes, label EXPORTER-Channel-Binding, zero-length context), on its response and on the argument passed to a request body given as a function. It is null below TLS 1.3, where RFC 9266 sec. 2 also requires the RFC 7627 extended master secret that Node cannot confirm, and null when the socket cannot export. tls.tlsUnique is unchanged, so a connection carries exactly the binding its version defines.
+
 ## v0.6.32 — 2026-09-04
 
 pki.est.simpleenroll and pki.est.simplereenroll accept a CSR builder, so an enrollment is signed over the tls-unique of the connection it is sent on (RFC 7030 sec. 3.5 channel binding).
