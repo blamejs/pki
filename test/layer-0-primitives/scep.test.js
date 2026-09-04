@@ -1365,8 +1365,18 @@ async function testCertRepIssuance() {
   check("CertRep SUCCESS with a recipient lacking keyEncipherment refused", (await codeOf(pki.scep.build({ messageType: "CertRep", pkiStatus: "SUCCESS", transactionId: "t", recipientNonce: rn, certificates: [F.issuedCert], recipient: noKeyEncCert, signer: caSigner }))) === "scep/bad-input");
 }
 
+// An injected transport that yields no promise is a wiring fault in the caller's own code, so it is
+// reported as a typed option error naming the option rather than a raw TypeError from the internals.
+async function testInjectedTransportMustReturnAPromise() {
+  check("a transport returning nothing is a typed option fault",
+    (await codeOf(pki.scep.getCACaps("http://ca.example/scep", { transport: function () { } }))) === "scep/bad-input");
+  check("a transport returning a non-promise response is refused the same way",
+    (await codeOf(pki.scep.getCACaps("http://ca.example/scep", { transport: function () { return { status: 200, headers: {}, body: "" }; } }))) === "scep/bad-input");
+}
+
 async function main() {
   await setup();
+  await testInjectedTransportMustReturnAPromise();
   await testPkcsReqRoundTrip();
   await testRenewalReqRoundTrip();
   await testNoKeyParse();

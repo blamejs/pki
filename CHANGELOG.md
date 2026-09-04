@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.34 — 2026-09-04
+
+An injected transport that does not return a promise is reported as a typed option error naming the option, in every client that accepts one.
+
+### Changed
+
+- pki.est, pki.acme, pki.cmp, and pki.scep reject with est/bad-input, acme/bad-input, cmp/bad-input, or scep/bad-input when opts.transport returns something that is not a promise of the response, instead of failing with a raw TypeError or a misleading response verdict. A transport returning any thenable is still accepted, and the documented signature now states the promise contract.
+
 ## v0.6.33 — 2026-09-04
 
 pki.transport reports the RFC 9266 tls-exporter channel binding of a TLS 1.3 connection, so every connection the toolkit opens now carries the binding its protocol version defines.

@@ -1,0 +1,11 @@
+{
+  "version": "0.6.34",
+  "date": "2026-09-04",
+  "headline": "An injected transport that does not return a promise is reported as a typed option error naming the option, in every client that accepts one.",
+  "summary": "pki.est, pki.acme, pki.cmp, and pki.scep all accept an injected transport for testing and for reaching a CA through a caller's own stack. A transport that returned something other than a promise, most often a function that simply forgot to return, previously surfaced as a raw TypeError from the toolkit's internals, or in one client as a confusing verdict about the response status. Each client now reports it as its own bad-input error naming opts.transport and saying what was received, so a wiring mistake in the caller's code reads as a wiring mistake. The check tests for a thenable rather than for Promise identity, so a transport returning any thenable still works, and the value is adopted so a foreign thenable whose own then() returns nothing chainable no longer breaks the request. The error is delivered as a rejection, never a synchronous throw, matching how these verbs already report every other fault.",
+  "sections": {
+    "Changed": [
+      "pki.est, pki.acme, pki.cmp, and pki.scep reject with est/bad-input, acme/bad-input, cmp/bad-input, or scep/bad-input when opts.transport returns something that is not a promise of the response, instead of failing with a raw TypeError or a misleading response verdict. A transport returning any thenable is still accepted, and the documented signature now states the promise contract."
+    ]
+  }
+}
