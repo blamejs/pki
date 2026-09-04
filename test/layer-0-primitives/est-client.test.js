@@ -914,6 +914,35 @@ async function testChannelBoundResponseNeverPreemptsBuilder() {
   var skipped200 = function () { return Promise.resolve(enrollOK([S.cert])); };
   check("CBE-41 nor an issued certificate",
     (await codeOf(pki.est.simpleenroll(BASE, boundBuilder(), { transport: skipped200 }))) === "est/csr-builder-failed");
+
+  // The shape the reference documents: a stand-in transport that requests and awaits the body, then
+  // answers 202. Pinned here because the example-execution gate skips that block.
+  var documented = async function (request) {
+    await request.body({ protocol: "TLSv1.2", cipher: null, peerCertificate: null, tlsUnique: Buffer.alloc(12, 1) });
+    return { status: 202, headers: { "retry-after": "60" }, body: "" };
+  };
+  var docRes = await pki.est.simpleenroll(BASE, boundBuilder(), { transport: documented });
+  check("CBE-42 the documented builder example really does surface the queued verdict",
+    docRes.retry === true && docRes.retryAfterSeconds === 60);
+
+  // A body-bearing retry must start with no completed attempt: a transport that does not await the
+  // first body, lets it finish during the retry, and then answers the retry WITHOUT requesting a body
+  // must not have the earlier CSR read as this hop's request.
+  var hops = 0;
+  var firstBody = null;
+  var raceTransport = function (request) {
+    var i = hops++;
+    if (i === 0) {
+      firstBody = request.body(chan(CB_B1));                      // started, deliberately not awaited here
+      return Promise.resolve({ status: 401, headers: { "www-authenticate": "Basic realm=\"est\"" }, body: "" });
+    }
+    // Let the FIRST hop's builder finish, so a completed attempt is on hand, then answer this hop
+    // without ever requesting a body for it.
+    return firstBody.then(function () { return { status: 202, headers: { "retry-after": "60" }, body: "" }; });
+  };
+  check("CBE-43 a retry that never requests a body cannot reuse the previous hop's CSR",
+    (await codeOf(pki.est.simpleenroll(BASE, boundBuilder(), { transport: raceTransport, username: "u", password: "p" }))) === "est/csr-builder-failed");
+  check("CBE-44 and both hops were attempted", hops === 2);
 }
 
 async function testChannelBoundOverRealTransport() {
