@@ -940,6 +940,28 @@ async function testChannelBoundResponseNeverPreemptsBuilder() {
     // without ever requesting a body for it.
     return firstBody.then(function () { return { status: 202, headers: { "retry-after": "60" }, body: "" }; });
   };
+  // Each hop's body callback belongs to that hop. A transport that RETAINS an earlier hop's callback and
+  // invokes it late must not have that invocation stand in for the hop in flight: the issued certificate
+  // is selected by public-key match, so a late call carrying a different key would otherwise get a
+  // certificate accepted for a CSR this hop never posted.
+  var keys = [S, DECOY];
+  var picks = 0;
+  var alternating = async function (tls) {
+    var sg = keys[picks++ % keys.length];
+    return pki.csr.sign({ subject: "enroll.example", subjectPublicKey: sg.spki, challengePassword: tls.tlsUnique.toString("base64") }, { key: sg.key });
+  };
+  var retained = null;
+  var retainHops = 0;
+  var retainTransport = async function (request) {
+    var i = retainHops++;
+    if (i === 0) { retained = request.body; return { status: 401, headers: { "www-authenticate": "Basic realm=\"est\"" }, body: "" }; }
+    await request.body(chan(CB_B2));       // this hop's own CSR (first key)
+    await retained(chan(CB_B1));           // the retained earlier callback, invoked late (second key)
+    return enrollOK([DECOY.cert]);         // a certificate for the LATE call's key, not this hop's
+  };
+  check("CBE-45 a retained earlier callback cannot make this hop accept a certificate it did not request",
+    (await codeOf(pki.est.simpleenroll(BASE, alternating, { transport: retainTransport, username: "u", password: "p" }))) === "est/issued-cert-not-found");
+
   check("CBE-43 a retry that never requests a body cannot reuse the previous hop's CSR",
     (await codeOf(pki.est.simpleenroll(BASE, boundBuilder(), { transport: raceTransport, username: "u", password: "p" }))) === "est/csr-builder-failed");
   check("CBE-44 and both hops were attempted", hops === 2);
