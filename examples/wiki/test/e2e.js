@@ -77,6 +77,18 @@ async function run() {
     check("page generated for namespace " + e.slug, !!built.pages["/" + e.slug]);
   });
 
+  // Visible prose carries no em-dash construction (" -- "). Code renders inside
+  // <pre>/<code>, so @opts / @signature / @example blocks and inline code are
+  // exempt; only the rendered prose of @module / @primitive / @intro / @card and
+  // the concept pages is held to the rule. A flag or badge token inside code is
+  // untouched because its markup is stripped before the check runs.
+  Object.keys(built.pages).forEach(function (p) {
+    var pg = built.pages[p];
+    var html = typeof pg === "string" ? pg : (pg && pg.html) || "";
+    var prose = html.replace(/<pre[\s\S]*?<\/pre>/g, "").replace(/<code[\s\S]*?<\/code>/g, "").replace(/<[^>]+>/g, " ");
+    check("no em-dash construction ( -- ) in the visible prose of " + p, prose.indexOf(" -- ") === -1);
+  });
+
   // Every nav item round-trips through groupForPath().
   built.navGroups.forEach(function (g) {
     check("nav group '" + g.group + "' is non-empty", g.items.length >= 1);
