@@ -853,6 +853,69 @@ async function testChannelBoundStaleErrorNotSurfaced() {
   check("CBE-31 and the builder really was not invoked on that attempt", invoked2 === 1 && seen2 === 2);
 }
 
+// A transport that swallows the builder's failure and answers anyway must not have its response read as
+// progress: no certification request was sent, so neither a 202 "queued" verdict nor a certificate
+// matched against a key from an earlier attempt describes anything that happened.
+async function testChannelBoundSwallowedFailureIsNotProgress() {
+  var swallow202 = function (request) {
+    return Promise.resolve()
+      .then(function () { return request.body(chan(CB_B1)); })
+      .then(function () { return null; }, function () { return null; })
+      .then(function () { return { status: 202, headers: { "retry-after": "60" }, body: "" }; });
+  };
+  check("CBE-36 a swallowed builder failure is not reported as a queued enrollment",
+    (await codeOf(pki.est.simpleenroll(BASE, function () { throw new Error("builder boom"); }, { transport: swallow202 }))) === "est/csr-builder-failed");
+
+  // The sharper shape: attempt 1 builds a CSR (so an SPKI is on hand), attempt 2's builder fails and is
+  // swallowed, and the CA answers 200. The issued certificate must not be accepted against the key from
+  // the attempt that is no longer the one in flight.
+  var n = 0;
+  var builder = function (tls) {
+    n += 1;
+    if (n === 1) return pki.csr.sign({ subject: "enroll.example", subjectPublicKey: S.spki, challengePassword: tls.tlsUnique.toString("base64") }, { key: S.key });
+    throw new Error("second-connection builder failure");
+  };
+  var seen = 0;
+  var swallowThen200 = function (request) {
+    var i = seen++;
+    return Promise.resolve()
+      .then(function () { return request.body(chan(i === 0 ? CB_B1 : CB_B2)); })
+      .then(function () { return null; }, function () { return null; })
+      .then(function () {
+        return i === 0 ? { status: 401, headers: { "www-authenticate": "Basic realm=\"est\"" }, body: "" } : enrollOK([S.cert]);
+      });
+  };
+  check("CBE-37 a certificate is not accepted against a key from an attempt that is no longer in flight",
+    (await codeOf(pki.est.simpleenroll(BASE, builder, { transport: swallowThen200, username: "u", password: "p" }))) === "est/csr-builder-failed");
+  check("CBE-38 and both connections were attempted", seen === 2 && n === 2);
+}
+
+// A response must never be read as an outcome for an attempt whose certification request has not
+// finished being built. Each body invocation is tracked on its own, so a builder still running (or one
+// left over from an earlier connection) cannot have its state read as this attempt's result.
+async function testChannelBoundResponseNeverPreemptsBuilder() {
+  var resolveBuilder = null;
+  var pending = new Promise(function (res) { resolveBuilder = res; });
+  var builder = function () { return pending; };            // never settles before the response
+  var noWait = function (request) {
+    request.body(chan(CB_B1));                               // invoked, but deliberately not awaited
+    return Promise.resolve({ status: 202, headers: { "retry-after": "60" }, body: "" });
+  };
+  var code = await codeOf(pki.est.simpleenroll(BASE, builder, { transport: noWait }));
+  check("CBE-39 a response arriving before the builder finished is not an enrollment outcome",
+    code === "est/csr-builder-failed");
+  resolveBuilder(CSR);
+
+  // The same rule with the builder never invoked at all. A 202 needs no key to be reported as queued,
+  // so this shape is only caught by requiring an attempt to exist, not by the issued-cert key match.
+  var skipped = function () { return Promise.resolve({ status: 202, headers: { "retry-after": "60" }, body: "" }); };
+  check("CBE-40 a transport that never asks for the CSR cannot report a queued enrollment",
+    (await codeOf(pki.est.simpleenroll(BASE, boundBuilder(), { transport: skipped }))) === "est/csr-builder-failed");
+  var skipped200 = function () { return Promise.resolve(enrollOK([S.cert])); };
+  check("CBE-41 nor an issued certificate",
+    (await codeOf(pki.est.simpleenroll(BASE, boundBuilder(), { transport: skipped200 }))) === "est/csr-builder-failed");
+}
+
 async function testChannelBoundOverRealTransport() {
   var s = makeSigner("ec-p256", { serial: 0x77, cn: "localhost" });
   var certDer = await pki.x509.sign({
@@ -929,6 +992,8 @@ async function main() {
   await testChannelBoundReenroll();
   await testChannelBoundFailClosed();
   await testChannelBoundStaleErrorNotSurfaced();
+  await testChannelBoundSwallowedFailureIsNotProgress();
+  await testChannelBoundResponseNeverPreemptsBuilder();
   await testChannelBoundOverRealTransport();
   await testChannelBoundBackwardCompatible();
   console.log("CHECKS " + helpers.getChecks());
