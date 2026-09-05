@@ -115,6 +115,31 @@ function run() {
     check("22. such a verdict still resolves as itself",
       (await Promise.resolve(hostile)) === hostile);
 
+    // `carries` answers from a captured own-property check, so replacing Object.hasOwn or
+    // Object.prototype.hasOwnProperty after load does not change what it reports.
+    var own = verdict.of({ status: "good" });
+    check("23. carries reports a field the object owns", verdict.carries(own, "status"));
+    check("24. carries reports an inherited field as absent",
+      withPollution("verdict", { valid: true }, function () { return verdict.carries(own, "verdict") === false; }));
+    check("25. carries answers for a primitive and a nullish argument without throwing",
+      verdict.carries(null, "status") === false && verdict.carries(undefined, "status") === false &&
+      verdict.carries("ab", "0") === true && verdict.carries(7, "status") === false);
+
+    var realHasOwn = Object.hasOwn;
+    var realHasOwnProperty = Object.prototype.hasOwnProperty;
+    var swapped;
+    try {
+      Object.hasOwn = function () { return true; };
+      Object.defineProperty(Object.prototype, "hasOwnProperty",
+        { configurable: true, writable: true, value: function () { return true; } });
+      swapped = verdict.carries(own, "verdict") === false && verdict.carries(own, "status") === true;
+    } finally {
+      Object.hasOwn = realHasOwn;
+      Object.defineProperty(Object.prototype, "hasOwnProperty",
+        { configurable: true, writable: true, value: realHasOwnProperty });
+    }
+    check("26. a replaced Object.hasOwn and hasOwnProperty do not change what carries reports", swapped);
+
     console.log("CHECKS " + helpers.getChecks());
   })();
 }

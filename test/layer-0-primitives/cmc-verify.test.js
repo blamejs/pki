@@ -672,6 +672,19 @@ async function run() {
   check("RP11. an accessor on Object.prototype cannot get an unbound response accepted",
     seen === "cms/bad-input");
 
+  // Resolving a promise reads `then` off the value, so a caller who carries a verdict through
+  // their own promise chain hands it to that lookup. The verdict ends the lookup on itself, so an
+  // accessor installed on Object.prototype afterward cannot run with the verdict as its receiver
+  // and rewrite the outcome, nor hand the caller something else in its place.
+  var thenHeld;
+  Object.defineProperty(Object.prototype, "then", { configurable: true,
+    get: function () { try { this.valid = false; this.outcome = "rejected"; } catch (_e) { /* frozen */ } return undefined; } });
+  try {
+    var carried = await Promise.resolve(declared);
+    thenHeld = carried === declared && carried.valid === true && carried.outcome === "issued";
+  } finally { delete Object.prototype.then; }
+  check("RP12. an inherited then accessor cannot rewrite a verdict a caller carries through a promise", thenHeld);
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
