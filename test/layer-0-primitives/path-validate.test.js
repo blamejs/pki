@@ -3539,6 +3539,31 @@ async function testInitialInputsAndTargetGates() {
       .then(function (r) { return r.valid === false; }, function (e) { return (e.code || "") === "path/bad-input"; });
   })();
   check("NC38 one anchor's getter cannot clear a later anchor's namespace", ncCrossVerdict);
+  // The anchor list itself is walked twice, to capture namespaces and then to normalize, so an
+  // accessor index could answer differently each time.
+  check("NC39 an anchor list entry supplied through an accessor is refused",
+    (await codeOf((function () {
+      var list = [];
+      Object.defineProperty(list, "0", { get: function () { return ncAnchor(undefined); }, enumerable: true, configurable: true });
+      list.length = 2;
+      list[1] = ncAnchor({ permitted: [{ tag: 2, base: "nowhere.example" }] });
+      return run([ncLeafIn], { time: T2027, trustAnchors: list });
+    })())) === "path/bad-input");
+  check("NC40 a one-entry anchor list is held to the same rule as a longer one",
+    (await codeOf(run([ncLeafOut], { time: T2027,
+      trustAnchors: new Proxy([ncAnchor({ permitted: [{ tag: 2, base: "nowhere.example" }] })], {
+        get: function (t, k) { return k === "0" ? ncAnchor(undefined) : t[k]; },
+      }) }))) === "path/bad-input");
+  check("NC41 a subtree base inheriting from a Proxy is refused before its prototype is probed",
+    (function () {
+      var nc = { excluded: [{ tag: 2, base: "evil.net" }] };
+      var hostile = new Proxy({}, { has: function () { nc.excluded = []; return false; } });
+      var b64 = Buffer.from([10, 0, 0, 0, 255, 0, 0, 0]);
+      Object.setPrototypeOf(b64, hostile);
+      nc.permitted = [{ tag: 7, base: b64 }];
+      try { pki.path.anchorFromCert(ncAnchor(nc)); return false; }
+      catch (e) { return (e.code || "") === "path/bad-input"; }
+    })());
   check("NC21 an anchor whose nameConstraints is null is unconstrained, not refused",
     (await run([ncLeafOut], { time: T2027, trustAnchors: ncAnchor(null) })).valid === true);
   // The seed option is read once: an accessor answering differently to the presence test and to the
