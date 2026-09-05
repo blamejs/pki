@@ -575,14 +575,22 @@ async function run() {
   }
   // Mint a certificate carrying an extension value THIS toolkit's x509 builder refuses to emit, which
   // is how such a certificate reaches us in the first place: from another implementation. The value is
-  // signed under an unallocated OID (2.5.29.99, so the builder passes it through opaquely) and the
-  // three OID content octets are then patched to the real extension, leaving the value untouched.
-  var DECOY_OID_BYTES = Buffer.from("551d63", "hex");
+  // signed under an unallocated OID so the builder passes it through opaquely, then the OID content
+  // octets are patched to the real extension, leaving the value untouched. The decoy is the target
+  // with its last arc replaced by 99, which keeps the encoding the same length whatever arc it is in.
+  function decoyFor(realOidDotted) {
+    var arcs = realOidDotted.split(".");
+    if (Number(arcs[arcs.length - 1]) >= 128) return null;
+    return arcs.slice(0, -1).concat("99").join(".");
+  }
   async function certWithForeignExt(realOidDotted, valueDer) {
-    var der = await certWithExts([b.sequence([b.oid("2.5.29.99"), b.octetString(valueDer)])]);
-    var at = der.indexOf(DECOY_OID_BYTES);
+    var decoy = decoyFor(realOidDotted);
+    if (!decoy) return null;
+    var decoyBytes = pki.asn1.encodeOidContent(decoy);
+    var der = await certWithExts([b.sequence([b.oid(decoy), b.octetString(valueDer)])]);
+    var at = der.indexOf(decoyBytes);
     var real = pki.asn1.encodeOidContent(realOidDotted);
-    if (at < 0 || real.length !== DECOY_OID_BYTES.length) return null;
+    if (at < 0 || real.length !== decoyBytes.length) return null;
     var patched = Buffer.from(der);
     real.copy(patched, at);
     return patched;
@@ -733,6 +741,53 @@ async function run() {
       b.sequence([b.contextConstructed(0, b.sequence([
         b.contextPrimitive(2, Buffer.from("a.example", "latin1")),
         b.contextPrimitive(0, Buffer.from([0x01]))]))])],
+    // The compact codec's remaining refusals. Each is the arm the section 3.7 extension rule relies
+    // on: a value it cannot represent keeps the generic form on a native certificate too.
+    ["an authorityKeyIdentifier holding one field instead of three", "2.5.29.35",
+      b.sequence([b.contextPrimitive(0, Buffer.from("0102", "hex"))])],
+    ["an authorityKeyIdentifier whose serial is negative", "2.5.29.35",
+      b.sequence([b.contextPrimitive(0, Buffer.from("0102", "hex")),
+        b.contextConstructed(1, b.contextPrimitive(2, Buffer.from("a.example", "latin1"))),
+        b.contextPrimitive(2, Buffer.from([0xff]))])],
+    ["an authorityInfoAccess that is not a SEQUENCE", "1.3.6.1.5.5.7.1.1",
+      b.octetString(Buffer.from("00", "hex"))],
+    ["an authorityInfoAccess description holding one element", "1.3.6.1.5.5.7.1.1",
+      b.sequence([b.sequence([b.oid("1.3.6.1.5.5.7.48.1")])])],
+    ["a subjectInfoAccess with an empty description list", "1.3.6.1.5.5.7.1.11",
+      b.sequence([])],
+    ["a nameConstraints field tagged outside [0..1]", "2.5.29.30",
+      b.sequence([b.contextConstructed(2, b.sequence([b.contextPrimitive(2, Buffer.from("a.example", "latin1"))]))])],
+    ["a nameConstraints carrying its subtree lists out of tag order", "2.5.29.30",
+      b.sequence([b.contextConstructed(1, b.sequence([b.contextPrimitive(2, Buffer.from("b.example", "latin1"))])),
+        b.contextConstructed(0, b.sequence([b.contextPrimitive(2, Buffer.from("a.example", "latin1"))]))])],
+    ["a tlsFeature list that is not a SEQUENCE", "1.3.6.1.5.5.7.1.24",
+      b.octetString(Buffer.from("05", "hex"))],
+    ["a cRLDistributionPoints holding no DistributionPoint", "2.5.29.31",
+      b.sequence([])],
+    ["a cRLDistributionPoints whose fullName holds no URI", "2.5.29.31",
+      b.sequence([b.sequence([b.contextConstructed(0, b.contextConstructed(0, Buffer.alloc(0)))])])],
+    ["an ipAddrBlocks holding no address family", "1.3.6.1.5.5.7.1.7",
+      b.sequence([])],
+    ["an IPAddressFamily holding one element instead of two", "1.3.6.1.5.5.7.1.7",
+      b.sequence([b.sequence([b.octetString(Buffer.from("0001", "hex"))])])],
+    ["an addressFamily octet string outside two or three octets", "1.3.6.1.5.5.7.1.7",
+      b.sequence([b.sequence([b.octetString(Buffer.from("00", "hex")), b.sequence([])])])],
+    ["two address families out of ascending order", "1.3.6.1.5.5.7.1.7",
+      b.sequence([
+        b.sequence([b.octetString(Buffer.from("0002", "hex")), b.sequence([])]),
+        b.sequence([b.octetString(Buffer.from("0001", "hex")), b.sequence([])])])],
+    ["an ASIdentifiers whose only field is not asnum [0]", "1.3.6.1.5.5.7.1.8",
+      b.sequence([b.contextConstructed(1, b.sequence([]))])],
+    ["an ASIdentifiers asnum holding an empty choice", "1.3.6.1.5.5.7.1.8",
+      b.sequence([b.contextConstructed(0, b.sequence([]))])],
+    ["an AS range whose upper bound does not exceed its lower", "1.3.6.1.5.5.7.1.8",
+      b.sequence([b.contextConstructed(0, b.sequence([b.sequence([b.integer(7n), b.integer(7n)])]))])],
+    ["a certificatePolicies holding no PolicyInformation", "2.5.29.32",
+      b.sequence([])],
+    ["a PolicyInformation that is not a SEQUENCE", "2.5.29.32",
+      b.sequence([b.integer(1n)])],
+    ["a policy qualifier list that is not a SEQUENCE", "2.5.29.32",
+      b.sequence([b.sequence([b.oid("2.5.29.32.0"), b.integer(1n)])])],
   ];
   for (var fi = 0; fi < foreignCases.length; fi++) {
     var fDer = await certWithForeignExt(foreignCases[fi][1], foreignCases[fi][2]);
@@ -1585,6 +1640,133 @@ async function run() {
     codeSync(function () { return pki.schema.c509.parse(type2WithField(2, genericAlg("1.2.840.10045.4.3.2", "0500"))); }) !== "c509/non-specific-encoding");
   check("343c. a type-2 ecPublicKey with a curve no registry row names keeps the generic form",
     codeSync(function () { return pki.schema.c509.parse(type2WithField(7, genericAlg("1.2.840.10045.2.1", b.oid("1.3.132.0.10").toString("hex")))); }) !== "c509/non-specific-encoding");
+
+  // The same section 3.7 rule for extensions. Whether the specific form was available is decided by
+  // asking the compact codec whether it represents this exact value, so a value it cannot express
+  // keeps the generic form on a native certificate as it already does on a re-encoded one.
+  function genericExt(dotted, valueDer) {
+    return CBb2.array([CBb2.byteString(pki.asn1.encodeOidContent(dotted)), CBb2.byteString(valueDer)]).toString("hex");
+  }
+  var GEXT = [
+    ["subjectKeyIdentifier", genericExt("2.5.29.14", b.octetString(Buffer.from("0102030405", "hex")))],
+    ["keyUsage", genericExt("2.5.29.15", b.bitString(Buffer.from([0x80]), 7))],
+    ["extKeyUsage", genericExt("2.5.29.37", b.sequence([b.oid("1.3.6.1.5.5.7.3.1")]))],
+    ["ocspNoCheck (a registry id with no compact value codec)", genericExt("1.3.6.1.5.5.7.48.1.5", b.nullValue())],
+  ];
+  GEXT.forEach(function (g, i) {
+    check("344g." + String.fromCharCode(97 + i) + " a type-2 writing " + g[0] + " generically -> c509/non-specific-encoding",
+      codeSync(function () { return pki.schema.c509.parse(type2WithField(9, g[1])); }) === "c509/non-specific-encoding");
+    check("344h." + String.fromCharCode(97 + i) + " a type-3 may still write " + g[0] + " generically",
+      codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: g[1] })); }) !== "c509/non-specific-encoding");
+  });
+  check("344i. a type-2 extension whose OID has no C509 registry id keeps the generic form",
+    codeSync(function () { return pki.schema.c509.parse(type2WithField(9, genericExt("2.5.29.99", b.nullValue()))); }) !== "c509/non-specific-encoding");
+  // A cRLDistributionPoints the compact codec provably cannot represent: its reasons BIT STRING
+  // declares an impossible unused-bit count, so the generic form is the only one that carries it.
+  // Representability is judged under the rules that will decode the value. A directoryName whose
+  // attribute is a PrintableString compacts to a negative attribute integer, which a natively signed
+  // certificate may not carry, so for that certificate type the generic form is the only one.
+  check("344k. a type-2 extension representable only under re-encoded rules keeps the generic form",
+    (function () {
+      var ps = Buffer.concat([Buffer.from([0x13, 0x02]), Buffer.from("CA", "ascii")]);
+      var san = b.sequence([b.contextConstructed(4, b.sequence([b.set([b.sequence([b.oid("2.5.4.3"), b.raw(ps)])])]))]);
+      var hex = genericExt("2.5.29.17", san);
+      return codeSync(function () { return pki.schema.c509.parse(type2WithField(9, hex)); }) !== "c509/non-specific-encoding" &&
+        codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: hex })); }) !== "c509/non-specific-encoding";
+    })());
+  // An extension may name itself by OID alone, so the registry lookup resolves the name from the OID
+  // before choosing a form. Otherwise a compactly representable value falls to the generic form.
+  // How an extension identifies itself does not change the form it is written in: the same value
+  // named by name, by OID, or by both encodes identically and decodes back to the same extension.
+  [["keyUsage", "2.5.29.15", b.bitString(Buffer.from([0x80]), 7)],
+    ["subjectKeyIdentifier", "2.5.29.14", b.octetString(Buffer.from("0102", "hex"))],
+    ["basicConstraints", "2.5.29.19", b.sequence([b.boolean(true)])],
+    ["extKeyUsage", "2.5.29.37", b.sequence([b.oid("1.3.6.1.5.5.7.3.1")])],
+    ["ocspNoCheck", "1.3.6.1.5.5.7.48.1.5", b.nullValue()],
+  ].forEach(function (k, i) {
+    [V.A1.type2, V.A1.type3].forEach(function (src, ti) {
+      check("344o." + String.fromCharCode(97 + i) + (ti + 2) + " " + k[0] + " encodes the same however it is identified (type " + (ti + 2) + ")",
+        (function () {
+          var forms = [{ name: k[0], oid: k[1] }, { name: k[0] }, { oid: k[1] }].map(function (id) {
+            var r = structured(src);
+            r.extensions = [{ name: id.name, oid: id.oid, critical: false, value: k[2] }];
+            var out = pki.schema.c509.encode(r);
+            return pki.schema.c509.parse(out).extensions[0].name + "|" + CB.decode(out).children[9].bytes.toString("hex");
+          });
+          return forms[0] === forms[1] && forms[1] === forms[2] && forms[0].indexOf(k[0] + "|") === 0;
+        })());
+    });
+  });
+  // Rebuilding a certificate field by field has no original to compare against, unlike encoding from
+  // DER, so each extension value must survive the form the encoder picks for it and re-encoding must
+  // reach the same bytes a second time.
+  [["a keyUsage wider than the nine defined bits", "keyUsage", "2.5.29.15", Buffer.from("0306008000000001", "hex")],
+    ["a keyUsage carrying all nine bits", "keyUsage", "2.5.29.15", b.bitString(Buffer.from([0xff, 0x80]), 7)],
+    ["an empty subjectKeyIdentifier", "subjectKeyIdentifier", "2.5.29.14", b.octetString(Buffer.alloc(0))],
+    ["an extKeyUsage naming an unregistered purpose", "extKeyUsage", "2.5.29.37", b.sequence([b.oid("1.2.3.4.5")])],
+    ["a basicConstraints with a pathLen", "basicConstraints", "2.5.29.19", b.sequence([b.boolean(true), b.integer(3n)])],
+    ["a tlsFeature naming two features", "tlsFeature", "1.3.6.1.5.5.7.1.24", b.sequence([b.integer(5n), b.integer(17n)])],
+  ].forEach(function (c, i) {
+    check("344q." + String.fromCharCode(97 + i) + " " + c[0] + " survives a field-by-field re-encode",
+      (function () {
+        var r = structured();
+        r.extensions = [{ name: c[1], oid: c[2], critical: false, value: c[3] }];
+        var first = pki.schema.c509.encode(r);
+        var back = pki.schema.c509.parse(first).extensions[0];
+        var kept = Buffer.isBuffer(back.value) ? back.value.equals(c[3]) : typeof back.keyUsageBits === "number";
+        var again = pki.schema.c509.parse(first); delete again._fieldBytes;
+        return kept && pki.schema.c509.encode(again).equals(first);
+      })());
+  });
+  // The shortcut may only be taken when the bare integer reproduces the value byte for byte. A
+  // keyUsage BIT STRING wider than the nine defined bits does not, so it keeps the generic form
+  // rather than being rewritten to an integer that drops the bits beyond it.
+  check("344p. a lone keyUsage the bare integer cannot reproduce keeps its own encoding",
+    (function () {
+      var wide = Buffer.from("0306008000000001", "hex");
+      var r = structured();
+      r.extensions = [{ name: "keyUsage", oid: "2.5.29.15", critical: false, value: wide }];
+      var out = pki.schema.c509.encode(r);
+      var back = pki.schema.c509.parse(out).extensions[0];
+      return Buffer.isBuffer(back.value) && back.value.equals(wide);
+    })());
+  // A lone keyUsage is written as a bare integer, so resolving an OID-only extension has to reach
+  // that shortcut rather than stopping at the compact pair the shortcut replaces.
+  check("344n. a lone keyUsage supplied by OID alone still encodes to the bare integer shortcut",
+    (function () {
+      var r = structured();
+      r.extensions = [{ oid: "2.5.29.15", critical: false, value: b.bitString(Buffer.from([0x80]), 7) }];
+      var out = pki.schema.c509.encode(r);
+      return CB.decode(out).children[9].majorType <= 1 &&
+        pki.schema.c509.parse(out).extensions[0].name === "keyUsage";
+    })());
+  check("344m. an extension supplied by OID alone still encodes to its registry identifier",
+    (function () {
+      var r = structured(V.A1.type2);
+      r.extensions = [{ oid: "2.5.29.14", critical: false, value: b.octetString(Buffer.from("0102", "hex")) }];
+      var out = pki.schema.c509.encode(r);
+      return CB.decode(out).children[9].children[0].majorType <= 1 &&
+        pki.schema.c509.parse(out).extensions[0].name === "subjectKeyIdentifier";
+    })());
+  check("344l. encode picks the form its own certificate type can decode, for that same value",
+    (function () {
+      var ps = Buffer.concat([Buffer.from([0x13, 0x02]), Buffer.from("CA", "ascii")]);
+      var san = b.sequence([b.contextConstructed(4, b.sequence([b.set([b.sequence([b.oid("2.5.4.3"), b.raw(ps)])])]))]);
+      function formFor(src) {
+        var r = pki.schema.c509.parse(src); delete r._fieldBytes;
+        r.extensions = [{ name: "subjectAltName", oid: "2.5.29.17", critical: false, value: san }];
+        var out = pki.schema.c509.encode(r);
+        pki.schema.c509.parse(out);
+        return CB.decode(out).children[9].children[0].majorType;
+      }
+      return formFor(V.A1.type2) === 2 && formFor(V.A1.type3) <= 1;
+    })());
+  check("344j. a type-2 extension the compact codec cannot represent keeps the generic form",
+    codeSync(function () {
+      return pki.schema.c509.parse(type2WithField(9, genericExt("2.5.29.31", b.sequence([b.sequence([
+        b.contextConstructed(0, b.contextConstructed(0, b.contextPrimitive(6, Buffer.from("http://a", "latin1")))),
+        b.contextPrimitive(1, Buffer.from([0x09, 0x80]))])]))));
+    }) !== "c509/non-specific-encoding");
 
   // A supplied algorithm parameter is part of the certificate. The rsaEncryption reconstruction
   // emitted OID + NULL whatever was supplied, so a parameter the caller sent was discarded and the
