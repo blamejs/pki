@@ -4,6 +4,18 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.41 — 2026-09-05
+
+A lookup table answers from its own entries, so a name taken off the wire cannot resolve to something the table never registered.
+
+### Changed
+
+- The name tables pki.C.NAMES exposes, along with pki.asn1.TAGS, pki.ct.HASH_ALGORITHMS, pki.ct.SIGNATURE_ALGORITHMS, pki.path.PROCESSED_EXTENSIONS and pki.path.TARGET_UNPROCESSED_IF_CRITICAL, carry no prototype. Reading an entry, listing the keys and serializing to JSON are unchanged; calling an Object.prototype method on the table itself, such as table.hasOwnProperty(name), no longer works, so use Object.hasOwn(table, name).
+
+### Fixed
+
+- A lookup table read by a computed key carries no prototype, so a name the wire supplies resolves to an entry the table registered or to nothing. pki.webauthn.verify is the reachable case: an attestation naming constructor, toString or another Object.prototype member as its format selected a verifier the table never held. The same shape covered the signature-scheme, content-encryption, key-agreement, extension-decoder and status-name registries.
+
 ## v0.6.40 — 2026-09-05
 
 Every verify verdict now reaches its caller as the object the verb built, and a list the toolkit assembles carries the entries the toolkit put in it.

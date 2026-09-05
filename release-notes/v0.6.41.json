@@ -1,0 +1,14 @@
+{
+  "version": "0.6.41",
+  "date": "2026-09-05",
+  "headline": "A lookup table answers from its own entries, so a name taken off the wire cannot resolve to something the table never registered.",
+  "summary": "A table written as an ordinary object literal inherits from Object.prototype, so looking a name up in it can return a member nobody put there. Asking such a table for constructor returns a function; asking for any name something else in the process left on Object.prototype returns whatever that is. Where the name comes off the wire, that is a dispatch the message chooses: a WebAuthn attestation naming constructor as its format reached the verifier table and was handed Object's own constructor to run as a verifier.\n\nEvery lookup table in the toolkit that is read by a computed key now carries no prototype, 151 of them, from the signature-scheme and content-encryption registries down to the name tables pki.C.NAMES exposes. A name the table does not hold now answers undefined, which is what each caller's miss handling already expects.\n\nThe rule is enforced rather than restored by hand: a module-level table declared as an object literal and read anywhere with a computed key is a build failure, so the next table written that way is caught where it is written.",
+  "sections": {
+    "Fixed": [
+      "A lookup table read by a computed key carries no prototype, so a name the wire supplies resolves to an entry the table registered or to nothing. pki.webauthn.verify is the reachable case: an attestation naming constructor, toString or another Object.prototype member as its format selected a verifier the table never held. The same shape covered the signature-scheme, content-encryption, key-agreement, extension-decoder and status-name registries."
+    ],
+    "Changed": [
+      "The name tables pki.C.NAMES exposes, along with pki.asn1.TAGS, pki.ct.HASH_ALGORITHMS, pki.ct.SIGNATURE_ALGORITHMS, pki.path.PROCESSED_EXTENSIONS and pki.path.TARGET_UNPROCESSED_IF_CRITICAL, carry no prototype. Reading an entry, listing the keys and serializing to JSON are unchanged; calling an Object.prototype method on the table itself, such as table.hasOwnProperty(name), no longer works, so use Object.hasOwn(table, name)."
+    ]
+  }
+}

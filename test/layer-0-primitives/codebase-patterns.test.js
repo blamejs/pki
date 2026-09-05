@@ -1115,6 +1115,48 @@ function testAlgorithmLookupNoDefault() {
   _report("algorithm-table lookups throw on a miss (no OR-defaults, no weak literal presets surviving unknown OIDs)", bad);
 }
 
+function testRegistryTablesCarryNoPrototype() {
+  // class: registry-table-inherits-object-prototype
+  // A module-level lookup table declared as a plain object literal inherits Object.prototype, so
+  // `TABLE[nameFromTheMessage]` resolves to a member the table never registered: `constructor`
+  // yields a function, and any name a co-resident planted yields whatever it planted. In a table
+  // that decides how a signature is verified, that lets a message name an algorithm the toolkit
+  // does not implement and have the verification proceed under a descriptor it did not write.
+  //
+  // The shape is the DECLARATION, which no rename touches: a module-level binding whose right-hand
+  // side opens an object literal. A table nothing reads with a computed key is not the class, so
+  // the check pairs the declaration with a computed read of that name anywhere in lib.
+  //
+  // Reads are collected in ONE pass over the stripped sources, so a commented-out or quoted
+  // lookup does not count and the cost stays linear in the corpus rather than one rescan per
+  // declaration. An assignment TARGET is removed from the line before the read test, so
+  // `TABLE[a] = 1` is not a read while `TABLE[a] = TABLE[b]` still is.
+  var bad = [];
+  var files = _libFiles();
+  var stripped = files.map(function (f) { return _stripCommentsAndLiterals(fs.readFileSync(f, "utf8")); });
+  var readByKey = Object.create(null);
+  stripped.forEach(function (src) {
+    src.split("\n").forEach(function (line) {
+      var rest = line.replace(/([A-Za-z_$][A-Za-z0-9_$]*)\s*\[[^\][]*\]\s*=(?!=)/g, "");
+      var m;
+      var re = /([A-Za-z_$][A-Za-z0-9_$]*)\s*\[/g;
+      while ((m = re.exec(rest)) !== null) readByKey[m[1]] = true;
+    });
+  });
+  files.forEach(function (f, fi) {
+    var rel = path.relative(REPO_ROOT, f);
+    var lines = stripped[fi].split("\n");
+    for (var i = 0; i < lines.length; i++) {
+      var d = /^(?:var|let|const) ([A-Za-z_$][A-Za-z0-9_$]*) = \{/.exec(lines[i]);
+      if (!d || !readByKey[d[1]]) continue;
+      bad.push({ file: rel, line: i + 1,
+        content: "the module-level table `" + d[1] + "` is an object literal, so it inherits Object.prototype and a computed lookup answers with a member it never registered — build it on Object.create(null) (or the module's captured create)" });
+    }
+  });
+  bad = _filterMarkers(bad, "registry-table-inherits-object-prototype");
+  _report("a module-level table read with a computed key carries no prototype", bad);
+}
+
 function testNoRemovedWebCryptoNamespace() {
   // class: removed-namespace-reference
   // pki.WebCrypto was removed in favor of pki.webcrypto.* — its classes now hang off
@@ -3951,6 +3993,7 @@ function run() {
   testWorkflowScanFailureMasked();
   testSharedLeafOptionScope();
   testAlgorithmLookupNoDefault();
+  testRegistryTablesCarryNoPrototype();
   testNumberNarrowsUnboundedInteger();
   testNanDateComparisonUnguarded();
   testEddsaVerifyGate();
