@@ -824,12 +824,17 @@ async function testOptionSurface() {
     (await transportRefused(function () {
       return pki.est.cacerts(BASE, Object.create({ transport: null, tls: { useSystemStore: true } }));
     })) === "typed");
-  // Binding a class hides its source, so it reaches the call. Calling it throws synchronously
-  // because a class cannot be invoked without new, and that throw is translated the same way a
-  // rejected promise from a transport already is, rather than escaping as a bare TypeError.
-  check("76a-i. a bound class constructor transport is refused when it is called",
+  // A class constructor is callable as far as any test of the value can tell, so it reaches the
+  // call. Calling it throws synchronously, because a class cannot be invoked without new, and that
+  // throw is translated the same way a rejected promise from a transport already is, rather than
+  // escaping as a bare TypeError. Binding one hides its source and changes nothing here.
+  check("76a-i. a class constructor transport is refused when it is called",
     (await transportRefused(function () {
-      return pki.est.cacerts(BASE, { transport: (class T {}).bind(null), tls: { useSystemStore: true } });
+      return pki.est.cacerts(BASE, { transport: class T {}, tls: { useSystemStore: true } });
+    })) === "typed");
+  check("76a-ii. a bound class constructor transport is refused the same way",
+    (await transportRefused(function () {
+      return pki.est.cacerts(BASE, { transport: (class U {}).bind(null), tls: { useSystemStore: true } });
     })) === "typed");
   // A FALSY transport is the same fault and must not be read as "no transport supplied": falling
   // back to the default client would open a real connection to the CA on behalf of a caller who
