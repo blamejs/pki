@@ -1124,73 +1124,55 @@ function testRegistryTablesCarryNoPrototype() {
   // does not implement and have the verification proceed under a descriptor it did not write.
   //
   // The shape is the DECLARATION, which no rename touches: a module-level binding whose right-hand
-  // side opens an object literal. A table nothing reads with a computed key is not the class, so
-  // the check pairs the declaration with a computed read of that name anywhere in lib.
+  // side opens an object literal. Every one of them is flagged, whether or not a lookup by that
+  // name is visible. Pairing the declaration with a computed read of its own name would answer for
+  // the binding rather than the object: a table handed to a lookup helper is indexed through the
+  // parameter (`_algorithm(byInt)` reading `byInt[i]`), and one stored into another structure is
+  // indexed through the property (`profile.algs[alg]`), so both read as unused and pass. Declaring
+  // the whole class means no alias can carry a table past the gate.
   //
-  // Reads are collected from the stripped sources, so a commented-out or quoted lookup does not
-  // count. An assignment TARGET is removed from the line first, so `TABLE[a] = 1` is not a read
-  // while `TABLE[a] = TABLE[b]` still is.
+  // Nothing in lib needs an inherited member from one of these, so the rule costs a binding no
+  // capability. Declarations inside a function body are out of scope: the anchor requires the
+  // keyword at column 0. So are the shapes that are not a declaration at all, a literal assigned
+  // to a property or returned from a factory; lib holds none that serve as a lookup table, and a
+  // table introduced that way is the residual under the rule.
   //
-  // A read counts for a declaration when it is in the SAME file, or in a file that requires the
-  // declaring module. Matching a bare name across unrelated files would let one module's table
-  // stand in for another's, so renaming the reader would take an unconverted table green.
-  //
-  // What this does not see: a table stored into another structure and looked up through that
-  // property instead of by its own name (`PROFILES[p] = { algs: MAC_ALGS }`, read as
-  // `profile.algs[alg]`). Recognizing that lexically means treating every reference as a read,
-  // which fires on the known-keys tables `guard.identifier.assertKnownKeys` consults by name.
-  // The residual is a table introduced that way and reached only that way; the sweep that
-  // converted the existing set is the floor under it.
+  // A declaration is read across the line break as well as along the line: the initializer may
+  // open on the next line, and a comma declarator may sit on one of its own. Matching only what
+  // fits on the declaring line would let either spelling carry a table past the gate.
   var bad = [];
   var files = _libFiles();
-  var raw = files.map(function (f) { return fs.readFileSync(f, "utf8"); });
-  var stripped = raw.map(_stripCommentsAndLiterals);
-  var basenames = files.map(function (f) { return path.basename(f, ".js"); });
-
-  function namesReadIn(src) {
-    var out = Object.create(null);
-    src.split("\n").forEach(function (line) {
-      var rest = line.replace(/([A-Za-z_$][A-Za-z0-9_$]*)\s*\[[^\][]*\]\s*=(?!=)/g, "");
-      var m, re = /([A-Za-z_$][A-Za-z0-9_$]*)\s*\[/g;
-      while ((m = re.exec(rest)) !== null) out[m[1]] = true;
-    });
-    return out;
+  function _flag(list, rel, line, name) {
+    list.push({ file: rel, line: line,
+      content: "the module-level table `" + name + "` is an object literal, so it inherits Object.prototype and a computed lookup answers with a member it never registered — build it on Object.create(null) (or the module's captured create)" });
   }
-  var readsIn = stripped.map(namesReadIn);
-  // Read the require graph from the RAW source: the stripper blanks string literals, which would
-  // turn every `require("./module")` into `require("")` and leave the graph empty, so every
-  // cross-module read would go unseen and the gate would pass on a table only its importers read.
-  var requiresOf = raw.map(function (src) {
-    var seen = Object.create(null), m, re = /require\("\.\/([A-Za-z0-9_.-]+?)(?:\.js)?"\)/g;
-    while ((m = re.exec(src)) !== null) seen[m[1]] = true;
-    return seen;
-  });
-  function readByKey(name, declFileIndex) {
-    if (readsIn[declFileIndex][name]) return true;
-    var declBase = basenames[declFileIndex];
-    for (var k = 0; k < files.length; k++) {
-      if (k !== declFileIndex && requiresOf[k][declBase] && readsIn[k][name]) return true;
-    }
-    return false;
-  }
-  files.forEach(function (f, fi) {
+  files.forEach(function (f) {
     var rel = path.relative(REPO_ROOT, f);
-    var lines = stripped[fi].split("\n");
+    var lines = _stripCommentsAndLiterals(fs.readFileSync(f, "utf8")).split("\n");
     for (var i = 0; i < lines.length; i++) {
+      var next = i + 1 < lines.length ? lines[i + 1] : "";
+      // A declarator whose literal opens on the following line, in either spelling: the keyword
+      // form at column 0, or a continued declarator indented under a trailing comma.
+      var open = /^(?:var|let|const)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*$/.exec(lines[i]);
+      if (!open && /,\s*$/.test(lines[i === 0 ? 0 : i - 1])) {
+        open = /^\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*$/.exec(lines[i]);
+      }
+      if (open && /^\s*\{/.test(next)) { _flag(bad, rel, i + 1, open[1]); continue; }
+      // A continued declarator carrying its literal on the same line.
+      if (/,\s*$/.test(lines[i === 0 ? 0 : i - 1])) {
+        var cont = /^\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*\{/.exec(lines[i]);
+        if (cont) { _flag(bad, rel, i + 1, cont[1]); continue; }
+      }
       if (!/^(?:var|let|const) /.test(lines[i])) continue;
       // Every declarator on the line, not just the one after the keyword: a comma-declared table
       // is the same class, and reading only the first would let one hide behind another.
       var decl = /(?:^(?:var|let|const)|,)\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*\{/g;
       var d;
-      while ((d = decl.exec(lines[i])) !== null) {
-        if (!readByKey(d[1], fi)) continue;
-        bad.push({ file: rel, line: i + 1,
-          content: "the module-level table `" + d[1] + "` is an object literal, so it inherits Object.prototype and a computed lookup answers with a member it never registered — build it on Object.create(null) (or the module's captured create)" });
-      }
+      while ((d = decl.exec(lines[i])) !== null) _flag(bad, rel, i + 1, d[1]);
     }
   });
   bad = _filterMarkers(bad, "registry-table-inherits-object-prototype");
-  _report("a module-level table read with a computed key carries no prototype", bad);
+  _report("no module-level object literal in lib carries Object.prototype", bad);
 }
 
 function testNoRemovedWebCryptoNamespace() {
@@ -1823,6 +1805,18 @@ function _isBoilerplate(slice) {
   var delegationReturns = (joined.match(/\breturn\s+_ID\s+\.\s+_ID\s+\(/g) || []).length;
   if (delegationReturns >= 2) return true;
   if (kvPairs >= 2 && delegationReturns >= 1) return true;
+  // The module-level table-declaration run. Every table in lib is built as
+  // `assign(create(null), { … })` (the registry-table-inherits-object-prototype rule), in either
+  // the bare `Object.` spelling or a module's captured-intrinsic one, which tokenize identically.
+  // A run of those declarations repeats the construction idiom and its key-value entries, neither
+  // of which has a body to extract. The match is on `create(null),` rather than the whole
+  // construction because a window lands mid-run: it opens inside one literal and closes inside the
+  // next, so the leading `assign(` of the first is outside the window. Two constructions are the
+  // run on their own; one is the run when the rest of the window is the entries of the tables
+  // around it, which keeps a lone construction inside real logic clustered.
+  var nullProtoTables = (joined.match(/_ID\s+\.\s+_ID\s+\(\s+null\s+\)\s+,/g) || []).length;
+  if (nullProtoTables >= 2) return true;
+  if (nullProtoTables >= 1 && kvPairs >= 2) return true;
   if (/\bclass\s+_ID\s+extends\s+_ID/.test(joined)) return true;
   var declTokens = toks.filter(function (t) {
     return t === "=" || t === ";" || t === "," || t === ":" ||

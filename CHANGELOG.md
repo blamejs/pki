@@ -14,7 +14,7 @@ A lookup table answers from its own entries, so a name taken off the wire cannot
 
 ### Fixed
 
-- A lookup table read by a computed key carries no prototype, so a name the wire supplies resolves to an entry the table registered or to nothing. pki.webauthn.verify is the reachable case: an attestation naming constructor, toString or another Object.prototype member as its format selected a verifier the table never held. The same shape covered the signature-scheme, content-encryption, key-agreement, extension-decoder and status-name registries.
+- A lookup table carries no prototype, so a name the wire supplies resolves to an entry the table registered or to nothing. Two verbs were reachable: pki.webauthn.verify selected a verifier the table never held for an attestation naming constructor, toString or another Object.prototype member as its format, and pki.schema.c509.parse accepted a certificate whose subject-public-key algorithm named such a member instead of throwing c509/unknown-algorithm. The same change applies to the signature-scheme, content-encryption, key-agreement, extension-decoder and status-name registries.
 
 ## v0.6.40 — 2026-09-05
 
