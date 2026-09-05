@@ -4,6 +4,18 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.40 — 2026-09-05
+
+Every verify verdict now reaches its caller as the object the verb built, and a list the toolkit assembles carries the entries the toolkit put in it.
+
+### Fixed
+
+- The verdicts of pki.attrcert.verify, pki.crl.verify, pki.csr.verify, pki.ct.verifySctWithLogList, pki.ct.verifySctList, pki.path.validate, pki.path.build, pki.pkcs12.verifyMac, pki.pkcs12.open, pki.webauthn.verify, pki.webauthn.verifyAssertion, pki.cmp.verify, pki.tsp.verify, pki.ocsp.verifyRequest and pki.sigstore.verifyBundle end the prototype lookup for then on themselves. An accessor installed there while a verification was pending could otherwise run with the verdict as its receiver and change what the caller reads.
+- A list a verdict reports is appended to by defining the entry rather than assigning it, so a setter at the appended index cannot take the value and answer the read with something else. This covers the keys, certificates, CRLs and secrets pki.pkcs12.open returns from an authenticated store, the signers pki.cms.verify reports and the countersignatures under them, the per-SCT results and the distinct operators pki.ct.verifySctList counts its policy against, the per-certificate results pki.path.validate reports and the checks under each of them that name which gate refused, the elements of a compound attestation pki.webauthn.verify returns along with the routes its anchoredTo names, the certificate chain and transcript a pki.cmp session returns, and the signer identities pki.smime.verify reports. The arrays a pki.schema parser fills are not covered: a verify verb re-derives its answer from the bytes and refuses a parse result whose fields were rebuilt, so a substituted entry there decides nothing.
+- pki.webauthn.verify builds the fields it learns after the attestation itself is checked into the verdict rather than writing them onto it. bindingChecked, which tells a relying party which of its expectations were enforced, could otherwise be taken by an inherited setter and reported by its getter as a check that never ran. anchoredTo, anchoredElements, metadata, clientData, safetyNet, tpm and compound are built the same way.
+- The results of pki.path.crlChecker(...).check and pki.path.ocspChecker(...).check, the build-only result pki.path.build returns under validate:false, and the results of pki.ct.signSct and pki.ct.fetchLogList carry the same protection. Each is handed to a caller, so each ends the prototype lookup for then on itself.
+- Path validation, CMS verification, timestamp verification, CMP protection verification and Sigstore bundle verification append to every one of their own lists the same way. Each reads its answer back out of those lists, so the name forms a name-constraint check compares, the CRLs a revocation decision scans, the policy-tree nodes that produce the user-constrained set, the candidate certificates a signer identifier selects, the chains a timestamp is trusted through and the path a Fulcio leaf is anchored by are all written where an indexed setter cannot reach them.
+
 ## v0.6.39 — 2026-09-05
 
 A verdict field is created with the verdict rather than written onto it afterward, so a value left on Object.prototype can no longer answer a question the verification never asked.

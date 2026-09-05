@@ -61,6 +61,10 @@ async function run() {
   var v1 = await pki.ct.verifySctList(ENTRY, [signedSct(opA), signedSct(opB)], listAB, { certNotAfter: NOT_AFTER });
   check("VL1. two SCTs, two distinct operators -> policyOk, validScts:2, operatorCount:2",
     v1.policyOk === true && v1.validScts === 2 && v1.operatorCount === 2 && v1.results.length === 2 && v1.results[0].valid === true && v1.results[1].valid === true);
+  // The verdict ends the prototype lookup for `then` on itself, so resolving it does not hand an
+  // inherited accessor the verdict as a receiver. verdict-shield.test.js drives that behavior.
+  check("VL1b. the verifySctList verdict owns then",
+    Object.prototype.hasOwnProperty.call(v1, "then") && v1.then === undefined);
 
   var v2 = await pki.ct.verifySctList(ENTRY, [signedSct(opA)], listAB, { certNotAfter: NOT_AFTER });
   check("VL2. one valid SCT, default policy -> policyOk", v2.policyOk === true && v2.validScts === 1 && v2.operatorCount === 1);
@@ -191,6 +195,20 @@ async function run() {
   var c18 = ctCheckOf(r18);
   check("VL18. an unmet CT policy (minScts:2, one SCT) -> ct ok:false code path/ct-policy-not-met, valid:false",
     c18 !== null && c18.ok === false && c18.code === "path/ct-policy-not-met" && r18.valid === false);
+  // The CT gate's own answer crosses an await before path.validate reads its `ok`, so an accessor
+  // installed for that name while the SCT list is being verified is the shape that would flip a
+  // failed gate. It reaches pki.ct.verifySctList's options first, where the accessor-options gate
+  // refuses the validation rather than reading a value that can differ between check and read.
+  var ctGateCode;
+  var r18Pending = pki.path.validate([certB], { trustAnchors: caCert, time: atTime, ctLogList: ctLogList, ctPolicy: { minScts: 2, minOperators: 1 } });
+  Object.defineProperty(Object.prototype, "then", { configurable: true,
+    get: function () { try { this.ok = true; } catch (_e) { /* frozen */ } return undefined; } });
+  try {
+    ctGateCode = await r18Pending.then(function (r) { return r.valid === false ? "REFUSED-VERDICT" : "ACCEPTED"; },
+      function (e) { return e && e.code; });
+  } finally { delete Object.prototype.then; }
+  check("VL18b. an accessor named then cannot flip the CT gate; the validation is refused",
+    ctGateCode === "path/bad-input" || ctGateCode === "REFUSED-VERDICT");
 
   // VL19 (P1): an SCT from a trusted log whose declared hash algorithm is unsupported makes verifySct
   // THROW (ct/unsupported-algorithm), not return false. The aggregate records it per-SCT and continues,

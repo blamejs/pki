@@ -85,6 +85,10 @@ async function run() {
     wlShape78 && typeof wlShape78 === "object" && wlShape78.valid === true &&
     typeof wlShape78.logIdHex === "string" && wlShape78.operator != null &&
     typeof wlShape78.logState === "string" && typeof wlShape78.timestamp === "bigint");
+  // The verdict ends the prototype lookup for `then` on itself, so resolving it does not hand an
+  // inherited accessor the verdict as a receiver. verdict-shield.test.js drives that behavior.
+  check("the verifySctWithLogList verdict owns then",
+    Object.prototype.hasOwnProperty.call(wlShape78, "then") && wlShape78.then === undefined);
   var badSig = Object.assign({}, sct, { signature: (function (b) { var c = Buffer.from(b); c[c.length - 1] ^= 0xff; return c; })(sct.signature) });
   check("7. a flipped signature byte -> false (a verdict, not a throw)", (await vres(function () { return pki.ct.verifySctWithLogList(ENTRY, badSig, list, { certNotAfter: NOT_AFTER }); })).valid === false);
 

@@ -128,6 +128,9 @@ async function run() {
   var v = await pki.webauthn.verify(attObj("packed"), clientHash("packed"), {});
   check("verify: packed KAT verifies (verified true)", v.attestationVerified === true);
   check("#78 valid aliases attestationVerified on the webauthn verdict", v.valid === true && v.valid === v.attestationVerified);
+  // The verdict ends the prototype lookup for `then` on itself, so resolving it does not hand an
+  // inherited accessor the verdict as a receiver. verdict-shield.test.js drives that behavior.
+  check("the webauthn verdict owns then", Object.prototype.hasOwnProperty.call(v, "then") && v.then === undefined);
   check("verify: packed reports fmt + attestation type + trust path", v.fmt === "packed" && typeof v.attestationType === "string" && Array.isArray(v.trustPath));
   check("verify: packed surfaces the aaguid + credentialPublicKey", Buffer.isBuffer(v.aaguid) && v.credentialPublicKey);
 
@@ -1211,6 +1214,23 @@ async function testCeremonyBinding() {
   check("binding: with nothing asked for, every binding reports NOT checked",
     unbound.bindingChecked.rpId === false && unbound.bindingChecked.userPresence === false &&
     unbound.bindingChecked.userVerification === false && unbound.bindingChecked.algorithm === false);
+  // bindingChecked is the field a relying party reads to learn which of its expectations were
+  // actually enforced, and it is created with the verdict rather than written onto it, so a setter
+  // installed while the attestation is being verified cannot swallow the write and report from its
+  // own getter that a check ran when none did.
+  var bindingHeld;
+  var bindingPending = pki.webauthn.verify(hostileObj, clientHash("packed"), {});
+  Object.defineProperty(Object.prototype, "bindingChecked", {
+    configurable: true,
+    get: function () { return { rpId: true, userPresence: true, userVerification: true, algorithm: true }; },
+    set: function () {},
+  });
+  try {
+    var polluted = await bindingPending;
+    bindingHeld = Object.prototype.hasOwnProperty.call(polluted, "bindingChecked") &&
+      polluted.bindingChecked.rpId === false && polluted.bindingChecked.algorithm === false;
+  } finally { delete Object.prototype.bindingChecked; }
+  check("binding: a polluted Object.prototype.bindingChecked cannot report a check that never ran", bindingHeld);
 
   check("binding: expectedRpId refuses an attestation made for another relying party",
     (await codeOfAsync(function () {
@@ -1572,6 +1592,24 @@ async function testCompoundAttestation() {
   // anchored === total would reject exactly the configuration this supports.
   check("compound: mixed-route coverage reports every element as anchored, not just the fallback's",
     combined.anchoredElements.total === 2 && combined.anchoredElements.anchored === 2);
+  // That coverage travels from the metadata attempt to the fallback on the error the attempt
+  // throws, so it is the one number a caller enforcing anchored === total reads. An accessor
+  // installed for its name supplies it to every options object the verification builds, and the
+  // accessor-options gate refuses the attestation rather than reading a value that can differ
+  // between the check and the read.
+  var coverageCode;
+  var coveragePending = pki.webauthn.verify(split.attestationObject, split.clientDataHash,
+    { metadata: listedU2fMd, rootCertificates: [split.rootDer], time: new Date("2026-06-01T00:00:00Z") });
+  Object.defineProperty(Object.prototype, "anchoredElements", {
+    configurable: true,
+    get: function () { return { total: 99, anchored: 99 }; },
+    set: function () {},
+  });
+  try {
+    coverageCode = await coveragePending.then(function () { return "NO-THROW"; }, function (e) { return e && e.code; });
+  } finally { delete Object.prototype.anchoredElements; }
+  check("compound: an accessor named for the coverage field cannot get a forged one accepted",
+    coverageCode === "webauthn/bad-input");
   // And the verdict names BOTH routes and keeps the governed entries. Reporting only
   // "rootCertificates" would attribute the whole evaluation to the weaker half and drop the
   // catalogue entry that governed the listed element -- the part an auditor most needs.
@@ -2076,6 +2114,9 @@ async function testAssertion() {
   check("assertion: a genuine signature over authenticatorData || SHA-256(clientDataJSON) verifies",
     res.signatureVerified === true && res.signCount === 9);
   check("#78 valid aliases signatureVerified on the webauthn assertion verdict", res.valid === true && res.valid === res.signatureVerified);
+  // The verdict ends the prototype lookup for `then` on itself, so resolving it does not hand an
+  // inherited accessor the verdict as a receiver. verdict-shield.test.js drives that behavior.
+  check("the webauthn assertion verdict owns then", Object.prototype.hasOwnProperty.call(res, "then") && res.then === undefined);
 
   // The registration -> store -> login round trip. `verify` hands back a credential key, the relying
   // party persists it, and a login months later needs it again. Bytes are the durable form: the

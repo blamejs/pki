@@ -323,6 +323,20 @@ async function run() {
   // ---- V-BUILD-10: build-only mode round-trip (the explicit GREEN oracle) ----
   var r10 = await pki.path.build(leaf, { candidates: [interA], trustAnchors: [anchorCert], time: T, validate: false });
   check("V-BUILD-10 build-only returns a path + trustAnchor without a validate result", r10.path.length === 2 && !!r10.trustAnchor && r10.result === undefined);
+  // A build-only result is a result a caller reads too, so it ends the prototype lookup for `then`
+  // on itself. Otherwise resolving it hands an accessor the object as a receiver, which can rewrite
+  // the path the caller is about to hand to validate, or answer with a different object entirely.
+  check("V-BUILD-10b a build-only result owns then",
+    Object.prototype.hasOwnProperty.call(r10, "then") && r10.then === undefined);
+  var b10Held;
+  var b10Pending = pki.path.build(leaf, { candidates: [interA], trustAnchors: [anchorCert], time: T, validate: false });
+  Object.defineProperty(Object.prototype, "then", { configurable: true,
+    get: function () { try { this.path = []; } catch (_e) { /* frozen */ } return undefined; } });
+  try {
+    var b10 = await b10Pending;
+    b10Held = b10.path.length === 2 && Object.prototype.hasOwnProperty.call(b10, "then");
+  } finally { delete Object.prototype.then; }
+  check("V-BUILD-10c an inherited then accessor cannot rewrite the path a build-only result carries", b10Held);
   var green10 = await pki.path.validate(r10.path, { time: T, trustAnchors: r10.trustAnchor });
   check("V-BUILD-10 the build-only order validates through pki.path.validate", green10.valid === true);
 

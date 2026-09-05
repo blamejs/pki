@@ -1147,6 +1147,21 @@ async function testCoreRejections() {
   });
   var res8 = await run([tampered], { time: T2027, trustAnchors: anchor });
   check("bad signature rejected", res8.valid === false && failCodes(res8).indexOf("path/bad-signature") !== -1);
+  // The per-certificate `checks` list is what tells an operator WHICH gate refused, and it is
+  // appended to by defining the entry. Writing it by assignment would let a setter at that index
+  // take the entry and answer the read with one the validator never produced, so a refusal would
+  // name a check that never ran while the certificate stayed rejected for a reason nobody sees.
+  var realZeroPV = Object.getOwnPropertyDescriptor(Array.prototype, "0");
+  var res8pending = run([tampered], { time: T2027, trustAnchors: anchor });
+  Object.defineProperty(Array.prototype, "0", { configurable: true,
+    get: function () { return { name: "decoy", ok: true }; }, set: function () {} });
+  var res8poll;
+  try { res8poll = await res8pending; } finally {
+    if (realZeroPV) Object.defineProperty(Array.prototype, "0", realZeroPV);
+    else delete Array.prototype[0];
+  }
+  check("a setter at the appended index cannot substitute the check that refused the certificate",
+    res8poll.valid === false && failCodes(res8poll).indexOf("path/bad-signature") !== -1);
 
   // expired / not-yet-valid.
   var expired = await mkCert({ subject: "Old", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", notBefore: new Date("2020-01-01T00:00:00Z"), notAfter: new Date("2021-01-01T00:00:00Z") });
@@ -3064,6 +3079,22 @@ async function testRfc5280ConformanceMusts() {
   var leafA11 = await mkCert({ subject: "A11l", issuer: "A11i", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt([P1x])] });
   var resA11 = await run([interA11, leafA11], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true, userInitialPolicySet: [P1x] });
   check("userConstrainedPolicySet computed", resA11.valid === true && Array.isArray(resA11.userConstrainedPolicySet) && resA11.userConstrainedPolicySet.indexOf(P1x) !== -1);
+  // An indexed accessor on Array.prototype reaches every list the validation builds while it runs,
+  // including the policy tree whose nodes decide the user-constrained set. The path that results is
+  // refused rather than accepted on substituted state: the checks that read those lists report the
+  // fabricated content as malformed, and no fabricated policy reaches the user-constrained set.
+  var realZeroA11 = Object.getOwnPropertyDescriptor(Array.prototype, "0");
+  var a11Pending = run([interA11, leafA11], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true, userInitialPolicySet: [P1x] });
+  Object.defineProperty(Array.prototype, "0", { configurable: true,
+    get: function () { return { validPolicy: P1x, expectedPolicySet: [P1x], qualifiers: [], children: [], depth: 0 }; },
+    set: function () {} });
+  var a11poll;
+  try { a11poll = await a11Pending; } finally {
+    if (realZeroA11) Object.defineProperty(Array.prototype, "0", realZeroA11);
+    else delete Array.prototype[0];
+  }
+  check("an indexed accessor during validation refuses the path rather than accepting substituted state",
+    a11poll.valid === false && a11poll.userConstrainedPolicySet.length === 0);
 
   // policy-mapping REPLACES the expected-policy set (§6.1.4(b)(1)): after
   // mapping P1->P2, a leaf asserting the mapped-FROM policy P1 must NOT satisfy
@@ -3895,6 +3926,18 @@ async function testOcspCheckerStandalone() {
   // O10 — responderID matches neither the issuer nor any embedded cert.
   var o10 = await mkOcsp({ responderID: { byName: "Nobody" }, signWith: "ed25519", single: [goodSingle()] });
   check("O10 responderID matches no authorized responder -> unknown", (await chk(o10)).status === "unknown");
+  // A revocation checker is a public verb of its own: an operator holds `check` and reads the
+  // status it answers with. That answer ends the prototype lookup for `then` on itself, so an
+  // accessor installed while the check is running cannot rewrite the status on its way back.
+  var chkHeld;
+  var chkPending = chk(o10);
+  Object.defineProperty(Object.prototype, "then", { configurable: true,
+    get: function () { try { this.status = "good"; } catch (_e) { /* frozen */ } return undefined; } });
+  try {
+    var chkPolluted = await chkPending;
+    chkHeld = chkPolluted.status === "unknown" && Object.prototype.hasOwnProperty.call(chkPolluted, "then");
+  } finally { delete Object.prototype.then; }
+  check("O10b an inherited then accessor cannot rewrite the status an ocspChecker answers with", chkHeld);
 
   // O10b — responderID names the issuer but the response is signed by an impostor key.
   var o10b = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519i", single: [goodSingle()] });

@@ -197,7 +197,13 @@ security-only patches after the next major releases.
   alternative a context tag selects, which string types are DisplayText, which
   decoder an extension OID resolves to, whether a policy OID has already been
   seen -- carries no prototype, so a name planted on `Object.prototype` cannot
-  answer for an entry nothing registered.
+  answer for an entry nothing registered. What a verify verb hands back is closed
+  the same way: every field of a verdict is defined on the verdict rather than
+  assigned onto it, so an inherited setter cannot take the write and answer the
+  read from its own getter, and the verdict carries a `then` of its own, so
+  resolving it does not hand an inherited accessor the verdict as a receiver on
+  its way to the caller. A list a verb returns is appended to by defining the
+  entry, so a setter at that index cannot substitute what the caller reads.
 - **One signature covering several encodings.** A type-3 C509 certificate is a
   re-encoding of an X.509 certificate, and the X.509 signature covers the bytes
   it rebuilds rather than the C509 bytes themselves. Where the specification
