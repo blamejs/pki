@@ -278,6 +278,19 @@ async function testUnsupportedAlgorithm() {
   var r3 = await pki.cms.verify(edUnmapped);
   check("EdDSA + signedAttrs + unmapped digest -> unsupported-algorithm verdict", r3.valid === false && r3.signers[0].code === "cms/unsupported-algorithm");
 
+  // The signature-scheme table is consulted by the name the message asks for, so it answers from
+  // its own entries alone. A digest OID names no signature scheme; were the lookup to fall through
+  // to Object.prototype, a message could name an algorithm the toolkit does not implement and have
+  // the verification proceed under whatever a co-resident had left there.
+  var digestAsSigAlg = swapSigAlg(fx("rsa-attached.p7s"), pki.oid.byName("sha256"));
+  var rProto = await (async function () {
+    var pending = pki.cms.verify(digestAsSigAlg);
+    Object.prototype.sha256 = { kind: "rsa", hash: "SHA-256", params: "absent" };
+    try { return await pending; } finally { delete Object.prototype.sha256; }
+  })();
+  check("a signature-scheme name reaching Object.prototype is not a scheme -> unsupported-algorithm",
+    rProto.valid === false && rProto.signers[0].code === "cms/unsupported-algorithm");
+
   // A bare key OID (rsaEncryption / ecPublicKey) takes its SIGNATURE hash from the SignerInfo
   // digestAlgorithm. RFC 8702 sec. 3.2 gives RSASSA-PKCS1-v1_5-with-SHAKE and ECDSA-with-SHAKE
   // their OWN signature OIDs and never pairs a bare key OID with a SHAKE digestAlgorithm, so the
@@ -1044,6 +1057,23 @@ async function testTrustSeam() {
     wrongAnchor.trusted === false);
   check("trust: ...while its signature is still reported sound, which is a different claim",
     wrongAnchor.valid === true);
+
+  // `trusted` is created with the verdict, on the message and on every signer row. An assignment
+  // would consult the prototype chain, so a setter installed while the verification was pending
+  // could swallow the write and leave its getter reporting a signer that was never anchored to
+  // anything as trusted.
+  var pollutedTrust = await (async function () {
+    var pending = pki.cms.verify(signed, AT);   // no anchors: nothing here can be trusted
+    Object.defineProperty(Object.prototype, "trusted",
+      { configurable: true, get: function () { return true; }, set: function () {} });
+    try {
+      var r = await pending;
+      return Object.prototype.hasOwnProperty.call(r, "trusted") && r.trusted === false &&
+        Object.prototype.hasOwnProperty.call(r.signers[0], "trusted") && r.signers[0].trusted === false;
+    } finally { delete Object.prototype.trusted; }
+  })();
+  check("trust: a polluted Object.prototype.trusted cannot report an unanchored signer as trusted",
+    pollutedTrust);
 
   // The trust verdict is a decision about the message, so it must not be reachable through the
   // prototype: `every` replaced after load answers true without consulting a single signer, and a

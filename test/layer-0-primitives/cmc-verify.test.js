@@ -658,6 +658,20 @@ async function run() {
   // a response that actually echoes an empty Recipient Nonce, which this fixture does not
   // build. The lib change is in _assertBound's `_carries`; the vector for it is outstanding.
 
+  // boundToRequest decides whether an unbound response is refused. An accessor installed on
+  // Object.prototype while the verification is pending supplies that name to every options
+  // object the verification builds, and the accessor-options gate refuses the response rather
+  // than reading a value that can differ between the check and the read.
+  var seen;
+  var pending = pki.cmc.verify(replay, retainedNothing);   // the caller's options are read before the pollution lands
+  Object.defineProperty(Object.prototype, "boundToRequest",
+    { configurable: true, get: function () { return true; }, set: function () {} });
+  try {
+    seen = await pending.then(function () { return "NO-THROW"; }, function (e) { return e && e.code; });
+  } finally { delete Object.prototype.boundToRequest; }
+  check("RP11. an accessor on Object.prototype cannot get an unbound response accepted",
+    seen === "cms/bad-input");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

@@ -6,7 +6,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## v0.6.39 — 2026-09-05
 
-The OCSP and CMC verify verdicts carry the same valid boolean the other verify verbs do, so one idiom reads a result whatever verb produced it.
+A verdict field is created with the verdict rather than written onto it afterward, so a value left on Object.prototype can no longer answer a question the verification never asked.
 
 ### Added
 
@@ -15,7 +15,19 @@ The OCSP and CMC verify verdicts carry the same valid boolean the other verify v
 
 ### Changed
 
+- The pki.ocsp.verify and pki.path.verifyOcspResponse verdicts report thisUpdate and nextUpdate as null, not undefined, when no response covered the certificate. Every path now reports both, so a reader gets the same shape whatever the verdict. Code testing them with === undefined should test == null.
 - The container release workflow takes docker/setup-qemu-action v4.3.0.
+
+### Fixed
+
+- A verdict field is now created with the verdict rather than assigned onto it afterward, so a value left on Object.prototype cannot answer a read the verification never wrote. Three verdicts could report an affirmative that had not been established: an OCSP response whose signature does not verify, or that no authorized responder signs, contributed a good status through pki.ocsp.verify, pki.path.verifyOcspResponse and pki.path.ocspChecker, so pki.path.validate accepted a certificate whose revocation status was never determined; pki.cms.verify reported a signer as trusted when it had been given no trust anchors to chain to; and pki.crmf.verifyPop reported verified for a request carrying no proof of possession at all. pki.cmc.verify, pki.smime.verify and the pki.cmp session results carried the same construction and are fixed with them.
+- A verdict also ends the prototype lookup for then, so an accessor installed there cannot rewrite it between the verification and the caller.
+- A pki.cmp session transcript no longer reports a protection result on a request leg. A request records no verdict, and the snapshot read the field without asking whether the entry carried one, so a value left on Object.prototype was copied in and read back as a result the session never reached.
+- The tables that decide how a signature is verified answer from their own entries alone. pki.cms.verify looked its signature scheme up in a table that inherits from Object.prototype, so a message could name an algorithm the toolkit does not implement and have the verification proceed under a descriptor left there. The dispatch tables in pki.cms.verify, pki.path.validate and the composite-signature resolver are fixed.
+
+### Internal
+
+- The test covering the implicit-rejection substitute content key chooses a ciphertext whose outcome it can predict. OpenSSL answers an RSA PKCS#1 v1.5 decode fault with a synthetic key whose length is drawn from the private key and the ciphertext, and a draw equal to the content-key length took the substitute out of the path, so the test failed about once in every few hundred runs.
 
 ## v0.6.38 — 2026-09-05
 
