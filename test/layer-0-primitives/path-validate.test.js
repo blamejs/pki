@@ -3527,6 +3527,18 @@ async function testInitialInputsAndTargetGates() {
         catch (e) { return (e.code || "") === "path/bad-input"; }
       })());
   });
+  // Anchors are normalized one at a time. An earlier anchor's getter must not be able to clear a
+  // later anchor's namespace before that anchor is reached.
+  var ncCrossVerdict = await (function () {
+    var laterNc = { permitted: [{ tag: 2, base: "nowhere.example" }] };
+    // The first anchor rejects this leaf, so the second is reached; its getter fires meanwhile.
+    var first = { name: anchor.name, algorithm: anchor.algorithm, nameConstraints: { permitted: [{ tag: 2, base: "also-nowhere.example" }] } };
+    Object.defineProperty(first, "publicKey", { get: function () { laterNc.permitted = []; return anchor.publicKey; }, enumerable: true, configurable: true });
+    var second = ncAnchor(laterNc);
+    return run([ncLeafIn], { time: T2027, trustAnchors: [first, second] })
+      .then(function (r) { return r.valid === false; }, function (e) { return (e.code || "") === "path/bad-input"; });
+  })();
+  check("NC38 one anchor's getter cannot clear a later anchor's namespace", ncCrossVerdict);
   check("NC21 an anchor whose nameConstraints is null is unconstrained, not refused",
     (await run([ncLeafOut], { time: T2027, trustAnchors: ncAnchor(null) })).valid === true);
   // The seed option is read once: an accessor answering differently to the presence test and to the
