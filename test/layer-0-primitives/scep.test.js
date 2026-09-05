@@ -489,6 +489,73 @@ async function rsaClient() {
 // opts.proxy threads through the verb -> _client -> _drive -> the transport request, and the unknown-option gate
 // accepts it. It is snapshotted ONCE at the start of the drive, so a caller mutating opts.proxy while a request is
 // in flight cannot repoint a later redirect within the same operation. The real transport establishes the tunnel.
+// A transport option that is not callable is a wiring fault the operator makes at config time, so
+// every network verb names the option in its own typed error rather than letting the value reach the
+// call site and surface a bare `TypeError: transport is not a function`. A FALSY transport is the
+// same fault and must not be read as "no transport supplied": falling back to the default client
+// would open a real connection to the CA on behalf of a caller who believed it had injected one.
+async function testTransportOptionTyped() {
+  var BASE = "http://ca.example/scep";
+  // Every network verb, including the four that do payload work of their own: the check is at each
+  // verb's door, so a wiring fault is named before the CSR or the CA certificate is looked at.
+  var VERBS = {
+    getCACaps: function (o) { return pki.scep.getCACaps(BASE, o); },
+    getCACert: function (o) { return pki.scep.getCACert(BASE, o); },
+    getNextCACert: function (o) { return pki.scep.getNextCACert(BASE, o); },
+    enroll: function (o) { return pki.scep.enroll(BASE, o); },
+    renew: function (o) { return pki.scep.renew(BASE, o); },
+    getCert: function (o) { return pki.scep.getCert(BASE, o); },
+    getCrl: function (o) { return pki.scep.getCrl(BASE, o); },
+  };
+  async function refused(fn) {
+    try { await fn(); return "NO-THROW"; }
+    catch (e) { return (e && e.code === "scep/bad-input" && String(e.message).indexOf("opts.transport") !== -1) ? "typed" : ("RAW:" + (e && e.message || "").slice(0, 40)); }
+  }
+  for (var verb of Object.keys(VERBS)) {
+    check("transport: pki.scep." + verb + " refuses a non-callable transport with a typed error",
+      (await refused(function () { return VERBS[verb]({ transport: 42 }); })) === "typed");
+    check("transport: pki.scep." + verb + " refuses a falsy transport rather than falling back to the network",
+      (await refused(function () { return VERBS[verb]({ transport: 0 }); })) === "typed");
+  }
+}
+
+// The response-shape and redirect arms a CA controls. Each is a branch the transport layer takes on
+// input the client did not choose, so each is asserted through the shipped verb rather than by
+// calling the reader directly.
+async function testResponseShapeArms() {
+  var BASE = "http://ca.example/scep";
+  // A 200 whose media type cannot be read is refused rather than parsed on the assumption that a
+  // body without a declared type is the expected one.
+  var noCt = await codeOf(pki.scep.getCACaps(BASE, { transport: fakeTransport({ status: 200, headers: {}, body: "AES\r\n" }) }));
+  check("response: a 200 with no content-type is refused", noCt === "scep/bad-content-type");
+  var noHeaders = await codeOf(pki.scep.getCACaps(BASE, { transport: fakeTransport({ status: 200, headers: null, body: "AES\r\n" }) }));
+  check("response: a response with no headers at all is refused the same way", noHeaders === "scep/bad-content-type");
+  var nullBody = await pki.scep.getCACaps(BASE, { transport: fakeTransport({ status: 200, headers: { "content-type": "text/plain" }, body: null }) });
+  check("response: a null body reads as empty rather than throwing", nullBody.AES === undefined);
+  var stringBody = await pki.scep.getCACaps(BASE, { transport: fakeTransport({ status: 200, headers: { "content-type": "text/plain" }, body: "SHA-256\r\n" }) });
+  check("response: a string body is decoded as UTF-8", stringBody["SHA-256"] === true);
+  // The media type is matched on the type alone, so a charset parameter does not defeat it.
+  var withParams = await pki.scep.getCACaps(BASE, { transport: fakeTransport({ status: 200, headers: { "content-type": "text/plain; charset=utf-8" }, body: "AES\r\n" }) });
+  check("response: a content-type parameter is ignored when matching the media type", withParams.AES === true);
+  // A duplicate content-type cannot be resolved to one media type, so the response is refused rather
+  // than answered from whichever copy happened to be scanned last.
+  var dupCode = await codeOf(pki.scep.getCACaps(BASE, {
+    transport: fakeTransport({ status: 200, headers: { "content-type": "text/plain", "Content-Type": "text/html" }, body: "AES\r\n" }),
+  }));
+  check("response: a duplicated content-type header is refused", dupCode === "scep/bad-response");
+  // Redirects: the Location a CA sends is untrusted input.
+  var noLoc = await codeOf(pki.scep.getCACaps(BASE, { transport: fakeTransport({ status: 302, headers: { "content-type": "text/plain" }, body: "" }) }));
+  check("redirect: a 302 with no Location is refused", noLoc === "scep/bad-response");
+  var badLoc = await codeOf(pki.scep.getCACaps(BASE, { transport: fakeTransport({ status: 302, headers: { location: "http://[bad", "content-type": "text/plain" }, body: "" }) }));
+  check("redirect: a Location that does not parse is refused", badLoc === "scep/bad-url");
+  var badScheme = await codeOf(pki.scep.getCACaps(BASE, { transport: fakeTransport({ status: 302, headers: { location: "ftp://ca.example/x", "content-type": "text/plain" }, body: "" }) }));
+  check("redirect: a non-HTTP redirect scheme is refused", badScheme === "scep/bad-url");
+  // An HTTP error surfaces the status and a bounded prefix of the body, so an operator can tell a
+  // 500 page from an empty one without the whole body reaching the message.
+  var errCode = await codeOf(pki.scep.getCACaps(BASE, { transport: fakeTransport({ status: 500, headers: { "content-type": "text/plain" }, body: "boom" }) }));
+  check("response: a 5xx is a typed http-error", errCode === "scep/http-error");
+}
+
 async function testProxyThreadsThrough() {
   var proxy = { url: "https://proxy.example:3128", auth: { scheme: "basic", username: "u", password: "p" }, tls: { useSystemStore: true } };
   var opts9 = { proxy: proxy };
@@ -1438,6 +1505,8 @@ async function main() {
   await testGetQuerySync();
   await testGetCarried();
   await testCertRepIssuance();
+  await testTransportOptionTyped();
+  await testResponseShapeArms();
   console.log("CHECKS " + helpers.getChecks());
 }
 

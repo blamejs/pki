@@ -153,6 +153,18 @@ async function run() {
   check("12. an old (2019) but validly-signed list resolves (staleness is surfaced, not policed)", o12 && Array.isArray(o12.logs));
   check("12. the old timestamp is returned for the caller to police", o12 && o12.timestamp instanceof Date && o12.timestamp.toISOString() === "2019-01-01T00:00:00.000Z");
 
+  // ==== 12b. a transport that is not callable ======================================================
+  // A wiring fault the operator makes at config time, so the option is named at the door. A FALSY
+  // transport is the same fault and must not be read as "none supplied": falling back to the default
+  // client would fetch the log list over the network for a caller that believed it had injected one.
+  async function badTransport(v) {
+    try { await pki.ct.fetchLogList({ transport: v, url: JSON_URL, sigUrl: SIG_URL, signerKey: fx.signerKey }); return "NO-THROW"; }
+    catch (e) { return (e && e.code === "ct/bad-input" && String(e.message).indexOf("opts.transport") !== -1) ? "typed" : ((e && e.code) || "RAW"); }
+  }
+  check("12b. a non-callable transport is refused, naming the option", (await badTransport(42)) === "typed");
+  check("12b. an object transport is refused, naming the option", (await badTransport({})) === "typed");
+  check("12b. a falsy transport is refused rather than falling back to the network", (await badTransport(0)) === "typed");
+
   // ==== 13. no-trust-anchors on the DEFAULT transport (M6) ==========================================
   check("13. no injected transport + no anchors + no useSystemStore -> ct/no-trust-anchors", (await code(function () {
     return pki.ct.fetchLogList({ url: JSON_URL, sigUrl: SIG_URL, signerKey: fx.signerKey });

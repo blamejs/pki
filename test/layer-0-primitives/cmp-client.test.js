@@ -54,6 +54,18 @@ async function run() {
   var r1u = await pki.cmp.transfer(BASE, f.irDer, s1u.opts);
   check("1 a Uint8Array response body is preserved and parsed", r1u.response.body.arm === "ip" && r1u.responseBytes.equals(f.ipDer));
 
+  // 1b. A transport that is not callable is a wiring fault the operator makes at config time, so the
+  // option is named at the door. A FALSY transport is the same fault and must not be read as "none
+  // supplied": falling back to the default client would reach the CA over the network on behalf of a
+  // caller that believed it had injected one.
+  async function badTransport(v) {
+    try { await pki.cmp.transfer(BASE, f.irDer, { transport: v }); return "NO-THROW"; }
+    catch (e) { return (e && e.code === "cmp/bad-input" && String(e.message).indexOf("opts.transport") !== -1) ? "typed" : ((e && e.code) || ("RAW:" + (e && e.message || "").slice(0, 40))); }
+  }
+  check("1b a non-callable transport is refused, naming the option", (await badTransport(42)) === "typed");
+  check("1b an object transport is refused, naming the option", (await badTransport({})) === "typed");
+  check("1b a falsy transport is refused rather than falling back to the network", (await badTransport(0)) === "typed");
+
   // 2. PEM message input is transfer-decoded and POSTed as the SAME DER (protection intact).
   var irPem = pki.schema.cmp.pemEncode(f.irDer, "CMP");
   var s2 = A.cmpOpts(A.pkixcmp(200, f.ipDer));

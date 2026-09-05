@@ -15,6 +15,7 @@ A lookup table answers from its own entries, so a name taken off the wire cannot
 ### Fixed
 
 - A lookup table carries no prototype, so a name the wire supplies resolves to an entry the table registered or to nothing. Two verbs were reachable: pki.webauthn.verify selected a verifier the table never held for an attestation naming constructor, toString or another Object.prototype member as its format, and pki.schema.c509.parse accepted a certificate whose subject-public-key algorithm named such a member instead of throwing c509/unknown-algorithm. The same change applies to the signature-scheme, content-encryption, key-agreement, extension-decoder and status-name registries.
+- Every verb that takes an injected opts.transport names the option when the value is not callable, refusing it with the module's own bad-input code at the door, before the message or the certificate is read. This covers all eighteen: the six pki.est verbs, the seven pki.scep verbs, pki.acme.client, pki.cmp.transfer, pki.cmp.session, pki.ct.fetchLogList and pki.path.build. Previously most of them let the value reach the call site, where the operator got a bare TypeError naming no option. A falsy transport is refused the same way. It had been read as no transport supplied and replaced with the default network client, so a caller that believed it had injected a transport reached the CA instead, which is the case worth upgrading for.
 
 ## v0.6.40 — 2026-09-05
 
