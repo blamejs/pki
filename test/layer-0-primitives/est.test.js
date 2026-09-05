@@ -819,6 +819,11 @@ async function testOptionSurface() {
   for (var fverb of Object.keys(VERBS)) {
     check("76b. pki.est." + fverb + " refuses a falsy transport rather than falling back to the network",
       (await transportRefused(function () { return VERBS[fverb]({ transport: 0, tls: { useSystemStore: true } }); })) === "typed");
+    // An explicit null is a supplied value, not an omitted option: reading it as absent would install
+    // the real client and open the connection the caller was trying to replace. Only an option that
+    // is genuinely absent, which reads as undefined, falls back.
+    check("76c. pki.est." + fverb + " refuses an explicit null transport",
+      (await transportRefused(function () { return VERBS[fverb]({ transport: null, tls: { useSystemStore: true } }); })) === "typed");
   }
   // The enroll CSR is accepted as any BufferSource, not only a Buffer: an ArrayBuffer CSR passes
   // _csrDer and reaches the transport (which this vector's transport then refuses). Before the widening

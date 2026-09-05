@@ -242,6 +242,7 @@ async function testFailClosedGates() {
   check("#6 a non-callable transport is refused, naming the option", (await badTransport(42)) === "typed");
   check("#6 an object transport is refused, naming the option", (await badTransport({})) === "typed");
   check("#6 a falsy transport is refused rather than falling back to the network", (await badTransport(0)) === "typed");
+  check("#6 an explicit null transport is refused, not read as an omitted option", (await badTransport(null)) === "typed");
 }
 
 // ---- 7 poll Retry-After surfaced (never slept in real time), then exhausted --

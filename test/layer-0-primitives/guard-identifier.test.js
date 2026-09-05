@@ -934,7 +934,34 @@ async function run() {
   testKnownKeys();
   testPollutionPlantedBeforeLoad();
   testGlobalScanNoAccessor();
+  testAssertCallable();
   await testConsumersFailClosed();
+}
+
+// guard.identifier.assertCallable -- an injectable callback option is refused unless it is callable.
+// The contract is asymmetric on purpose: an ABSENT option reads as undefined and passes, so a
+// boundary can install its own default, while any value that is PRESENT must be callable. Reading a
+// present-but-falsy value as absent is what sends a caller to the default network client it was
+// trying to replace.
+function testAssertCallable() {
+  function E(code, message) { var e = new Error(message); e.code = code; return e; }
+  function codeOf(v) {
+    try { identifier.assertCallable(v, E, "x/bad-input", "opts.transport", "(req) => Promise"); return "NO-THROW"; }
+    catch (e) { return e.code + " :: " + e.message; }
+  }
+  check("assertCallable: an absent option passes", codeOf(undefined) === "NO-THROW");
+  check("assertCallable: a function passes", codeOf(function () {}) === "NO-THROW");
+  var nullOut = codeOf(null);
+  check("assertCallable: an explicit null is refused, not read as absent", nullOut.indexOf("x/bad-input") === 0);
+  check("assertCallable: the refusal names the option and the expected shape",
+    nullOut.indexOf("opts.transport must be a function (req) => Promise") !== -1);
+  check("assertCallable: the refusal renders null as null rather than as an object", nullOut.indexOf("got null") !== -1);
+  for (var v of [0, "", false, NaN, 42, "fn", {}, []]) {
+    check("assertCallable: " + JSON.stringify(v) + " is refused", codeOf(v).indexOf("x/bad-input") === 0);
+  }
+  // The returned value is the input, so a caller can bind it in one expression.
+  var fn = function () {};
+  check("assertCallable: it returns the value it accepted", identifier.assertCallable(fn, E, "x/bad-input", "opts.transport") === fn);
 }
 
 module.exports = { run: run };

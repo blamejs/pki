@@ -516,6 +516,10 @@ async function testTransportOptionTyped() {
       (await refused(function () { return VERBS[verb]({ transport: 42 }); })) === "typed");
     check("transport: pki.scep." + verb + " refuses a falsy transport rather than falling back to the network",
       (await refused(function () { return VERBS[verb]({ transport: 0 }); })) === "typed");
+    // An explicit null is a supplied value, not an omitted option: only a genuinely absent option,
+    // which reads as undefined, falls back to the default client.
+    check("transport: pki.scep." + verb + " refuses an explicit null transport",
+      (await refused(function () { return VERBS[verb]({ transport: null }); })) === "typed");
   }
 }
 

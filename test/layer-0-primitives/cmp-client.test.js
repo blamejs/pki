@@ -65,6 +65,7 @@ async function run() {
   check("1b a non-callable transport is refused, naming the option", (await badTransport(42)) === "typed");
   check("1b an object transport is refused, naming the option", (await badTransport({})) === "typed");
   check("1b a falsy transport is refused rather than falling back to the network", (await badTransport(0)) === "typed");
+  check("1b an explicit null transport is refused, not read as an omitted option", (await badTransport(null)) === "typed");
 
   // 2. PEM message input is transfer-decoded and POSTed as the SAME DER (protection intact).
   var irPem = pki.schema.cmp.pemEncode(f.irDer, "CMP");
