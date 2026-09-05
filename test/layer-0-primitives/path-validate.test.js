@@ -3507,6 +3507,17 @@ async function testInitialInputsAndTargetGates() {
   var ncRaceVerdict = await run([ncLeafIn], { time: T2027, trustAnchors: ncRaceAnchor, initialPermittedSubtrees: ncSeedsRace })
     .then(function (r) { return r.valid === false; }, function (e) { return (e.code || "") === "path/bad-input"; });
   check("NC34 an anchor getter cannot clear the caller's own subtree seeds first", ncRaceVerdict);
+  // The caller's own seed entries are held to the rule the anchor's already were: tag and base are
+  // read once, from own data properties, so an accessor cannot answer a check and a copy differently.
+  for (var nsj = 0; nsj < 3; nsj++) {
+    var mk = [
+      function () { var s = { tag: 7 }; Object.defineProperty(s, "base", { get: function () { return Buffer.alloc(8); }, enumerable: true, configurable: true }); return s; },
+      function () { var s = { base: "example.com" }; Object.defineProperty(s, "tag", { get: function () { return 2; }, enumerable: true, configurable: true }); return s; },
+      function () { return new Proxy({ tag: 2, base: "example.com" }, {}); },
+    ][nsj];
+    check("NC36." + String.fromCharCode(97 + nsj) + " a caller seed entry that is an accessor or Proxy is refused",
+      (await codeOf(run([ncLeafIn], { time: T2027, trustAnchors: anchor, initialPermittedSubtrees: [mk()] }))) === "path/bad-input");
+  }
   check("NC21 an anchor whose nameConstraints is null is unconstrained, not refused",
     (await run([ncLeafOut], { time: T2027, trustAnchors: ncAnchor(null) })).valid === true);
   // The seed option is read once: an accessor answering differently to the presence test and to the
