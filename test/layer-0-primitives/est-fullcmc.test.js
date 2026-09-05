@@ -136,6 +136,17 @@ async function run() {
   check("G1. a certs-only 200 yields outcome issued with the certificates surfaced",
     r1.outcome === "issued" && r1.certificates.length === 1 &&
     Buffer.compare(r1.certificates[0], certDer) === 0);
+  // G1b. A defaults bag carries its options on a prototype, and this verb copies own properties
+  // before it sends. The transport is carried across that copy, so an inherited one is the one that
+  // is used; dropping it would send the request to the default client and reach the CA the caller
+  // meant to replace.
+  var tInherited = fakeTransport({ status: 200, headers: ct("certs-only"),
+    body: pki.est.transferEncode(certsOnly([certDer])) });
+  var inheritedBag = Object.create({ transport: tInherited, tls: TLS,
+    allowUnverifiedResponse: true, allowUnboundResponse: true });
+  var rInherited = await pki.est.fullcmc("https://ca.example", requestDer, inheritedBag);
+  check("G1b. a transport inherited from a defaults bag is the one that sends the request",
+    tInherited.calls.length === 1 && rInherited.outcome === "issued");
   // Both response arms must answer the SAME question about authentication. A
   // certs-only body is a degenerate SignedData with no signers by definition
   // (RFC 5652 sec. 5.2), so there is nothing here to verify -- but the field has
