@@ -218,6 +218,28 @@ async function run() {
     catch (e) { return e.code === "c509/unknown-algorithm" && /must not be an empty byte string/.test(e.message); }
   })());
 
+  // ==== the ECDSA signature width is the issuer's, not a choice (draft sec. 3.2.2 / RFC 9053) ====
+  // Reconstruction strips the leading zeros of each half into a DER INTEGER, so a narrower r||s
+  // padded out to a wider accepted width rebuilds byte-identical DER: one issuer signature over two
+  // distinct C509 byte strings. A genuine signature at the wider width has its own leading bytes and
+  // is unaffected; both halves being small enough to fit the narrower width has probability 2^-256.
+  var sig64 = require("../../lib/cbor-det.js").decode(V.A1.type3).children[10].content;
+  function widened(from, to) {
+    var half = from / 2, pad = (to - from) / 2;
+    return Buffer.concat([Buffer.alloc(pad), sig64.subarray(0, half), Buffer.alloc(pad), sig64.subarray(half)]);
+  }
+  check("39a. a 64-byte r||s padded out to 96 is refused as a second spelling of the same signature",
+    codeSync(function () { return pki.schema.c509.parse(V.mk({ 10: pki.cbor.build.byteString(widened(64, 96)).toString("hex") })); }) === "c509/bad-signature");
+  check("39b. and padded out to 132 likewise",
+    codeSync(function () { return pki.schema.c509.parse(V.mk({ 10: pki.cbor.build.byteString(widened(64, 132)).toString("hex") })); }) === "c509/bad-signature");
+  check("39c. the certificate's own 64-byte signature still parses",
+    Buffer.isBuffer(pki.schema.c509.parse(V.A1.type3).signatureValue));
+  check("39d. a 96-byte r||s whose halves do not fit 32 octets is a normal P-384 signature",
+    (function () {
+      var wide = Buffer.concat([Buffer.alloc(48, 0x11), Buffer.alloc(48, 0x22)]);
+      return codeSync(function () { return pki.schema.c509.parse(V.mk({ 10: pki.cbor.build.byteString(wide).toString("hex") })); }) !== "c509/bad-signature";
+    })());
+
   // ==== no-expiry validity (notAfter == null) ====
   var noExpiry = pki.schema.c509.parse(V.mk({ 5: "f6" }));
   check("35. notAfter == null decodes to null (no expiry)", noExpiry.validity.notAfter === null);

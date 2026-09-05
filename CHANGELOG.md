@@ -4,6 +4,18 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.39 — 2026-09-05
+
+A C509 ECDSA signature padded out to a wider coordinate size is refused, so one issuer signature cannot cover two different C509 byte strings.
+
+### Changed
+
+- The container release workflow takes docker/setup-qemu-action v4.3.0.
+
+### Fixed
+
+- pki.schema.c509.parse refuses a type-3 ECDSA signature that is a narrower fixed-width r||s padded out to a wider accepted one, with c509/bad-signature naming both widths. The three widths RFC 9053 section 2.1 defines are still accepted for the signatures that genuinely have them.
+
 ## v0.6.38 — 2026-09-05
 
 A trust anchor can name the namespace its root is trusted for, and pki.path.validate enforces it as the initial name-constraint state.

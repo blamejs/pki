@@ -1,0 +1,14 @@
+{
+  "version": "0.6.39",
+  "date": "2026-09-05",
+  "headline": "A C509 ECDSA signature padded out to a wider coordinate size is refused, so one issuer signature cannot cover two different C509 byte strings.",
+  "summary": "An ECDSA signature in a C509 certificate is the two integers r and s written at a fixed width, and RFC 9053 section 2.1 takes that width from the signing key. Rebuilding the X.509 certificate turns each half back into a DER INTEGER, which drops its leading zero bytes. A 64-byte signature padded out to 96 or 132 bytes therefore rebuilt exactly the same DER as the original, so the issuer's signature was valid over more than one C509 encoding of the same certificate. That defeats identifying, deduplicating, caching or blocklisting a certificate by its encoded form.\n\nA signature whose two halves both fit a narrower accepted width is that narrower signature padded out, and it is now refused. Deciding this needs nothing beyond the signature itself, which matters because the issuer's public key is not in the certificate and so its coordinate size cannot be read from one. A genuine signature at the wider width keeps its own leading bytes and is unaffected; both of its halves being small enough to fit the next width down has a probability of about 2 to the power of -256.",
+  "sections": {
+    "Fixed": [
+      "pki.schema.c509.parse refuses a type-3 ECDSA signature that is a narrower fixed-width r||s padded out to a wider accepted one, with c509/bad-signature naming both widths. The three widths RFC 9053 section 2.1 defines are still accepted for the signatures that genuinely have them."
+    ],
+    "Changed": [
+      "The container release workflow takes docker/setup-qemu-action v4.3.0."
+    ]
+  }
+}
