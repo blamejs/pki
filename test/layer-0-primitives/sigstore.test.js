@@ -169,6 +169,9 @@ async function run() {
   var v = await pki.sigstore.verifyBundle(BUNDLE, TM);
   check("verifyBundle: the real bundle verifies (all legs)", v && v.verified === true);
   check("#78 valid aliases verified on the sigstore verdict", v.valid === true && v.valid === v.verified);
+  // The verdict ends the prototype lookup for `then` on itself, so resolving it does not hand an
+  // inherited accessor the verdict as a receiver. verdict-shield.test.js drives that behavior.
+  check("the sigstore verdict owns then", Object.prototype.hasOwnProperty.call(v, "then") && v.then === undefined);
   check("verifyBundle surfaces the in-toto subject digest", v && v.subjects && v.subjects.length >= 1 && /^[0-9a-f]{64,128}$/.test(v.subjects[0].digest.sha512 || v.subjects[0].digest.sha256 || ""));
   check("verifyBundle surfaces the SLSA predicateType", v && v.predicateType === "https://slsa.dev/provenance/v1");
   check("#78 predicateTypeChecked is false when no predicateType is pinned", v.predicateTypeChecked === false);

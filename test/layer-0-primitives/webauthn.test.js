@@ -128,6 +128,9 @@ async function run() {
   var v = await pki.webauthn.verify(attObj("packed"), clientHash("packed"), {});
   check("verify: packed KAT verifies (verified true)", v.attestationVerified === true);
   check("#78 valid aliases attestationVerified on the webauthn verdict", v.valid === true && v.valid === v.attestationVerified);
+  // The verdict ends the prototype lookup for `then` on itself, so resolving it does not hand an
+  // inherited accessor the verdict as a receiver. verdict-shield.test.js drives that behavior.
+  check("the webauthn verdict owns then", Object.prototype.hasOwnProperty.call(v, "then") && v.then === undefined);
   check("verify: packed reports fmt + attestation type + trust path", v.fmt === "packed" && typeof v.attestationType === "string" && Array.isArray(v.trustPath));
   check("verify: packed surfaces the aaguid + credentialPublicKey", Buffer.isBuffer(v.aaguid) && v.credentialPublicKey);
 
@@ -2076,6 +2079,9 @@ async function testAssertion() {
   check("assertion: a genuine signature over authenticatorData || SHA-256(clientDataJSON) verifies",
     res.signatureVerified === true && res.signCount === 9);
   check("#78 valid aliases signatureVerified on the webauthn assertion verdict", res.valid === true && res.valid === res.signatureVerified);
+  // The verdict ends the prototype lookup for `then` on itself, so resolving it does not hand an
+  // inherited accessor the verdict as a receiver. verdict-shield.test.js drives that behavior.
+  check("the webauthn assertion verdict owns then", Object.prototype.hasOwnProperty.call(res, "then") && res.then === undefined);
 
   // The registration -> store -> login round trip. `verify` hands back a credential key, the relying
   // party persists it, and a login months later needs it again. Bytes are the durable form: the

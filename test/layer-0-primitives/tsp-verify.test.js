@@ -182,6 +182,9 @@ async function testVerifyAccept() {
   var token = await signToken(tsa);
   var res = await pki.tsp.verify(token, DATA, { trustAnchors: tsa.anchor });
   check("valid with trust anchor", res.valid === true);
+  // The verdict ends the prototype lookup for `then` on itself, so resolving it does not hand an
+  // inherited accessor the verdict as a receiver. verdict-shield.test.js drives that behavior.
+  check("the tsp verdict owns then", Object.prototype.hasOwnProperty.call(res, "then") && res.then === undefined);
   check("genTime from verified eContent", res.genTime instanceof Date && res.genTime.toISOString() === "2027-01-01T00:00:00.000Z");
   check("serialNumber surfaced (lossless)", res.serialNumber === 7n);
   check("policy surfaced", res.policy === "1.2.3.4.1");
@@ -276,6 +279,8 @@ async function testVerifyAccept() {
   var taNotTs = Object.assign({}, tsa.anchor, { purposes: { timeStamping: false } });
   var notTs = await pki.tsp.verify(token, DATA, { trustAnchors: taNotTs });
   check("an anchor NOT delegated for timestamping is refused", notTs.valid === false && notTs.trusted === false);
+  // A refusal is a verdict too, so it carries the same shield the accepting one does.
+  check("a refusing tsp verdict owns then", Object.prototype.hasOwnProperty.call(notTs, "then") && notTs.then === undefined);
   // ...and the refusal reports WHICH anchor checks ran. This case establishes anchor constraints
   // while establishing nothing about revocation -- no revocationChecker is configured -- so the two
   // fields have to travel independently. Reported together, the constraints went missing here.

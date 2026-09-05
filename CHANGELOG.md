@@ -4,6 +4,15 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.40 — 2026-09-05
+
+Every verify verdict now reaches its caller as the object the verb built, and a list the toolkit assembles carries the entries the toolkit put in it.
+
+### Fixed
+
+- The verdicts of pki.attrcert.verify, pki.crl.verify, pki.csr.verify, pki.ct.verifySctWithLogList, pki.ct.verifySctList, pki.path.validate, pki.path.build, pki.pkcs12.verifyMac, pki.pkcs12.open, pki.webauthn.verify, pki.webauthn.verifyAssertion, pki.cmp.verify, pki.tsp.verify, pki.ocsp.verifyRequest and pki.sigstore.verifyBundle end the prototype lookup for then on themselves. An accessor installed there while a verification was pending could otherwise run with the verdict as its receiver and change what the caller reads.
+- A list a verdict reports is appended to by defining the entry rather than assigning it, so a setter at the appended index cannot take the value and answer the read with something else. This covers the signers pki.cms.verify reports and the countersignatures under them, the per-SCT results and the distinct operators pki.ct.verifySctList counts its policy against, the per-certificate results pki.path.validate reports, the elements of a compound attestation pki.webauthn.verify returns, the certificate chain and transcript a pki.cmp session returns, and the signer identities pki.smime.verify reports.
+
 ## v0.6.39 — 2026-09-05
 
 A verdict field is created with the verdict rather than written onto it afterward, so a value left on Object.prototype can no longer answer a question the verification never asked.

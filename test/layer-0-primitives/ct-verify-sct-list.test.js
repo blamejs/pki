@@ -61,6 +61,10 @@ async function run() {
   var v1 = await pki.ct.verifySctList(ENTRY, [signedSct(opA), signedSct(opB)], listAB, { certNotAfter: NOT_AFTER });
   check("VL1. two SCTs, two distinct operators -> policyOk, validScts:2, operatorCount:2",
     v1.policyOk === true && v1.validScts === 2 && v1.operatorCount === 2 && v1.results.length === 2 && v1.results[0].valid === true && v1.results[1].valid === true);
+  // The verdict ends the prototype lookup for `then` on itself, so resolving it does not hand an
+  // inherited accessor the verdict as a receiver. verdict-shield.test.js drives that behavior.
+  check("VL1b. the verifySctList verdict owns then",
+    Object.prototype.hasOwnProperty.call(v1, "then") && v1.then === undefined);
 
   var v2 = await pki.ct.verifySctList(ENTRY, [signedSct(opA)], listAB, { certNotAfter: NOT_AFTER });
   check("VL2. one valid SCT, default policy -> policyOk", v2.policyOk === true && v2.validScts === 1 && v2.operatorCount === 1);
