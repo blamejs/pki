@@ -140,6 +140,22 @@ function run() {
     }
     check("26. a replaced Object.hasOwn and hasOwnProperty do not change what carries reports", swapped);
 
+    // `set` is for a target that cannot be rebuilt, such as an Error carrying a value the catch
+    // needs. Defining the field means an inherited setter cannot take it and answer the read with
+    // something the thrower never measured.
+    var err = new Error("carrier");
+    check("27. set returns the target it defined on", verdict.set(err, "measured", 2) === err && err.measured === 2);
+    check("28. a set field is an own enumerable writable property",
+      hasOwn.call(err, "measured") && Object.keys(err).indexOf("measured") !== -1 &&
+      Object.getOwnPropertyDescriptor(err, "measured").writable === true);
+    check("29. the target keeps what it already was", err instanceof Error && err.message === "carrier");
+    check("30. a swallowing setter cannot intercept a set field",
+      withPollution("measured", 99, function () {
+        var e2 = new Error("carrier");
+        verdict.set(e2, "measured", 2);
+        return hasOwn.call(e2, "measured") && e2.measured === 2;
+      }));
+
     console.log("CHECKS " + helpers.getChecks());
   })();
 }

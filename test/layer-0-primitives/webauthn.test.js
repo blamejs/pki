@@ -1592,6 +1592,24 @@ async function testCompoundAttestation() {
   // anchored === total would reject exactly the configuration this supports.
   check("compound: mixed-route coverage reports every element as anchored, not just the fallback's",
     combined.anchoredElements.total === 2 && combined.anchoredElements.anchored === 2);
+  // That coverage travels from the metadata attempt to the fallback on the error the attempt
+  // throws, so it is the one number a caller enforcing anchored === total reads. An accessor
+  // installed for its name supplies it to every options object the verification builds, and the
+  // accessor-options gate refuses the attestation rather than reading a value that can differ
+  // between the check and the read.
+  var coverageCode;
+  var coveragePending = pki.webauthn.verify(split.attestationObject, split.clientDataHash,
+    { metadata: listedU2fMd, rootCertificates: [split.rootDer], time: new Date("2026-06-01T00:00:00Z") });
+  Object.defineProperty(Object.prototype, "anchoredElements", {
+    configurable: true,
+    get: function () { return { total: 99, anchored: 99 }; },
+    set: function () {},
+  });
+  try {
+    coverageCode = await coveragePending.then(function () { return "NO-THROW"; }, function (e) { return e && e.code; });
+  } finally { delete Object.prototype.anchoredElements; }
+  check("compound: an accessor named for the coverage field cannot get a forged one accepted",
+    coverageCode === "webauthn/bad-input");
   // And the verdict names BOTH routes and keeps the governed entries. Reporting only
   // "rootCertificates" would attribute the whole evaluation to the weaker half and drop the
   // catalogue entry that governed the listed element -- the part an auditor most needs.
