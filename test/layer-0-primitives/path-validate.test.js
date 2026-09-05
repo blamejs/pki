@@ -3339,6 +3339,15 @@ async function testInitialInputsAndTargetGates() {
   check("NC17 a malformed anchor subtree is refused from either position in the anchor list",
     (await codeOf(run([ncLeafIn], { time: T2027, trustAnchors: [ncAnchor(undefined), ncAnchor({ permitted: [{ tag: 2, base: 42 }] })] }))) === "path/bad-input" &&
     (await codeOf(run([ncLeafIn], { time: T2027, trustAnchors: [ncAnchor({ permitted: [{ tag: 2, base: 42 }] }), ncAnchor(undefined)] }))) === "path/bad-input");
+  // An accessor rdns can answer one shape to a test and another to the copy, handing the validation
+  // an empty DN that matches every name. It is read once, from its own data property.
+  check("NC18 an accessor rdns on a directoryName subtree base is refused, not read twice",
+    (await codeOf((function () {
+      var reads = 0;
+      var base = {};
+      Object.defineProperty(base, "rdns", { get: function () { return ++reads === 1 ? [[{ type: "2.5.4.6", value: "FR" }]] : []; }, configurable: true });
+      return run([ncLeafIn], { time: T2027, trustAnchors: ncAnchor({ permitted: [{ tag: 4, base: base }] }) });
+    })())) === "path/bad-input");
   check("NC10a a mis-shaped anchor subtree is refused at the door, never silently dropped",
     (await codeOf(run([ncLeafIn], { time: T2027, trustAnchors: ncAnchor({ permitted: [{ tag: 2, base: 42 }] }) }))) === "path/bad-input");
   check("NC10b an anchor carrying the decoder's subtree shape rather than { tag, base } is refused",
