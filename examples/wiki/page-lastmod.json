@@ -45,7 +45,7 @@
   "lib/est.js": "2026-09-05",
   "lib/framework-error.js": "2026-09-03",
   "lib/guard-all.js": "2026-09-05",
-  "lib/guard-async.js": "2026-09-04",
+  "lib/guard-async.js": "2026-09-05",
   "lib/guard-bytes.js": "2026-09-05",
   "lib/guard-compress.js": "2026-09-05",
   "lib/guard-crypto.js": "2026-09-01",
