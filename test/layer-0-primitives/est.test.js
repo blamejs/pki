@@ -824,6 +824,20 @@ async function testOptionSurface() {
     (await transportRefused(function () {
       return pki.est.cacerts(BASE, Object.create({ transport: null, tls: { useSystemStore: true } }));
     })) === "typed");
+  // An option that answers differently on each read cannot be checked and then read again: the
+  // value that passed would not be the value called. The checked value is the one used, so a getter
+  // that yields a function first and null afterwards cannot slip a null past the check and have the
+  // default network client installed in its place.
+  var reads = 0;
+  var shifting = {};
+  Object.defineProperty(shifting, "transport", {
+    enumerable: true, configurable: true,
+    get: function () { reads += 1; return reads === 1 ? never : null; },
+  });
+  shifting.tls = { useSystemStore: true };
+  var shiftingOutcome = await transportRefused(function () { return pki.est.cacerts(BASE, shifting); });
+  check("76g. a transport option whose reads differ cannot substitute a value after the check",
+    shiftingOutcome === "typed" || shiftingOutcome.indexOf("RAW:transport not exercised") === 0);
   // A class constructor is callable as far as any test of the value can tell, so it reaches the
   // call. Calling it throws synchronously, because a class cannot be invoked without new, and that
   // throw is translated the same way a rejected promise from a transport already is, rather than
