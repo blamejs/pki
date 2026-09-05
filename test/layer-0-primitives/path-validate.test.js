@@ -3348,6 +3348,34 @@ async function testInitialInputsAndTargetGates() {
       Object.defineProperty(base, "rdns", { get: function () { return ++reads === 1 ? [[{ type: "2.5.4.6", value: "FR" }]] : []; }, configurable: true });
       return run([ncLeafIn], { time: T2027, trustAnchors: ncAnchor({ permitted: [{ tag: 4, base: base }] }) });
     })())) === "path/bad-input");
+  // The anchor's other fields may be accessors, and those getters run while the anchor is being
+  // read. The namespace is copied when it is captured, so a getter cannot empty it afterwards.
+  check("NC19 a getter on another anchor field cannot empty the namespace after it is captured",
+    (function () {
+      var nc = { permitted: [{ tag: 2, base: "example.com" }] };
+      var a = { nameConstraints: nc, name: anchor.name, algorithm: anchor.algorithm };
+      Object.defineProperty(a, "publicKey", { get: function () { nc.permitted = []; return anchor.publicKey; }, enumerable: true, configurable: true });
+      var out = pki.path.anchorFromCert(a);
+      return out.nameConstraints.permitted.length === 1 && out.nameConstraints.permitted[0].base === "example.com";
+    })());
+  // Every field of the anchor, not just the one that happened to be reported: a getter on any of
+  // them runs while the anchor is read, and none may empty the namespace already captured.
+  ["publicKey", "name", "algorithm", "subjectDer", "label", "mozillaCaPolicy"].forEach(function (field, i) {
+    check("NC20." + String.fromCharCode(97 + i) + " a getter on anchor." + field + " cannot widen the namespace",
+      (function () {
+        var nc = { permitted: [{ tag: 2, base: "example.com" }] };
+        var a = { nameConstraints: nc };
+        ["name", "publicKey", "algorithm"].forEach(function (k) { if (k !== field) a[k] = anchor[k]; });
+        Object.defineProperty(a, field, {
+          get: function () { nc.permitted = []; return anchor[field]; },
+          enumerable: true, configurable: true,
+        });
+        try {
+          var out = pki.path.anchorFromCert(a);
+          return out.nameConstraints.permitted.length === 1 && out.nameConstraints.permitted[0].base === "example.com";
+        } catch (e) { return (e.code || "") === "path/bad-input"; }
+      })());
+  });
   check("NC10a a mis-shaped anchor subtree is refused at the door, never silently dropped",
     (await codeOf(run([ncLeafIn], { time: T2027, trustAnchors: ncAnchor({ permitted: [{ tag: 2, base: 42 }] }) }))) === "path/bad-input");
   check("NC10b an anchor carrying the decoder's subtree shape rather than { tag, base } is refused",
