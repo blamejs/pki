@@ -247,6 +247,8 @@ async function run() {
     failed.valid === false && failed.outcome === "rejected");
   check("V78 a pending response is valid false: it names an outcome that is not issued",
     pend.valid === false && pend.outcome === "pending");
+  check("V78 valid is the verdict's own property, so a polluted prototype cannot answer for it",
+    Object.prototype.hasOwnProperty.call(failed, "valid") && Object.prototype.hasOwnProperty.call(d1, "valid"));
 
   var noSupport = await pki.cmc.verify(response([statusV2(1, 4, null)]), { allowUnverified: true, allowUnbound: true });
   check("D15c. noSupport yields outcome rejected", noSupport.outcome === "rejected");

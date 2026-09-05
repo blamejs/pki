@@ -121,6 +121,19 @@ async function run() {
   var vr = await verify(w, rev);
   check("verify revoked surfaces the status + reason", vr.status === "revoked" && vr.revocationReason === "keyCompromise");
   check("V78 a revoked response is valid false, with the reason still in status", vr.valid === false && vr.status === "revoked");
+  // `valid` is created as the verdict's OWN property. An assignment would run an inherited setter,
+  // so a co-resident that installs one could swallow the write and leave its getter answering true
+  // for a revoked certificate.
+  check("V78 a polluted Object.prototype.valid cannot make a revoked response read as valid",
+    await (async function () {
+      var pending = verify(w, rev);            // options are read before the pollution lands
+      Object.defineProperty(Object.prototype, "valid",
+        { configurable: true, get: function () { return true; }, set: function () {} });
+      try {
+        var polluted = await pending;
+        return Object.prototype.hasOwnProperty.call(polluted, "valid") && polluted.valid === false;
+      } finally { delete Object.prototype.valid; }
+    })());
   check("#78 verify revoked surfaces revocationTime (the LTV instant)", vr.revocationTime instanceof Date && vr.revocationTime.getTime() === new Date("2027-03-01Z").getTime());
   var unk = await pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: "unknown", thisUpdate: TU, nextUpdate: NU }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 });
   check("verify explicit unknown status", (await verify(w, unk)).status === "unknown");
