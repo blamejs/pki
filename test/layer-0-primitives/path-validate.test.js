@@ -3497,6 +3497,16 @@ async function testInitialInputsAndTargetGates() {
         catch (e) { return (e.code || "") === "path/bad-input"; }
       })());
   });
+  // The anchor is normalized after the caller's own seeds are captured, so a getter on an anchor
+  // field cannot clear the seed list before it is read.
+  var ncSeedsRace = [{ tag: 2, base: "nowhere.example" }];
+  var ncRaceAnchor = { name: anchor.name, algorithm: anchor.algorithm };
+  Object.defineProperty(ncRaceAnchor, "publicKey", {
+    get: function () { ncSeedsRace.length = 0; return anchor.publicKey; }, enumerable: true, configurable: true,
+  });
+  var ncRaceVerdict = await run([ncLeafIn], { time: T2027, trustAnchors: ncRaceAnchor, initialPermittedSubtrees: ncSeedsRace })
+    .then(function (r) { return r.valid === false; }, function (e) { return (e.code || "") === "path/bad-input"; });
+  check("NC34 an anchor getter cannot clear the caller's own subtree seeds first", ncRaceVerdict);
   check("NC21 an anchor whose nameConstraints is null is unconstrained, not refused",
     (await run([ncLeafOut], { time: T2027, trustAnchors: ncAnchor(null) })).valid === true);
   // The seed option is read once: an accessor answering differently to the presence test and to the
