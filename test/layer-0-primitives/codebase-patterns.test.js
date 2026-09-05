@@ -1132,10 +1132,20 @@ function testRegistryTablesCarryNoPrototype() {
   // the whole class means no alias can carry a table past the gate.
   //
   // Nothing in lib needs an inherited member from one of these, so the rule costs a binding no
-  // capability. Declarations inside a function body are out of scope: the anchor requires the
-  // keyword at column 0. So are the shapes that are not a declaration at all, a literal assigned
-  // to a property or returned from a factory; lib holds none that serve as a lookup table, and a
-  // table introduced that way is the residual under the rule.
+  // capability.
+  //
+  // A literal inside a function body is the same class when something reads it with a computed
+  // key: an accumulator asked `seen[nameFromTheWire]` answers truthy for a name nobody added, and
+  // a label table asked for one hands back the member Object.prototype carries. Those are flagged
+  // by pairing the declaration with a computed read of that name in the same file, which is where
+  // a local's readers are. Declaring the whole class the way the module-level rule does would
+  // reach every short-lived object a function builds, none of which is a lookup table.
+  //
+  // Out of scope are the shapes that are not a declaration at all: a literal assigned to a
+  // property, nested inside another literal, or returned from a factory. Those have no binding to
+  // anchor on, and a converted outer table copies an inner literal by reference, so the inner one
+  // keeps its prototype. Nesting one is the residual under the rule; lib holds none that serve as
+  // a lookup table.
   //
   // A declaration is read across the line break as well as along the line: the initializer may
   // open on the next line, and a comma declarator may sit on one of its own. Matching only what
@@ -1144,13 +1154,44 @@ function testRegistryTablesCarryNoPrototype() {
   var files = _libFiles();
   function _flag(list, rel, line, name) {
     list.push({ file: rel, line: line,
-      content: "the module-level table `" + name + "` is an object literal, so it inherits Object.prototype and a computed lookup answers with a member it never registered — build it on Object.create(null) (or the module's captured create)" });
+      content: "the table `" + name + "` is an object literal, so it inherits Object.prototype and a computed lookup answers with a member it never registered — build it on Object.create(null) (or the module's captured create)" });
   }
   files.forEach(function (f) {
     var rel = path.relative(REPO_ROOT, f);
     var lines = _stripCommentsAndLiterals(fs.readFileSync(f, "utf8")).split("\n");
+    // Names used with a computed key, per enclosing function. A local's users are inside the
+    // function that declares it, and a file-wide map would let a lookup on one function's `out`
+    // answer for every other function's. The boundary is the closing brace at column 0, the same
+    // structural anchor the other cross-token detectors use.
+    //
+    // A write counts as well as a read. `t[name] = 1` where name is `__proto__` sets the object's
+    // prototype instead of recording the name, so a duplicate check that asks for it afterwards is
+    // told the name was never added, even one that asks with hasOwn.
+    var region = [];
+    var start = 0;
+    for (var b = 0; b < lines.length; b++) {
+      if (/^\}/.test(lines[b])) { for (var r0 = start; r0 <= b; r0++) region[r0] = start; start = b + 1; }
+    }
+    for (var t0 = start; t0 < lines.length; t0++) region[t0] = start;
+    var readsIn = Object.create(null);
+    lines.forEach(function (line, li) {
+      var key = region[li];
+      var r, re = /([A-Za-z_$][A-Za-z0-9_$]*)\s*\[/g;
+      while ((r = re.exec(line)) !== null) readsIn[key + "|" + r[1]] = true;
+    });
+    function readsLocal(name, li) { return !!readsIn[region[li] + "|" + name]; }
     for (var i = 0; i < lines.length; i++) {
       var next = i + 1 < lines.length ? lines[i + 1] : "";
+      if (!/^(?:var|let|const)\s/.test(lines[i]) && /^\s+(?:var|let|const)\s/.test(lines[i])) {
+        // Every declarator on the line, the same as at module level: a table declared after a
+        // comma is the same class, and reading only the first lets one hide behind another.
+        var locals = /(?:^\s+(?:var|let|const)|,)\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*\{/g;
+        var lm, hit = false;
+        while ((lm = locals.exec(lines[i])) !== null) {
+          if (readsLocal(lm[1], i)) { _flag(bad, rel, i + 1, lm[1]); hit = true; }
+        }
+        if (hit) continue;
+      }
       // A declarator whose literal opens on the following line, in either spelling: the keyword
       // form at column 0, or a continued declarator indented under a trailing comma.
       var open = /^(?:var|let|const)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*$/.exec(lines[i]);

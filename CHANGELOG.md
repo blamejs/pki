@@ -10,7 +10,7 @@ A lookup table answers from its own entries, so a name taken off the wire cannot
 
 ### Changed
 
-- The name tables pki.C.NAMES exposes, along with pki.asn1.TAGS, pki.ct.HASH_ALGORITHMS, pki.ct.SIGNATURE_ALGORITHMS, pki.path.PROCESSED_EXTENSIONS and pki.path.TARGET_UNPROCESSED_IF_CRITICAL, carry no prototype. Reading an entry, listing the keys and serializing to JSON are unchanged; calling an Object.prototype method on the table itself, such as table.hasOwnProperty(name), no longer works, so use Object.hasOwn(table, name).
+- Every object the toolkit publishes as a table carries no prototype: pki.C.TIME, pki.C.BYTES, pki.C.LIMITS, pki.C.NAMES and each name table under it, pki.asn1.TAGS, pki.asn1.build, pki.cbor.build, pki.ct.HASH_ALGORITHMS, pki.ct.SIGNATURE_ALGORITHMS, pki.hpke.suites, pki.path.PROCESSED_EXTENSIONS and pki.path.TARGET_UNPROCESSED_IF_CRITICAL. So do the maps a verb returns keyed by names rather than by a fixed set of fields: the results of pki.oid.all, pki.est.paths and pki.scep.parseCapabilities, the headers on each part pki.est.splitMultipartMixed returns, the counts map on a pki.lint.certificate result, and the purposes map on each anchor from pki.trust.parseCertdata, pki.trust.parseCcadbCsv and pki.trust.anchor. Every other result a verb returns, parsed certificates among them, keeps the prototype it had. Reading an entry, calling a member, listing the keys, spreading, destructuring and serializing to JSON are unchanged; calling an Object.prototype method on the object itself, such as table.hasOwnProperty(name), no longer works, so use Object.hasOwn(table, name).
 
 ### Fixed
 
