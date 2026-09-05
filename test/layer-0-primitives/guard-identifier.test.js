@@ -934,7 +934,68 @@ async function run() {
   testKnownKeys();
   testPollutionPlantedBeforeLoad();
   testGlobalScanNoAccessor();
+  testAssertCallable();
   await testConsumersFailClosed();
+}
+
+// guard.identifier.assertCallable -- an injectable callback option is refused unless it is callable.
+// The contract is asymmetric on purpose: an ABSENT option reads as undefined and passes, so a
+// boundary can install its own default, while any value that is PRESENT must be callable. Reading a
+// present-but-falsy value as absent is what sends a caller to the default network client it was
+// trying to replace.
+function testAssertCallable() {
+  function E(code, message) { var e = new Error(message); e.code = code; return e; }
+  function codeOf(v) {
+    try { identifier.assertCallable(v, E, "x/bad-input", "opts.transport", "(req) => Promise"); return "NO-THROW"; }
+    catch (e) { return e.code + " :: " + e.message; }
+  }
+  check("assertCallable: undefined is refused, since presence is the option form's question", codeOf(undefined).indexOf("x/bad-input") === 0);
+  check("assertCallable: a function passes", codeOf(function () {}) === "NO-THROW");
+  // The option form asks whether the object carries the key at all. A key it does not carry is an
+  // option the caller left out, and only that falls through to the boundary's default; a key it
+  // carries is a value the caller set, undefined included, so a merge that produced
+  // { transport: undefined } cannot silently select the real network client.
+  function optCode(opts) {
+    try { identifier.assertCallableOption(opts, "transport", E, "x/bad-input", "opts.transport"); return "NO-THROW"; }
+    catch (e) { return e.code; }
+  }
+  check("assertCallableOption: an object without the key passes", optCode({}) === "NO-THROW");
+  check("assertCallableOption: a null options object passes", optCode(null) === "NO-THROW");
+  check("assertCallableOption: the key present and callable passes", optCode({ transport: function () {} }) === "NO-THROW");
+  check("assertCallableOption: the key present and undefined is refused", optCode({ transport: undefined }) === "x/bad-input");
+  check("assertCallableOption: the key present and null is refused", optCode({ transport: null }) === "x/bad-input");
+  check("assertCallableOption: the key present and falsy is refused", optCode({ transport: 0 }) === "x/bad-input");
+  // Presence is asked the way the boundary asks for the value, so a defaults bag carrying the option
+  // on its prototype is checked rather than skipped. Skipping it would let an inherited null pass
+  // here and then be read as absent, which selects the very client the caller meant to replace.
+  check("assertCallableOption: an inherited callable is accepted", optCode(Object.create({ transport: function () {} })) === "NO-THROW");
+  check("assertCallableOption: an inherited non-callable is refused", optCode(Object.create({ transport: 42 })) === "x/bad-input");
+  check("assertCallableOption: an inherited null is refused", optCode(Object.create({ transport: null })) === "x/bad-input");
+  var nullOut = codeOf(null);
+  check("assertCallable: an explicit null is refused, not read as absent", nullOut.indexOf("x/bad-input") === 0);
+  check("assertCallable: the refusal names the option and the expected shape",
+    nullOut.indexOf("opts.transport must be a function (req) => Promise") !== -1);
+  check("assertCallable: the refusal renders null as null rather than as an object", nullOut.indexOf("got null") !== -1);
+  for (var v of [0, "", false, NaN, 42, "fn", {}, []]) {
+    check("assertCallable: " + JSON.stringify(v) + " is refused", codeOf(v).indexOf("x/bad-input") === 0);
+  }
+  // Callable is all this asks, so every legitimate callable form passes. A class constructor passes
+  // too: nothing here separates one from an ordinary function, because freezing a function leaves
+  // its prototype non-writable exactly as a class's is, and the source text of a method NAMED class
+  // begins with the keyword. Calling it is what settles it, and the boundary that does the calling
+  // reports the throw as its own typed error, which is covered by the client suites.
+  check("assertCallable: an ordinary function passes", codeOf(function () { return 1; }) === "NO-THROW");
+  check("assertCallable: an async function passes", codeOf(async function () {}) === "NO-THROW");
+  check("assertCallable: a generator function passes", codeOf(function * () {}) === "NO-THROW");
+  check("assertCallable: a bound function passes", codeOf(function () {}.bind(null)) === "NO-THROW");
+  check("assertCallable: a frozen ordinary function passes", codeOf(Object.freeze(function () { return 1; })) === "NO-THROW");
+  check("assertCallable: a function named classify passes", codeOf(function classify() { return 1; }) === "NO-THROW");
+  check("assertCallable: a method named class passes", codeOf({ class: function () { return 1; } }["class"]) === "NO-THROW");
+  check("assertCallable: the shorthand spelling of that method passes", codeOf({ class() { return 1; } }["class"]) === "NO-THROW");
+  check("assertCallable: a class constructor passes the callable test", codeOf(class T {}) === "NO-THROW");
+  // The returned value is the input, so a caller can bind it in one expression.
+  var fn = function () {};
+  check("assertCallable: it returns the value it accepted", identifier.assertCallable(fn, E, "x/bad-input", "opts.transport") === fn);
 }
 
 module.exports = { run: run };

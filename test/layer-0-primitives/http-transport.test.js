@@ -94,6 +94,16 @@ async function testHappy() {
     check("7 the POST carries a fixed Content-Length matching the body", r.headers["x-req-cl"] === "4");
     check("7 the POST is not sent Transfer-Encoding: chunked", r.headers["x-req-te"] === "");
     check("7 the negotiated TLS protocol is surfaced", /^TLSv1\.[23]$/.test(r.tls.protocol));
+    // Request headers parsed out of JSON can carry a __proto__ member. The copy the transport
+    // makes of them keeps its own entries only, so the member lands as a header field rather than
+    // as the copy's prototype. Node drops a field by that name further down, so the request goes
+    // out the same either way; what this pins is that supplying one still produces a normal
+    // request instead of a copy whose later lookups answer from the caller's value.
+    var protoHeaders = JSON.parse('{"content-type":"application/pkcs10","__proto__":"probe"}');
+    var rProto = await t({ method: "POST", url: urlFor(s.port), headers: protoHeaders, body: Buffer.from("PING"),
+      tls: { anchors: [tls.certPem], servername: "localhost" } });
+    check("7 a __proto__ member among the request headers leaves the request well-formed",
+      rProto.status === 200 && rProto.headers["x-echo"] === "PING" && rProto.headers["x-req-cl"] === "4");
     check("7 the peer certificate DER is surfaced", Buffer.isBuffer(r.tls.peerCertificate));
     // The request body accepts any BufferSource, not only a Buffer: an ArrayBuffer body is written and
     // framed with the same fixed Content-Length. Before the widening the one-form Buffer.isBuffer gate

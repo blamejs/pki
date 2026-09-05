@@ -4,6 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.41 — 2026-09-05
+
+A lookup table answers from its own entries, so a name taken off the wire cannot resolve to something the table never registered.
+
+### Changed
+
+- Every object the toolkit publishes as a table carries no prototype: pki.C.TIME, pki.C.BYTES, pki.C.LIMITS, pki.C.NAMES and each name table under it, pki.asn1.TAGS, pki.asn1.build, pki.cbor.build, pki.ct.HASH_ALGORITHMS, pki.ct.SIGNATURE_ALGORITHMS, pki.hpke.suites, pki.path.PROCESSED_EXTENSIONS and pki.path.TARGET_UNPROCESSED_IF_CRITICAL. The same holds for a map a verb returns that is keyed by names it read, rather than by a fixed set of fields. Among them: the results of pki.oid.all, pki.est.paths and pki.scep.parseCapabilities, the headers on a pki.transport response and on each part pki.est.splitMultipartMixed returns, the counts map on a pki.lint.certificate result, the extensions map on a pki.sigstore.verifyBundle identity, and the purposes map on each anchor from pki.trust.parseCertdata, pki.trust.parseCcadbCsv and pki.trust.anchor. A result read by a fixed set of field names keeps the prototype it had, which covers parsed certificates, decoded WebAuthn authenticator data, CMS recipient identifiers and the other parse records. Reading an entry, calling a member, listing the keys, spreading, destructuring and serializing to JSON are unchanged; calling an Object.prototype method on the object itself, such as table.hasOwnProperty(name), no longer works, so use Object.hasOwn(table, name).
+
+### Fixed
+
+- A lookup table carries no prototype, so a name the wire supplies resolves to an entry the table registered or to nothing. Two verbs were reachable: pki.webauthn.verify selected a verifier the table never held for an attestation naming constructor, toString or another Object.prototype member as its format, and pki.schema.c509.parse accepted a certificate whose subject-public-key algorithm named such a member instead of throwing c509/unknown-algorithm. The same change applies to the signature-scheme, content-encryption, key-agreement, extension-decoder and status-name registries.
+- Every verb that takes an injected opts.transport names the option when the value is not callable, refusing it with the module's own bad-input code at the door, before the message or the certificate is read. This covers all eighteen: the six pki.est verbs, the seven pki.scep verbs, pki.acme.client, pki.cmp.transfer, pki.cmp.session, pki.ct.fetchLogList and pki.path.build. Previously most of them let the value reach the call site, where the operator got a bare TypeError naming no option. A falsy transport and an explicit null are refused the same way. Either had been read as no transport supplied and replaced with the default network client, so a caller that believed it had injected a transport reached the CA instead, which is the case worth upgrading for. Only an option no lookup finds falls back, so a defaults object carrying the transport on its prototype still works. A value that passes for callable and then throws when it is called, which is what a class constructor does, is reported as that verb's typed error too, rather than escaping as a TypeError.
+
 ## v0.6.40 — 2026-09-05
 
 Every verify verdict now reaches its caller as the object the verb built, and a list the toolkit assembles carries the entries the toolkit put in it.

@@ -558,6 +558,28 @@ function testCoverageBranches() {
   var rawNoCt = "--bnd\r\nX-Foo: bar\r\n\r\nhello\r\n--bnd--\r\n";
   var pNoCt = pki.est.splitMultipartMixed(rawNoCt, "multipart/mixed; boundary=bnd");
   check("62d. unquoted boundary + no-content-type part", pNoCt.length === 1 && pNoCt[0].contentType === "" && /hello/.test(pNoCt[0].body));
+  // 62d-i. RFC 2046 allows linear whitespace between a delimiter and its line break, so a boundary
+  // line padded with spaces or tabs still delimits a part rather than being read as body bytes.
+  var rawPad = "--bnd  \r\nContent-Type: text/plain\r\n\r\nhello\r\n--bnd--\t\r\n";
+  var pPad = pki.est.splitMultipartMixed(rawPad, "multipart/mixed; boundary=bnd");
+  check("62d-i. whitespace after a boundary delimiter still delimits", pPad.length === 1 && /hello/.test(pPad[0].body));
+  // 62d-ii. A delimiter that only PREFIXES the boundary is body text, not a delimiter, so a part
+  // whose content happens to start with the boundary's first bytes is not split at it.
+  var rawPrefix = "--bnd\r\nContent-Type: text/plain\r\n\r\n--bndx not a delimiter\r\n--bnd--\r\n";
+  var pPrefix = pki.est.splitMultipartMixed(rawPrefix, "multipart/mixed; boundary=bnd");
+  check("62d-ii. a longer token sharing the boundary prefix is body, not a delimiter",
+    pPrefix.length === 1 && /--bndx not a delimiter/.test(pPrefix[0].body));
+  // 62d-iii. A close delimiter ending the input with no trailing line break still closes the part.
+  var rawEnd = "--bnd\r\nContent-Type: text/plain\r\n\r\nhello\r\n--bnd--";
+  var pEnd = pki.est.splitMultipartMixed(rawEnd, "multipart/mixed; boundary=bnd");
+  check("62d-iii. a close delimiter at end of input with no trailing newline closes the part",
+    pEnd.length === 1 && /hello/.test(pEnd[0].body));
+  // 62d-iv. A folded header continuation line (RFC 5322 sec. 2.2.3) belongs to the header above it,
+  // so the folded value is read whole rather than the continuation being taken as a new field.
+  var rawFold = "--bnd\r\nContent-Type: text/plain;\r\n charset=utf-8\r\n\r\nhello\r\n--bnd--\r\n";
+  var pFold = pki.est.splitMultipartMixed(rawFold, "multipart/mixed; boundary=bnd");
+  check("62d-iv. a folded header line is unfolded into the field above it",
+    pFold.length === 1 && pFold[0].contentType.indexOf("text/plain") === 0);
   // 62e. an LF-only (not CRLF) header/body separator is tolerated.
   var rawLf = "--bnd\nContent-Type: text/plain\n\nhello\n--bnd--\n";
   var pLf = pki.est.splitMultipartMixed(rawLf, 'multipart/mixed; boundary="bnd"');
@@ -778,6 +800,71 @@ async function testOptionSurface() {
           maxResponseBytes: 1024, maxRedirects: 0, now: 0, auth: { scheme: "basic" }, username: "u",
           password: "p", allowCrossOriginRedirect: false });
       })) === false);
+  }
+  // A transport option that is not callable is a wiring fault the operator makes at config time, so
+  // every verb names the option in its own typed error. Without the check the value reaches the call
+  // site and the operator gets a bare `TypeError: transport is not a function`, which names no
+  // option and carries no domain code.
+  async function transportRefused(fn) {
+    try { await fn(); return "NO-THROW"; }
+    catch (e) { return (e && e.code === "est/bad-input" && String(e.message).indexOf("opts.transport") !== -1) ? "typed" : ("RAW:" + (e && e.message || "").slice(0, 40)); }
+  }
+  for (var tverb of Object.keys(VERBS)) {
+    check("76a. pki.est." + tverb + " refuses a non-callable transport with a typed error",
+      (await transportRefused(function () { return VERBS[tverb]({ transport: 42, tls: { useSystemStore: true } }); })) === "typed");
+  }
+  // A defaults bag carries its options on a prototype, and the verbs read them with a plain lookup,
+  // so the check has to ask the same way. An inherited callable is used; an inherited unusable value
+  // is refused rather than skipped and then read back as absent, which would install the real client.
+  check("76e. an inherited callable transport is accepted and reached",
+    (await _reachedTransport(function () {
+      return pki.est.cacerts(BASE, Object.create({ transport: never, tls: { useSystemStore: true } }));
+    })) === true);
+  check("76f. an inherited null transport is refused, not read as absent",
+    (await transportRefused(function () {
+      return pki.est.cacerts(BASE, Object.create({ transport: null, tls: { useSystemStore: true } }));
+    })) === "typed");
+  // An option that answers differently on each read cannot be checked and then read again: the
+  // value that passed would not be the value called. The checked value is the one used, so a getter
+  // that yields a function first and null afterwards cannot slip a null past the check and have the
+  // default network client installed in its place.
+  var reads = 0;
+  var shifting = {};
+  Object.defineProperty(shifting, "transport", {
+    enumerable: true, configurable: true,
+    get: function () { reads += 1; return reads === 1 ? never : null; },
+  });
+  shifting.tls = { useSystemStore: true };
+  var shiftingOutcome = await transportRefused(function () { return pki.est.cacerts(BASE, shifting); });
+  check("76g. a transport option whose reads differ cannot substitute a value after the check",
+    shiftingOutcome === "typed" || shiftingOutcome.indexOf("RAW:transport not exercised") === 0);
+  // A class constructor is callable as far as any test of the value can tell, so it reaches the
+  // call. Calling it throws synchronously, because a class cannot be invoked without new, and that
+  // throw is translated the same way a rejected promise from a transport already is, rather than
+  // escaping as a bare TypeError. Binding one hides its source and changes nothing here.
+  check("76a-i. a class constructor transport is refused when it is called",
+    (await transportRefused(function () {
+      return pki.est.cacerts(BASE, { transport: class T {}, tls: { useSystemStore: true } });
+    })) === "typed");
+  check("76a-ii. a bound class constructor transport is refused the same way",
+    (await transportRefused(function () {
+      return pki.est.cacerts(BASE, { transport: (class U {}).bind(null), tls: { useSystemStore: true } });
+    })) === "typed");
+  // A FALSY transport is the same fault and must not be read as "no transport supplied": falling
+  // back to the default client would open a real connection to the CA on behalf of a caller who
+  // believed it had injected one.
+  for (var fverb of Object.keys(VERBS)) {
+    check("76b. pki.est." + fverb + " refuses a falsy transport rather than falling back to the network",
+      (await transportRefused(function () { return VERBS[fverb]({ transport: 0, tls: { useSystemStore: true } }); })) === "typed");
+    // An explicit null is a supplied value, not an omitted option: reading it as absent would install
+    // the real client and open the connection the caller was trying to replace. Only an option that
+    // is genuinely absent, which reads as undefined, falls back.
+    check("76c. pki.est." + fverb + " refuses an explicit null transport",
+      (await transportRefused(function () { return VERBS[fverb]({ transport: null, tls: { useSystemStore: true } }); })) === "typed");
+    // A merge that produced { transport: undefined } set the key, so it is a value rather than an
+    // omitted option; only an object that does not carry the key at all falls back.
+    check("76d. pki.est." + fverb + " refuses a present-but-undefined transport",
+      (await transportRefused(function () { return VERBS[fverb]({ transport: undefined, tls: { useSystemStore: true } }); })) === "typed");
   }
   // The enroll CSR is accepted as any BufferSource, not only a Buffer: an ArrayBuffer CSR passes
   // _csrDer and reaches the transport (which this vector's transport then refuses). Before the widening
