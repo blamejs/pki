@@ -1,0 +1,15 @@
+{
+  "version": "0.6.37",
+  "date": "2026-09-05",
+  "headline": "A natively signed C509 certificate is refused when it writes an extension in the generic OID form that the registry can carry as an identifier.",
+  "summary": "Section 3.7 of the C509 draft requires a natively signed certificate to use only the specific CBOR encoding, and keeps the generic form available when decoding a re-encoded X.509 certificate that may predate an encoding's registration. The previous release applied that split to algorithm identifiers. It now covers extensions as well, so a natively signed certificate writing an extension as an OID and a DER value, where a registry identifier carries the same extension, is refused.\n\nWhether the specific form was available is decided by asking the compact encodings whether they represent that exact value under the rules of the certificate type at hand, not by the extension's identifier alone. Some values compact only under the rules for a re-encoded certificate: a directoryName whose attribute is a PrintableString needs a negative attribute identifier, which a natively signed certificate may not carry. Such a value keeps the generic OID form on a natively signed certificate, and pki.schema.c509.encode picks its form the same way, so a certificate carrying a value from another implementation still decodes and still inverts to its original bytes. An extension whose OID has no registry identifier is unaffected."
+  ,
+  "sections": {
+    "Fixed": [
+      "pki.schema.c509.parse refuses a natively signed certificate (c509CertificateType 2) that writes an extension as an OID and a DER value when a C509 registry identifier carries the same extension value. Draft section 3.7 reserves the generic form for re-encoded certificates, where it stays accepted. An extension whose OID has no registry identifier, and one whose value the compact encodings cannot represent under that certificate type's rules, both keep the generic form.",
+      "pki.schema.c509.encode chooses an extension's form under the rules of the certificate type it is writing. It previously judged whether a value could be written compactly using the rules for a re-encoded certificate, so a natively signed certificate could be given a compact form its own decoder does not accept.",
+      "pki.schema.c509.encode resolves an extension named only by its OID to the matching registry identifier. It looked the identifier up by name alone, so an extension supplied without one was written in the generic OID form even where a compact encoding carried it.",
+      "pki.schema.c509 decides what belongs to the C509 registries by dotted OID rather than by the name pki.oid.register maps that OID to. Registering a different name for a built-in OID previously changed what the toolkit emitted for an unrelated certificate, and for commonName, a curve, ecPublicKey or an ECDSA signature algorithm it stopped a certificate converting to C509 at all."
+    ]
+  }
+}

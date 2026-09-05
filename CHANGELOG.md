@@ -4,6 +4,17 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.37 — 2026-09-05
+
+A natively signed C509 certificate is refused when it writes an extension in the generic OID form that the registry can carry as an identifier.
+
+### Fixed
+
+- pki.schema.c509.parse refuses a natively signed certificate (c509CertificateType 2) that writes an extension as an OID and a DER value when a C509 registry identifier carries the same extension value. Draft section 3.7 reserves the generic form for re-encoded certificates, where it stays accepted. An extension whose OID has no registry identifier, and one whose value the compact encodings cannot represent under that certificate type's rules, both keep the generic form.
+- pki.schema.c509.encode chooses an extension's form under the rules of the certificate type it is writing. It previously judged whether a value could be written compactly using the rules for a re-encoded certificate, so a natively signed certificate could be given a compact form its own decoder does not accept.
+- pki.schema.c509.encode resolves an extension named only by its OID to the matching registry identifier. It looked the identifier up by name alone, so an extension supplied without one was written in the generic OID form even where a compact encoding carried it.
+- pki.schema.c509 decides what belongs to the C509 registries by dotted OID rather than by the name pki.oid.register maps that OID to. Registering a different name for a built-in OID previously changed what the toolkit emitted for an unrelated certificate, and for commonName, a curve, ecPublicKey or an ECDSA signature algorithm it stopped a certificate converting to C509 at all.
+
 ## v0.6.36 — 2026-09-04
 
 A natively signed C509 certificate is refused when it spells an algorithm generically instead of using the registry entry that names the same value.
