@@ -1147,6 +1147,21 @@ async function testCoreRejections() {
   });
   var res8 = await run([tampered], { time: T2027, trustAnchors: anchor });
   check("bad signature rejected", res8.valid === false && failCodes(res8).indexOf("path/bad-signature") !== -1);
+  // The per-certificate `checks` list is what tells an operator WHICH gate refused, and it is
+  // appended to by defining the entry. Writing it by assignment would let a setter at that index
+  // take the entry and answer the read with one the validator never produced, so a refusal would
+  // name a check that never ran while the certificate stayed rejected for a reason nobody sees.
+  var realZeroPV = Object.getOwnPropertyDescriptor(Array.prototype, "0");
+  var res8pending = run([tampered], { time: T2027, trustAnchors: anchor });
+  Object.defineProperty(Array.prototype, "0", { configurable: true,
+    get: function () { return { name: "decoy", ok: true }; }, set: function () {} });
+  var res8poll;
+  try { res8poll = await res8pending; } finally {
+    if (realZeroPV) Object.defineProperty(Array.prototype, "0", realZeroPV);
+    else delete Array.prototype[0];
+  }
+  check("a setter at the appended index cannot substitute the check that refused the certificate",
+    res8poll.valid === false && failCodes(res8poll).indexOf("path/bad-signature") !== -1);
 
   // expired / not-yet-valid.
   var expired = await mkCert({ subject: "Old", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", notBefore: new Date("2020-01-01T00:00:00Z"), notAfter: new Date("2021-01-01T00:00:00Z") });

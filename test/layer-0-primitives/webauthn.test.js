@@ -1214,6 +1214,23 @@ async function testCeremonyBinding() {
   check("binding: with nothing asked for, every binding reports NOT checked",
     unbound.bindingChecked.rpId === false && unbound.bindingChecked.userPresence === false &&
     unbound.bindingChecked.userVerification === false && unbound.bindingChecked.algorithm === false);
+  // bindingChecked is the field a relying party reads to learn which of its expectations were
+  // actually enforced, and it is created with the verdict rather than written onto it, so a setter
+  // installed while the attestation is being verified cannot swallow the write and report from its
+  // own getter that a check ran when none did.
+  var bindingHeld;
+  var bindingPending = pki.webauthn.verify(hostileObj, clientHash("packed"), {});
+  Object.defineProperty(Object.prototype, "bindingChecked", {
+    configurable: true,
+    get: function () { return { rpId: true, userPresence: true, userVerification: true, algorithm: true }; },
+    set: function () {},
+  });
+  try {
+    var polluted = await bindingPending;
+    bindingHeld = Object.prototype.hasOwnProperty.call(polluted, "bindingChecked") &&
+      polluted.bindingChecked.rpId === false && polluted.bindingChecked.algorithm === false;
+  } finally { delete Object.prototype.bindingChecked; }
+  check("binding: a polluted Object.prototype.bindingChecked cannot report a check that never ran", bindingHeld);
 
   check("binding: expectedRpId refuses an attestation made for another relying party",
     (await codeOfAsync(function () {
