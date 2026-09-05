@@ -813,6 +813,17 @@ async function testOptionSurface() {
     check("76a. pki.est." + tverb + " refuses a non-callable transport with a typed error",
       (await transportRefused(function () { return VERBS[tverb]({ transport: 42, tls: { useSystemStore: true } }); })) === "typed");
   }
+  // A defaults bag carries its options on a prototype, and the verbs read them with a plain lookup,
+  // so the check has to ask the same way. An inherited callable is used; an inherited unusable value
+  // is refused rather than skipped and then read back as absent, which would install the real client.
+  check("76e. an inherited callable transport is accepted and reached",
+    (await _reachedTransport(function () {
+      return pki.est.cacerts(BASE, Object.create({ transport: never, tls: { useSystemStore: true } }));
+    })) === true);
+  check("76f. an inherited null transport is refused, not read as absent",
+    (await transportRefused(function () {
+      return pki.est.cacerts(BASE, Object.create({ transport: null, tls: { useSystemStore: true } }));
+    })) === "typed");
   // Binding a class hides its source, so it reaches the call. Calling it throws synchronously
   // because a class cannot be invoked without new, and that throw is translated the same way a
   // rejected promise from a transport already is, rather than escaping as a bare TypeError.

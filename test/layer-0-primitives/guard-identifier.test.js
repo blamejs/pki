@@ -965,9 +965,12 @@ function testAssertCallable() {
   check("assertCallableOption: the key present and undefined is refused", optCode({ transport: undefined }) === "x/bad-input");
   check("assertCallableOption: the key present and null is refused", optCode({ transport: null }) === "x/bad-input");
   check("assertCallableOption: the key present and falsy is refused", optCode({ transport: 0 }) === "x/bad-input");
-  // An inherited key is not one this object carries, so it does not count as supplied.
-  var inherited = Object.create({ transport: 42 });
-  check("assertCallableOption: an inherited key does not count as supplied", optCode(inherited) === "NO-THROW");
+  // Presence is asked the way the boundary asks for the value, so a defaults bag carrying the option
+  // on its prototype is checked rather than skipped. Skipping it would let an inherited null pass
+  // here and then be read as absent, which selects the very client the caller meant to replace.
+  check("assertCallableOption: an inherited callable is accepted", optCode(Object.create({ transport: function () {} })) === "NO-THROW");
+  check("assertCallableOption: an inherited non-callable is refused", optCode(Object.create({ transport: 42 })) === "x/bad-input");
+  check("assertCallableOption: an inherited null is refused", optCode(Object.create({ transport: null })) === "x/bad-input");
   var nullOut = codeOf(null);
   check("assertCallable: an explicit null is refused, not read as absent", nullOut.indexOf("x/bad-input") === 0);
   check("assertCallable: the refusal names the option and the expected shape",
