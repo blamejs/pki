@@ -1552,6 +1552,222 @@ async function run() {
     check("338." + String.fromCharCode(97 + i) + " the same nested Name with a non-negative integer stays valid in a type-2 (" + kind + ")", codeSync(function () { return pki.schema.c509.parse(type2WithExts(nestedExt(kind, 1))); }) === "NO-THROW");
     check("339." + String.fromCharCode(97 + i) + " a type-3 may still carry the negative integer there (it selects printableString) (" + kind + ")", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: nestedExt(kind, -1) })); }) === "NO-THROW");
   });
+  // ==== draft sec. 3.7: a native certificate uses only the specific CBOR encoding ==============
+  // "Native C509 certificates MUST use only specific CBOR-encoded fields. However, when decoding
+  // non-native C509 certificates, the decoder may need to support [...] the encoding of an extension
+  // for which an (extensionID: int, extensionValue: Defined) encoding exists." So the generic form is
+  // refused on a type 2 and stays accepted on a type 3, where a certificate may predate the specific
+  // encoding's registration. A registry row (sec. 8.14, 8.15) fixes both the OID and the parameters,
+  // so a generic spelling is that row's value only when the parameters agree too.
+  function type2WithField(idx, hex) { var g = t2Fields.slice(); g[idx] = hex; return Buffer.from("8b" + g.join(""), "hex"); }
+  function genericAlg(dotted, paramsHex) {
+    var o = CBb2.byteString(pki.asn1.encodeOidContent(dotted));
+    return (paramsHex === null ? o : CBb2.array([o, CBb2.byteString(Buffer.from(paramsHex, "hex"))])).toString("hex");
+  }
+  var P256_PARAMS = b.oid("1.2.840.10045.3.1.7").toString("hex");
+  var GENERIC = [
+    ["issuerSignatureAlgorithm as a bare ~oid (row 0, parameters absent)", 2, genericAlg("1.2.840.10045.4.3.2", null)],
+    ["subjectPublicKeyAlgorithm as [~oid, namedCurve] (row 1)", 7, genericAlg("1.2.840.10045.2.1", P256_PARAMS)],
+    ["subjectPublicKeyAlgorithm as [~oid, NULL] (row 0, rsaEncryption)", 7, genericAlg("1.2.840.113549.1.1.1", "0500")],
+  ];
+  GENERIC.forEach(function (g, i) {
+    check("341." + String.fromCharCode(97 + i) + " a type-2 carrying " + g[0] + " -> c509/non-specific-encoding",
+      codeSync(function () { return pki.schema.c509.parse(type2WithField(g[1], g[2])); }) === "c509/non-specific-encoding");
+    check("342." + String.fromCharCode(97 + i) + " a type-3 may still carry " + g[0],
+      codeSync(function () { var o = {}; o[g[1]] = g[2]; return pki.schema.c509.parse(V.mk(o)); }) !== "c509/non-specific-encoding");
+  });
+  // The rule names the VALUE, not the form. Two ways it must not overreach: an algorithm with no
+  // registry row has only the generic spelling, and a registry OID carrying parameters the row does
+  // not name is a different value that no int can express.
+  check("343a. a type-2 algorithm with no C509 registry row keeps the generic ~oid form",
+    codeSync(function () { return pki.schema.c509.parse(type2WithField(2, genericAlg("1.2.840.113549.1.1.11", null))); }) !== "c509/non-specific-encoding");
+  check("343b. a type-2 registry OID whose parameters differ from the row is not the row's value",
+    codeSync(function () { return pki.schema.c509.parse(type2WithField(2, genericAlg("1.2.840.10045.4.3.2", "0500"))); }) !== "c509/non-specific-encoding");
+  check("343c. a type-2 ecPublicKey with a curve no registry row names keeps the generic form",
+    codeSync(function () { return pki.schema.c509.parse(type2WithField(7, genericAlg("1.2.840.10045.2.1", b.oid("1.3.132.0.10").toString("hex")))); }) !== "c509/non-specific-encoding");
+
+  // A supplied algorithm parameter is part of the certificate. The rsaEncryption reconstruction
+  // emitted OID + NULL whatever was supplied, so a parameter the caller sent was discarded and the
+  // rebuilt DER named an algorithm the C509 did not carry. RFC 3279 sec. 2.3.1 fixes it to NULL.
+  var RSA_OID = pki.asn1.encodeOidContent("1.2.840.113549.1.1.1");
+  var RSA_MOD = CBb2.byteString(Buffer.from("c0000000000000000000000000000001", "hex")).toString("hex");
+  function rsaSpki(paramsHex) {
+    return V.mk({ 7: paramsHex === null ? CBb2.byteString(RSA_OID).toString("hex")
+      : CBb2.array([CBb2.byteString(RSA_OID), CBb2.byteString(Buffer.from(paramsHex, "hex"))]).toString("hex"), 8: RSA_MOD });
+  }
+  check("344a. an rsaEncryption subjectPublicKeyAlgorithm carrying non-NULL parameters is refused, not silently dropped",
+    codeSync(function () { return pki.schema.c509.parse(rsaSpki("0403010203")); }) === "c509/bad-spki");
+  check("344b. the same algorithm carrying the DER NULL parameters still reconstructs",
+    (function () {
+      var r = pki.schema.c509.parse(rsaSpki("0500"));
+      return pki.schema.x509.parse(r.reconstructedDer).subjectPublicKeyInfo.algorithm.name === "rsaEncryption";
+    })());
+  // The bare ~oid form states that the algorithm carries no parameters, which rsaEncryption cannot:
+  // rebuilding it with a NULL would put a parameter in the DER that the certificate did not encode.
+  check("344c. the bare ~oid form, which carries no parameters at all, is refused for the same reason",
+    codeSync(function () { return pki.schema.c509.parse(rsaSpki(null)); }) === "c509/bad-spki");
+  check("344d. the registry int form carries the row's NULL parameters and still reconstructs",
+    pki.schema.x509.parse(pki.schema.c509.parse(V.mk({ 7: "00", 8: RSA_MOD })).reconstructedDer).subjectPublicKeyInfo.algorithm.name === "rsaEncryption");
+
+  // The encoder's own refusals, driven through pki.schema.c509.encode on a structured result.
+  function structured(src) { var r = pki.schema.c509.parse(src || V.A1.type3); delete r._fieldBytes; return r; }
+  check("345a. encode refuses a negative serialNumber",
+    codeSync(function () { var r = structured(); r.serialNumber = -1n; delete r.serialNumberHex; return pki.schema.c509.encode(r); }) === "c509/bad-serial");
+  check("345b. encode refuses a result with no subject Name",
+    codeSync(function () { var r = structured(); r.subject = null; return pki.schema.c509.encode(r); }) === "c509/bad-name");
+  check("345c. encode refuses a DN attribute type with no C509 registry int",
+    codeSync(function () { var r = structured(); r.subject = { rdns: [{ type: "notARegisteredAttribute", value: "x" }] }; return pki.schema.c509.encode(r); }) === "c509/bad-name");
+  // The native rule names the value, so it must accept everything the encoder emits for a native
+  // result: an algorithm with no registry row is written generically and parses back unchanged.
+  check("346. a native result whose signature algorithm has no registry row round-trips through the generic form",
+    (function () {
+      var r = structured(V.A1.type2);
+      r.signatureAlgorithm = { name: "sha256WithRSAEncryption", oid: "1.2.840.113549.1.1.11" };
+      var out = pki.schema.c509.encode(r);
+      return CB.decode(out).children[2].majorType === 2 && pki.schema.c509.parse(out).signatureAlgorithm.name === "sha256WithRSAEncryption";
+    })());
+  check("347. a native result re-encoded field by field still parses under the same rule",
+    codeSync(function () { return pki.schema.c509.parse(pki.schema.c509.encode(structured(V.A1.type2))); }) === "NO-THROW");
+  // Encode picks the form the same way parse judges it: parameters that are the registry entry's own
+  // select the integer, so a value the native rule refuses in generic form is never emitted for one.
+  check("347a. explicit parameters equal to the registry entry's encode as the integer, not the generic form",
+    (function () {
+      var r = structured(V.A1.type2);
+      r.subjectPublicKeyAlgorithm = { name: "rsaEncryption", oid: "1.2.840.113549.1.1.1", parameters: Buffer.from("0500", "hex") };
+      r.rsaPublicKey = { modulus: 0xc0000000000000000000000000000001n, exponent: 65537n };
+      r.subjectPublicKey = null;
+      var out = pki.schema.c509.encode(r);
+      return CB.decode(out).children[7].majorType === 0 && pki.schema.c509.parse(out).subjectPublicKeyAlgorithm.name === "rsaEncryption";
+    })());
+  // Rebuilding must not move an algorithm to an entry that names parameters it did not carry: a
+  // native bare rsaEncryption states it has none, and entry 0 states NULL.
+  check("347d. a native bare-OID algorithm keeps its form rather than gaining the entry's parameters",
+    (function () {
+      var r = pki.schema.c509.parse(type2WithField(7, genericAlg("1.2.840.113549.1.1.1", null)));
+      delete r._fieldBytes;
+      var out = pki.schema.c509.encode(r);
+      return CB.decode(out).children[7].majorType === 2 &&
+        pki.schema.c509.parse(out).subjectPublicKeyAlgorithm.parameters === undefined;
+    })());
+  check("347e. a hand-built EC algorithm named only by curve still resolves to its entry",
+    (function () {
+      var r = structured(V.A1.type2);
+      r.subjectPublicKeyAlgorithm = { name: "ecPublicKey", oid: "1.2.840.10045.2.1", curve: "prime256v1" };
+      return CB.decode(pki.schema.c509.encode(r)).children[7].majorType === 0;
+    })());
+  check("347c. an EC algorithm named only by its namedCurve parameters resolves to the same entry",
+    (function () {
+      var r = structured(V.A1.type2);
+      r.subjectPublicKeyAlgorithm = { name: "ecPublicKey", oid: "1.2.840.10045.2.1", parameters: b.oid("1.2.840.10045.3.1.7") };
+      var out = pki.schema.c509.encode(r);
+      return CB.decode(out).children[7].majorType === 0 && pki.schema.c509.parse(out).subjectPublicKeyAlgorithm.curve === "prime256v1";
+    })());
+  // _requireResultShape asks only for a name, so a result may identify an algorithm by name alone.
+  check("347f. a signature algorithm given by name alone resolves to its registry entry",
+    (function () {
+      var r = structured(); r.signatureAlgorithm = { name: "ecdsaWithSHA256" };
+      return CB.decode(pki.schema.c509.encode(r)).children[2].majorType === 0;
+    })());
+  check("347g. a public key algorithm given by name and curve alone resolves to its registry entry",
+    (function () {
+      var r = structured(); r.subjectPublicKeyAlgorithm = { name: "ecPublicKey", curve: "prime256v1" };
+      return CB.decode(pki.schema.c509.encode(r)).children[7].majorType === 0;
+    })());
+  check("347h. a name that resolves to no OID is a typed c509 fault, not an oid/* one",
+    codeSync(function () {
+      var r = structured(); r.signatureAlgorithm = { name: "notARegisteredAlgorithm" };
+      return pki.schema.c509.encode(r);
+    }) === "c509/bad-input");
+  check("347b. the registry int form surfaces the entry's parameters on the parse result",
+    (function () {
+      var a = pki.schema.c509.parse(V.A1.type3).subjectPublicKeyAlgorithm;
+      return Buffer.isBuffer(a.parameters) && a.parameters.equals(b.oid("1.2.840.10045.3.1.7"));
+    })());
+  // Every number the encoder writes as a ~biguint comes from the caller. A value that is not a
+  // BigInt was coerced by the hex conversion, so a string serial became whichever leading bytes
+  // happened to parse and a missing RSA field reached the emitter as an untyped fault.
+  [["a string", "abc", "c509/bad-serial"], ["a Number", 5, "c509/bad-serial"],
+    ["a Date", new Date(), "c509/bad-serial"],
+    ["null", null, "c509/bad-input"], ["undefined", undefined, "c509/bad-input"]].forEach(function (t, i) {
+    check("350." + String.fromCharCode(97 + i) + " a serialNumber that is " + t[0] + " is refused with " + t[2] + ", not coerced",
+      codeSync(function () {
+        var r = structured(); r.serialNumber = t[1]; delete r.serialNumberHex;
+        return pki.schema.c509.encode(r);
+      }) === t[2]);
+  });
+  check("350e. an RSA public key with no modulus is a typed fault",
+    codeSync(function () {
+      var r = structured();
+      r.subjectPublicKeyAlgorithm = { name: "rsaEncryption" }; r.rsaPublicKey = { exponent: 65537n };
+      return pki.schema.c509.encode(r);
+    }) === "c509/bad-serial");
+  check("350f. an RSA public key with no exponent is a typed fault",
+    codeSync(function () {
+      var r = structured();
+      r.subjectPublicKeyAlgorithm = { name: "rsaEncryption" }; r.rsaPublicKey = { modulus: 5n };
+      return pki.schema.c509.encode(r);
+    }) === "c509/bad-serial");
+  // Every remaining field the emitter reads off a caller's result. Each was reached without a check,
+  // so a wrong type surfaced as an untyped TypeError or RangeError, as a fault from the OID or CBOR
+  // builders, or, for an RDN value, as different bytes than the caller named.
+  [["an extensions entry that is null", function (r) { r.extensions = [null]; }, "c509/bad-input"],
+    ["an extensions entry that is a Number", function (r) { r.extensions = [7]; }, "c509/bad-input"],
+    ["an RDN that is null", function (r) { r.subject = { rdns: [null] }; }, "c509/bad-name"],
+    ["an RDN value that is a Number", function (r) { r.subject = { rdns: [{ type: "commonName", value: 42, printable: true }] }; }, "c509/bad-name"],
+    ["an RDN eui64 that is not a Buffer", function (r) { r.subject = { rdns: [{ type: "commonName", eui64: "0123456789ab" }] }; }, "c509/bad-name"],
+    ["an extension oid that is not a string", function (r) { r.extensions = [{ oid: 42, value: Buffer.from("0500", "hex") }]; }, "c509/bad-input"],
+    ["keyUsageBits that is NaN", function (r) { r.extensions = [{ name: "keyUsage", keyUsageBits: NaN }]; }, "c509/bad-extensions"],
+    ["keyUsageBits that is Infinity", function (r) { r.extensions = [{ name: "keyUsage", keyUsageBits: Infinity }]; }, "c509/bad-extensions"],
+    ["keyUsageBits that is fractional", function (r) { r.extensions = [{ name: "keyUsage", keyUsageBits: 1.5 }]; }, "c509/bad-extensions"],
+  ].forEach(function (t, i) {
+    check("351." + String.fromCharCode(97 + i) + " " + t[0] + " is refused with " + t[2],
+      codeSync(function () { var r = structured(); t[1](r); return pki.schema.c509.encode(r); }) === t[2]);
+  });
+
+  // A diagnostic that formats a caller value must not itself fail on that value, and an OID string
+  // reaches the encoder unvalidated unless the field checks it.
+  [["an extension oid that is not dotted-decimal", function (r) { r.extensions = [{ oid: "notanoid", value: Buffer.from("0500", "hex") }]; }, "c509/bad-input"],
+    ["an extension name that is a BigInt", function (r) { r.extensions = [{ name: 1n, value: Buffer.from("0500", "hex") }]; }, "c509/bad-input"],
+    ["keyUsageBits that is a Symbol", function (r) { r.extensions = [{ name: "keyUsage", keyUsageBits: Symbol("x") }]; }, "c509/bad-extensions"],
+  ].forEach(function (t, i) {
+    check("352." + String.fromCharCode(97 + i) + " " + t[0] + " is refused with " + t[2],
+      codeSync(function () { var r = structured(); t[1](r); return pki.schema.c509.encode(r); }) === t[2]);
+  });
+  // A hole is not an entry: forEach skips it, so a sparse list silently emitted fewer items than the
+  // caller's array held.
+  check("352d. a sparse rdns array is refused rather than silently emitting fewer attributes",
+    codeSync(function () {
+      var r = structured(); var s = []; s[1] = { type: "commonName", value: "x", printable: true };
+      r.subject = { rdns: s };
+      return pki.schema.c509.encode(r);
+    }) === "c509/bad-name");
+  check("352e. a sparse extensions array is refused for the same reason",
+    codeSync(function () {
+      var r = structured(); var s = []; s[1] = { name: "keyUsage", keyUsageBits: 1 };
+      r.extensions = s;
+      return pki.schema.c509.encode(r);
+    }) === "c509/bad-input");
+
+  check("350g. an extension naming neither an OID nor a registered name is a typed c509 fault",
+    codeSync(function () {
+      var r = structured(); r.extensions = [{ value: Buffer.from("0500", "hex") }];
+      return pki.schema.c509.encode(r);
+    }) === "c509/bad-input");
+
+  check("348. reconstruction refuses an extension carrying neither keyUsage bits nor a value buffer",
+    codeSync(function () {
+      var r = structured();
+      r.extensions = [{ name: "basicConstraints", oid: "2.5.29.19", critical: false, value: null }];
+      return pki.schema.c509.encode(r);
+    }) === "c509/non-invertible");
+  check("349. an RSA result whose exponent is not 65537 re-encodes field by field to the array form",
+    (function () {
+      var arr = CBb2.array([CBb2.byteString(Buffer.from("c0000000000000000000000000000001", "hex")), CBb2.byteString(Buffer.from("03", "hex"))]).toString("hex");
+      var r = structured(V.mk({ 7: "00", 8: arr }));
+      var out = pki.schema.c509.encode(r);
+      return CB.decode(out).children[8].majorType === 4 && pki.schema.c509.parse(out).rsaPublicKey.exponent === 3n;
+    })());
+
   // the empty-issuer rule binds the EFFECTIVE issuer: a CBOR-null issuer means issuer == subject.
   check("340. a self-signed C509 (null issuer) with an empty subject -> c509/bad-name", codeSync(function () { return pki.schema.c509.parse(V.mk({ 3: "f6", 6: "80" })); }) === "c509/bad-name");
   check("334. a control byte in a name value is escaped in the rendered dn (never emitted raw)", (function () { var d = pki.schema.c509.parse(V.mk({ 6: bareName("a" + String.fromCharCode(13) + "b") })).subject.dn; return d.indexOf(String.fromCharCode(13)) < 0 && d.indexOf("\\0D") >= 0; })());

@@ -4,6 +4,23 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.36 — 2026-09-04
+
+A natively signed C509 certificate is refused when it spells an algorithm generically instead of using the registry entry that names the same value.
+
+### Added
+
+- The subjectPublicKeyAlgorithm on a pki.schema.c509.parse result carries a parameters buffer when the certificate used a C509 registry integer, holding the parameters that entry names: the DER NULL for rsaEncryption and the namedCurve OID for an EC key. The generic OID forms already surfaced this field, so it is now present for every form that has parameters.
+
+### Fixed
+
+- pki.schema.c509.parse refuses a natively signed certificate (c509CertificateType 2) that writes an algorithm as an OID, or as an OID with parameters, when a C509 registry entry names that same value. Draft section 3.7 reserves the generic form for re-encoded certificates, where it stays accepted. An algorithm with no registry entry, and a registry OID whose parameters differ from the entry's, both keep the generic form.
+- pki.schema.c509.parse refuses an rsaEncryption subjectPublicKeyAlgorithm that does not carry the DER NULL parameters RFC 3279 section 2.3.1 requires, including the bare OID form that carries none. The type-3 reconstruction previously emitted the OID and a NULL regardless, so the rebuilt DER described an algorithm identifier the certificate had not encoded.
+- pki.schema.c509.encode writes an algorithm back as the form naming the same value. It previously chose the form by algorithm name alone, so re-encoding a certificate field by field could move an algorithm that carried no parameters onto a registry entry that names some, and could miss the entry for a key identified by its namedCurve parameters rather than by a curve name.
+- pki.schema.c509.encode refuses a serialNumber, RSA modulus or RSA exponent that is not a BigInt. A string was previously read as hexadecimal and truncated to an even number of digits, so a caller passing "abc" received a certificate carrying the serial 0xab, and a number was silently converted. A missing modulus or exponent reached the emitter as an untyped fault rather than a c509 error naming the field.
+- pki.schema.c509.encode reports every field it reads off a result as a typed c509 error naming that field. An extensions entry or an RDN that is not an object, an extension carrying neither an OID nor a registry name, an extension OID that is not a dotted-decimal string, and a keyUsageBits that is not a safe integer previously surfaced as a TypeError, a RangeError, or a fault from the OID or CBOR builders. An RDN value that is not a string is refused rather than converted, so a caller passing a number no longer receives a certificate naming its decimal spelling.
+- pki.schema.c509.encode refuses a sparse extensions or rdns array. Array iteration skips a hole, so such a list emitted fewer entries than it held without reporting anything.
+
 ## v0.6.35 — 2026-09-04
 
 Three redundant C509 spellings are refused, so a certificate has one encoding and an issuer signature cannot cover two different C509 byte strings.
