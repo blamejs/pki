@@ -75,6 +75,19 @@ async function run() {
   check("1p. a session refuses an unknown option (proxy whitelist did not widen the gate)",
     (await codeOf(Promise.resolve().then(function () { return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: mk([]).transport, bogusOpt: 1 }); }))) === "cmp/bad-input");
 
+  // 1p2. A transport the caller supplied but that cannot be called is named at construction. It
+  // would otherwise be dropped when the session forwards its options, and the transfer leg would
+  // install the real HTTPS client, reaching the CA the caller meant to replace.
+  async function badSessionTransport(v) {
+    var code = await codeOf(Promise.resolve().then(function () {
+      return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: v });
+    }));
+    return code === "cmp/bad-input" ? "typed" : code;
+  }
+  check("1p2. a session refuses a non-callable transport", (await badSessionTransport(42)) === "typed");
+  check("1p2. a session refuses an explicit null transport", (await badSessionTransport(null)) === "typed");
+  check("1p2. a session refuses a present-but-undefined transport", (await badSessionTransport(undefined)) === "typed");
+
   // ===== 1q. the proxy is snapshotted at construction; a mutation during the transaction cannot repoint or re-credential a leg =====
   var pxy = { url: "https://p.example", auth: { username: "u", password: "s3cret" } };
   var sQ = mk([H.ip(0, 0, certDer), H.pkiconf()], { proxy: pxy });
