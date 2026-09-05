@@ -3377,6 +3377,11 @@ async function testInitialInputsAndTargetGates() {
       })());
   });
   // An absent namespace may be spelled null, the way optional metadata serializes.
+  var ncShapeCases = [["a string", "example.com"], ["a number", 7], ["an array", [{ tag: 2, base: "example.com" }]]];
+  for (var nsi = 0; nsi < ncShapeCases.length; nsi++) {
+    check("NC23." + String.fromCharCode(97 + nsi) + " an anchor nameConstraints that is " + ncShapeCases[nsi][0] + " is refused",
+      (await codeOf(run([ncLeafIn], { time: T2027, trustAnchors: ncAnchor(ncShapeCases[nsi][1]) }))) === "path/bad-input");
+  }
   check("NC21 an anchor whose nameConstraints is null is unconstrained, not refused",
     (await run([ncLeafOut], { time: T2027, trustAnchors: ncAnchor(null) })).valid === true);
   // The seed option is read once: an accessor answering differently to the presence test and to the
