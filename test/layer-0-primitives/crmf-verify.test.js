@@ -271,6 +271,21 @@ async function testAbsentPopIsNotVerified() {
   var m = await firstOf(der);
   check("a request with no popo is not verified", m.verified === false);
   check("a request with no popo reports no method", m.method === null);
+  // Every field of the verdict is its own property. An assignment would run an inherited setter,
+  // so a co-resident that installs one while the verification is pending could swallow the write
+  // and leave its getter answering true for a request that carries no proof at all.
+  var held;
+  Object.defineProperty(Object.prototype, "verified",
+    { configurable: true, get: function () { return true; }, set: function () {} });
+  Object.defineProperty(Object.prototype, "valid",
+    { configurable: true, get: function () { return true; }, set: function () {} });
+  try {
+    var polluted = (await pki.crmf.verifyPop(der)).messages[0];
+    held = Object.prototype.hasOwnProperty.call(polluted, "verified") &&
+      Object.prototype.hasOwnProperty.call(polluted, "valid") &&
+      polluted.verified === false && polluted.valid === false;
+  } finally { delete Object.prototype.verified; delete Object.prototype.valid; }
+  check("a polluted Object.prototype cannot make an absent proof of possession read as verified", held);
 }
 
 // ---- fail closed on malformed input ---------------------------------------

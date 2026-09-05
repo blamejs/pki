@@ -114,16 +114,86 @@ async function run() {
   // ---- certStatus arms + raw-exactness ----
   var good = await signGood(w);
   check("verify good", (await verify(w, good)).status === "good");
+  // The canonical verdict alias: `valid` is the affirmative terminal and nothing more, so the
+  // reason a certificate is not good stays in `status`.
+  check("V78 a good response carries valid true beside its status", (await verify(w, good)).valid === true);
   var rev = await pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: { revoked: new Date("2027-03-01Z"), revocationReason: "keyCompromise" }, thisUpdate: TU, nextUpdate: NU }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 });
   var vr = await verify(w, rev);
   check("verify revoked surfaces the status + reason", vr.status === "revoked" && vr.revocationReason === "keyCompromise");
+  check("V78 a revoked response is valid false, with the reason still in status", vr.valid === false && vr.status === "revoked");
+  // `valid` is created as the verdict's OWN property. An assignment would run an inherited setter,
+  // so a co-resident that installs one could swallow the write and leave its getter answering true
+  // for a revoked certificate.
+  check("V78 a polluted Object.prototype.valid cannot make a revoked response read as valid",
+    await (async function () {
+      var pending = verify(w, rev);            // options are read before the pollution lands
+      Object.defineProperty(Object.prototype, "valid",
+        { configurable: true, get: function () { return true; }, set: function () {} });
+      try {
+        var polluted = await pending;
+        return Object.prototype.hasOwnProperty.call(polluted, "valid") && polluted.valid === false;
+      } finally { delete Object.prototype.valid; }
+    })());
+  // Every field of the verdict is its own property, not `valid` alone: the affirmative boolean is
+  // derived from `status`, so a swallowed `status` write would answer the derivation from the
+  // inherited getter and report a revoked certificate as good.
+  check("V78 a polluted Object.prototype.status cannot make a revoked response read as good",
+    await (async function () {
+      var pending = verify(w, rev);
+      Object.defineProperty(Object.prototype, "status",
+        { configurable: true, get: function () { return "good"; }, set: function () {} });
+      try {
+        var polluted = await pending;
+        return Object.prototype.hasOwnProperty.call(polluted, "status") &&
+          polluted.status === "revoked" && polluted.valid === false;
+      } finally { delete Object.prototype.status; }
+    })());
+  // The lower-level verdict settles through a promise of its own, and resolving one reads `then`
+  // off the value. That verdict ends the lookup on itself, so an accessor installed while the
+  // target-certificate signature check is pending cannot rewrite its status before pki.ocsp.verify
+  // copies it and derives valid.
+  check("V78 an inherited then accessor cannot rewrite the status the low-level verdict settles with",
+    await (async function () {
+      var pending = verify(w, rev);            // options are read before the pollution lands
+      Object.defineProperty(Object.prototype, "then", { configurable: true,
+        get: function () { try { this.status = "good"; } catch (_e) { /* frozen */ } return undefined; } });
+      try {
+        var polluted = await pending;
+        return polluted.status === "revoked" && polluted.valid === false;
+      } finally { delete Object.prototype.then; }
+    })());
+  check("V78 a polluted Object.prototype.status cannot survive pki.path.verifyOcspResponse either",
+    await (async function () {
+      var pending = pki.path.verifyOcspResponse(rev, pki.schema.x509.parse(w.targetCertDer), pki.schema.x509.parse(w.issuerCertDer), T);
+      Object.defineProperty(Object.prototype, "status",
+        { configurable: true, get: function () { return "good"; }, set: function () {} });
+      try {
+        var polluted = await pending;
+        return Object.prototype.hasOwnProperty.call(polluted, "status") &&
+          polluted.status === "revoked" && polluted.valid === false;
+      } finally { delete Object.prototype.status; }
+    })());
   check("#78 verify revoked surfaces revocationTime (the LTV instant)", vr.revocationTime instanceof Date && vr.revocationTime.getTime() === new Date("2027-03-01Z").getTime());
   var unk = await pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: "unknown", thisUpdate: TU, nextUpdate: NU }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 });
   check("verify explicit unknown status", (await verify(w, unk)).status === "unknown");
+  check("V78 an unknown response is valid false", (await verify(w, unk)).valid === false);
   // raw-exactness: mutate one byte of the signed response -> signature no longer verifies.
   var tampered = Buffer.from(good); tampered[tampered.length - 40] ^= 0x01;
   var vt = await verify(w, tampered);
   check("a mutated response byte -> signatureValid:false, status unknown", vt.status === "unknown" && vt.signatureValid === false);
+  // A rejected response reports every field the verdict is derived from. Without that, a value
+  // left on Object.prototype answers the read the evaluation never wrote, and a response whose
+  // signature does not verify is reported as a good status the responder never gave.
+  check("V78 a polluted Object.prototype.sawGood cannot turn a rejected response into good",
+    await (async function () {
+      var pending = verify(w, tampered);            // options are read before the pollution lands
+      Object.defineProperty(Object.prototype, "sawGood",
+        { value: true, enumerable: false, configurable: true, writable: true });
+      try {
+        var polluted = await pending;
+        return polluted.status === "unknown" && polluted.valid === false && polluted.signatureValid === false;
+      } finally { delete Object.prototype.sawGood; }
+    })());
 
   // ---- version omitted + GeneralizedTime shape ----
   var rd = pki.asn1.decode(pki.schema.ocsp.parseResponse(good).basicResponse.tbsResponseDataBytes);

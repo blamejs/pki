@@ -3792,6 +3792,16 @@ async function testOcspRevocation() {
   // O16 — the response signature is mutated (tbs intact).
   var o16 = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle()], mutateSig: function (s) { var c = Buffer.from(s); c[c.length - 1] ^= 0xff; return c; } });
   check("O16 OCSP tampered signature -> undetermined", undetermined(await ocspRun(o16)));
+  // A rejected response reports every field the checker decides on, so a value sitting on
+  // Object.prototype is not read in place of one the evaluation never wrote. Without that, a
+  // response whose signature does not verify contributes a "good" the responder never gave.
+  var o16pending = ocspRun(o16);   // the caller's options are read before the pollution lands
+  Object.defineProperty(Object.prototype, "sawGood",
+    { value: true, enumerable: false, configurable: true, writable: true });
+  var o16poll;
+  try { o16poll = await o16pending; } finally { delete Object.prototype.sawGood; }
+  check("O16b a polluted Object.prototype.sawGood cannot turn a rejected response into good",
+    undetermined(o16poll));
 
   // O17 — a future revocationTime under historical validation is not yet effective.
   var o17 = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle({ status: "revoked", revocationTime: new Date("2028-01-01T00:00:00Z"), revocationReason: 1 })] });

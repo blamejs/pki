@@ -278,6 +278,19 @@ async function testUnsupportedAlgorithm() {
   var r3 = await pki.cms.verify(edUnmapped);
   check("EdDSA + signedAttrs + unmapped digest -> unsupported-algorithm verdict", r3.valid === false && r3.signers[0].code === "cms/unsupported-algorithm");
 
+  // The signature-scheme table is consulted by the name the message asks for, so it answers from
+  // its own entries alone. A digest OID names no signature scheme; were the lookup to fall through
+  // to Object.prototype, a message could name an algorithm the toolkit does not implement and have
+  // the verification proceed under whatever a co-resident had left there.
+  var digestAsSigAlg = swapSigAlg(fx("rsa-attached.p7s"), pki.oid.byName("sha256"));
+  var rProto = await (async function () {
+    var pending = pki.cms.verify(digestAsSigAlg);
+    Object.prototype.sha256 = { kind: "rsa", hash: "SHA-256", params: "absent" };
+    try { return await pending; } finally { delete Object.prototype.sha256; }
+  })();
+  check("a signature-scheme name reaching Object.prototype is not a scheme -> unsupported-algorithm",
+    rProto.valid === false && rProto.signers[0].code === "cms/unsupported-algorithm");
+
   // A bare key OID (rsaEncryption / ecPublicKey) takes its SIGNATURE hash from the SignerInfo
   // digestAlgorithm. RFC 8702 sec. 3.2 gives RSASSA-PKCS1-v1_5-with-SHAKE and ECDSA-with-SHAKE
   // their OWN signature OIDs and never pairs a bare key OID with a SHAKE digestAlgorithm, so the
@@ -849,6 +862,11 @@ async function testMalformedCountersignatureValue() {
   check("a real countersignature verifies and is reported",
     baseline.valid === true && (baseline.signers[0].countersignatures || []).length === 1 &&
     baseline.signers[0].countersignatures[0].ok === true);
+  // A countersignature that verified carries no code, so a reader can tell a failure row from a
+  // successful one by the field's presence.
+  check("a countersignature row that verified carries no code field",
+    Object.keys(baseline.signers[0].countersignatures[0]).join(",") ===
+      "ok,sid,cert,digestAlgorithm,unsignedAttrs,countersignatures");
 
   var notSignerInfos = [
     ["an INTEGER", b.integer(5n)],
@@ -1044,6 +1062,37 @@ async function testTrustSeam() {
     wrongAnchor.trusted === false);
   check("trust: ...while its signature is still reported sound, which is a different claim",
     wrongAnchor.valid === true);
+
+  // `trusted` is created with the verdict, on the message and on every signer row. An assignment
+  // would consult the prototype chain, so a setter installed while the verification was pending
+  // could swallow the write and leave its getter reporting a signer that was never anchored to
+  // anything as trusted.
+  var pollutedTrust = await (async function () {
+    var pending = pki.cms.verify(signed, AT);   // no anchors: nothing here can be trusted
+    Object.defineProperty(Object.prototype, "trusted",
+      { configurable: true, get: function () { return true; }, set: function () {} });
+    try {
+      var r = await pending;
+      return Object.prototype.hasOwnProperty.call(r, "trusted") && r.trusted === false &&
+        Object.prototype.hasOwnProperty.call(r.signers[0], "trusted") && r.signers[0].trusted === false;
+    } finally { delete Object.prototype.trusted; }
+  })();
+  check("trust: a polluted Object.prototype.trusted cannot report an unanchored signer as trusted",
+    pollutedTrust);
+
+  // A signer row settles through a promise of its own, and resolving one reads `then` off the
+  // value. The row ends that lookup on itself, so an accessor installed while the signature check
+  // is pending cannot rewrite the ok the message verdict is derived from.
+  var badSig = Buffer.from(signed);
+  badSig[badSig.length - 20] ^= 0x01;
+  var pollutedRow = await (async function () {
+    var pending = pki.cms.verify(badSig, AT);
+    Object.defineProperty(Object.prototype, "then", { configurable: true,
+      get: function () { try { this.ok = true; } catch (_e) { /* frozen */ } return undefined; } });
+    try { return await pending; } finally { delete Object.prototype.then; }
+  })();
+  check("trust: an inherited then accessor cannot turn a failed signer row into a valid message",
+    pollutedRow.valid === false && pollutedRow.signers[0].ok === false);
 
   // The trust verdict is a decision about the message, so it must not be reachable through the
   // prototype: `every` replaced after load answers true without consulting a single signer, and a

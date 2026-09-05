@@ -631,6 +631,15 @@ async function run() {
   check("85a. the transcript is a snapshot -> mutating a returned entry's bytes does not affect the internal transcript", s85.session.transcript[0].bytes[0] === orig85);
   var read85a = s85.session.transcript, read85b = s85.session.transcript;   // two reads -> two distinct arrays
   check("85b. session.transcript returns a fresh array each read (freezing the returned value is harmless)", read85a !== read85b && Object.isFrozen(Object.freeze(read85a)) && read85b.length === 4);
+  // A request leg records no verdict -- nothing has been verified yet. The snapshot asks whether
+  // the entry carries one of its own, so a value inherited from a polluted prototype is not
+  // copied in and read back as a protection result this session never reached.
+  Object.prototype.verdict = { valid: true, trusted: true, code: null };
+  var read85c;
+  try { read85c = s85.session.transcript; } finally { delete Object.prototype.verdict; }
+  check("85c. an inherited verdict is not copied onto a request leg of the transcript",
+    read85c[0].direction === "out" && !Object.hasOwn(read85c[0], "verdict") &&
+    Object.hasOwn(read85c[1], "verdict") && read85c[1].verdict.valid === true);
 
   // ===== 86. a decoy carrying the real signer's key under an UNTRUSTED root (valid but untrusted) -> fall back to the cached signer =====
   var s86 = mk([H.ip(0, 0, certDer), { body: H.pkiconf(), untrustedDecoy: true }]);

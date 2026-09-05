@@ -458,8 +458,23 @@ async function run() {
   // so the message is built by hand -- a hostile message is exactly the case that reaches it. A
   // wrong-length RSA ciphertext is a decode fault, which is what triggers the substitution.
   var rsaA = makeRecipient("rsa");
+  // OpenSSL answers a v1.5 decode fault with its own synthetic key rather than an error, and that
+  // key's LENGTH is drawn pseudorandomly from the private key and the ciphertext. A draw that lands
+  // on 32 is the AES-256 content-key length, so the decryptor would accept it and never reach the
+  // substitute this vector is about. Pick a ciphertext whose draw is some other length.
+  var v15Cipher = Buffer.alloc(128);
+  var v15Key = nodeCrypto.createPrivateKey({ key: rsaA.key, format: "der", type: "pkcs8" });
+  for (var v15Try = 0; v15Try < 64; v15Try++) {
+    var synthetic;
+    try {
+      synthetic = nodeCrypto.privateDecrypt(
+        { key: v15Key, padding: nodeCrypto.constants.RSA_PKCS1_PADDING }, v15Cipher);
+    } catch (_e) { break; }             // an error yields a null key, which reaches the substitute too
+    if (synthetic.length !== 32) break;
+    v15Cipher[0] = (v15Cipher[0] + 1) & 0xff;
+  }
   var v15Ktri = bld.sequence([bld.integer(0n), bld.sequence([bld.sequence([]), bld.integer(1n)]),
-    bld.sequence([bld.oid(pki.oid.byName("rsaEncryption")), bld.nullValue()]), bld.octetString(Buffer.alloc(128))]);
+    bld.sequence([bld.oid(pki.oid.byName("rsaEncryption")), bld.nullValue()]), bld.octetString(v15Cipher)]);
   var v15Eci = bld.sequence([bld.oid(pki.oid.byName("data")),
     bld.sequence([bld.oid(pki.oid.byName("aes256-CBC")), bld.octetString(Buffer.alloc(16))]),
     bld.contextPrimitive(0, Buffer.alloc(16))]);
@@ -469,7 +484,7 @@ async function run() {
   try {
     // The substitute key is random and the content is unauthenticated CBC, so this does not reliably
     // throw -- the deterministic property is that it never yields plaintext. Either way the
-    // substitute must be cleared.
+    // substitute must be cleared. The ciphertext above is chosen so the substitute is always taken.
     var leakedV15 = false;
     try {
       var v15Out = await pki.cms.decrypt(v15Env, { key: rsaA.key, cert: rsaA.cert }, { recipientIndex: 0 });

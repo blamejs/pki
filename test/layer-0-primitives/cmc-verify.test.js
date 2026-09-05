@@ -152,6 +152,8 @@ async function run() {
   var d1 = await pki.cmc.verify(response([]), { allowUnverified: true, allowUnbound: true });
   check("D1. a PKIResponse with NO status control verifies as issued (ST5: success is assumed)",
     d1.outcome === "issued" && d1.statuses.length === 0);
+  // The canonical verdict alias beside the string terminal: true only for the issued outcome.
+  check("V78 an issued response carries valid true beside its outcome", d1.valid === true);
 
   // ---- E1: the happy path binds the exchange ---------------------------
   var e1 = await pki.cmc.verify(response(txControls([statusV2(4, 0, null)])), sent);
@@ -241,6 +243,12 @@ async function run() {
   var failed = await pki.cmc.verify(response([statusV2(1, 2, b.integer(7n))]), { allowUnverified: true, allowUnbound: true });
   check("D3b. a failed status yields outcome rejected carrying the failInfo name",
     failed.outcome === "rejected" && failed.failInfo === "badIdentity");
+  check("V78 a rejected response is valid false, with the reason still in outcome and failInfo",
+    failed.valid === false && failed.outcome === "rejected");
+  check("V78 a pending response is valid false: it names an outcome that is not issued",
+    pend.valid === false && pend.outcome === "pending");
+  check("V78 valid is the verdict's own property, so a polluted prototype cannot answer for it",
+    Object.prototype.hasOwnProperty.call(failed, "valid") && Object.prototype.hasOwnProperty.call(d1, "valid"));
 
   var noSupport = await pki.cmc.verify(response([statusV2(1, 4, null)]), { allowUnverified: true, allowUnbound: true });
   check("D15c. noSupport yields outcome rejected", noSupport.outcome === "rejected");
@@ -649,6 +657,33 @@ async function run() {
   // The roll-up itself -- that an empty value contributes nothing to boundToRequest -- needs
   // a response that actually echoes an empty Recipient Nonce, which this fixture does not
   // build. The lib change is in _assertBound's `_carries`; the vector for it is outstanding.
+
+  // boundToRequest decides whether an unbound response is refused. An accessor installed on
+  // Object.prototype while the verification is pending supplies that name to every options
+  // object the verification builds, and the accessor-options gate refuses the response rather
+  // than reading a value that can differ between the check and the read.
+  var seen;
+  var pending = pki.cmc.verify(replay, retainedNothing);   // the caller's options are read before the pollution lands
+  Object.defineProperty(Object.prototype, "boundToRequest",
+    { configurable: true, get: function () { return true; }, set: function () {} });
+  try {
+    seen = await pending.then(function () { return "NO-THROW"; }, function (e) { return e && e.code; });
+  } finally { delete Object.prototype.boundToRequest; }
+  check("RP11. an accessor on Object.prototype cannot get an unbound response accepted",
+    seen === "cms/bad-input");
+
+  // Resolving a promise reads `then` off the value, so a caller who carries a verdict through
+  // their own promise chain hands it to that lookup. The verdict ends the lookup on itself, so an
+  // accessor installed on Object.prototype afterward cannot run with the verdict as its receiver
+  // and rewrite the outcome, nor hand the caller something else in its place.
+  var thenHeld;
+  Object.defineProperty(Object.prototype, "then", { configurable: true,
+    get: function () { try { this.valid = false; this.outcome = "rejected"; } catch (_e) { /* frozen */ } return undefined; } });
+  try {
+    var carried = await Promise.resolve(declared);
+    thenHeld = carried === declared && carried.valid === true && carried.outcome === "issued";
+  } finally { delete Object.prototype.then; }
+  check("RP12. an inherited then accessor cannot rewrite a verdict a caller carries through a promise", thenHeld);
 
   console.log("CHECKS " + helpers.getChecks());
 }
