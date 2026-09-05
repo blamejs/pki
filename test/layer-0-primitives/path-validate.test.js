@@ -3518,6 +3518,15 @@ async function testInitialInputsAndTargetGates() {
     check("NC36." + String.fromCharCode(97 + nsj) + " a caller seed entry that is an accessor or Proxy is refused",
       (await codeOf(run([ncLeafIn], { time: T2027, trustAnchors: anchor, initialPermittedSubtrees: [mk()] }))) === "path/bad-input");
   }
+  // A built-in exotic carries no permitted or excluded entries, so accepting one would normalize a
+  // configuration meant to restrict the anchor into no restriction at all.
+  [["a Map", new Map()], ["a Date", new Date()], ["a Set", new Set()]].forEach(function (t, i) {
+    check("NC37." + String.fromCharCode(97 + i) + " an anchor nameConstraints that is " + t[0] + " is refused",
+      (function () {
+        try { pki.path.anchorFromCert(ncAnchor(t[1])); return false; }
+        catch (e) { return (e.code || "") === "path/bad-input"; }
+      })());
+  });
   check("NC21 an anchor whose nameConstraints is null is unconstrained, not refused",
     (await run([ncLeafOut], { time: T2027, trustAnchors: ncAnchor(null) })).valid === true);
   // The seed option is read once: an accessor answering differently to the presence test and to the
