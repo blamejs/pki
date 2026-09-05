@@ -3222,6 +3222,380 @@ async function testInitialInputsAndTargetGates() {
   check("mis-shaped permitted seed throws path/bad-input",
     (await codeOf(run([leafInside], { time: T2027, trustAnchors: anchor, initialPermittedSubtrees: [{ tag: "2", base: "good.example" }] }))) === "path/bad-input");
 
+  // ---- a trust anchor carrying its own name constraints (RFC 5280 sec. 6.1.1(h)(i)) ----------
+  // A root program can restrict a root to a namespace without that restriction appearing in any
+  // nameConstraints extension the root certificate carries. The anchor states it, and it seeds the
+  // same section 6.1.4 permitted/excluded state a certificate's own extension feeds, so the two
+  // intersect: a leaf must satisfy both.
+  function ncAnchor(nc) {
+    var a = {};
+    Object.keys(anchor).forEach(function (k) { a[k] = anchor[k]; });
+    a.nameConstraints = nc;
+    return a;
+  }
+  var ncLeafIn = await mkCert({ subject: "NcIn", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("host.example.com")])] });
+  var ncLeafOut = await mkCert({ subject: "NcOut", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("evil.net")])] });
+
+  var ncRes1 = await run([ncLeafIn], { time: T2027, trustAnchors: ncAnchor({ permitted: [{ tag: 2, base: "example.com" }] }) });
+  check("NC1 an anchor permitted subtree accepts a leaf inside it",
+    ncRes1.valid === true && ncRes1.anchorConstraints.nameConstraintsApplied === true);
+  var ncRes2 = await run([ncLeafOut], { time: T2027, trustAnchors: ncAnchor({ permitted: [{ tag: 2, base: "example.com" }] }) });
+  check("NC2 an anchor permitted subtree refuses a leaf outside it",
+    ncRes2.valid === false && failCodes(ncRes2).indexOf("path/name-constraint-not-permitted") !== -1);
+  var ncRes3 = await run([ncLeafIn], { time: T2027, trustAnchors: ncAnchor({ excluded: [{ tag: 2, base: "host.example.com" }] }) });
+  check("NC3 an anchor excluded subtree refuses a leaf inside the exclusion",
+    ncRes3.valid === false && failCodes(ncRes3).indexOf("path/name-constraint-excluded") !== -1);
+  var ncRes7 = await run([ncLeafOut], { time: T2027, trustAnchors: anchor });
+  check("NC7 an anchor carrying no constraints is unchanged and reports none applied",
+    ncRes7.valid === true && ncRes7.anchorConstraints.nameConstraintsApplied === false);
+  // The anchor's restriction and the caller's own initial seed are SEPARATE generations, so they
+  // intersect. A union would accept this leaf; the intersection must not.
+  var ncRes8 = await run([ncLeafIn], {
+    time: T2027, trustAnchors: ncAnchor({ permitted: [{ tag: 2, base: "example.com" }] }),
+    initialPermittedSubtrees: [{ tag: 2, base: "example.org" }],
+  });
+  check("NC8 an anchor subtree and opts.initialPermittedSubtrees intersect rather than union",
+    ncRes8.valid === false && failCodes(ncRes8).indexOf("path/name-constraint-not-permitted") !== -1);
+  // The anchor's restriction is generation 0, so an intermediate's own permittedSubtrees intersects
+  // with it (sec. 6.1.4(g)(1)) and a leaf must satisfy both.
+  var ncCaOwn = await mkCert({
+    subject: "NcCa", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i",
+    extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt([gnDns("foo.example.com")], null)],
+  });
+  var ncLeafBoth = await mkCert({ subject: "NcBoth", issuer: "NcCa", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("a.foo.example.com")])] });
+  var ncLeafOverlayOnly = await mkCert({ subject: "NcOverlay", issuer: "NcCa", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("b.example.com")])] });
+  var ncAnchorCom = ncAnchor({ permitted: [{ tag: 2, base: "example.com" }] });
+  var ncRes6a = await run([ncCaOwn, ncLeafBoth], { time: T2027, trustAnchors: ncAnchorCom });
+  check("NC6a a leaf inside both the anchor subtree and the issuer's own constraint validates", ncRes6a.valid === true);
+  var ncRes6b = await run([ncCaOwn, ncLeafOverlayOnly], { time: T2027, trustAnchors: ncAnchorCom });
+  check("NC6b a leaf inside the anchor subtree but outside the issuer's own constraint is refused",
+    ncRes6b.valid === false && failCodes(ncRes6b).indexOf("path/name-constraint-not-permitted") !== -1);
+  // An rfc822Name restriction binds the mailbox forms (sec. 4.2.1.10).
+  var ncMailIn = await mkCert({ subject: "NcMailIn", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [sanExt([gnEmail("user@example.com")])] });
+  var ncMailOut = await mkCert({ subject: "NcMailOut", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [sanExt([gnEmail("user@other.com")])] });
+  var ncAnchorMail = ncAnchor({ permitted: [{ tag: 1, base: "example.com" }] });
+  check("NC5a an anchor rfc822Name subtree accepts a mailbox inside it",
+    (await run([ncMailIn], { time: T2027, trustAnchors: ncAnchorMail })).valid === true);
+  var ncRes5b = await run([ncMailOut], { time: T2027, trustAnchors: ncAnchorMail });
+  check("NC5b an anchor rfc822Name subtree refuses a mailbox outside it",
+    ncRes5b.valid === false && failCodes(ncRes5b).indexOf("path/name-constraint-not-permitted") !== -1);
+  // A parsed certificate is not a place to hang trust metadata: the certificate branch cannot carry
+  // it, so accepting it there would drop the namespace and validate everything.
+  check("NC11 a parsed root certificate carrying nameConstraints is refused, not silently unconstrained",
+    (await codeOf((async function () {
+      var c = pki.schema.x509.parse(await mkCert({ subject: "Root", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN])] }));
+      Object.defineProperty(c, "nameConstraints", { value: { permitted: [{ tag: 2, base: "example.com" }] }, enumerable: true, configurable: true, writable: true });
+      return run([ncLeafOut], { time: T2027, trustAnchors: c });
+    })())) === "path/bad-input");
+  // The subtree the validation enforces is the one captured at entry. A caller clearing its own
+  // constraint object while the path is still verifying signatures must not widen the namespace.
+  var ncMutRdns = [[{ type: "2.5.4.6", value: "FR" }]];
+  var ncMutSubtree = { tag: 4, base: { rdns: ncMutRdns } };
+  var ncMutPending = run([ncLeafIn], { time: T2027, trustAnchors: ncAnchor({ permitted: [ncMutSubtree] }) });
+  ncMutRdns.length = 0;
+  ncMutSubtree.base.rdns = [];
+  ncMutSubtree.base = { rdns: [] };
+  check("NC12 mutating a directoryName subtree after the call does not change the verdict",
+    (await ncMutPending).valid === false);
+  // The same rule for the caller's own seeds, which reach the state machine by the same route.
+  var ncOptRdns = [[{ type: "2.5.4.6", value: "FR" }]];
+  var ncOptSubtree = { tag: 4, base: { rdns: ncOptRdns } };
+  var ncOptPending = run([ncLeafIn], { time: T2027, trustAnchors: anchor, initialPermittedSubtrees: [ncOptSubtree] });
+  ncOptRdns.length = 0;
+  ncOptSubtree.base = { rdns: [] };
+  check("NC13 mutating an opts.initialPermittedSubtrees directoryName after the call does not change the verdict",
+    (await ncOptPending).valid === false);
+  // An iPAddress base is a byte buffer, and with several anchors the later ones are only reached
+  // after an await, so the bytes must be snapshotted where the anchor is captured.
+  var ncIpLeaf = await mkCert({ subject: "NcIp", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [sanExt([gnIp([198, 51, 100, 7])])] });
+  var ncIpBase = Buffer.from([10, 0, 0, 0, 255, 0, 0, 0]);
+  var ncIpPending = run([ncIpLeaf], { time: T2027, trustAnchors: [
+    ncAnchor({ permitted: [{ tag: 7, base: Buffer.from([192, 0, 2, 0, 255, 255, 255, 0]) }] }),
+    ncAnchor({ permitted: [{ tag: 7, base: ncIpBase }] }),
+  ] });
+  ncIpBase.fill(0);
+  check("NC14 mutating an iPAddress subtree base after the call does not widen the namespace",
+    (await ncIpPending).valid === false);
+  // With several anchors each attempt is a separate pass, so the caller's own seed list must be
+  // read once, before the first of them, not again after each await.
+  var ncSeedBase = Buffer.from([10, 0, 0, 0, 255, 0, 0, 0]);
+  var ncSeedList = [{ tag: 7, base: ncSeedBase }];
+  var ncSeedPending = run([ncIpLeaf], {
+    time: T2027,
+    trustAnchors: [ncAnchor(undefined), ncAnchor(undefined)],
+    initialPermittedSubtrees: ncSeedList,
+  });
+  ncSeedBase.fill(0);
+  ncSeedList[0] = { tag: 7, base: Buffer.alloc(8) };
+  ncSeedList.length = 0;
+  check("NC15 mutating opts.initialPermittedSubtrees between anchor attempts does not widen the namespace",
+    (await ncSeedPending).valid === false);
+  // The field names are permitted / excluded. The decoder's own spelling names the same thing, so
+  // accepting it silently would leave the anchor unconstrained rather than restricted.
+  check("NC16 an anchor naming its subtree lists with the decoder's field names is refused",
+    (await codeOf(run([ncLeafOut], { time: T2027, trustAnchors: ncAnchor({ permittedSubtrees: [{ tag: 2, base: "example.com" }] }) }))) === "path/bad-input");
+  // A malformed anchor is refused wherever it sits in the list: an earlier anchor succeeding must
+  // not decide whether a later one was ever checked.
+  check("NC17 a malformed anchor subtree is refused from either position in the anchor list",
+    (await codeOf(run([ncLeafIn], { time: T2027, trustAnchors: [ncAnchor(undefined), ncAnchor({ permitted: [{ tag: 2, base: 42 }] })] }))) === "path/bad-input" &&
+    (await codeOf(run([ncLeafIn], { time: T2027, trustAnchors: [ncAnchor({ permitted: [{ tag: 2, base: 42 }] }), ncAnchor(undefined)] }))) === "path/bad-input");
+  // An accessor rdns can answer one shape to a test and another to the copy, handing the validation
+  // an empty DN that matches every name. It is read once, from its own data property.
+  check("NC18 an accessor rdns on a directoryName subtree base is refused, not read twice",
+    (await codeOf((function () {
+      var reads = 0;
+      var base = {};
+      Object.defineProperty(base, "rdns", { get: function () { return ++reads === 1 ? [[{ type: "2.5.4.6", value: "FR" }]] : []; }, configurable: true });
+      return run([ncLeafIn], { time: T2027, trustAnchors: ncAnchor({ permitted: [{ tag: 4, base: base }] }) });
+    })())) === "path/bad-input");
+  // The anchor's other fields may be accessors, and those getters run while the anchor is being
+  // read. The namespace is copied when it is captured, so a getter cannot empty it afterwards.
+  check("NC19 a getter on another anchor field cannot empty the namespace after it is captured",
+    (function () {
+      var nc = { permitted: [{ tag: 2, base: "example.com" }] };
+      var a = { nameConstraints: nc, name: anchor.name, algorithm: anchor.algorithm };
+      Object.defineProperty(a, "publicKey", { get: function () { nc.permitted = []; return anchor.publicKey; }, enumerable: true, configurable: true });
+      var out = pki.path.anchorFromCert(a);
+      return out.nameConstraints.permitted.length === 1 && out.nameConstraints.permitted[0].base === "example.com";
+    })());
+  // Every field of the anchor, not just the one that happened to be reported: a getter on any of
+  // them runs while the anchor is read, and none may empty the namespace already captured.
+  ["publicKey", "name", "algorithm", "subjectDer", "label", "mozillaCaPolicy"].forEach(function (field, i) {
+    check("NC20." + String.fromCharCode(97 + i) + " a getter on anchor." + field + " cannot widen the namespace",
+      (function () {
+        var nc = { permitted: [{ tag: 2, base: "example.com" }] };
+        var a = { nameConstraints: nc };
+        ["name", "publicKey", "algorithm"].forEach(function (k) { if (k !== field) a[k] = anchor[k]; });
+        Object.defineProperty(a, field, {
+          get: function () { nc.permitted = []; return anchor[field]; },
+          enumerable: true, configurable: true,
+        });
+        try {
+          var out = pki.path.anchorFromCert(a);
+          return out.nameConstraints.permitted.length === 1 && out.nameConstraints.permitted[0].base === "example.com";
+        } catch (e) { return (e.code || "") === "path/bad-input"; }
+      })());
+  });
+  // An absent namespace may be spelled null, the way optional metadata serializes.
+  var ncShapeCases = [["a string", "example.com"], ["a number", 7], ["an array", [{ tag: 2, base: "example.com" }]]];
+  for (var nsi = 0; nsi < ncShapeCases.length; nsi++) {
+    check("NC23." + String.fromCharCode(97 + nsi) + " an anchor nameConstraints that is " + ncShapeCases[nsi][0] + " is refused",
+      (await codeOf(run([ncLeafIn], { time: T2027, trustAnchors: ncAnchor(ncShapeCases[nsi][1]) }))) === "path/bad-input");
+  }
+  // A Proxy array answers length and index reads itself, so it can hold a restrictive subtree while
+  // reporting none and leave the anchor unconstrained.
+  check("NC24 an anchor subtree list that is a Proxy is refused",
+    (await codeOf(run([ncLeafOut], { time: T2027, trustAnchors: ncAnchor({
+      permitted: new Proxy([{ tag: 2, base: "example.com" }], { get: function (t, k) { return k === "length" ? 0 : t[k]; } }),
+    }) }))) === "path/bad-input");
+  check("NC25 an anchor subtree entry supplied through an index accessor is refused",
+    (await codeOf((function () {
+      var list = [];
+      Object.defineProperty(list, "0", { get: function () { return { tag: 2, base: "example.com" }; }, enumerable: true, configurable: true });
+      list.length = 1;
+      return run([ncLeafOut], { time: T2027, trustAnchors: ncAnchor({ permitted: list }) });
+    })())) === "path/bad-input");
+  check("NC26 a caller's own subtree seed list that is a Proxy is refused for the same reason",
+    (await codeOf(run([ncLeafOut], { time: T2027, trustAnchors: anchor,
+      initialPermittedSubtrees: new Proxy([{ tag: 2, base: "example.com" }], { get: function (t, k) { return k === "length" ? 0 : t[k]; } }),
+    }))) === "path/bad-input");
+  check("NC27 a Proxy-backed directoryName rdns is refused, at the outer level and nested",
+    (await codeOf(run([ncLeafOut], { time: T2027, trustAnchors: ncAnchor({
+      permitted: [{ tag: 4, base: { rdns: new Proxy([[{ type: "2.5.4.6", value: "FR" }]], { get: function (t, k) { return k === "length" ? 0 : t[k]; } }) } }],
+    }) }))) === "path/bad-input" &&
+    (await codeOf(run([ncLeafOut], { time: T2027, trustAnchors: ncAnchor({
+      permitted: [{ tag: 4, base: { rdns: [new Proxy([{ type: "2.5.4.6", value: "FR" }], { get: function (t, k) { return k === "length" ? 0 : t[k]; } })] } }],
+    }) }))) === "path/bad-input");
+  // Every level of the namespace, crossed with the shapes a hostile caller object can take. Each
+  // must either keep the restriction or refuse; normalizing to an empty namespace is the defect,
+  // because an empty constraint matches every name.
+  var ncAtv = { type: "2.5.4.6", value: "FR" };
+  function ncLying(t) { return new Proxy(t, { get: function (o, k) { return k === "length" ? 0 : o[k]; } }); }
+  function ncAccessorArray(v) { var a = []; Object.defineProperty(a, "0", { get: function () { return v; }, enumerable: true, configurable: true }); a.length = 1; return a; }
+  var ncHostile = [
+    ["the permitted list is a Proxy", { permitted: ncLying([{ tag: 2, base: "example.com" }]) }],
+    ["the excluded list is a Proxy", { excluded: ncLying([{ tag: 2, base: "bad.example" }]) }],
+    ["a list entry is an accessor", { permitted: ncAccessorArray({ tag: 2, base: "example.com" }) }],
+    ["a subtree entry is a Proxy", { permitted: [new Proxy({ tag: 2, base: "example.com" }, {})] }],
+    ["rdns is a Proxy", { permitted: [{ tag: 4, base: { rdns: ncLying([[ncAtv]]) } }] }],
+    ["an RDN inside rdns is a Proxy", { permitted: [{ tag: 4, base: { rdns: [ncLying([ncAtv])] } }] }],
+    ["an ATV is a Proxy", { permitted: [{ tag: 4, base: { rdns: [[new Proxy(ncAtv, {})]] } }] }],
+    ["nameConstraints itself is a Proxy", new Proxy({ permitted: [{ tag: 2, base: "example.com" }] }, {})],
+    // A Proxy lies through its traps, not only through length: a getOwnPropertyDescriptor trap can
+    // report an empty DN for a base that holds a restrictive one.
+    ["a directoryName base whose descriptor trap lies", { permitted: [{ tag: 4, base: new Proxy({ rdns: [[ncAtv]] }, {
+      getOwnPropertyDescriptor: function () { return { value: [], writable: true, enumerable: true, configurable: true }; },
+    }) }] }],
+    ["a directoryName base is a transparent Proxy", { permitted: [{ tag: 4, base: new Proxy({ rdns: [[ncAtv]] }, {}) }] }],
+  ];
+  for (var nhi = 0; nhi < ncHostile.length; nhi++) {
+    check("NC28." + String.fromCharCode(97 + nhi) + " " + ncHostile[nhi][0] + ": refused, or the namespace survives",
+      (function (nc) {
+        var a = ncAnchor(nc);
+        try {
+          var out = pki.path.anchorFromCert(a);
+          var got = out.nameConstraints || {};
+          return ((got.permitted ? got.permitted.length : 0) + (got.excluded ? got.excluded.length : 0)) > 0;
+        } catch (e) { return (e.code || "") === "path/bad-input"; }
+      })(ncHostile[nhi][1]));
+  }
+  // An attribute's own fields are read while the namespace is copied, so a getter there runs caller
+  // code mid-copy and can erase a part not yet reached.
+  check("NC29 an accessor on a directoryName attribute is refused before any of it is copied",
+    (function () {
+      var nc = { permitted: [], excluded: [{ tag: 2, base: "bad.example" }] };
+      var atv = { value: "Leaf" };
+      Object.defineProperty(atv, "type", { get: function () { nc.excluded = []; return "2.5.4.3"; }, enumerable: true, configurable: true });
+      nc.permitted = [{ tag: 4, base: { rdns: [[atv]] } }];
+      try { pki.path.anchorFromCert(ncAnchor(nc)); return false; }
+      catch (e) { return (e.code || "") === "path/bad-input"; }
+    })());
+  // A directoryName is an RDN sequence of attribute arrays, and nothing deeper. A self-referencing
+  // array must be a typed refusal, not an exhausted stack.
+  check("NC30 a cyclic rdns array is a typed refusal, not a stack overflow",
+    (function () {
+      var cyc = []; cyc.push(cyc);
+      try { pki.path.anchorFromCert(ncAnchor({ permitted: [{ tag: 4, base: { rdns: cyc } }] })); return false; }
+      catch (e) { return (e.code || "") === "path/bad-input"; }
+    })());
+  // An inherited getter runs just as an own one does. The copy is built from descriptors, so no
+  // caller code runs at all while the namespace is read.
+  check("NC31 an inherited accessor on a directoryName attribute cannot erase another restriction",
+    (function () {
+      var nc = { excluded: [{ tag: 2, base: "bad.example" }] };
+      var proto = {};
+      Object.defineProperty(proto, "type", { get: function () { nc.excluded = []; return "2.5.4.3"; }, enumerable: true, configurable: true });
+      var atv = Object.create(proto);
+      atv.value = "Leaf";
+      nc.permitted = [{ tag: 4, base: { rdns: [[atv]] } }];
+      try {
+        var out = pki.path.anchorFromCert(ncAnchor(nc));
+        return out.nameConstraints.excluded.length === 1;
+      } catch (e) { return (e.code || "") === "path/bad-input"; }
+    })());
+  // Dropping an entry the array does not own would compact a restrictive name into an empty one,
+  // and an empty directoryName constraint matches every subject.
+  check("NC32 an rdns entry supplied by the prototype rather than the array is refused",
+    (function () {
+      var arr = Object.create({ 0: [{ type: "2.5.4.6", value: "FR" }] });
+      arr.length = 1;
+      Object.setPrototypeOf(arr, Object.assign(Object.create(Array.prototype), { 0: [{ type: "2.5.4.6", value: "FR" }] }));
+      var viaProto = [];
+      viaProto.length = 1;
+      try { pki.path.anchorFromCert(ncAnchor({ permitted: [{ tag: 4, base: { rdns: viaProto } }] })); return false; }
+      catch (e) { return (e.code || "") === "path/bad-input"; }
+    })());
+  // Malformed contents are a configuration fault, refused wherever the anchor sits, not a name
+  // mismatch that an earlier successful anchor could hide.
+  [["an RDN that is not an array", { rdns: [42] }],
+    ["an attribute that is not an object", { rdns: [[42]] }],
+    ["an attribute with no value", { rdns: [[{ type: "2.5.4.6" }]] }],
+  ].forEach(function (t, i) {
+    check("NC33." + String.fromCharCode(97 + i) + " a directoryName carrying " + t[0] + " is refused",
+      (function () {
+        try { pki.path.anchorFromCert(ncAnchor({ permitted: [{ tag: 4, base: t[1] }] })); return false; }
+        catch (e) { return (e.code || "") === "path/bad-input"; }
+      })());
+  });
+  // The anchor is normalized after the caller's own seeds are captured, so a getter on an anchor
+  // field cannot clear the seed list before it is read.
+  var ncSeedsRace = [{ tag: 2, base: "nowhere.example" }];
+  var ncRaceAnchor = { name: anchor.name, algorithm: anchor.algorithm };
+  Object.defineProperty(ncRaceAnchor, "publicKey", {
+    get: function () { ncSeedsRace.length = 0; return anchor.publicKey; }, enumerable: true, configurable: true,
+  });
+  var ncRaceVerdict = await run([ncLeafIn], { time: T2027, trustAnchors: ncRaceAnchor, initialPermittedSubtrees: ncSeedsRace })
+    .then(function (r) { return r.valid === false; }, function (e) { return (e.code || "") === "path/bad-input"; });
+  check("NC34 an anchor getter cannot clear the caller's own subtree seeds first", ncRaceVerdict);
+  // The caller's own seed entries are held to the rule the anchor's already were: tag and base are
+  // read once, from own data properties, so an accessor cannot answer a check and a copy differently.
+  for (var nsj = 0; nsj < 3; nsj++) {
+    var mk = [
+      function () { var s = { tag: 7 }; Object.defineProperty(s, "base", { get: function () { return Buffer.alloc(8); }, enumerable: true, configurable: true }); return s; },
+      function () { var s = { base: "example.com" }; Object.defineProperty(s, "tag", { get: function () { return 2; }, enumerable: true, configurable: true }); return s; },
+      function () { return new Proxy({ tag: 2, base: "example.com" }, {}); },
+    ][nsj];
+    check("NC36." + String.fromCharCode(97 + nsj) + " a caller seed entry that is an accessor or Proxy is refused",
+      (await codeOf(run([ncLeafIn], { time: T2027, trustAnchors: anchor, initialPermittedSubtrees: [mk()] }))) === "path/bad-input");
+  }
+  // A built-in exotic carries no permitted or excluded entries, so accepting one would normalize a
+  // configuration meant to restrict the anchor into no restriction at all.
+  [["a Map", new Map()], ["a Date", new Date()], ["a Set", new Set()]].forEach(function (t, i) {
+    check("NC37." + String.fromCharCode(97 + i) + " an anchor nameConstraints that is " + t[0] + " is refused",
+      (function () {
+        try { pki.path.anchorFromCert(ncAnchor(t[1])); return false; }
+        catch (e) { return (e.code || "") === "path/bad-input"; }
+      })());
+  });
+  // Anchors are normalized one at a time. An earlier anchor's getter must not be able to clear a
+  // later anchor's namespace before that anchor is reached.
+  var ncCrossVerdict = await (function () {
+    var laterNc = { permitted: [{ tag: 2, base: "nowhere.example" }] };
+    // The first anchor rejects this leaf, so the second is reached; its getter fires meanwhile.
+    var first = { name: anchor.name, algorithm: anchor.algorithm, nameConstraints: { permitted: [{ tag: 2, base: "also-nowhere.example" }] } };
+    Object.defineProperty(first, "publicKey", { get: function () { laterNc.permitted = []; return anchor.publicKey; }, enumerable: true, configurable: true });
+    var second = ncAnchor(laterNc);
+    return run([ncLeafIn], { time: T2027, trustAnchors: [first, second] })
+      .then(function (r) { return r.valid === false; }, function (e) { return (e.code || "") === "path/bad-input"; });
+  })();
+  check("NC38 one anchor's getter cannot clear a later anchor's namespace", ncCrossVerdict);
+  // The anchor list itself is walked twice, to capture namespaces and then to normalize, so an
+  // accessor index could answer differently each time.
+  check("NC39 an anchor list entry supplied through an accessor is refused",
+    (await codeOf((function () {
+      var list = [];
+      Object.defineProperty(list, "0", { get: function () { return ncAnchor(undefined); }, enumerable: true, configurable: true });
+      list.length = 2;
+      list[1] = ncAnchor({ permitted: [{ tag: 2, base: "nowhere.example" }] });
+      return run([ncLeafIn], { time: T2027, trustAnchors: list });
+    })())) === "path/bad-input");
+  check("NC40 a one-entry anchor list is held to the same rule as a longer one",
+    (await codeOf(run([ncLeafOut], { time: T2027,
+      trustAnchors: new Proxy([ncAnchor({ permitted: [{ tag: 2, base: "nowhere.example" }] })], {
+        get: function (t, k) { return k === "0" ? ncAnchor(undefined) : t[k]; },
+      }) }))) === "path/bad-input");
+  check("NC41 a subtree base inheriting from a Proxy is refused before its prototype is probed",
+    (function () {
+      var nc = { excluded: [{ tag: 2, base: "evil.net" }] };
+      var hostile = new Proxy({}, { has: function () { nc.excluded = []; return false; } });
+      var b64 = Buffer.from([10, 0, 0, 0, 255, 0, 0, 0]);
+      Object.setPrototypeOf(b64, hostile);
+      nc.permitted = [{ tag: 7, base: b64 }];
+      try { pki.path.anchorFromCert(ncAnchor(nc)); return false; }
+      catch (e) { return (e.code || "") === "path/bad-input"; }
+    })());
+  check("NC21 an anchor whose nameConstraints is null is unconstrained, not refused",
+    (await run([ncLeafOut], { time: T2027, trustAnchors: ncAnchor(null) })).valid === true);
+  // The seed option is read once: an accessor answering differently to the presence test and to the
+  // validation would let an empty list overwrite the restriction the caller supplied.
+  // A subtree list supplied through an accessor never reaches the state machine at all: the options
+  // door refuses an accessor field, so only the mutable-value case (NC15) can reach it.
+  check("NC22 a subtree list supplied through an accessor is refused at the options door",
+    (await codeOf((function () {
+      var o = { time: T2027, trustAnchors: [ncAnchor(undefined), ncAnchor(undefined)] };
+      Object.defineProperty(o, "initialPermittedSubtrees", {
+        get: function () { return [{ tag: 2, base: "nowhere.example" }]; },
+        enumerable: true, configurable: true,
+      });
+      return run([ncLeafIn], o);
+    })())) === "path/bad-input");
+  check("NC10a a mis-shaped anchor subtree is refused at the door, never silently dropped",
+    (await codeOf(run([ncLeafIn], { time: T2027, trustAnchors: ncAnchor({ permitted: [{ tag: 2, base: 42 }] }) }))) === "path/bad-input");
+  check("NC10b an anchor carrying the decoder's subtree shape rather than { tag, base } is refused",
+    (await codeOf(run([ncLeafIn], { time: T2027, trustAnchors: ncAnchor({ permitted: [{ base: { tagNumber: 2, value: "example.com" } }] }) }))) === "path/bad-input");
+  check("NC10c an accessor nameConstraints on the anchor is refused like purposes and distrustAfter",
+    (await codeOf((function () {
+      var a = ncAnchor(undefined);
+      Object.defineProperty(a, "nameConstraints", { get: function () { return { permitted: [] }; }, configurable: true });
+      return run([ncLeafIn], { time: T2027, trustAnchors: a });
+    })())) === "path/bad-input");
+  check("NC10d an inherited nameConstraints on the anchor is refused",
+    (await codeOf((function () {
+      var a = Object.create({ nameConstraints: { permitted: [{ tag: 2, base: "example.com" }] } });
+      Object.keys(anchor).forEach(function (k) { a[k] = anchor[k]; });
+      return run([ncLeafIn], { time: T2027, trustAnchors: a });
+    })())) === "path/bad-input");
+
   // ---- maxPolicyNodes is entry-point-validated ------------------------------
   check("maxPolicyNodes 0 throws path/bad-input",
     (await codeOf(run([leafInside], { time: T2027, trustAnchors: anchor, maxPolicyNodes: 0 }))) === "path/bad-input");
