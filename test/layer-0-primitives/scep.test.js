@@ -560,7 +560,9 @@ async function testGetCACert() {
   var okFp = await pki.scep.getCACert("http://ca.example/scep", { transport: fakeTransport({ status: 200, headers: { "content-type": "application/x-x509-ca-cert" }, body: F.caCert }), expectedFingerprint: fp });
   check("getCACert: matching fingerprint accepted", Buffer.compare(okFp.caCertificate, F.caCert) === 0);
   check("getCACert: an unavailable fingerprintAlgorithm is a typed bad-input", (await codeOf(pki.scep.getCACert("http://ca.example/scep", { transport: fakeTransport({ status: 200, headers: { "content-type": "application/x-x509-ca-cert" }, body: F.caCert }), expectedFingerprint: fp, fingerprintAlgorithm: "not-a-real-hash" }))) === "scep/bad-input");
-  var mismatch = "00" + fp.slice(2);
+  // Flip the first digit rather than overwriting it: a fixed prefix equals the real fingerprint
+  // whenever it happens to start with those digits, and the vector then asserts nothing.
+  var mismatch = (fp[0] === "0" ? "1" : "0") + fp.slice(1);
   check("getCACert: fingerprint mismatch refused", (await codeOf(pki.scep.getCACert("http://ca.example/scep", { transport: fakeTransport({ status: 200, headers: { "content-type": "application/x-x509-ca-cert" }, body: F.caCert }), expectedFingerprint: mismatch }))) === "scep/fingerprint-mismatch");
   var rc = await pki.scep.getCACert("http://ca.example/scep", { transport: fakeTransport({ status: 200, headers: { "content-type": "application/x-x509-ca-ra-cert" }, body: certsOnly([F.caCert, F.issuedCert]) }) });
   check("getCACert: unpinned chain returns all certificates", rc.certificates.length === 2);
@@ -575,7 +577,8 @@ async function testGetCACert() {
   // in flight cannot repoint the pin away from the value it supplied at the call.
   var fpOrig = nodeCrypto.createHash("sha256").update(F.caCert).digest("hex");
   var gcOpts = { expectedFingerprint: fpOrig };
-  gcOpts.transport = fakeTransport(function () { gcOpts.expectedFingerprint = "00" + fpOrig.slice(2); return Promise.resolve({ status: 200, headers: { "content-type": "application/x-x509-ca-cert" }, body: F.caCert }); });
+  var fpSwapped = (fpOrig[0] === "0" ? "1" : "0") + fpOrig.slice(1);
+  gcOpts.transport = fakeTransport(function () { gcOpts.expectedFingerprint = fpSwapped; return Promise.resolve({ status: 200, headers: { "content-type": "application/x-x509-ca-cert" }, body: F.caCert }); });
   var gcOut = await pki.scep.getCACert("http://ca.example/scep", gcOpts);
   check("getCACert: a mid-GET fingerprint swap cannot repoint the pin", Buffer.compare(gcOut.caCertificate, F.caCert) === 0);
 }

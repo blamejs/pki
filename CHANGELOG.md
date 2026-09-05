@@ -4,6 +4,21 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.38 — 2026-09-05
+
+A trust anchor can name the namespace its root is trusted for, and pki.path.validate enforces it as the initial name-constraint state.
+
+### Added
+
+- A trust anchor passed to pki.path.validate or pki.path.build may carry nameConstraints: { permitted, excluded }, each an array of { tag, base } subtrees. They seed the RFC 5280 section 6.1.1(h)(i) initial permitted and excluded state, so a root a program trusts only for a namespace enforces that namespace even though its certificate states no nameConstraints extension. The anchor's subtrees intersect with an intermediate's own extension and with opts.initialPermittedSubtrees; excluded subtrees are a union.
+- The pki.path.validate verdict reports anchorConstraints.nameConstraintsApplied, so a stored verdict distinguishes an anchor that named a namespace from one that did not, alongside the distrustAfterApplied and purposeTrustApplied it already carries.
+
+### Fixed
+
+- pki.path.validate and pki.path.build copy a directoryName subtree base and snapshot an iPAddress one before validating, and read opts.initialPermittedSubtrees and opts.initialExcludedSubtrees once rather than again for each trust anchor tried. A caller mutating its own subtree list, entry or base while the path is still verifying signatures no longer changes the namespace the validation enforces; the subtrees that bind are the ones read at entry.
+- A parsed certificate passed as a trust anchor is refused if it carries nameConstraints, the way one carrying purposes or distrustAfter already is. A certificate anchor cannot hold that metadata, so accepting it would have dropped the namespace and validated a leaf the anchor was meant to exclude.
+- An anchor whose nameConstraints names a field other than permitted or excluded is refused rather than read as unconstrained, and its subtrees are checked while the anchor is normalized, so a malformed one is refused wherever that anchor sits among several rather than only once it is reached.
+
 ## v0.6.37 — 2026-09-05
 
 A natively signed C509 certificate is refused when it writes an extension in the generic OID form that the registry can carry as an identifier.

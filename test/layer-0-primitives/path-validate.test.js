@@ -3222,6 +3222,140 @@ async function testInitialInputsAndTargetGates() {
   check("mis-shaped permitted seed throws path/bad-input",
     (await codeOf(run([leafInside], { time: T2027, trustAnchors: anchor, initialPermittedSubtrees: [{ tag: "2", base: "good.example" }] }))) === "path/bad-input");
 
+  // ---- a trust anchor carrying its own name constraints (RFC 5280 sec. 6.1.1(h)(i)) ----------
+  // A root program can restrict a root to a namespace without that restriction appearing in any
+  // nameConstraints extension the root certificate carries. The anchor states it, and it seeds the
+  // same section 6.1.4 permitted/excluded state a certificate's own extension feeds, so the two
+  // intersect: a leaf must satisfy both.
+  function ncAnchor(nc) {
+    var a = {};
+    Object.keys(anchor).forEach(function (k) { a[k] = anchor[k]; });
+    a.nameConstraints = nc;
+    return a;
+  }
+  var ncLeafIn = await mkCert({ subject: "NcIn", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("host.example.com")])] });
+  var ncLeafOut = await mkCert({ subject: "NcOut", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("evil.net")])] });
+
+  var ncRes1 = await run([ncLeafIn], { time: T2027, trustAnchors: ncAnchor({ permitted: [{ tag: 2, base: "example.com" }] }) });
+  check("NC1 an anchor permitted subtree accepts a leaf inside it",
+    ncRes1.valid === true && ncRes1.anchorConstraints.nameConstraintsApplied === true);
+  var ncRes2 = await run([ncLeafOut], { time: T2027, trustAnchors: ncAnchor({ permitted: [{ tag: 2, base: "example.com" }] }) });
+  check("NC2 an anchor permitted subtree refuses a leaf outside it",
+    ncRes2.valid === false && failCodes(ncRes2).indexOf("path/name-constraint-not-permitted") !== -1);
+  var ncRes3 = await run([ncLeafIn], { time: T2027, trustAnchors: ncAnchor({ excluded: [{ tag: 2, base: "host.example.com" }] }) });
+  check("NC3 an anchor excluded subtree refuses a leaf inside the exclusion",
+    ncRes3.valid === false && failCodes(ncRes3).indexOf("path/name-constraint-excluded") !== -1);
+  var ncRes7 = await run([ncLeafOut], { time: T2027, trustAnchors: anchor });
+  check("NC7 an anchor carrying no constraints is unchanged and reports none applied",
+    ncRes7.valid === true && ncRes7.anchorConstraints.nameConstraintsApplied === false);
+  // The anchor's restriction and the caller's own initial seed are SEPARATE generations, so they
+  // intersect. A union would accept this leaf; the intersection must not.
+  var ncRes8 = await run([ncLeafIn], {
+    time: T2027, trustAnchors: ncAnchor({ permitted: [{ tag: 2, base: "example.com" }] }),
+    initialPermittedSubtrees: [{ tag: 2, base: "example.org" }],
+  });
+  check("NC8 an anchor subtree and opts.initialPermittedSubtrees intersect rather than union",
+    ncRes8.valid === false && failCodes(ncRes8).indexOf("path/name-constraint-not-permitted") !== -1);
+  // The anchor's restriction is generation 0, so an intermediate's own permittedSubtrees intersects
+  // with it (sec. 6.1.4(g)(1)) and a leaf must satisfy both.
+  var ncCaOwn = await mkCert({
+    subject: "NcCa", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i",
+    extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt([gnDns("foo.example.com")], null)],
+  });
+  var ncLeafBoth = await mkCert({ subject: "NcBoth", issuer: "NcCa", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("a.foo.example.com")])] });
+  var ncLeafOverlayOnly = await mkCert({ subject: "NcOverlay", issuer: "NcCa", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("b.example.com")])] });
+  var ncAnchorCom = ncAnchor({ permitted: [{ tag: 2, base: "example.com" }] });
+  var ncRes6a = await run([ncCaOwn, ncLeafBoth], { time: T2027, trustAnchors: ncAnchorCom });
+  check("NC6a a leaf inside both the anchor subtree and the issuer's own constraint validates", ncRes6a.valid === true);
+  var ncRes6b = await run([ncCaOwn, ncLeafOverlayOnly], { time: T2027, trustAnchors: ncAnchorCom });
+  check("NC6b a leaf inside the anchor subtree but outside the issuer's own constraint is refused",
+    ncRes6b.valid === false && failCodes(ncRes6b).indexOf("path/name-constraint-not-permitted") !== -1);
+  // An rfc822Name restriction binds the mailbox forms (sec. 4.2.1.10).
+  var ncMailIn = await mkCert({ subject: "NcMailIn", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [sanExt([gnEmail("user@example.com")])] });
+  var ncMailOut = await mkCert({ subject: "NcMailOut", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [sanExt([gnEmail("user@other.com")])] });
+  var ncAnchorMail = ncAnchor({ permitted: [{ tag: 1, base: "example.com" }] });
+  check("NC5a an anchor rfc822Name subtree accepts a mailbox inside it",
+    (await run([ncMailIn], { time: T2027, trustAnchors: ncAnchorMail })).valid === true);
+  var ncRes5b = await run([ncMailOut], { time: T2027, trustAnchors: ncAnchorMail });
+  check("NC5b an anchor rfc822Name subtree refuses a mailbox outside it",
+    ncRes5b.valid === false && failCodes(ncRes5b).indexOf("path/name-constraint-not-permitted") !== -1);
+  // A parsed certificate is not a place to hang trust metadata: the certificate branch cannot carry
+  // it, so accepting it there would drop the namespace and validate everything.
+  check("NC11 a parsed root certificate carrying nameConstraints is refused, not silently unconstrained",
+    (await codeOf((async function () {
+      var c = pki.schema.x509.parse(await mkCert({ subject: "Root", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN])] }));
+      Object.defineProperty(c, "nameConstraints", { value: { permitted: [{ tag: 2, base: "example.com" }] }, enumerable: true, configurable: true, writable: true });
+      return run([ncLeafOut], { time: T2027, trustAnchors: c });
+    })())) === "path/bad-input");
+  // The subtree the validation enforces is the one captured at entry. A caller clearing its own
+  // constraint object while the path is still verifying signatures must not widen the namespace.
+  var ncMutRdns = [[{ type: "2.5.4.6", value: "FR" }]];
+  var ncMutSubtree = { tag: 4, base: { rdns: ncMutRdns } };
+  var ncMutPending = run([ncLeafIn], { time: T2027, trustAnchors: ncAnchor({ permitted: [ncMutSubtree] }) });
+  ncMutRdns.length = 0;
+  ncMutSubtree.base.rdns = [];
+  ncMutSubtree.base = { rdns: [] };
+  check("NC12 mutating a directoryName subtree after the call does not change the verdict",
+    (await ncMutPending).valid === false);
+  // The same rule for the caller's own seeds, which reach the state machine by the same route.
+  var ncOptRdns = [[{ type: "2.5.4.6", value: "FR" }]];
+  var ncOptSubtree = { tag: 4, base: { rdns: ncOptRdns } };
+  var ncOptPending = run([ncLeafIn], { time: T2027, trustAnchors: anchor, initialPermittedSubtrees: [ncOptSubtree] });
+  ncOptRdns.length = 0;
+  ncOptSubtree.base = { rdns: [] };
+  check("NC13 mutating an opts.initialPermittedSubtrees directoryName after the call does not change the verdict",
+    (await ncOptPending).valid === false);
+  // An iPAddress base is a byte buffer, and with several anchors the later ones are only reached
+  // after an await, so the bytes must be snapshotted where the anchor is captured.
+  var ncIpLeaf = await mkCert({ subject: "NcIp", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [sanExt([gnIp([198, 51, 100, 7])])] });
+  var ncIpBase = Buffer.from([10, 0, 0, 0, 255, 0, 0, 0]);
+  var ncIpPending = run([ncIpLeaf], { time: T2027, trustAnchors: [
+    ncAnchor({ permitted: [{ tag: 7, base: Buffer.from([192, 0, 2, 0, 255, 255, 255, 0]) }] }),
+    ncAnchor({ permitted: [{ tag: 7, base: ncIpBase }] }),
+  ] });
+  ncIpBase.fill(0);
+  check("NC14 mutating an iPAddress subtree base after the call does not widen the namespace",
+    (await ncIpPending).valid === false);
+  // With several anchors each attempt is a separate pass, so the caller's own seed list must be
+  // read once, before the first of them, not again after each await.
+  var ncSeedBase = Buffer.from([10, 0, 0, 0, 255, 0, 0, 0]);
+  var ncSeedList = [{ tag: 7, base: ncSeedBase }];
+  var ncSeedPending = run([ncIpLeaf], {
+    time: T2027,
+    trustAnchors: [ncAnchor(undefined), ncAnchor(undefined)],
+    initialPermittedSubtrees: ncSeedList,
+  });
+  ncSeedBase.fill(0);
+  ncSeedList[0] = { tag: 7, base: Buffer.alloc(8) };
+  ncSeedList.length = 0;
+  check("NC15 mutating opts.initialPermittedSubtrees between anchor attempts does not widen the namespace",
+    (await ncSeedPending).valid === false);
+  // The field names are permitted / excluded. The decoder's own spelling names the same thing, so
+  // accepting it silently would leave the anchor unconstrained rather than restricted.
+  check("NC16 an anchor naming its subtree lists with the decoder's field names is refused",
+    (await codeOf(run([ncLeafOut], { time: T2027, trustAnchors: ncAnchor({ permittedSubtrees: [{ tag: 2, base: "example.com" }] }) }))) === "path/bad-input");
+  // A malformed anchor is refused wherever it sits in the list: an earlier anchor succeeding must
+  // not decide whether a later one was ever checked.
+  check("NC17 a malformed anchor subtree is refused from either position in the anchor list",
+    (await codeOf(run([ncLeafIn], { time: T2027, trustAnchors: [ncAnchor(undefined), ncAnchor({ permitted: [{ tag: 2, base: 42 }] })] }))) === "path/bad-input" &&
+    (await codeOf(run([ncLeafIn], { time: T2027, trustAnchors: [ncAnchor({ permitted: [{ tag: 2, base: 42 }] }), ncAnchor(undefined)] }))) === "path/bad-input");
+  check("NC10a a mis-shaped anchor subtree is refused at the door, never silently dropped",
+    (await codeOf(run([ncLeafIn], { time: T2027, trustAnchors: ncAnchor({ permitted: [{ tag: 2, base: 42 }] }) }))) === "path/bad-input");
+  check("NC10b an anchor carrying the decoder's subtree shape rather than { tag, base } is refused",
+    (await codeOf(run([ncLeafIn], { time: T2027, trustAnchors: ncAnchor({ permitted: [{ base: { tagNumber: 2, value: "example.com" } }] }) }))) === "path/bad-input");
+  check("NC10c an accessor nameConstraints on the anchor is refused like purposes and distrustAfter",
+    (await codeOf((function () {
+      var a = ncAnchor(undefined);
+      Object.defineProperty(a, "nameConstraints", { get: function () { return { permitted: [] }; }, configurable: true });
+      return run([ncLeafIn], { time: T2027, trustAnchors: a });
+    })())) === "path/bad-input");
+  check("NC10d an inherited nameConstraints on the anchor is refused",
+    (await codeOf((function () {
+      var a = Object.create({ nameConstraints: { permitted: [{ tag: 2, base: "example.com" }] } });
+      Object.keys(anchor).forEach(function (k) { a[k] = anchor[k]; });
+      return run([ncLeafIn], { time: T2027, trustAnchors: a });
+    })())) === "path/bad-input");
+
   // ---- maxPolicyNodes is entry-point-validated ------------------------------
   check("maxPolicyNodes 0 throws path/bad-input",
     (await codeOf(run([leafInside], { time: T2027, trustAnchors: anchor, maxPolicyNodes: 0 }))) === "path/bad-input");
