@@ -1127,22 +1127,52 @@ function testRegistryTablesCarryNoPrototype() {
   // side opens an object literal. A table nothing reads with a computed key is not the class, so
   // the check pairs the declaration with a computed read of that name anywhere in lib.
   //
-  // Reads are collected in ONE pass over the stripped sources, so a commented-out or quoted
-  // lookup does not count and the cost stays linear in the corpus rather than one rescan per
-  // declaration. An assignment TARGET is removed from the line before the read test, so
-  // `TABLE[a] = 1` is not a read while `TABLE[a] = TABLE[b]` still is.
+  // Reads are collected from the stripped sources, so a commented-out or quoted lookup does not
+  // count. An assignment TARGET is removed from the line first, so `TABLE[a] = 1` is not a read
+  // while `TABLE[a] = TABLE[b]` still is.
+  //
+  // A read counts for a declaration when it is in the SAME file, or in a file that requires the
+  // declaring module. Matching a bare name across unrelated files would let one module's table
+  // stand in for another's, so renaming the reader would take an unconverted table green.
+  //
+  // What this does not see: a table stored into another structure and looked up through that
+  // property instead of by its own name (`PROFILES[p] = { algs: MAC_ALGS }`, read as
+  // `profile.algs[alg]`). Recognizing that lexically means treating every reference as a read,
+  // which fires on the known-keys tables `guard.identifier.assertKnownKeys` consults by name.
+  // The residual is a table introduced that way and reached only that way; the sweep that
+  // converted the existing set is the floor under it.
   var bad = [];
   var files = _libFiles();
-  var stripped = files.map(function (f) { return _stripCommentsAndLiterals(fs.readFileSync(f, "utf8")); });
-  var readByKey = Object.create(null);
-  stripped.forEach(function (src) {
+  var raw = files.map(function (f) { return fs.readFileSync(f, "utf8"); });
+  var stripped = raw.map(_stripCommentsAndLiterals);
+  var basenames = files.map(function (f) { return path.basename(f, ".js"); });
+
+  function namesReadIn(src) {
+    var out = Object.create(null);
     src.split("\n").forEach(function (line) {
       var rest = line.replace(/([A-Za-z_$][A-Za-z0-9_$]*)\s*\[[^\][]*\]\s*=(?!=)/g, "");
-      var m;
-      var re = /([A-Za-z_$][A-Za-z0-9_$]*)\s*\[/g;
-      while ((m = re.exec(rest)) !== null) readByKey[m[1]] = true;
+      var m, re = /([A-Za-z_$][A-Za-z0-9_$]*)\s*\[/g;
+      while ((m = re.exec(rest)) !== null) out[m[1]] = true;
     });
+    return out;
+  }
+  var readsIn = stripped.map(namesReadIn);
+  // Read the require graph from the RAW source: the stripper blanks string literals, which would
+  // turn every `require("./module")` into `require("")` and leave the graph empty, so every
+  // cross-module read would go unseen and the gate would pass on a table only its importers read.
+  var requiresOf = raw.map(function (src) {
+    var seen = Object.create(null), m, re = /require\("\.\/([A-Za-z0-9_.-]+?)(?:\.js)?"\)/g;
+    while ((m = re.exec(src)) !== null) seen[m[1]] = true;
+    return seen;
   });
+  function readByKey(name, declFileIndex) {
+    if (readsIn[declFileIndex][name]) return true;
+    var declBase = basenames[declFileIndex];
+    for (var k = 0; k < files.length; k++) {
+      if (k !== declFileIndex && requiresOf[k][declBase] && readsIn[k][name]) return true;
+    }
+    return false;
+  }
   files.forEach(function (f, fi) {
     var rel = path.relative(REPO_ROOT, f);
     var lines = stripped[fi].split("\n");
@@ -1153,7 +1183,7 @@ function testRegistryTablesCarryNoPrototype() {
       var decl = /(?:^(?:var|let|const)|,)\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*\{/g;
       var d;
       while ((d = decl.exec(lines[i])) !== null) {
-        if (!readByKey[d[1]]) continue;
+        if (!readByKey(d[1], fi)) continue;
         bad.push({ file: rel, line: i + 1,
           content: "the module-level table `" + d[1] + "` is an object literal, so it inherits Object.prototype and a computed lookup answers with a member it never registered — build it on Object.create(null) (or the module's captured create)" });
       }
