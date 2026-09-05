@@ -862,6 +862,11 @@ async function testMalformedCountersignatureValue() {
   check("a real countersignature verifies and is reported",
     baseline.valid === true && (baseline.signers[0].countersignatures || []).length === 1 &&
     baseline.signers[0].countersignatures[0].ok === true);
+  // A countersignature that verified carries no code, so a reader can tell a failure row from a
+  // successful one by the field's presence.
+  check("a countersignature row that verified carries no code field",
+    Object.keys(baseline.signers[0].countersignatures[0]).join(",") ===
+      "ok,sid,cert,digestAlgorithm,unsignedAttrs,countersignatures");
 
   var notSignerInfos = [
     ["an INTEGER", b.integer(5n)],
