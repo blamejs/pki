@@ -3382,6 +3382,121 @@ async function testInitialInputsAndTargetGates() {
     check("NC23." + String.fromCharCode(97 + nsi) + " an anchor nameConstraints that is " + ncShapeCases[nsi][0] + " is refused",
       (await codeOf(run([ncLeafIn], { time: T2027, trustAnchors: ncAnchor(ncShapeCases[nsi][1]) }))) === "path/bad-input");
   }
+  // A Proxy array answers length and index reads itself, so it can hold a restrictive subtree while
+  // reporting none and leave the anchor unconstrained.
+  check("NC24 an anchor subtree list that is a Proxy is refused",
+    (await codeOf(run([ncLeafOut], { time: T2027, trustAnchors: ncAnchor({
+      permitted: new Proxy([{ tag: 2, base: "example.com" }], { get: function (t, k) { return k === "length" ? 0 : t[k]; } }),
+    }) }))) === "path/bad-input");
+  check("NC25 an anchor subtree entry supplied through an index accessor is refused",
+    (await codeOf((function () {
+      var list = [];
+      Object.defineProperty(list, "0", { get: function () { return { tag: 2, base: "example.com" }; }, enumerable: true, configurable: true });
+      list.length = 1;
+      return run([ncLeafOut], { time: T2027, trustAnchors: ncAnchor({ permitted: list }) });
+    })())) === "path/bad-input");
+  check("NC26 a caller's own subtree seed list that is a Proxy is refused for the same reason",
+    (await codeOf(run([ncLeafOut], { time: T2027, trustAnchors: anchor,
+      initialPermittedSubtrees: new Proxy([{ tag: 2, base: "example.com" }], { get: function (t, k) { return k === "length" ? 0 : t[k]; } }),
+    }))) === "path/bad-input");
+  check("NC27 a Proxy-backed directoryName rdns is refused, at the outer level and nested",
+    (await codeOf(run([ncLeafOut], { time: T2027, trustAnchors: ncAnchor({
+      permitted: [{ tag: 4, base: { rdns: new Proxy([[{ type: "2.5.4.6", value: "FR" }]], { get: function (t, k) { return k === "length" ? 0 : t[k]; } }) } }],
+    }) }))) === "path/bad-input" &&
+    (await codeOf(run([ncLeafOut], { time: T2027, trustAnchors: ncAnchor({
+      permitted: [{ tag: 4, base: { rdns: [new Proxy([{ type: "2.5.4.6", value: "FR" }], { get: function (t, k) { return k === "length" ? 0 : t[k]; } })] } }],
+    }) }))) === "path/bad-input");
+  // Every level of the namespace, crossed with the shapes a hostile caller object can take. Each
+  // must either keep the restriction or refuse; normalizing to an empty namespace is the defect,
+  // because an empty constraint matches every name.
+  var ncAtv = { type: "2.5.4.6", value: "FR" };
+  function ncLying(t) { return new Proxy(t, { get: function (o, k) { return k === "length" ? 0 : o[k]; } }); }
+  function ncAccessorArray(v) { var a = []; Object.defineProperty(a, "0", { get: function () { return v; }, enumerable: true, configurable: true }); a.length = 1; return a; }
+  var ncHostile = [
+    ["the permitted list is a Proxy", { permitted: ncLying([{ tag: 2, base: "example.com" }]) }],
+    ["the excluded list is a Proxy", { excluded: ncLying([{ tag: 2, base: "bad.example" }]) }],
+    ["a list entry is an accessor", { permitted: ncAccessorArray({ tag: 2, base: "example.com" }) }],
+    ["a subtree entry is a Proxy", { permitted: [new Proxy({ tag: 2, base: "example.com" }, {})] }],
+    ["rdns is a Proxy", { permitted: [{ tag: 4, base: { rdns: ncLying([[ncAtv]]) } }] }],
+    ["an RDN inside rdns is a Proxy", { permitted: [{ tag: 4, base: { rdns: [ncLying([ncAtv])] } }] }],
+    ["an ATV is a Proxy", { permitted: [{ tag: 4, base: { rdns: [[new Proxy(ncAtv, {})]] } }] }],
+    ["nameConstraints itself is a Proxy", new Proxy({ permitted: [{ tag: 2, base: "example.com" }] }, {})],
+    // A Proxy lies through its traps, not only through length: a getOwnPropertyDescriptor trap can
+    // report an empty DN for a base that holds a restrictive one.
+    ["a directoryName base whose descriptor trap lies", { permitted: [{ tag: 4, base: new Proxy({ rdns: [[ncAtv]] }, {
+      getOwnPropertyDescriptor: function () { return { value: [], writable: true, enumerable: true, configurable: true }; },
+    }) }] }],
+    ["a directoryName base is a transparent Proxy", { permitted: [{ tag: 4, base: new Proxy({ rdns: [[ncAtv]] }, {}) }] }],
+  ];
+  for (var nhi = 0; nhi < ncHostile.length; nhi++) {
+    check("NC28." + String.fromCharCode(97 + nhi) + " " + ncHostile[nhi][0] + ": refused, or the namespace survives",
+      (function (nc) {
+        var a = ncAnchor(nc);
+        try {
+          var out = pki.path.anchorFromCert(a);
+          var got = out.nameConstraints || {};
+          return ((got.permitted ? got.permitted.length : 0) + (got.excluded ? got.excluded.length : 0)) > 0;
+        } catch (e) { return (e.code || "") === "path/bad-input"; }
+      })(ncHostile[nhi][1]));
+  }
+  // An attribute's own fields are read while the namespace is copied, so a getter there runs caller
+  // code mid-copy and can erase a part not yet reached.
+  check("NC29 an accessor on a directoryName attribute is refused before any of it is copied",
+    (function () {
+      var nc = { permitted: [], excluded: [{ tag: 2, base: "bad.example" }] };
+      var atv = { value: "Leaf" };
+      Object.defineProperty(atv, "type", { get: function () { nc.excluded = []; return "2.5.4.3"; }, enumerable: true, configurable: true });
+      nc.permitted = [{ tag: 4, base: { rdns: [[atv]] } }];
+      try { pki.path.anchorFromCert(ncAnchor(nc)); return false; }
+      catch (e) { return (e.code || "") === "path/bad-input"; }
+    })());
+  // A directoryName is an RDN sequence of attribute arrays, and nothing deeper. A self-referencing
+  // array must be a typed refusal, not an exhausted stack.
+  check("NC30 a cyclic rdns array is a typed refusal, not a stack overflow",
+    (function () {
+      var cyc = []; cyc.push(cyc);
+      try { pki.path.anchorFromCert(ncAnchor({ permitted: [{ tag: 4, base: { rdns: cyc } }] })); return false; }
+      catch (e) { return (e.code || "") === "path/bad-input"; }
+    })());
+  // An inherited getter runs just as an own one does. The copy is built from descriptors, so no
+  // caller code runs at all while the namespace is read.
+  check("NC31 an inherited accessor on a directoryName attribute cannot erase another restriction",
+    (function () {
+      var nc = { excluded: [{ tag: 2, base: "bad.example" }] };
+      var proto = {};
+      Object.defineProperty(proto, "type", { get: function () { nc.excluded = []; return "2.5.4.3"; }, enumerable: true, configurable: true });
+      var atv = Object.create(proto);
+      atv.value = "Leaf";
+      nc.permitted = [{ tag: 4, base: { rdns: [[atv]] } }];
+      try {
+        var out = pki.path.anchorFromCert(ncAnchor(nc));
+        return out.nameConstraints.excluded.length === 1;
+      } catch (e) { return (e.code || "") === "path/bad-input"; }
+    })());
+  // Dropping an entry the array does not own would compact a restrictive name into an empty one,
+  // and an empty directoryName constraint matches every subject.
+  check("NC32 an rdns entry supplied by the prototype rather than the array is refused",
+    (function () {
+      var arr = Object.create({ 0: [{ type: "2.5.4.6", value: "FR" }] });
+      arr.length = 1;
+      Object.setPrototypeOf(arr, Object.assign(Object.create(Array.prototype), { 0: [{ type: "2.5.4.6", value: "FR" }] }));
+      var viaProto = [];
+      viaProto.length = 1;
+      try { pki.path.anchorFromCert(ncAnchor({ permitted: [{ tag: 4, base: { rdns: viaProto } }] })); return false; }
+      catch (e) { return (e.code || "") === "path/bad-input"; }
+    })());
+  // Malformed contents are a configuration fault, refused wherever the anchor sits, not a name
+  // mismatch that an earlier successful anchor could hide.
+  [["an RDN that is not an array", { rdns: [42] }],
+    ["an attribute that is not an object", { rdns: [[42]] }],
+    ["an attribute with no value", { rdns: [[{ type: "2.5.4.6" }]] }],
+  ].forEach(function (t, i) {
+    check("NC33." + String.fromCharCode(97 + i) + " a directoryName carrying " + t[0] + " is refused",
+      (function () {
+        try { pki.path.anchorFromCert(ncAnchor({ permitted: [{ tag: 4, base: t[1] }] })); return false; }
+        catch (e) { return (e.code || "") === "path/bad-input"; }
+      })());
+  });
   check("NC21 an anchor whose nameConstraints is null is unconstrained, not refused",
     (await run([ncLeafOut], { time: T2027, trustAnchors: ncAnchor(null) })).valid === true);
   // The seed option is read once: an accessor answering differently to the presence test and to the
