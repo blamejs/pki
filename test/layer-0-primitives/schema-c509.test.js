@@ -1659,6 +1659,54 @@ async function run() {
     check("344h." + String.fromCharCode(97 + i) + " a type-3 may still write " + g[0] + " generically",
       codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: g[1] })); }) !== "c509/non-specific-encoding");
   });
+  // Registry membership follows the OID, which is fixed, not the display name, which an application
+  // may re-register. Otherwise renaming a built-in OID would quietly lift the rule off it.
+  check("344r. renaming a built-in OID does not lift the rule off that extension",
+    (function () {
+      var hex = genericExt("2.5.29.14", b.octetString(Buffer.from("0102030405", "hex")));
+      pki.oid.register("2.5.29.14", "customSki");
+      try {
+        var refusedUnderAlias = codeSync(function () { return pki.schema.c509.parse(type2WithField(9, hex)); }) === "c509/non-specific-encoding";
+        var r = structured(V.A1.type2);
+        r.extensions = [{ oid: "2.5.29.14", critical: false, value: b.octetString(Buffer.from("0102", "hex")) }];
+        var compactUnderAlias = CB.decode(pki.schema.c509.encode(r)).children[9].children[0].majorType <= 1;
+        return refusedUnderAlias && compactUnderAlias;
+      } finally { pki.oid.register("2.5.29.14", "subjectKeyIdentifier"); }
+    })());
+  // The same rule for attribute types. An application renaming a built-in OID must not change what
+  // this toolkit emits for an unrelated certificate, nor stop it converting one at all.
+  [["a curve", "1.2.840.10045.3.1.7", "prime256v1"],
+    ["a public key algorithm", "1.2.840.10045.2.1", "ecPublicKey"],
+    ["a signature algorithm", "1.2.840.10045.4.3.2", "ecdsaWithSHA256"],
+  ].forEach(function (t, i) {
+    check("344u." + String.fromCharCode(97 + i) + " renaming " + t[0] + " OID does not stop a certificate converting to C509",
+      (function () {
+        pki.oid.register(t[1], "renamedForTest");
+        try { return codeSync(function () { return pki.schema.c509.encode(V.A1.der, { issuerCurve: "P-256" }); }) === "NO-THROW"; }
+        finally { pki.oid.register(t[1], t[2]); }
+      })());
+  });
+  check("344s. renaming commonName does not stop a certificate converting to C509",
+    (function () {
+      pki.oid.register("2.5.4.3", "myCn");
+      try { return codeSync(function () { return pki.schema.c509.encode(V.A1.der, { issuerCurve: "P-256" }); }) === "NO-THROW"; }
+      finally { pki.oid.register("2.5.4.3", "commonName"); }
+    })());
+  check("344t. renaming an attribute OID does not change the form its value is written in",
+    (function () {
+      var ps = Buffer.concat([Buffer.from([0x13, 0x02]), Buffer.from("SE", "ascii")]);
+      var sda = b.sequence([b.sequence([b.oid("2.5.4.6"), b.set([b.raw(ps)])])]);
+      function firstElementType() {
+        var r = structured();
+        r.extensions = [{ name: "subjectDirectoryAttributes", oid: "2.5.29.9", critical: false, value: sda }];
+        var v = CB.decode(pki.schema.c509.encode(r)).children[9].children[1];
+        return v.majorType === 4 && v.children.length ? v.children[0].majorType : -1;
+      }
+      var before = firstElementType();
+      pki.oid.register("2.5.4.6", "myCountry");
+      try { return before <= 1 && firstElementType() === before; }
+      finally { pki.oid.register("2.5.4.6", "countryName"); }
+    })());
   check("344i. a type-2 extension whose OID has no C509 registry id keeps the generic form",
     codeSync(function () { return pki.schema.c509.parse(type2WithField(9, genericExt("2.5.29.99", b.nullValue()))); }) !== "c509/non-specific-encoding");
   // A cRLDistributionPoints the compact codec provably cannot represent: its reasons BIT STRING
