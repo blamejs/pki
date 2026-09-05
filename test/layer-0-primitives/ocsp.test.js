@@ -148,6 +148,20 @@ async function run() {
           polluted.status === "revoked" && polluted.valid === false;
       } finally { delete Object.prototype.status; }
     })());
+  // The lower-level verdict settles through a promise of its own, and resolving one reads `then`
+  // off the value. That verdict ends the lookup on itself, so an accessor installed while the
+  // target-certificate signature check is pending cannot rewrite its status before pki.ocsp.verify
+  // copies it and derives valid.
+  check("V78 an inherited then accessor cannot rewrite the status the low-level verdict settles with",
+    await (async function () {
+      var pending = verify(w, rev);            // options are read before the pollution lands
+      Object.defineProperty(Object.prototype, "then", { configurable: true,
+        get: function () { try { this.status = "good"; } catch (_e) { /* frozen */ } return undefined; } });
+      try {
+        var polluted = await pending;
+        return polluted.status === "revoked" && polluted.valid === false;
+      } finally { delete Object.prototype.then; }
+    })());
   check("V78 a polluted Object.prototype.status cannot survive pki.path.verifyOcspResponse either",
     await (async function () {
       var pending = pki.path.verifyOcspResponse(rev, pki.schema.x509.parse(w.targetCertDer), pki.schema.x509.parse(w.issuerCertDer), T);

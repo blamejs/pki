@@ -1075,6 +1075,20 @@ async function testTrustSeam() {
   check("trust: a polluted Object.prototype.trusted cannot report an unanchored signer as trusted",
     pollutedTrust);
 
+  // A signer row settles through a promise of its own, and resolving one reads `then` off the
+  // value. The row ends that lookup on itself, so an accessor installed while the signature check
+  // is pending cannot rewrite the ok the message verdict is derived from.
+  var badSig = Buffer.from(signed);
+  badSig[badSig.length - 20] ^= 0x01;
+  var pollutedRow = await (async function () {
+    var pending = pki.cms.verify(badSig, AT);
+    Object.defineProperty(Object.prototype, "then", { configurable: true,
+      get: function () { try { this.ok = true; } catch (_e) { /* frozen */ } return undefined; } });
+    try { return await pending; } finally { delete Object.prototype.then; }
+  })();
+  check("trust: an inherited then accessor cannot turn a failed signer row into a valid message",
+    pollutedRow.valid === false && pollutedRow.signers[0].ok === false);
+
   // The trust verdict is a decision about the message, so it must not be reachable through the
   // prototype: `every` replaced after load answers true without consulting a single signer, and a
   // message no supplied anchor covers reports trusted:true.
