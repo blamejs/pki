@@ -835,9 +835,12 @@ async function testOptionSurface() {
     get: function () { reads += 1; return reads === 1 ? never : null; },
   });
   shifting.tls = { useSystemStore: true };
-  var shiftingOutcome = await transportRefused(function () { return pki.est.cacerts(BASE, shifting); });
+  var shiftingOutcome = await (async function () {
+    try { await pki.est.cacerts(BASE, shifting); return "NO-THROW"; }
+    catch (e) { return (e && e.code) + " :: " + String(e && e.message); }
+  })();
   check("76g. a transport option whose reads differ cannot substitute a value after the check",
-    shiftingOutcome === "typed" || shiftingOutcome.indexOf("RAW:transport not exercised") === 0);
+    shiftingOutcome.indexOf("est/bad-input") === 0 && shiftingOutcome.indexOf("accessor") !== -1 && reads === 0);
   // A class constructor is callable as far as any test of the value can tell, so it reaches the
   // call. Calling it throws synchronously, because a class cannot be invoked without new, and that
   // throw is translated the same way a rejected promise from a transport already is, rather than

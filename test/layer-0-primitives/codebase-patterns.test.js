@@ -1931,6 +1931,15 @@ function testNoDuplicateCodeBlocks() {
   //     reason: "why these are not extractable" }
   var KNOWN_CLUSTERS = [
     {
+      mode: "family-subset",
+      files: [
+        "lib/acme.js:client", "lib/key.js:import_", "lib/ocsp.js:verifyRequest",
+        "lib/est.js:_knownOpts", "lib/scep.js:getCACaps", "lib/scep.js:getCACert",
+        "lib/cmp-session.js:session",
+      ],
+      reason: "The options door a public verb opens with: settle the caller's options object, then refuse any key the verb does not accept. Both steps ARE the shared primitives, already factored into guard-identifier, so what repeats is the pair of calls and nothing else; the arguments differ at every site, since each verb has its own accepted-key table and its own label. Settling has to happen at the verb, before it reads anything, so the call cannot move inside the key check. family-subset so any 3+ match as more verbs adopt the door.",
+    },
+    {
       // The per-module capture header: a run of `var _x = intrinsic.y;` bindings taking what the
       // module reads from the runtime before any caller code can reach it. The uniformity IS the
       // point -- every module binds the same names to the same intrinsics, so a reader comparing two

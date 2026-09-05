@@ -100,6 +100,13 @@ function run() {
   check("a real cert lints with zero error/fatal findings", clean.counts.error === 0 && clean.counts.fatal === 0);
   check("a clean report's worst is at most notice", ["fatal", "error", "warn"].indexOf(clean.worst) === -1);
   check("lint accepts raw PEM/DER bytes too", pki.lint.certificate(REAL).findings !== undefined);
+  // The counts map is keyed by severity names, so it carries no prototype, and it is built the same
+  // way whether the certificate parsed or not. A report whose shape depended on which input arrived
+  // would make a consumer's check pass on one certificate and fail on the next.
+  var unparseable = pki.lint.certificate(Buffer.from([0]));
+  check("counts carries no prototype on a parsed certificate", Object.getPrototypeOf(clean.counts) === null);
+  check("counts is built the same way when the certificate does not parse",
+    Object.getPrototypeOf(unparseable.counts) === Object.getPrototypeOf(clean.counts) && unparseable.counts.fatal === 1);
 
   // The load-bearing inversion: hostile bytes NEVER throw -- one fatal lint/unparseable.
   var truncated = pki.lint.certificate(REAL.subarray(0, 12));
