@@ -1675,14 +1675,31 @@ async function run() {
     })());
   // The same rule for attribute types. An application renaming a built-in OID must not change what
   // this toolkit emits for an unrelated certificate, nor stop it converting one at all.
+  // One name per lookup family. The assertion is byte-identity, not merely that nothing threw:
+  // a rename must not change which form anything is written in. Both encode paths are driven,
+  // because supplying opts.issuerCurve skips the curve resolution that reads the algorithm's name.
+  function conversionFingerprint() {
+    return [
+      function () { return pki.schema.c509.encode(V.A1.der); },
+      function () { return pki.schema.c509.encode(V.A1.der, { issuerCurve: "P-256" }); },
+      function () { return pki.schema.c509.parse(V.A1.type3).reconstructedDer; },
+    ].map(function (fn) {
+      try { return fn().toString("hex"); } catch (e) { return "threw:" + (e.code || e.message); }
+    }).join("|");
+  }
+  var fingerprintBefore = conversionFingerprint();
   [["a curve", "1.2.840.10045.3.1.7", "prime256v1"],
     ["a public key algorithm", "1.2.840.10045.2.1", "ecPublicKey"],
     ["a signature algorithm", "1.2.840.10045.4.3.2", "ecdsaWithSHA256"],
+    ["an attribute type", "2.5.4.3", "commonName"],
+    ["an extension", "2.5.29.14", "subjectKeyIdentifier"],
+    ["an extended key usage purpose", "1.3.6.1.5.5.7.3.1", "serverAuth"],
+    ["an access method", "1.3.6.1.5.5.7.48.1", "ocsp"],
   ].forEach(function (t, i) {
-    check("344u." + String.fromCharCode(97 + i) + " renaming " + t[0] + " OID does not stop a certificate converting to C509",
+    check("344u." + String.fromCharCode(97 + i) + " renaming " + t[0] + " OID leaves the conversion byte-identical",
       (function () {
         pki.oid.register(t[1], "renamedForTest");
-        try { return codeSync(function () { return pki.schema.c509.encode(V.A1.der, { issuerCurve: "P-256" }); }) === "NO-THROW"; }
+        try { return conversionFingerprint() === fingerprintBefore; }
         finally { pki.oid.register(t[1], t[2]); }
       })());
   });
