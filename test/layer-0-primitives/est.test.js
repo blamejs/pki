@@ -831,6 +831,10 @@ async function testOptionSurface() {
     // is genuinely absent, which reads as undefined, falls back.
     check("76c. pki.est." + fverb + " refuses an explicit null transport",
       (await transportRefused(function () { return VERBS[fverb]({ transport: null, tls: { useSystemStore: true } }); })) === "typed");
+    // A merge that produced { transport: undefined } set the key, so it is a value rather than an
+    // omitted option; only an object that does not carry the key at all falls back.
+    check("76d. pki.est." + fverb + " refuses a present-but-undefined transport",
+      (await transportRefused(function () { return VERBS[fverb]({ transport: undefined, tls: { useSystemStore: true } }); })) === "typed");
   }
   // The enroll CSR is accepted as any BufferSource, not only a Buffer: an ArrayBuffer CSR passes
   // _csrDer and reaches the transport (which this vector's transport then refuses). Before the widening

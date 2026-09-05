@@ -949,8 +949,25 @@ function testAssertCallable() {
     try { identifier.assertCallable(v, E, "x/bad-input", "opts.transport", "(req) => Promise"); return "NO-THROW"; }
     catch (e) { return e.code + " :: " + e.message; }
   }
-  check("assertCallable: an absent option passes", codeOf(undefined) === "NO-THROW");
+  check("assertCallable: undefined is refused, since presence is the option form's question", codeOf(undefined).indexOf("x/bad-input") === 0);
   check("assertCallable: a function passes", codeOf(function () {}) === "NO-THROW");
+  // The option form asks whether the object carries the key at all. A key it does not carry is an
+  // option the caller left out, and only that falls through to the boundary's default; a key it
+  // carries is a value the caller set, undefined included, so a merge that produced
+  // { transport: undefined } cannot silently select the real network client.
+  function optCode(opts) {
+    try { identifier.assertCallableOption(opts, "transport", E, "x/bad-input", "opts.transport"); return "NO-THROW"; }
+    catch (e) { return e.code; }
+  }
+  check("assertCallableOption: an object without the key passes", optCode({}) === "NO-THROW");
+  check("assertCallableOption: a null options object passes", optCode(null) === "NO-THROW");
+  check("assertCallableOption: the key present and callable passes", optCode({ transport: function () {} }) === "NO-THROW");
+  check("assertCallableOption: the key present and undefined is refused", optCode({ transport: undefined }) === "x/bad-input");
+  check("assertCallableOption: the key present and null is refused", optCode({ transport: null }) === "x/bad-input");
+  check("assertCallableOption: the key present and falsy is refused", optCode({ transport: 0 }) === "x/bad-input");
+  // An inherited key is not one this object carries, so it does not count as supplied.
+  var inherited = Object.create({ transport: 42 });
+  check("assertCallableOption: an inherited key does not count as supplied", optCode(inherited) === "NO-THROW");
   var nullOut = codeOf(null);
   check("assertCallable: an explicit null is refused, not read as absent", nullOut.indexOf("x/bad-input") === 0);
   check("assertCallable: the refusal names the option and the expected shape",
