@@ -3910,6 +3910,18 @@ async function testOcspCheckerStandalone() {
   // O10 — responderID matches neither the issuer nor any embedded cert.
   var o10 = await mkOcsp({ responderID: { byName: "Nobody" }, signWith: "ed25519", single: [goodSingle()] });
   check("O10 responderID matches no authorized responder -> unknown", (await chk(o10)).status === "unknown");
+  // A revocation checker is a public verb of its own: an operator holds `check` and reads the
+  // status it answers with. That answer ends the prototype lookup for `then` on itself, so an
+  // accessor installed while the check is running cannot rewrite the status on its way back.
+  var chkHeld;
+  var chkPending = chk(o10);
+  Object.defineProperty(Object.prototype, "then", { configurable: true,
+    get: function () { try { this.status = "good"; } catch (_e) { /* frozen */ } return undefined; } });
+  try {
+    var chkPolluted = await chkPending;
+    chkHeld = chkPolluted.status === "unknown" && Object.prototype.hasOwnProperty.call(chkPolluted, "then");
+  } finally { delete Object.prototype.then; }
+  check("O10b an inherited then accessor cannot rewrite the status an ocspChecker answers with", chkHeld);
 
   // O10b — responderID names the issuer but the response is signed by an impostor key.
   var o10b = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519i", single: [goodSingle()] });
