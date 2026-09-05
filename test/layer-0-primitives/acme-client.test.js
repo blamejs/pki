@@ -243,6 +243,9 @@ async function testFailClosedGates() {
   check("#6 an object transport is refused, naming the option", (await badTransport({})) === "typed");
   check("#6 a falsy transport is refused rather than falling back to the network", (await badTransport(0)) === "typed");
   check("#6 an explicit null transport is refused, not read as an omitted option", (await badTransport(null)) === "typed");
+  // A class constructor answers "function" to typeof but throws when called without new, so
+  // accepting one would defer the fault to the first request and surface a raw TypeError there.
+  check("#6 a class constructor transport is refused at the door", (await badTransport(class T {})) === "typed");
 }
 
 // ---- 7 poll Retry-After surfaced (never slept in real time), then exhausted --
