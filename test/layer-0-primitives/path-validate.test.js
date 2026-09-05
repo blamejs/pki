@@ -3079,6 +3079,22 @@ async function testRfc5280ConformanceMusts() {
   var leafA11 = await mkCert({ subject: "A11l", issuer: "A11i", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt([P1x])] });
   var resA11 = await run([interA11, leafA11], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true, userInitialPolicySet: [P1x] });
   check("userConstrainedPolicySet computed", resA11.valid === true && Array.isArray(resA11.userConstrainedPolicySet) && resA11.userConstrainedPolicySet.indexOf(P1x) !== -1);
+  // An indexed accessor on Array.prototype reaches every list the validation builds while it runs,
+  // including the policy tree whose nodes decide the user-constrained set. The path that results is
+  // refused rather than accepted on substituted state: the checks that read those lists report the
+  // fabricated content as malformed, and no fabricated policy reaches the user-constrained set.
+  var realZeroA11 = Object.getOwnPropertyDescriptor(Array.prototype, "0");
+  var a11Pending = run([interA11, leafA11], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true, userInitialPolicySet: [P1x] });
+  Object.defineProperty(Array.prototype, "0", { configurable: true,
+    get: function () { return { validPolicy: P1x, expectedPolicySet: [P1x], qualifiers: [], children: [], depth: 0 }; },
+    set: function () {} });
+  var a11poll;
+  try { a11poll = await a11Pending; } finally {
+    if (realZeroA11) Object.defineProperty(Array.prototype, "0", realZeroA11);
+    else delete Array.prototype[0];
+  }
+  check("an indexed accessor during validation refuses the path rather than accepting substituted state",
+    a11poll.valid === false && a11poll.userConstrainedPolicySet.length === 0);
 
   // policy-mapping REPLACES the expected-policy set (§6.1.4(b)(1)): after
   // mapping P1->P2, a leaf asserting the mapped-FROM policy P1 must NOT satisfy
