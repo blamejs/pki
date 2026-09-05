@@ -3376,6 +3376,22 @@ async function testInitialInputsAndTargetGates() {
         } catch (e) { return (e.code || "") === "path/bad-input"; }
       })());
   });
+  // An absent namespace may be spelled null, the way optional metadata serializes.
+  check("NC21 an anchor whose nameConstraints is null is unconstrained, not refused",
+    (await run([ncLeafOut], { time: T2027, trustAnchors: ncAnchor(null) })).valid === true);
+  // The seed option is read once: an accessor answering differently to the presence test and to the
+  // validation would let an empty list overwrite the restriction the caller supplied.
+  // A subtree list supplied through an accessor never reaches the state machine at all: the options
+  // door refuses an accessor field, so only the mutable-value case (NC15) can reach it.
+  check("NC22 a subtree list supplied through an accessor is refused at the options door",
+    (await codeOf((function () {
+      var o = { time: T2027, trustAnchors: [ncAnchor(undefined), ncAnchor(undefined)] };
+      Object.defineProperty(o, "initialPermittedSubtrees", {
+        get: function () { return [{ tag: 2, base: "nowhere.example" }]; },
+        enumerable: true, configurable: true,
+      });
+      return run([ncLeafIn], o);
+    })())) === "path/bad-input");
   check("NC10a a mis-shaped anchor subtree is refused at the door, never silently dropped",
     (await codeOf(run([ncLeafIn], { time: T2027, trustAnchors: ncAnchor({ permitted: [{ tag: 2, base: 42 }] }) }))) === "path/bad-input");
   check("NC10b an anchor carrying the decoder's subtree shape rather than { tag, base } is refused",
