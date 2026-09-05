@@ -1,0 +1,15 @@
+{
+  "version": "0.6.39",
+  "date": "2026-09-05",
+  "headline": "The OCSP and CMC verify verdicts carry the same valid boolean the other verify verbs do, so one idiom reads a result whatever verb produced it.",
+  "summary": "Most verify verbs answer with a valid boolean. Two answered only with a string: pki.ocsp.verify with a status of good, revoked or unknown, and pki.cmc.verify with an outcome of issued, pending, confirm-required, pop-required or rejected. Reading a result therefore depended on which verb produced it, and code that handles several of them carried a branch per verb.\n\nBoth verdicts now carry valid alongside the string they already had. Nothing is renamed or removed, and the string stays the place the reason lives: an OCSP response is valid only when its status is good, so a revoked certificate reads as false and status says which of the two it was. A CMC response is valid only for the issued outcome, so a pending response reads as false and outcome and pendToken say what to do next.\n\nNeither boolean stands in for a check that did not run. pki.ocsp.verify already collapses an unauthorized, stale or mismatched response to unknown, so a status of good means every gate it applies passed; valid states that and no more.",
+  "sections": {
+    "Added": [
+      "The pki.ocsp.verify and pki.path.verifyOcspResponse verdicts carry valid, true only when status is good. Every failure these verbs detect already reports status unknown, so the boolean covers exactly the checks they run.",
+      "The pki.cmc.verify verdict carries valid, true only for the issued outcome. Every other outcome, pending included, reads as false, with outcome, failInfo and pendToken unchanged."
+    ],
+    "Changed": [
+      "The container release workflow takes docker/setup-qemu-action v4.3.0."
+    ]
+  }
+}

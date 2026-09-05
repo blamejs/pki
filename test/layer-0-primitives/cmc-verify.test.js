@@ -152,6 +152,8 @@ async function run() {
   var d1 = await pki.cmc.verify(response([]), { allowUnverified: true, allowUnbound: true });
   check("D1. a PKIResponse with NO status control verifies as issued (ST5: success is assumed)",
     d1.outcome === "issued" && d1.statuses.length === 0);
+  // The canonical verdict alias beside the string terminal: true only for the issued outcome.
+  check("V78 an issued response carries valid true beside its outcome", d1.valid === true);
 
   // ---- E1: the happy path binds the exchange ---------------------------
   var e1 = await pki.cmc.verify(response(txControls([statusV2(4, 0, null)])), sent);
@@ -241,6 +243,10 @@ async function run() {
   var failed = await pki.cmc.verify(response([statusV2(1, 2, b.integer(7n))]), { allowUnverified: true, allowUnbound: true });
   check("D3b. a failed status yields outcome rejected carrying the failInfo name",
     failed.outcome === "rejected" && failed.failInfo === "badIdentity");
+  check("V78 a rejected response is valid false, with the reason still in outcome and failInfo",
+    failed.valid === false && failed.outcome === "rejected");
+  check("V78 a pending response is valid false: it names an outcome that is not issued",
+    pend.valid === false && pend.outcome === "pending");
 
   var noSupport = await pki.cmc.verify(response([statusV2(1, 4, null)]), { allowUnverified: true, allowUnbound: true });
   check("D15c. noSupport yields outcome rejected", noSupport.outcome === "rejected");

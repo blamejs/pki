@@ -114,12 +114,17 @@ async function run() {
   // ---- certStatus arms + raw-exactness ----
   var good = await signGood(w);
   check("verify good", (await verify(w, good)).status === "good");
+  // The canonical verdict alias: `valid` is the affirmative terminal and nothing more, so the
+  // reason a certificate is not good stays in `status`.
+  check("V78 a good response carries valid true beside its status", (await verify(w, good)).valid === true);
   var rev = await pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: { revoked: new Date("2027-03-01Z"), revocationReason: "keyCompromise" }, thisUpdate: TU, nextUpdate: NU }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 });
   var vr = await verify(w, rev);
   check("verify revoked surfaces the status + reason", vr.status === "revoked" && vr.revocationReason === "keyCompromise");
+  check("V78 a revoked response is valid false, with the reason still in status", vr.valid === false && vr.status === "revoked");
   check("#78 verify revoked surfaces revocationTime (the LTV instant)", vr.revocationTime instanceof Date && vr.revocationTime.getTime() === new Date("2027-03-01Z").getTime());
   var unk = await pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: "unknown", thisUpdate: TU, nextUpdate: NU }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 });
   check("verify explicit unknown status", (await verify(w, unk)).status === "unknown");
+  check("V78 an unknown response is valid false", (await verify(w, unk)).valid === false);
   // raw-exactness: mutate one byte of the signed response -> signature no longer verifies.
   var tampered = Buffer.from(good); tampered[tampered.length - 40] ^= 0x01;
   var vt = await verify(w, tampered);

@@ -4,6 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.39 — 2026-09-05
+
+The OCSP and CMC verify verdicts carry the same valid boolean the other verify verbs do, so one idiom reads a result whatever verb produced it.
+
+### Added
+
+- The pki.ocsp.verify and pki.path.verifyOcspResponse verdicts carry valid, true only when status is good. Every failure these verbs detect already reports status unknown, so the boolean covers exactly the checks they run.
+- The pki.cmc.verify verdict carries valid, true only for the issued outcome. Every other outcome, pending included, reads as false, with outcome, failInfo and pendToken unchanged.
+
+### Changed
+
+- The container release workflow takes docker/setup-qemu-action v4.3.0.
+
 ## v0.6.38 — 2026-09-05
 
 A trust anchor can name the namespace its root is trusted for, and pki.path.validate enforces it as the initial name-constraint state.
