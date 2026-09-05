@@ -1147,10 +1147,16 @@ function testRegistryTablesCarryNoPrototype() {
     var rel = path.relative(REPO_ROOT, f);
     var lines = stripped[fi].split("\n");
     for (var i = 0; i < lines.length; i++) {
-      var d = /^(?:var|let|const) ([A-Za-z_$][A-Za-z0-9_$]*) = \{/.exec(lines[i]);
-      if (!d || !readByKey[d[1]]) continue;
-      bad.push({ file: rel, line: i + 1,
-        content: "the module-level table `" + d[1] + "` is an object literal, so it inherits Object.prototype and a computed lookup answers with a member it never registered — build it on Object.create(null) (or the module's captured create)" });
+      if (!/^(?:var|let|const) /.test(lines[i])) continue;
+      // Every declarator on the line, not just the one after the keyword: a comma-declared table
+      // is the same class, and reading only the first would let one hide behind another.
+      var decl = /(?:^(?:var|let|const)|,)\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*\{/g;
+      var d;
+      while ((d = decl.exec(lines[i])) !== null) {
+        if (!readByKey[d[1]]) continue;
+        bad.push({ file: rel, line: i + 1,
+          content: "the module-level table `" + d[1] + "` is an object literal, so it inherits Object.prototype and a computed lookup answers with a member it never registered — build it on Object.create(null) (or the module's captured create)" });
+      }
     }
   });
   bad = _filterMarkers(bad, "registry-table-inherits-object-prototype");
