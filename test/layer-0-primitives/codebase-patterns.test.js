@@ -150,6 +150,10 @@ var VALID_ALLOW_CLASSES = {
   "schema-build-drops-parsed-field": 1,
   "guard-shape-reinlined": 1,
   "guard-reads-runtime-live": 1,
+  // A record an operator receives whose computed key comes from the code rather than the input.
+  // The marker states which argument supplies the key and that every caller passes a literal, so
+  // the claim is read off the call sites rather than taken on the category.
+  "registry-table-inherits-object-prototype": 1,
   "ocsp-responder-auth-reinlined": 1,
   "constant-time-compare-short-circuited": 1,
   "guard-without-enforcement": 1,
