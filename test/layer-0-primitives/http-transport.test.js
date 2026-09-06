@@ -406,6 +406,34 @@ async function testBlockPrivateAddresses() {
 // A server that reads a CONNECT request, optionally demands Basic via a 407, and on success pipes the socket to a
 // loopback upstream so the client's TLS-in-tunnel handshake reaches the real origin. With opts.tls it is a TLS
 // server (an https proxy), so proxy credentials ride an authenticated channel.
+// Recompute the RFC 7616 response the client should have sent for this CONNECT, from the credential it did
+// send, so the fake proxy accepts only a correct answer. Returns the pair to compare, or null when the
+// credential is not a well-formed Digest value.
+function digestExpected(reqLine, credential, opts) {
+  if (credential.slice(0, 7) !== "Digest ") return null;
+  var params = {};
+  credential.slice(7).split(",").forEach(function (piece) {
+    var eq = piece.indexOf("=");
+    if (eq === -1) return;
+    var k = piece.slice(0, eq).trim().toLowerCase();
+    var v = piece.slice(eq + 1).trim();
+    if (v.charAt(0) === '"' && v.charAt(v.length - 1) === '"') v = v.slice(1, -1);
+    params[k] = v;
+  });
+  var crypto = require("node:crypto");
+  var algName = (params.algorithm || "MD5").toUpperCase() === "SHA-256" ? "sha256" : "md5";
+  function h(s) { return crypto.createHash(algName).update(s, "utf8").digest("hex"); }
+  var ha1 = h(opts.username + ":" + (params.realm || "") + ":" + opts.password);
+  var method = reqLine.split(" ")[0];
+  var ha2 = params.qop === "auth-int"
+    ? h(method + ":" + (params.uri || "") + ":" + h(""))
+    : h(method + ":" + (params.uri || ""));
+  var response = params.qop
+    ? h(ha1 + ":" + (params.nonce || "") + ":" + (params.nc || "") + ":" + (params.cnonce || "") + ":" + params.qop + ":" + ha2)
+    : h(ha1 + ":" + (params.nonce || "") + ":" + ha2);
+  return { response: response, got: params.response || "", uri: params.uri || "", method: method };
+}
+
 function startConnectProxy(opts) {
   opts = opts || {};
   var net = require("node:net");
@@ -433,6 +461,17 @@ function startConnectProxy(opts) {
         client.write('HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="proxy"\r\nContent-Length: 0\r\n\r\n');
         client.end();
         return;
+      }
+      if (opts.requireAuth === "digest") {
+        var expected = pa ? digestExpected(reqLine, pa, opts) : null;
+        if (!pa || expected === null || expected.response !== expected.got) {
+          client.write("HTTP/1.1 407 Proxy Authentication Required\r\n" +
+            (opts.noChallenge ? "" : "Proxy-Authenticate: " +
+              (opts.challenge || 'Digest realm="proxy", nonce="' + (opts.nonce || "n0nce") + '", qop="auth", algorithm=SHA-256') + "\r\n") +
+            "Content-Length: 0\r\n\r\n");
+          client.end();
+          return;
+        }
       }
       var target = reqLine.split(" ")[1] || "";
       var lastColon = target.lastIndexOf(":");
@@ -478,6 +517,71 @@ async function testProxyConnect() {
       check("PX-4 the origin request carried NO Proxy-Authorization (hop-by-hop)", r2.headers["x-had-proxy-auth"] === "no");
       check("PX-12 the tls report reflects the ORIGIN handshake over the tunnel", !!(r2.tls && r2.tls.cipher && r2.tls.cipher.name));
     } finally { pxBasic.srv.close(); }
+
+    // PX-18 Digest proxy auth (RFC 7616) over the CONNECT tunnel. The proxy answers the first CONNECT with a
+    // 407 carrying its challenge, and the client answers it once. The credential is computed over the CONNECT
+    // method and the authority-form target, which is what the proxy hashes to check it.
+    var pxDigest = await startConnectProxy({ tls: proxyTls, requireAuth: "digest", username: "u", password: "p" });
+    try {
+      var rd = await t({ method: "GET", url: originUrl, proxy: { url: "https://127.0.0.1:" + pxDigest.port, auth: { scheme: "digest", username: "u", password: "p" }, tls: pTrust } });
+      check("PX-18 Digest proxy auth over an https proxy: the tunneled GET succeeds", rd.status === 200 && rd.body.toString() === "TUNNELED");
+      check("PX-18b the first CONNECT carried no credential and the second carried a Digest one",
+        pxDigest.seen.length === 2 && !pxDigest.seen[0].headers["proxy-authorization"] &&
+        (pxDigest.seen[1].headers["proxy-authorization"] || "").slice(0, 7) === "Digest ");
+      var sentUri = digestExpected(pxDigest.seen[1].requestLine, pxDigest.seen[1].headers["proxy-authorization"], { username: "u", password: "p" });
+      check("PX-18c the credential names the CONNECT method and the authority-form target",
+        sentUri.method === "CONNECT" && sentUri.uri === "127.0.0.1:" + origin.port);
+      check("PX-18d the origin request carried no Proxy-Authorization", rd.headers["x-had-proxy-auth"] === "no");
+    } finally { pxDigest.srv.close(); }
+
+    // PX-19 a wrong password is answered once and then refused. The retry is a single attempt the client
+    // counts, never a loop the proxy can drive by repeating its challenge.
+    var pxDigestBad = await startConnectProxy({ tls: proxyTls, requireAuth: "digest", username: "u", password: "correct" });
+    try {
+      check("PX-19 a rejected Digest credential -> proxy-auth-failed",
+        (await codeOf(t({ method: "GET", url: originUrl, proxy: { url: "https://127.0.0.1:" + pxDigestBad.port, auth: { scheme: "digest", username: "u", password: "wrong" }, tls: pTrust } }))) === "transport/proxy-auth-failed");
+      check("PX-19b the client answered exactly once, so a repeated challenge is not a loop", pxDigestBad.seen.length === 2);
+    } finally { pxDigestBad.srv.close(); }
+
+    // PX-20 the challenge is held to the toolkit's Digest policy: an MD5 challenge is refused rather than
+    // answered, and a challenge offering no Digest at all is a refusal naming what was offered.
+    var pxMd5 = await startConnectProxy({ tls: proxyTls, requireAuth: "digest", username: "u", password: "p",
+      challenge: 'Digest realm="proxy", nonce="n0nce", qop="auth", algorithm=MD5' });
+    try {
+      check("PX-20 an MD5 Digest challenge is refused by default",
+        (await codeOf(t({ method: "GET", url: originUrl, proxy: { url: "https://127.0.0.1:" + pxMd5.port, auth: { scheme: "digest", username: "u", password: "p" }, tls: pTrust } }))) === "transport/proxy-digest-weak-algorithm");
+    } finally { pxMd5.srv.close(); }
+    var pxMd5Ok = await startConnectProxy({ tls: proxyTls, requireAuth: "digest", username: "u", password: "p",
+      challenge: 'Digest realm="proxy", nonce="n0nce", qop="auth", algorithm=MD5' });
+    try {
+      var rMd5 = await t({ method: "GET", url: originUrl, proxy: { url: "https://127.0.0.1:" + pxMd5Ok.port, auth: { scheme: "digest", username: "u", password: "p", allowMD5: true }, tls: pTrust } });
+      check("PX-20b MD5 is answered when the caller opts in", rMd5.status === 200 && rMd5.body.toString() === "TUNNELED");
+    } finally { pxMd5Ok.srv.close(); }
+    var pxBasicOffer = await startConnectProxy({ tls: proxyTls, requireAuth: "basic", username: "u", password: "p" });
+    try {
+      check("PX-20c a proxy offering only Basic while digest was configured -> proxy-auth-required",
+        (await codeOf(t({ method: "GET", url: originUrl, proxy: { url: "https://127.0.0.1:" + pxBasicOffer.port, auth: { scheme: "digest", username: "u", password: "p" }, tls: pTrust } }))) === "transport/proxy-auth-required");
+    } finally { pxBasicOffer.srv.close(); }
+    // PX-21 a 407 that names no scheme at all is the same refusal: there is nothing to answer.
+    var pxSilent = await startConnectProxy({ tls: proxyTls, requireAuth: "digest", username: "u", password: "p", noChallenge: true });
+    try {
+      check("PX-21 a 407 carrying no Proxy-Authenticate -> proxy-auth-required",
+        (await codeOf(t({ method: "GET", url: originUrl, proxy: { url: "https://127.0.0.1:" + pxSilent.port, auth: { scheme: "digest", username: "u", password: "p" }, tls: pTrust } }))) === "transport/proxy-auth-required");
+    } finally { pxSilent.srv.close(); }
+    // PX-22 a challenge the parser reads but the policy cannot answer: no qop is refused by default and
+    // answered when the caller opts in, the same pair as the algorithm knob.
+    var pxNoQop = await startConnectProxy({ tls: proxyTls, requireAuth: "digest", username: "u", password: "p",
+      challenge: 'Digest realm="proxy", nonce="n0nce", algorithm=SHA-256' });
+    try {
+      check("PX-22 a Digest challenge carrying no qop is refused by default",
+        (await codeOf(t({ method: "GET", url: originUrl, proxy: { url: "https://127.0.0.1:" + pxNoQop.port, auth: { scheme: "digest", username: "u", password: "p" }, tls: pTrust } }))) === "transport/proxy-digest-no-qop");
+    } finally { pxNoQop.srv.close(); }
+    var pxNoQopOk = await startConnectProxy({ tls: proxyTls, requireAuth: "digest", username: "u", password: "p",
+      challenge: 'Digest realm="proxy", nonce="n0nce", algorithm=SHA-256' });
+    try {
+      var rNoQop = await t({ method: "GET", url: originUrl, proxy: { url: "https://127.0.0.1:" + pxNoQopOk.port, auth: { scheme: "digest", username: "u", password: "p", allowLegacyQop: true }, tls: pTrust } });
+      check("PX-22b a qop-less challenge is answered when the caller opts in", rNoQop.status === 200 && rNoQop.body.toString() === "TUNNELED");
+    } finally { pxNoQopOk.srv.close(); }
 
     // PX-3 an open http proxy (no auth) is tunnel-only and still works
     var pxOpen = await startConnectProxy({});
@@ -583,7 +687,15 @@ async function testProxyConnect() {
   check("PX-9a a non-object proxy is refused", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: "http://p:8080" }))) === "transport/bad-proxy");
   check("PX-9b an unparseable proxy.url is refused", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "::::" } }))) === "transport/bad-proxy");
   check("PX-9c auth over a plaintext http proxy is refused -> proxy-auth-requires-tls", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "http://p:8080", auth: { scheme: "basic", username: "u", password: "p" } } }))) === "transport/proxy-auth-requires-tls");
-  check("PX-9d Digest proxy auth is refused -> proxy-unsupported-scheme", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "https://p:8080", auth: { scheme: "digest", username: "u", password: "p" } } }))) === "transport/proxy-unsupported-scheme");
+  check("PX-9d Digest proxy auth over a plaintext http proxy is refused, like Basic", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "http://p:8080", auth: { scheme: "digest", username: "u", password: "p" } } }))) === "transport/proxy-auth-requires-tls");
+  check("PX-9d2 a Digest knob on a Basic proxy auth is refused", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "https://p:8080", auth: { scheme: "basic", username: "u", password: "p", allowMD5: true }, tls: { useSystemStore: true } } }))) === "transport/bad-proxy");
+  check("PX-9d3 a non-boolean Digest knob is refused", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "https://p:8080", auth: { scheme: "digest", username: "u", password: "p", allowMD5: "yes" }, tls: { useSystemStore: true } } }))) === "transport/bad-proxy");
+  check("PX-9d4 a non-string Digest password is refused", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "https://p:8080", auth: { scheme: "digest", username: "u", password: 7 }, tls: { useSystemStore: true } } }))) === "transport/bad-proxy");
+  check("PX-9d5 an auth record supplying a field through an accessor is refused", (await codeOf((function () {
+    var a = { scheme: "digest", username: "u" };
+    Object.defineProperty(a, "password", { enumerable: true, configurable: true, get: function () { return "p"; } });
+    return t({ method: "GET", url: "https://ca.example/x", proxy: { url: "https://p:8080", auth: a, tls: { useSystemStore: true } } });
+  })())) === "transport/bad-proxy");
   check("PX-9e an unknown proxy.auth.scheme is refused", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "https://p:8080", auth: { scheme: "ntlm", username: "u", password: "p" } } }))) === "transport/bad-proxy");
   check("PX-9f a mistyped proxy key is refused", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "http://p:8080", usernam: "x" } }))) === "transport/bad-proxy");
   check("PX-9g a Basic user-id with a colon is refused (RFC 7617)", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "https://p:8080", auth: { scheme: "basic", username: "a:b", password: "p" }, tls: { useSystemStore: true } } }))) === "transport/bad-proxy");

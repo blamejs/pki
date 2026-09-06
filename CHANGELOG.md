@@ -4,6 +4,18 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.44 — 2026-09-06
+
+An enrollment client reaches a certification authority through a proxy that demands Digest authentication.
+
+### Added
+
+- opts.proxy.auth.scheme accepts "digest" alongside "basic", so a client reaches a certification authority through a forward proxy that authenticates with RFC 7616 Digest. The first CONNECT carries no credential; the proxy's 407 carries its Proxy-Authenticate challenge, and the client answers it once, hashing the method CONNECT over the authority-form target (RFC 9112 section 3.2.3) that the proxy checks it against. The challenge is read by the same parser the origin verbs use and held to the same policy, so MD5 and a challenge carrying no qop are refused unless opts.proxy.auth.allowMD5 or allowLegacyQop says otherwise, surfacing transport/proxy-digest-weak-algorithm, transport/proxy-digest-unsupported-algorithm, transport/proxy-digest-no-qop, and transport/proxy-digest-bad-challenge (each under the calling client's own prefix, so a SCEP call reports scep/...). A proxy that offers no Digest challenge while digest is configured is transport/proxy-auth-required naming what it offered, and a rejected credential is transport/proxy-auth-failed after that single answer. Digest requires an https proxy on the same terms as Basic: credentials ride the authenticated channel to the proxy, and a plaintext http proxy carrying auth stays refused with transport/proxy-auth-requires-tls.
+
+### Removed
+
+- transport/proxy-unsupported-scheme is no longer raised. It reported that Digest proxy authentication was unavailable, and Digest is now supported; an unknown scheme is transport/bad-proxy, as it was before.
+
 ## v0.6.43 — 2026-09-06
 
 Path building finds a path through a mesh of cross-certified domains without walking the foreign branches first.
