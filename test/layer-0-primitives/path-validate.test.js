@@ -3363,6 +3363,12 @@ async function testInitialInputsAndTargetGates() {
     (await ncSeedPending).valid === false);
   // The field names are permitted / excluded. The decoder's own spelling names the same thing, so
   // accepting it silently would leave the anchor unconstrained rather than restricted.
+  // An anchor carrying the field but naming no subtree restricts nothing, and reads to whoever
+  // built it as a namespace that has been applied.
+  check("NC15b an anchor nameConstraints naming no subtree is refused",
+    (await codeOf(run([ncLeafOut], { time: T2027, trustAnchors: ncAnchor({}) }))) === "path/bad-input" &&
+    (await codeOf(run([ncLeafOut], { time: T2027, trustAnchors: ncAnchor({ permitted: [] }) }))) === "path/bad-input" &&
+    (await codeOf(run([ncLeafOut], { time: T2027, trustAnchors: ncAnchor({ permitted: [], excluded: [] }) }))) === "path/bad-input");
   check("NC16 an anchor naming its subtree lists with the decoder's field names is refused",
     (await codeOf(run([ncLeafOut], { time: T2027, trustAnchors: ncAnchor({ permittedSubtrees: [{ tag: 2, base: "example.com" }] }) }))) === "path/bad-input");
   // A malformed anchor is refused wherever it sits in the list: an earlier anchor succeeding must
@@ -4507,7 +4513,13 @@ async function testCoverageEdges() {
   await cap("401+544 rfc822 SAN without '@' vs host constraint", async function () { return ncCase([gnEmail("example.com")], null, [gnEmail("noatsign")]); });
   await cap("418 rfc822 SAN without '@' vs full-mailbox constraint", async function () { return ncCase([gnEmail("user@example.com")], null, [gnEmail("noat")]); });
   await cap("426 rfc822 SAN with empty host", async function () { return ncCase([gnEmail("example.com")], null, [gnEmail("user@")]); });
-  await cap("441 empty dNSName permitted seed matches all", async function () {
+  // A dNSName constraint that is a bare dot names the root of the namespace, so it matches every
+  // name. A certificate carrying one is compared as the certificate wrote it; an empty one is
+  // refused when the extension is decoded, and a caller cannot seed either, because a seed that
+  // permits everything is a restriction the caller believes they applied.
+  await cap("441 bare-dot dNSName permitted constraint matches all", async function () { return ncCase([gnDns(".")], null, [gnDns("anything.example")]); });
+  await cap("441 empty dNSName permitted constraint refused at decode", async function () { return ncCase([gnDns("")], null, [gnDns("anything.example")]); });
+  await cap("441 empty dNSName permitted seed refused", async function () {
     var leaf = await mkCert({ subject: "Empty441", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("anything.example")])] });
     return run([leaf], { time: T2027, trustAnchors: anchor, initialPermittedSubtrees: [{ tag: 2, base: "" }] });
   });
@@ -4527,6 +4539,16 @@ async function testCoverageEdges() {
   await cap("668 directoryName seed non-Name base rejected", async function () { return run([plainLeaf], { time: T2027, trustAnchors: anchor, initialPermittedSubtrees: [{ tag: 4, base: {} }] }); });
   await cap("669 registeredID seed base accepted", async function () { return run([plainLeaf], { time: T2027, trustAnchors: anchor, initialPermittedSubtrees: [{ tag: 8, base: "1.2.3.4" }] }); });
   await cap("669 default-form seed undefined base rejected", async function () { return run([plainLeaf], { time: T2027, trustAnchors: anchor, initialPermittedSubtrees: [{ tag: 5 }] }); });
+  // A seed is refused unless the comparison it names can reach a verdict. A base outside the form
+  // its tag names either matches nothing, so an exclusion keeps nothing out, or matches everything,
+  // so a permitted subtree restricts nothing.
+  await cap("670 dNSName seed a host name cannot hold rejected", async function () { return run([plainLeaf], { time: T2027, trustAnchors: anchor, initialExcludedSubtrees: [{ tag: 2, base: "https://example.com" }] }); });
+  await cap("670 rfc822Name seed with two at-signs rejected", async function () { return run([plainLeaf], { time: T2027, trustAnchors: anchor, initialExcludedSubtrees: [{ tag: 1, base: "a@b@example.com" }] }); });
+  await cap("670 rfc822Name seed host base accepted", async function () { return run([plainLeaf], { time: T2027, trustAnchors: anchor, initialExcludedSubtrees: [{ tag: 1, base: "example.com" }] }); });
+  await cap("670 URI seed that is a URI rather than a host rejected", async function () { return run([plainLeaf], { time: T2027, trustAnchors: anchor, initialExcludedSubtrees: [{ tag: 6, base: "https://example.com" }] }); });
+  await cap("670 URI seed host base accepted", async function () { return run([plainLeaf], { time: T2027, trustAnchors: anchor, initialExcludedSubtrees: [{ tag: 6, base: "example.com" }] }); });
+  await cap("670 directoryName seed attribute value that is not a string rejected", async function () { return run([plainLeaf], { time: T2027, trustAnchors: anchor, initialExcludedSubtrees: [{ tag: 4, base: { rdns: [[{ type: "2.5.4.3", value: NaN }]] } }] }); });
+  await cap("670 directoryName seed attribute value carrying a control byte rejected", async function () { return run([plainLeaf], { time: T2027, trustAnchors: anchor, initialExcludedSubtrees: [{ tag: 4, base: { rdns: [[{ type: "2.5.4.3", value: "A" + String.fromCharCode(0) + "B" }]] } }] }); });
 
   // ---- 838 malformed extendedKeyUsage under requiredEku ----------------------
   await cap("838 malformed EKU with requiredEku", async function () {
@@ -4879,7 +4901,16 @@ async function testCoverageEdges() {
     "401+544 rfc822 SAN without '@' vs host constraint": { code: NCU },
     "418 rfc822 SAN without '@' vs full-mailbox constraint": { code: NCU },
     "426 rfc822 SAN with empty host": { code: NCU },
-    "441 empty dNSName permitted seed matches all": { valid: true },
+    "441 bare-dot dNSName permitted constraint matches all": { valid: true },
+    "441 empty dNSName permitted constraint refused at decode": { code: "path/bad-name-constraints" },
+    "441 empty dNSName permitted seed refused": { throw: BADIN },
+    "670 dNSName seed a host name cannot hold rejected": { throw: BADIN },
+    "670 rfc822Name seed with two at-signs rejected": { throw: BADIN },
+    "670 rfc822Name seed host base accepted": { valid: true },
+    "670 URI seed that is a URI rather than a host rejected": { throw: BADIN },
+    "670 URI seed host base accepted": { valid: true },
+    "670 directoryName seed attribute value that is not a string rejected": { throw: BADIN },
+    "670 directoryName seed attribute value carrying a control byte rejected": { throw: BADIN },
     "442 leading-dot dNSName permitted matches subdomain": { valid: true },
     "488 URI SAN multi-'@' authority": { code: NCU },
     "496 IPv4 constraint vs IPv6 SAN length mismatch": { code: NCNP },
