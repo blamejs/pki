@@ -250,6 +250,23 @@ async function testHssCertificatePath() {
   check("HSS-10 replacing the public verify verb does not make a tampered certificate validate",
     swapped.valid === false);
 
+  // Resolving a promise reads `then` off the value it is given, so a verdict built as a plain object
+  // would be assimilated by an accessor planted on Object.prototype, and whatever that accessor resolved
+  // to would become the answer. The verdict carries its own `then`, which ends that lookup.
+  // The options object carries no prototype, so the unknown-option gate does not see the planted name
+  // and refuse the call before the verdict is built.
+  var polluted;
+  var bareOpts = Object.assign(Object.create(null), { time: T, trustAnchors: [pem] });
+  Object.defineProperty(Object.prototype, "then", {
+    configurable: true, writable: true,
+    value: function (resolve) { resolve({ ok: true, valid: true }); },
+  });
+  try {
+    polluted = await pki.path.validate([pki.schema.x509.parse(tampered)], bareOpts);
+  } finally { delete Object.prototype.then; }
+  check("HSS-11 a then planted on Object.prototype cannot turn a tampered certificate into a pass",
+    polluted.valid === false);
+
   // RFC 9802 sec. 6 names the CertificateList beside the Certificate, so a revocation list claiming the
   // algorithm reaches the same engine and is answered with a signature verdict. There is no published
   // HSS-signed CRL to accept, and the toolkit does not sign stateful keys, so what is pinned here is the
