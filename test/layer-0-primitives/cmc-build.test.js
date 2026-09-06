@@ -941,6 +941,19 @@ async function run() {
       return pki.cmc.build({ requests: [{ tcr: macCsr }], controls: [identControl(MAC_IDENTITY)],
         identityProof: { secret: MAC_SECRET, identity: MAC_IDENTITY } }, macProt);
     })) === "cmc/bad-input");
+  // A control is a caller object, so its value is read once: what the name is checked against has to be
+  // what the request carries. A value that answers differently on a second read cannot slip a different
+  // name into the message than the one the check saw.
+  var twoFaced = { type: "id-cmc-identification" };
+  var reads = 0;
+  Object.defineProperty(twoFaced, "value", {
+    enumerable: true,
+    get: function () { reads += 1; return reads === 1 ? b.utf8("bob") : b.utf8(MAC_IDENTITY); },
+  });
+  check("AD4k. a control whose value answers differently on a second read cannot pass the name check",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: macCsr }], controls: [twoFaced] }, macProt);
+    })) === "cmc/bad-input");
   check("AD4. the message reads back as the same PKIData a signed carrier would carry",
     pki.schema.cmc.parse(macDer).kind === "pkiData" &&
     pki.schema.cmc.parse(macDer).requests.length === 1);
@@ -1020,6 +1033,16 @@ async function run() {
     !!macDetachedObs.report && macDetachedObs.report.wiped.length > 0 &&
       macDetachedObs.report.wiped.some(function (e) { return e.hadContent; }) &&
       macDetachedObs.report.wiped.every(function (e) { return e.allZeroAfter; }));
+  // Furthest out: the LAST option the snapshot reads throws, several steps after the secret copy was
+  // taken. Everything from the copy to the return is protected, so this clears it too.
+  var macLateObs = observeWipe({ op: "cmc-verify-mac-late-throw", key: s.key,
+    csr: Buffer.from([0x30, 0x03, 0x02, 0x01, 0x01]), secret: Buffer.from(MAC_SECRET, "utf8") });
+  check("AD17. the wipe observation ran for a throw in the last option read (child exit " + macLateObs.status + ")",
+    macLateObs.report !== null);
+  check("AD17b. the secret copy is cleared when a later option read throws",
+    !!macLateObs.report && macLateObs.report.wiped.length > 0 &&
+      macLateObs.report.wiped.some(function (e) { return e.hadContent; }) &&
+      macLateObs.report.wiped.every(function (e) { return e.allZeroAfter; }));
   var BAD_MACS = [
     ["a non-object", "just-a-string"],
     ["an array", ["identifier", "secret"]],
