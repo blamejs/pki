@@ -282,6 +282,50 @@ async function testHssCertificatePath() {
   check("HSS-8 a CertificateList naming the HSS algorithm is answered with a signature verdict",
     crlVerdict.valid === false && crlVerdict.signatureValid === false && crlVerdict.issuerMaySign === true);
 
+  // RFC 9802 sec. 6 states the key-usage rule twice and the two differ: a certification authority's
+  // certificate may assert keyCertSign, an end entity's may not, and neither may assert a value outside
+  // its list. The published certificate is a certification authority asserting keyCertSign and cRLSign,
+  // which HSS-2 already accepts; these drive the refusals. The extension is rewritten in place, so the
+  // signature no longer covers it, and the assertion is on the key-usage verdict rather than the path.
+  function kuVerdict(certDer) {
+    return pki.path.validate([pki.schema.x509.parse(certDer)], { time: T, trustAnchors: [pem] })
+      .then(function (res) {
+        var codes = [];
+        (res.results || []).forEach(function (r) { (r.checks || []).forEach(function (c) { if (c.name === "hbsKeyUsage") codes.push(c.ok ? "ok" : c.code); }); });
+        return codes.join(",");
+      });
+  }
+  // The published extension is `03 02 01 06` (keyCertSign + cRLSign). Rewriting the bits in place keeps
+  // the length, so every other field of the certificate stays where it was.
+  var kuAt = der.indexOf(Buffer.from("03020106", "hex"));
+  check("HSS-12 the fixture's keyUsage bits are where the rewrite expects them", kuAt > 0);
+  function withKeyUsage(unused, bits) {
+    var out = Buffer.from(der);
+    out[kuAt + 2] = unused;
+    out[kuAt + 3] = bits;
+    return out;
+  }
+  check("HSS-13 the published certification-authority key usage is accepted",
+    (await kuVerdict(der)) === "ok");
+  check("HSS-14 a stateful hash-based key asserting only keyEncipherment is refused",
+    (await kuVerdict(withKeyUsage(5, 0x20))) === "path/hbs-key-usage");
+  check("HSS-15 a stateful hash-based key asserting a signature bit alongside a forbidden one is refused",
+    (await kuVerdict(withKeyUsage(5, 0xa0))) === "path/hbs-key-usage");
+  check("HSS-16 digitalSignature alone is accepted",
+    (await kuVerdict(withKeyUsage(7, 0x80))) === "ok");
+  // The two lists differ by exactly this bit: keyCertSign satisfies the rule for a certification
+  // authority and is a value an end entity may not assert at all.
+  check("HSS-17 keyCertSign alone is accepted for a certification authority",
+    (await kuVerdict(withKeyUsage(2, 0x04))) === "ok");
+  var bcAt = der.indexOf(Buffer.from("30030101ff", "hex"));
+  check("HSS-18 the fixture's basicConstraints are where the rewrite expects them", bcAt > 0);
+  function asEndEntity(certDer) { var out = Buffer.from(certDer); out[bcAt + 4] = 0x00; return out; }
+  check("HSS-19 keyCertSign is refused for an end entity, which the same bits allow for a certification authority",
+    (await kuVerdict(asEndEntity(withKeyUsage(2, 0x04)))) === "path/hbs-key-usage" &&
+    (await kuVerdict(withKeyUsage(2, 0x04))) === "ok");
+  check("HSS-20 an end entity asserting digitalSignature is accepted",
+    (await kuVerdict(asEndEntity(withKeyUsage(7, 0x80)))) === "ok");
+
   // Outside the validity window the verdict is the ordinary one, so the new dispatch did not become
   // a way around the rest of section 6.1.
   var rExpired = await pki.path.validate([parsed], { time: new Date("2040-01-01T00:00:00Z"), trustAnchors: [pem] });
