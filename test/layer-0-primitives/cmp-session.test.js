@@ -382,6 +382,18 @@ async function run() {
   check("6t7b. a response cap below that certificate does not refuse the token that names it",
     (await codeOf(tightSess.resumePoll(JSON.parse(JSON.stringify(bareTok))))) !== "cmp/bad-input" &&
     tightF.transport.calls.length > 0);
+  // The chain is bounded by the path length rather than by the response size, so a token naming more
+  // certificates than a path can hold is refused while a caller's own oversized intermediate is not.
+  var longChain = [];
+  for (var oc = 0; oc < 101; oc++) longChain.push(H.intCaCert.toString("base64"));
+  var sLongChain = mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()], { intermediates: [H.intCaCert] });
+  check("6t7c. a token naming more chain certificates than a path holds is refused before any request",
+    (await codeOf(sLongChain.session.resumePoll(Object.assign({}, tok, { chain: longChain })))) === "cmp/bad-input" &&
+    sLongChain.transport.calls.length === 0);
+  var sFitChain = mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()], { intermediates: [H.intCaCert] });
+  check("6t7d. a chain at that length is read",
+    (await codeOf(sFitChain.session.resumePoll(Object.assign({}, tok, { chain: longChain.slice(0, 100) })))) !== "cmp/bad-input" &&
+    sFitChain.transport.calls.length > 0);
 
   // Well-formed DER in the shape of a public key is not one: the door reads the SEQUENCE widths and the
   // BIT STRING, so DER that merely decodes cannot be fingerprinted as a key and spend the saved nonce.
