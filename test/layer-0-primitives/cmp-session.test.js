@@ -596,6 +596,26 @@ async function run() {
     (await codeOf(macForSig.resumePoll(sigTokP))) === "cmp/bad-input" && macForSigF.transport.calls.length === 0);
   check("6t10f. a token naming a protection that is neither is refused",
     await codeOf(mk([]).session.resumePoll(Object.assign({}, tok, { protection: "none" }))) === "cmp/bad-input");
+  // A token trimmed of the field is read from its own contents, never from the session reading it, or a
+  // session of either flavor could answer for a transaction of the other.
+  var trimmedSig = JSON.parse(JSON.stringify(tok));
+  delete trimmedSig.protection;
+  var macForTrimmedF = H.fakeCa(pki, [H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()], { macSecret: MAC_SECRET });
+  var macForTrimmed = pki.cmp.session({ url: URL, mac: { secret: MAC_SECRET }, transport: macForTrimmedF.transport,
+    sleep: function () { return Promise.resolve(); } });
+  check("6t10g. a trimmed signature token is not resumed by a shared-secret session",
+    (await codeOf(macForTrimmed.resumePoll(trimmedSig))) === "cmp/bad-input" && macForTrimmedF.transport.calls.length === 0);
+  var trimmedMac = JSON.parse(JSON.stringify(macTok));
+  delete trimmedMac.protection;
+  var sigForTrimmed = mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()]);
+  check("6t10h. a trimmed shared-secret token is not resumed by a signature session",
+    (await codeOf(sigForTrimmed.session.resumePoll(trimmedMac))) === "cmp/bad-input" &&
+    sigForTrimmed.transport.calls.length === 0);
+  var macForTrimmed2F = H.fakeCa(pki, [H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()], { macSecret: MAC_SECRET });
+  var macForTrimmed2 = pki.cmp.session({ url: URL, mac: { secret: MAC_SECRET }, transport: macForTrimmed2F.transport,
+    sleep: function () { return Promise.resolve(); } });
+  check("6t10i. and a trimmed token still resumes under the flavor it was made with",
+    (await macForTrimmed2.resumePoll(JSON.parse(JSON.stringify(trimmedMac)))).outcome === "issued");
 
   check("6t8. and that token resumes to the grant",
     (await mk([H.pollRep(-1, 1), H.cp(-1, 0, certDer), H.pkiconf()]).session.resumePoll(
