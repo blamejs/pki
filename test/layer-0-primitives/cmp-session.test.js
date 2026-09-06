@@ -326,6 +326,29 @@ async function run() {
     sNeg.transport.calls.length > 0);
   check("6t3b. a token whose certReqId is longer than the widest identifier a request can carry is refused",
     await codeOf(mk([]).session.resumePoll(Object.assign({}, tok, { certReqId: "9".repeat(49153) }))) === "cmp/bad-input");
+  // Every spelling a numeric conversion would read but a session never writes. Each names a different
+  // request than it appears to, so each is refused before the saved nonce is spent.
+  var NOT_DECIMAL = ["0x10", "0b10", "0o10", "+10", " 10", "10 ", "\t10", "007", "-0", "-", "1_0", "1e3", "", "10.0"];
+  for (var nd = 0; nd < NOT_DECIMAL.length; nd++) {
+    var sDec = mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()]);
+    check("6t3b2. a token whose certReqId is " + JSON.stringify(NOT_DECIMAL[nd]) + " is refused before any request",
+      (await codeOf(sDec.session.resumePoll(Object.assign({}, tok, { certReqId: NOT_DECIMAL[nd] })))) === "cmp/bad-input" &&
+      sDec.transport.calls.length === 0);
+  }
+  // The spellings a session does write are still read.
+  var DECIMAL = ["0", "-1", "10", "9007199254740993"];
+  for (var dd = 0; dd < DECIMAL.length; dd++) {
+    var sOk = mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()]);
+    check("6t3b3. a token whose certReqId is " + JSON.stringify(DECIMAL[dd]) + " is read",
+      (await codeOf(sOk.session.resumePoll(Object.assign({}, tok, { certReqId: DECIMAL[dd] })))) !== "cmp/bad-input" &&
+      sOk.transport.calls.length > 0);
+  }
+  // The response cap is a bound the token decode measures against, so it is refused where it is given.
+  check("6t3b4. a session built with a fractional response cap is refused at construction",
+    await codeOf(Promise.resolve().then(function () {
+      return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert],
+        transport: H.fakeCa(pki, []).transport, maxResponseBytes: 1.5 });
+    })) === "cmp/bad-input");
   check("6t4. a token whose chain is not an array is refused",
     await codeOf(mk([]).session.resumePoll(Object.assign({}, tok, { chain: tok.signer }))) === "cmp/bad-input");
   check("6t5. a token whose next-poll instant is not a number is refused",
