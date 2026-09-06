@@ -1419,6 +1419,13 @@ embedding it is responsible for.
 - **Application-layer misuse.** Calling a parse entry point and then ignoring the
   thrown error, or trusting a field the toolkit surfaced but the operator never
   validated, defeats the fail-closed design.
+- **Integrity of state the caller stores between calls.** A `pki.cmp.session`
+  `resumeToken` carries no secret, and a resumed poll still verifies, nonce-binds
+  and key-binds every response. Its fields are what the resumed exchange is held
+  to, so someone who can rewrite the stored token can widen what the resumed
+  session accepts, as far as that session's trust anchors and the authority's
+  protection allow and no further. Store it where the enrollment's own state is
+  stored.
 
 ---
 

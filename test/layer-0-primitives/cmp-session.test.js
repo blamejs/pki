@@ -39,6 +39,12 @@ var URL = "https://ca.example/cmp";
 
 async function codeOf(p) { try { await p; return "NO-THROW"; } catch (e) { return (e && e.code) || ("RAW:" + (e && e.message)); } }
 
+// Every resumeToken field that names a certificate, so the door rule is asserted on all of them.
+var CERT_FIELDS = ["signer", "signerCache", "chain", "caPubs"];
+var B = pki.asn1.build;
+// A field, and a value that would break the resumed poll if a second read of it reached the state.
+var TWO_FACED_FIELDS = [["arm", "kup"], ["polls", 1e9], ["nextPollAt", 8.64e15], ["certReqId", "123"]];
+
 // Build a session over a scripted fake CA. Returns { session, transport, slept:()=>n }.
 function mk(legs, extra) {
   var f = H.fakeCa(pki, legs);
@@ -157,6 +163,501 @@ async function run() {
   var r6 = await s6.session.enroll(H.irRequest(CLIENT.spki));
   check("6a. exceeding maxPolls -> a terminal outcome:poll-timeout VERDICT (not a throw)", r6.outcome === "poll-timeout" && r6.polls === 2);
   check("6b. poll-timeout carries the last waiting PKIStatusInfo diagnostic", r6.status && r6.status.status.code === 3);
+
+  // ===== 6c. resuming a poll in a later process =====
+  // A certification authority that answers `waiting` can take longer than the caller is willing to
+  // hold a process open. The poll-timeout verdict carries what the next process needs to carry the
+  // SAME transaction on: its identifier, the nonce the next request must echo, and which request is
+  // being polled (RFC 9810 sec. 5.1.1). Everything else, the protection key and the endpoint, comes
+  // from the session the caller builds then.
+  check("6c. poll-timeout carries a resumeToken", !!r6.resumeToken && typeof r6.resumeToken === "object");
+  var tok = r6.resumeToken;
+  check("6d. the token is JSON-serializable, so it survives a process boundary",
+    JSON.stringify(tok) === JSON.stringify(JSON.parse(JSON.stringify(tok))));
+  check("6e. the token names the transaction, the polled request and the nonce to echo",
+    typeof tok.transactionId === "string" && tok.transactionId.length > 0 &&
+    typeof tok.certReqId === "string" && typeof tok.recipNonce === "string" && tok.recipNonce.length > 0 &&
+    tok.arm === "ip" && tok.polls === 2);
+  // The identifier is an integer of any width, so it travels as a decimal string: a token that cannot
+  // be serialized is not a resumable one.
+  var WIDE_ID = 72057594037927936n;
+  var wideTok = (await mk([H.ip(WIDE_ID, 3), H.pollRep(WIDE_ID, 1), H.pollRep(WIDE_ID, 1), H.pollRep(WIDE_ID, 1)], { maxPolls: 2 })
+    .session.enroll(H.irRequest(CLIENT.spki, WIDE_ID))).resumeToken;
+  check("6e2. a request identifier too wide for a JSON number survives the round trip",
+    wideTok.certReqId === "72057594037927936" &&
+    JSON.parse(JSON.stringify(wideTok)).certReqId === "72057594037927936");
+  // The token also carries the identity the first process authenticated, and the certificates it was
+  // sent, so a restart is no weaker and no more dependent on the authority repeating itself.
+  check("6e3. the token carries the pinned signer identity", typeof tok.signer === "string" && tok.signer.length > 0);
+  // The identity pinned on the first response and the certificate currently used to verify one that
+  // omits its extraCerts are carried as two fields, because a same-identity rotation moves the second
+  // and never the first. A token naming only the pin verifies under it.
+  check("6e4. the token carries the pin and the verification certificate as separate fields",
+    Object.prototype.hasOwnProperty.call(tok, "signer") && Object.prototype.hasOwnProperty.call(tok, "signerCache"));
+  check("6e5. a token naming only the pin resumes, verifying under it",
+    (await mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()]).session.resumePoll(
+      Object.assign(JSON.parse(JSON.stringify(tok)), { signerCache: null }))).outcome === "issued");
+
+  // A second session resumes it: the grant arrives on the poll, and the certificate is issued.
+  var s6r = mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()]);
+  var r6r = await s6r.session.resumePoll(JSON.parse(JSON.stringify(tok)));
+  check("6f. a later session resumes the poll and reaches the grant",
+    r6r.outcome === "issued" && Buffer.isBuffer(r6r.certificate));
+  var firstResumed = pki.schema.cmp.parse(s6r.transport.calls[0].body).header;
+  check("6g. the resumed transaction keeps the identifier the token carried",
+    Buffer.from(firstResumed.transactionID).toString("hex") === tok.transactionId);
+  check("6h. the first resumed request echoes the nonce the token carried",
+    Buffer.from(firstResumed.recipNonce).toString("base64") === tok.recipNonce);
+  check("6i. the polls the first process spent are carried into the resumed verdict", r6r.polls > 2);
+
+  // The token is state, not authority: a resumed poll verifies protection and binds the issued
+  // certificate to the requested key exactly as the first process did.
+  var s6bad = mk([H.pollRep(0, 1), H.ip(0, 0, H.signerCert), H.pkiconf()]);
+  check("6j. a resumed grant certifying a different key is refused",
+    (await codeOf(s6bad.session.resumePoll(JSON.parse(JSON.stringify(tok))))) === "cmp/bad-cert-response");
+  var s6untrusted = mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()], { trustAnchors: [H.intCaCert] });
+  check("6k. a resumed response whose protection does not verify is refused",
+    typeof (await codeOf(s6untrusted.session.resumePoll(JSON.parse(JSON.stringify(tok))))) === "string");
+
+  // The identity the first process authenticated is carried, so a restart admits no signer the
+  // uninterrupted transaction would have refused. Within one process a second trusted signer with its
+  // own subject is cmp/untrusted-signer; the resumed poll must answer the same way.
+  var s6forge = H.fakeCa(pki, [{ body: H.pollRep(0, 1), foreignSigner: true }, H.ip(0, 0, certDer), H.pkiconf()]);
+  var sess6forge = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert],
+    transport: s6forge.transport, sleep: function () { return Promise.resolve(); } });
+  check("6y. a resumed response from a DIFFERENT trusted signer is refused, as it is mid-transaction",
+    (await codeOf(sess6forge.resumePoll(JSON.parse(JSON.stringify(tok))))) === "cmp/untrusted-signer");
+
+  // The authority's own checkAfter is honored across the restart: resuming before it falls due waits
+  // out the remainder rather than polling faster than it asked to be polled.
+  var slow = await mk([H.ip(0, 3), H.pollRep(0, 3600), H.pollRep(0, 3600)], { maxPolls: 1 })
+    .session.enroll(H.irRequest(CLIENT.spki));
+  check("6z. a timeout with an outstanding checkAfter records when the next poll is due",
+    slow.outcome === "poll-timeout" && typeof slow.resumeToken.nextPollAt === "number" &&
+    slow.resumeToken.nextPollAt > Date.now());
+  var waitedMs = 0;
+  var s6wait = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert],
+    transport: H.fakeCa(pki, [H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()]).transport,
+    sleep: function (ms) { waitedMs += ms; return Promise.resolve(); } });
+  await s6wait.resumePoll(JSON.parse(JSON.stringify(slow.resumeToken)));
+  check("6z2. resuming before the interval falls due waits out the remainder first", waitedMs > 0);
+  // The authority's interval is honored, but this process's own wait budget still bounds it: a
+  // remainder longer than the budget is a timeout now, carrying the same due time on.
+  var tightSlept = 0;
+  var s6tight = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert],
+    transport: H.fakeCa(pki, [H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()]).transport,
+    maxTotalWait: 1, sleep: function (ms) { tightSlept += ms; return Promise.resolve(); } });
+  var tight = await s6tight.resumePoll(JSON.parse(JSON.stringify(slow.resumeToken)));
+  check("6z3. a remainder longer than this process's wait budget times out now instead of sleeping it out",
+    tight.outcome === "poll-timeout" && tightSlept === 0 &&
+    tight.resumeToken.nextPollAt === slow.resumeToken.nextPollAt);
+  // That session now holds the restored transaction's identifier and nonce, so it is spent even though
+  // it sent nothing: enrolling on it would open a new enrollment under another transaction's identity.
+  check("6z3b. a session that restored a transaction is consumed even when it sent no request",
+    await codeOf(s6tight.enroll(H.irRequest(CLIENT.spki))) === "cmp/bad-input");
+
+  // An authority may send the issued certificate's intermediate in a WAITING response and omit it from
+  // the grant. The certificates the first process was sent travel in the token, so the resumed grant
+  // validates on material the uninterrupted transaction also had.
+  check("6z4. the token carries the certificates accumulated before the timeout",
+    Array.isArray(tok.caPubs));
+  var intLeaf6 = await H.makeIntSignedLeaf(pki, CLIENT.spki);   // leaf -> intCaCert -> root
+  var capubTok = (await mk([H.ip(0, 3, null, { caPubs: [H.intCaCert] }), H.pollRep(0, 1), H.pollRep(0, 1), H.pollRep(0, 1)], { maxPolls: 2 })
+    .session.enroll(H.irRequest(CLIENT.spki))).resumeToken;
+  check("6z5. an intermediate delivered on a waiting leg is in the token", capubTok.caPubs.length === 1);
+  var resumedIssued = await mk([H.pollRep(0, 1), H.ip(0, 0, intLeaf6), H.pkiconf()])
+    .session.resumePoll(JSON.parse(JSON.stringify(capubTok)));
+  check("6z6. a resumed grant that omits that intermediate still validates the leaf it signed",
+    resumedIssued.outcome === "issued" && resumedIssued.chain.length === 2);
+  check("6z7. a token whose caPubs is not an array is refused",
+    await codeOf(mk([]).session.resumePoll(Object.assign({}, tok, { caPubs: "nope" }))) === "cmp/bad-input");
+  var manyPubs = [];
+  for (var mp = 0; mp < 65; mp++) manyPubs.push(Buffer.from(H.intCaCert).toString("base64"));
+  check("6z8. a token carrying more certificates than a transaction accumulates is refused",
+    await codeOf(mk([]).session.resumePoll(Object.assign({}, tok, { caPubs: manyPubs }))) === "cmp/bad-input");
+  // A token written by an earlier release, or trimmed by a caller, may omit the optional lists and the
+  // due time entirely; it still resumes on what it does name.
+  var minimalTok = { transactionId: tok.transactionId, recipNonce: tok.recipNonce, certReqId: tok.certReqId,
+    arm: tok.arm, requestedSpki: tok.requestedSpki, signer: tok.signer };
+  check("6z8b. a token naming only what binds the transaction resumes on that alone",
+    (await mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()]).session.resumePoll(minimalTok)).outcome === "issued");
+  check("6z9. a duplicate in the token's certificates is restored once, not twice",
+    (await mk([H.pollRep(0, 1), H.ip(0, 0, intLeaf6), H.pkiconf()]).session.resumePoll(
+      Object.assign({}, JSON.parse(JSON.stringify(capubTok)), { caPubs: [capubTok.caPubs[0], capubTok.caPubs[0]] }))).outcome === "issued");
+
+  // A malformed token is refused at the door rather than starting a transaction that cannot be bound.
+  check("6l. a token that is not an object is refused",
+    await codeOf(mk([]).session.resumePoll("not a token")) === "cmp/bad-input");
+  check("6m. a token missing its transaction identifier is refused",
+    await codeOf(mk([]).session.resumePoll({ certReqId: 0, recipNonce: tok.recipNonce, arm: "ip" })) === "cmp/bad-input");
+  check("6n. a token whose transaction identifier is not hex is refused",
+    await codeOf(mk([]).session.resumePoll(Object.assign({}, tok, { transactionId: "zz" }))) === "cmp/bad-input");
+  // The door refuses before anything is sent, which is what distinguishes a rejected token from a
+  // transaction that started and then went wrong.
+  var s6arm = mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()]);
+  check("6o. a token naming an arm the session cannot answer is refused before any request is sent",
+    (await codeOf(s6arm.session.resumePoll(Object.assign({}, tok, { arm: "rp" })))) === "cmp/bad-input" &&
+    s6arm.transport.calls.length === 0);
+  var s6nonce = mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()]);
+  check("6o2. a token whose recipNonce is not canonical base64 is refused before any request is sent",
+    (await codeOf(s6nonce.session.resumePoll(Object.assign({}, tok, { recipNonce: "not base64!!" })))) === "cmp/bad-input" &&
+    s6nonce.transport.calls.length === 0);
+  var s6extra = mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()]);
+  check("6o3. a token carrying an unknown field is refused rather than read past",
+    (await codeOf(s6extra.session.resumePoll(Object.assign({}, tok, { endpoint: "https://elsewhere.example" })))) === "cmp/bad-input" &&
+    s6extra.transport.calls.length === 0);
+  check("6p. a session that already ran a transaction refuses to resume one",
+    await codeOf(s6.session.resumePoll(JSON.parse(JSON.stringify(tok)))) === "cmp/bad-input");
+  check("6q. a token whose transaction identifier is empty is refused",
+    await codeOf(mk([]).session.resumePoll(Object.assign({}, tok, { transactionId: "" }))) === "cmp/bad-input");
+  check("6r. a token whose recipNonce is empty is refused",
+    await codeOf(mk([]).session.resumePoll(Object.assign({}, tok, { recipNonce: "" }))) === "cmp/bad-input");
+  check("6s. a token whose certReqId is not an integer is refused",
+    await codeOf(mk([]).session.resumePoll(Object.assign({}, tok, { certReqId: 1.5 }))) === "cmp/bad-input");
+  check("6t. a token whose polls count is negative is refused",
+    await codeOf(mk([]).session.resumePoll(Object.assign({}, tok, { polls: -1 }))) === "cmp/bad-input");
+  check("6t2. a token whose certReqId is not a decimal string is refused",
+    await codeOf(mk([]).session.resumePoll(Object.assign({}, tok, { certReqId: "seven" }))) === "cmp/bad-input");
+  // The reader accepts every identifier an enrollment can put in a token, and refuses a decimal string
+  // too long to convert without the conversion itself becoming the cost.
+  var sNeg = mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()]);
+  check("6t3. a token whose certReqId is a negative identifier an enrollment can carry is read",
+    (await codeOf(sNeg.session.resumePoll(Object.assign({}, tok, { certReqId: "-2" })))) !== "cmp/bad-input" &&
+    sNeg.transport.calls.length > 0);
+  check("6t3b. a token whose certReqId is longer than the widest identifier a request can carry is refused",
+    await codeOf(mk([]).session.resumePoll(Object.assign({}, tok, { certReqId: "9".repeat(49153) }))) === "cmp/bad-input");
+  // A wait split across processes reads the same as one held in a single process: a resumed poll that
+  // read no certificate response of its own still reports the waiting status, because that is the status
+  // a transaction a token can continue is in.
+  var sTimeoutA = mk([H.ip(0, 3), H.pollRep(0, 1)], { maxPolls: 1 });
+  var timeoutStraight = await sTimeoutA.session.enroll(H.irRequest(CLIENT.spki));
+  var sTimeoutB = mk([H.pollRep(0, 1)], { maxPolls: 1 });
+  var timeoutResumed = await sTimeoutB.session.resumePoll(JSON.parse(JSON.stringify(timeoutStraight.resumeToken)));
+  check("6t3d. a resumed timeout that read no certificate response still reports the waiting status",
+    timeoutStraight.outcome === "poll-timeout" && timeoutStraight.status.status.code === 3 &&
+    timeoutResumed.outcome === "poll-timeout" && timeoutResumed.status.status.code === 3 &&
+    timeoutResumed.status.status.name === timeoutStraight.status.status.name &&
+    timeoutResumed.resumeToken != null);
+  // The authority's own diagnostics are not reproduced from stored state, so a verdict never presents
+  // text as the authority's that the authority did not send in this exchange.
+  check("6t3d2. and it reports no diagnostic string of its own",
+    timeoutResumed.status.statusString === null && timeoutResumed.status.failInfo === null);
+  // The due-time handoff, which sends no request at all, reports the same status.
+  var farTok = JSON.parse(JSON.stringify(timeoutStraight.resumeToken));
+  farTok.nextPollAt = Date.now() + 3600000;
+  var sFar = mk([H.pollRep(0, 1)], { maxTotalWait: 1 });
+  var farOut = await sFar.session.resumePoll(farTok);
+  check("6t3d3. a resume whose remaining wait exceeds the budget reports it too, sending no request",
+    farOut.outcome === "poll-timeout" && farOut.status.status.code === 3 && sFar.transport.calls.length === 0);
+
+  // A nonce shorter than a received message is allowed to carry could not have come from a response, so
+  // it is refused before it is echoed into a request that cannot continue the chain.
+  var SHORT_NONCES = ["AA==", Buffer.alloc(15, 7).toString("base64"), ""];
+  for (var sn = 0; sn < SHORT_NONCES.length; sn++) {
+    var sShort = mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()]);
+    check("6t3e. a token whose recipNonce is shorter than a response nonce is refused before any request (" + sn + ")",
+      (await codeOf(sShort.session.resumePoll(Object.assign({}, tok, { recipNonce: SHORT_NONCES[sn] })))) === "cmp/bad-input" &&
+      sShort.transport.calls.length === 0);
+  }
+  // The same question of the identifier: a first message opens a transaction with 128 bits, so a token
+  // naming any other width names a transaction it cannot have opened.
+  var ODD_TXNS = [Buffer.alloc(8, 3).toString("hex"), Buffer.alloc(17, 3).toString("hex"), ""];
+  for (var ot = 0; ot < ODD_TXNS.length; ot++) {
+    var sTxn = mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()]);
+    check("6t3g. a token whose transactionId is not the width a first message opens with is refused (" + ot + ")",
+      (await codeOf(sTxn.session.resumePoll(Object.assign({}, tok, { transactionId: ODD_TXNS[ot] })))) === "cmp/bad-input" &&
+      sTxn.transport.calls.length === 0);
+  }
+  var sAtFloor = mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()]);
+  check("6t3f. a token whose recipNonce is exactly at that floor is read",
+    (await codeOf(sAtFloor.session.resumePoll(Object.assign({}, tok, { recipNonce: Buffer.alloc(16, 7).toString("base64") })))) !== "cmp/bad-input" &&
+    sAtFloor.transport.calls.length > 0);
+
+  // The door accepts exactly the widths the next request can encode, so an identifier the encoder
+  // refuses cannot pass the door and consume the session before the encoding is attempted.
+  var sWide = mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()]);
+  var wideCode = await codeOf(sWide.session.resumePoll(Object.assign({}, tok, { certReqId: "9".repeat(45000) })));
+  var wideSent = sWide.transport.calls.length;
+  await codeOf(sWide.session.resumePoll(JSON.parse(JSON.stringify(tok))));
+  check("6t3b1. a token whose certReqId is wider than a request identifier encodes is refused, and the session it was handed to still resumes",
+    wideCode === "cmp/bad-input" && wideSent === 0 && sWide.transport.calls.length > 0);
+  // Every spelling a numeric conversion would read but a session never writes. Each names a different
+  // request than it appears to, so each is refused before the saved nonce is spent.
+  var NOT_DECIMAL = ["0x10", "0b10", "0o10", "+10", " 10", "10 ", "\t10", "007", "-0", "-", "1_0", "1e3", "", "10.0"];
+  for (var nd = 0; nd < NOT_DECIMAL.length; nd++) {
+    var sDec = mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()]);
+    check("6t3b2. a token whose certReqId is " + JSON.stringify(NOT_DECIMAL[nd]) + " is refused before any request",
+      (await codeOf(sDec.session.resumePoll(Object.assign({}, tok, { certReqId: NOT_DECIMAL[nd] })))) === "cmp/bad-input" &&
+      sDec.transport.calls.length === 0);
+  }
+  // The spellings a session does write are still read.
+  var DECIMAL = ["0", "-1", "10", "9007199254740993"];
+  for (var dd = 0; dd < DECIMAL.length; dd++) {
+    var sOk = mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()]);
+    check("6t3b3. a token whose certReqId is " + JSON.stringify(DECIMAL[dd]) + " is read",
+      (await codeOf(sOk.session.resumePoll(Object.assign({}, tok, { certReqId: DECIMAL[dd] })))) !== "cmp/bad-input" &&
+      sOk.transport.calls.length > 0);
+  }
+  // The response cap is a bound the token decode measures against, so it is refused where it is given.
+  check("6t3b4. a session built with a fractional response cap is refused at construction",
+    await codeOf(Promise.resolve().then(function () {
+      return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert],
+        transport: H.fakeCa(pki, []).transport, maxResponseBytes: 1.5 });
+    })) === "cmp/bad-input");
+  check("6t4. a token whose chain is not an array is refused",
+    await codeOf(mk([]).session.resumePoll(Object.assign({}, tok, { chain: tok.signer }))) === "cmp/bad-input");
+  check("6t5. a token whose next-poll instant is not a number is refused",
+    await codeOf(mk([]).session.resumePoll(Object.assign({}, tok, { nextPollAt: "soon" }))) === "cmp/bad-input");
+  // A token is any object a caller hands in. Each field is taken once, so a field that answers one way
+  // to the check and another to the restore cannot put the second answer into the resumed state.
+  for (var tf = 0; tf < TWO_FACED_FIELDS.length; tf++) {
+    var twoFaced = {};
+    var names = Object.keys(tok);
+    for (var tn = 0; tn < names.length; tn++) twoFaced[names[tn]] = tok[names[tn]];
+    (function (name, second) {
+      var reads = 0, first = tok[name];
+      Object.defineProperty(twoFaced, name, { enumerable: true, get: function () { return reads++ === 0 ? first : second; } });
+    }(TWO_FACED_FIELDS[tf][0], TWO_FACED_FIELDS[tf][1]));
+    var sTwo = mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()]);
+    var twoCode = await codeOf(sTwo.session.resumePoll(twoFaced));
+    check("6t5. a token whose " + TWO_FACED_FIELDS[tf][0] + " answers differently on a second read carries the checked value",
+      twoCode === "NO-THROW" && sTwo.transport.calls.length > 0);
+  }
+  // Every field of a token that names a certificate is parsed at the door, so stored bytes that are not
+  // one cannot spend the nonce the token carries before they are found to be unusable.
+  var notCertB64 = Buffer.from("nope").toString("base64");
+  for (var cf = 0; cf < CERT_FIELDS.length; cf++) {
+    var field = CERT_FIELDS[cf];
+    var bad = Object.assign({}, tok);
+    bad[field] = field === "chain" || field === "caPubs" ? [notCertB64] : notCertB64;
+    var sBad = mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()]);
+    check("6t6. a token whose " + field + " is not a certificate is refused before any request",
+      (await codeOf(sBad.session.resumePoll(bad))) === "cmp/bad-input" && sBad.transport.calls.length === 0);
+  }
+  // Stored state that is not a public key is read at the door, so it cannot advance the exchange with
+  // the authority and only then be found unusable.
+  // The key a token names came from the caller's own request, not from a response, so a response cap
+  // below its size does not refuse the token that carries it.
+  var rsaSpki = signing.makeSigner("rsa").spki;
+  var sBigKey = mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()], { maxResponseBytes: rsaSpki.length - 1 });
+  check("6t3c. a response cap below the requested key does not refuse the token that names it",
+    (await codeOf(sBigKey.session.resumePoll(Object.assign({}, tok, { requestedSpki: rsaSpki.toString("base64") })))) !== "cmp/bad-input" &&
+    sBigKey.transport.calls.length > 0);
+
+  // The chain that validates the signer can hold a certificate the caller passed in opts.intermediates.
+  // It never crossed the wire, so it is bounded by the codec rather than by the response size, and a
+  // session whose response cap is smaller than that certificate still restores the token it names.
+  var bareF = H.fakeCa(pki, [H.ip(0, 3), H.pollRep(0, 1)], { deepSigner: true, deepSignerBareExtra: true });
+  var bareSess = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert],
+    intermediates: [H.intCaCert], transport: bareF.transport, sleep: function () { return Promise.resolve(); }, maxPolls: 1 });
+  var bareTok = (await bareSess.enroll(H.irRequest(CLIENT.spki))).resumeToken;
+  check("6t7. a token from a caller-supplied chain names that certificate",
+    bareTok != null && bareTok.chain.length === 2 && Buffer.from(bareTok.chain[0], "base64").length === H.intCaCert.length);
+  var tightF = H.fakeCa(pki, [H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()], { deepSigner: true, deepSignerBareExtra: true });
+  var tightSess = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert],
+    intermediates: [H.intCaCert], maxResponseBytes: H.intCaCert.length - 1, transport: tightF.transport,
+    sleep: function () { return Promise.resolve(); } });
+  check("6t7b. a response cap below that certificate does not refuse the token that names it",
+    (await codeOf(tightSess.resumePoll(JSON.parse(JSON.stringify(bareTok))))) !== "cmp/bad-input" &&
+    tightF.transport.calls.length > 0);
+  // A resumed transaction is held to what the first process actually had. Driving the SAME response
+  // sequence both ways, a token that names no cached verification certificate must not let the pinned
+  // identity stand in for one: the grant is validated from the certificates the authority sent, and a
+  // sequence that leaves none of them behind is refused in one process and in two alike.
+  // Implicit confirmation is negotiated in the request the token continues, so the token carries it and
+  // the resumed poll confirms the way that request asked, whatever the resuming session's options say.
+  var icA = mk([H.ip(0, 3), H.pollRep(0, 1)], { implicitConfirm: true, maxPolls: 1 });
+  var icTok = (await icA.session.enroll(H.irRequest(CLIENT.spki))).resumeToken;
+  check("6t13. a token records that its request asked for implicit confirmation", icTok != null && icTok.implicitConfirm === true);
+  var icB = mk([{ body: H.ip(0, 0, certDer), generalInfo: H.IMPLICIT_CONFIRM_GI }]);
+  var icOut = await icB.session.resumePoll(JSON.parse(JSON.stringify(icTok)));
+  check("6t13b. a session that never set the option still confirms that grant implicitly, sending no certConf",
+    icOut.outcome === "issued" && icOut.implicitConfirm === true && icB.transport.calls.length === 1);
+  // The other direction is the one that must not open: a session setting the option cannot make a
+  // transaction whose request never asked for it accept an implicit-confirm indication.
+  var plainA = mk([H.ip(0, 3), H.pollRep(0, 1)], { maxPolls: 1 });
+  var plainTok = (await plainA.session.enroll(H.irRequest(CLIENT.spki))).resumeToken;
+  var plainB = mk([{ body: H.ip(0, 0, certDer), generalInfo: H.IMPLICIT_CONFIRM_GI }, H.pkiconf()], { implicitConfirm: true });
+  var plainOut = await plainB.session.resumePoll(JSON.parse(JSON.stringify(plainTok)));
+  check("6t13c. a token whose request did not ask for implicit confirmation still sends its certConf",
+    plainTok.implicitConfirm === false && plainOut.outcome === "issued" &&
+    plainOut.implicitConfirm === false && plainB.transport.calls.length === 2);
+  check("6t13d. a token that says how its transaction confirms in anything but a boolean is refused",
+    await codeOf(mk([]).session.resumePoll(Object.assign({}, plainTok, { implicitConfirm: "yes" }))) === "cmp/bad-input");
+  var sOmit = mk([H.pollRep(0, 1), { body: H.ip(0, 0, certDer), generalInfo: H.IMPLICIT_CONFIRM_GI }, H.pkiconf()],
+    { implicitConfirm: true });
+  var omitTok = JSON.parse(JSON.stringify(icTok));
+  delete omitTok.implicitConfirm;
+  var omitOut = await sOmit.session.resumePoll(omitTok);
+  check("6t13f. a token omitting it resumes as though the request asked for nothing, so the grant is confirmed explicitly",
+    omitOut.outcome === "issued" && omitOut.implicitConfirm === false);
+  var sVet = mk([{ body: H.ip(0, 0, certDer), generalInfo: H.IMPLICIT_CONFIRM_GI }], { acceptCert: function () { return true; } });
+  check("6t13e. an implicit-confirm token handed to a session that vets grants is refused before any request",
+    (await codeOf(sVet.session.resumePoll(JSON.parse(JSON.stringify(icTok))))) === "cmp/bad-input" &&
+    sVet.transport.calls.length === 0);
+
+  var waitLeg = { body: H.ip(0, 3), noExtraCerts: true };
+  var pollLeg = { body: H.pollRep(0, 1), noExtraCerts: true };
+  var grantLeg = { body: H.ip(0, 0, certDer), noExtraCerts: true };
+  var confLeg = { body: H.pkiconf(), noExtraCerts: true };
+  var straight = mk([waitLeg, pollLeg, grantLeg, confLeg], { expectedSender: H.signerCert });
+  var straightCode = await codeOf(straight.session.enroll(H.irRequest(CLIENT.spki)));
+  var splitA = mk([waitLeg, pollLeg], { expectedSender: H.signerCert, maxPolls: 1 });
+  var splitTok = (await splitA.session.enroll(H.irRequest(CLIENT.spki))).resumeToken;
+  var splitB = mk([grantLeg, confLeg], { expectedSender: H.signerCert });
+  var splitCode = splitTok == null ? "NO-TOKEN" : await codeOf(splitB.session.resumePoll(JSON.parse(JSON.stringify(splitTok))));
+  check("6t8. the same response sequence reaches the same verdict whether it runs in one process or two",
+    splitTok != null && splitTok.signerCache == null && splitCode === straightCode);
+  // The equivalence holds in both directions, including where the transaction fails. A session that
+  // authenticated bare responses through opts.expectedSender is configuration, not transaction state, so
+  // a resumed session without it refuses exactly where an uninterrupted one without it refuses, and the
+  // pinned identity does not quietly stand in for the certificate the option supplied.
+  var bareSeq = [waitLeg, pollLeg, grantLeg, confLeg];
+  var noOptStraight = await codeOf(mk(bareSeq).session.enroll(H.irRequest(CLIENT.spki)));
+  var noOptA = mk([waitLeg, pollLeg], { expectedSender: H.signerCert, maxPolls: 1 });
+  var noOptTok = (await noOptA.session.enroll(H.irRequest(CLIENT.spki))).resumeToken;
+  var noOptResumed = await codeOf(mk([grantLeg, confLeg]).session.resumePoll(JSON.parse(JSON.stringify(noOptTok))));
+  check("6t8b. a session that does not carry the sender pin refuses a bare response the same way in one process or two",
+    noOptStraight === "cmp/signer-cert-not-found" && noOptResumed === noOptStraight);
+
+  // The chain is bounded by the path length rather than by the response size, so a token naming more
+  // certificates than a path can hold is refused while a caller's own oversized intermediate is not.
+  var longChain = [];
+  for (var oc = 0; oc < 101; oc++) longChain.push(H.intCaCert.toString("base64"));
+  var sLongChain = mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()], { intermediates: [H.intCaCert] });
+  check("6t7c. a token naming more chain certificates than a path holds is refused before any request",
+    (await codeOf(sLongChain.session.resumePoll(Object.assign({}, tok, { chain: longChain })))) === "cmp/bad-input" &&
+    sLongChain.transport.calls.length === 0);
+  var sFitChain = mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()], { intermediates: [H.intCaCert] });
+  check("6t7d. a chain at that length is read",
+    (await codeOf(sFitChain.session.resumePoll(Object.assign({}, tok, { chain: longChain.slice(0, 100) })))) !== "cmp/bad-input" &&
+    sFitChain.transport.calls.length > 0);
+
+  // Well-formed DER in the shape of a public key is not one: the door reads the SEQUENCE widths and the
+  // BIT STRING, so DER that merely decodes cannot be fingerprinted as a key and spend the saved nonce.
+  var notSpki = [
+    ["undecodable bytes", Buffer.from("nope")],
+    ["a SEQUENCE whose second element is an INTEGER", B.sequence([B.sequence([B.oid("1.2.3")]), B.integer(1n)])],
+    ["a SEQUENCE of one element", B.sequence([B.sequence([B.oid("1.2.3")])])],
+    ["an AlgorithmIdentifier of three elements", B.sequence([B.sequence([B.oid("1.2.3"), B.nullValue(), B.nullValue()]), B.bitString(Buffer.from([1, 2, 3]), 0)])],
+    ["a subjectPublicKey that is not octet-aligned", B.sequence([B.sequence([B.oid("1.2.3")]), B.bitString(Buffer.from([1, 2, 4]), 2)])],
+  ];
+  for (var ns = 0; ns < notSpki.length; ns++) {
+    var s6badKey = mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()]);
+    check("6t6b. a token whose requested key is " + notSpki[ns][0] + " is refused before any request",
+      (await codeOf(s6badKey.session.resumePoll(Object.assign({}, tok, { requestedSpki: notSpki[ns][1].toString("base64") })))) === "cmp/bad-input" &&
+      s6badKey.transport.calls.length === 0);
+  }
+  // The certificate pool a token restores is held to the same aggregate size a live transaction
+  // accumulates under, so stored state cannot ask for a larger allocation than the exchange could.
+  // Every entry is a real certificate under the per-response cap, so only their SUM can refuse this:
+  // the pool a live transaction is allowed to accumulate is twice that cap.
+  var poolCap = { maxResponseBytes: H.caCert.length * 4 };
+  var overPool = [];
+  for (var bp = 0; bp < 12; bp++) overPool.push(H.caCert.toString("base64"));
+  var s6pool = mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()], poolCap);
+  check("6t6c. a token whose certificate pool exceeds the transaction's byte budget is refused before any request",
+    (await codeOf(s6pool.session.resumePoll(Object.assign({}, tok, { caPubs: overPool })))) === "cmp/bad-input" &&
+    s6pool.transport.calls.length === 0);
+  check("6t6d. the same pool one entry short of the budget is accepted",
+    (await codeOf(mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()], poolCap)
+      .session.resumePoll(Object.assign({}, tok, { caPubs: overPool.slice(0, 7) })))) === "NO-THROW");
+  // The whole-message sentinel is what a PKCS#10 enrollment polls under, so it must resume.
+  var p10req = await pki.csr.sign({ subject: [{ commonName: "leaf" }], subjectPublicKey: CLIENT.spki }, CLIENT.key);
+  var p10tok = (await mk([H.cp(-1, 3), H.pollRep(-1, 1), H.pollRep(-1, 1), H.pollRep(-1, 1)], { maxPolls: 2 })
+    .session.enroll({ p10cr: p10req })).resumeToken;
+  check("6t7. a PKCS#10 enrollment's token names the whole-message sentinel", p10tok.certReqId === "-1");
+  // Whatever an enrollment arm puts in a token, its own reader accepts: an arm that emitted a field the
+  // reader refuses would produce a timeout no operator could resume. Driven per arm, token straight back.
+  var ROUND_TRIP = [
+    ["ir", function () { return H.irRequest(CLIENT.spki); }, H.ip, 0],
+    ["p10cr", function () { return { p10cr: p10req }; }, H.cp, -1],
+  ];
+  for (var rt = 0; rt < ROUND_TRIP.length; rt++) {
+    var rtArm = ROUND_TRIP[rt][0], rtReq = ROUND_TRIP[rt][1], rtResp = ROUND_TRIP[rt][2], rtId = ROUND_TRIP[rt][3];
+    var rtTok = (await mk([rtResp(rtId, 3), H.pollRep(rtId, 1)], { maxPolls: 1 }).session.enroll(rtReq())).resumeToken;
+    var rtOut = await mk([H.pollRep(rtId, 1), rtResp(rtId, 0, certDer), H.pkiconf()])
+      .session.resumePoll(JSON.parse(JSON.stringify(rtTok)));
+    check("6t7b. a " + rtArm + " enrollment's own token resumes to the outcome the arm reaches",
+      rtTok != null && rtOut.outcome === "issued" && rtOut.confirmed === true);
+  }
+  // A shared-secret session pins no signer certificate, since there is none, so its token carries none
+  // and the resumed poll authenticates the same way the first process did: by the secret.
+  var MAC_SECRET = "shared-secret-resume";
+  var s6macF = H.fakeCa(pki, [H.ip(0, 3), H.pollRep(0, 1), H.pollRep(0, 1), H.pollRep(0, 1)], { macSecret: MAC_SECRET });
+  var s6mac = pki.cmp.session({ url: URL, mac: { secret: MAC_SECRET }, transport: s6macF.transport,
+    sleep: function () { return Promise.resolve(); }, maxPolls: 2 });
+  var macTok = (await s6mac.enroll(H.irRequest(CLIENT.spki, null, CLIENT.key))).resumeToken;
+  check("6t9. a shared-secret session's token carries no signer certificate", macTok.signer === null && macTok.chain.length === 0);
+  var s6macR = pki.cmp.session({ url: URL, mac: { secret: MAC_SECRET },
+    transport: H.fakeCa(pki, [H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()], { macSecret: MAC_SECRET }).transport,
+    sleep: function () { return Promise.resolve(); } });
+  check("6t10. and it resumes under the same secret",
+    (await s6macR.resumePoll(JSON.parse(JSON.stringify(macTok)))).outcome === "issued");
+  // How a transaction authenticates is fixed when it opens. The two flavors bind a response by different
+  // things, the pinned signer identity and the shared secret, so neither resumes the other's transaction.
+  check("6t10b. a shared-secret token names its protection", macTok.protection === "mac");
+  var sigTokP = JSON.parse(JSON.stringify(tok));
+  check("6t10c. a signature token names its protection", sigTokP.protection === "signature");
+  var sSigForMac = mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()]);
+  check("6t10d. a shared-secret transaction is not resumed by a signature session",
+    (await codeOf(sSigForMac.session.resumePoll(JSON.parse(JSON.stringify(macTok))))) === "cmp/bad-input" &&
+    sSigForMac.transport.calls.length === 0);
+  var macForSigF = H.fakeCa(pki, [H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()], { macSecret: MAC_SECRET });
+  var macForSig = pki.cmp.session({ url: URL, mac: { secret: MAC_SECRET }, transport: macForSigF.transport,
+    sleep: function () { return Promise.resolve(); } });
+  check("6t10e. a signature transaction is not resumed by a shared-secret session",
+    (await codeOf(macForSig.resumePoll(sigTokP))) === "cmp/bad-input" && macForSigF.transport.calls.length === 0);
+  check("6t10f. a token naming a protection that is neither is refused",
+    await codeOf(mk([]).session.resumePoll(Object.assign({}, tok, { protection: "none" }))) === "cmp/bad-input");
+  // A token trimmed of the field is read from its own contents, never from the session reading it, or a
+  // session of either flavor could answer for a transaction of the other.
+  var trimmedSig = JSON.parse(JSON.stringify(tok));
+  delete trimmedSig.protection;
+  var macForTrimmedF = H.fakeCa(pki, [H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()], { macSecret: MAC_SECRET });
+  var macForTrimmed = pki.cmp.session({ url: URL, mac: { secret: MAC_SECRET }, transport: macForTrimmedF.transport,
+    sleep: function () { return Promise.resolve(); } });
+  check("6t10g. a trimmed signature token is not resumed by a shared-secret session",
+    (await codeOf(macForTrimmed.resumePoll(trimmedSig))) === "cmp/bad-input" && macForTrimmedF.transport.calls.length === 0);
+  var trimmedMac = JSON.parse(JSON.stringify(macTok));
+  delete trimmedMac.protection;
+  var sigForTrimmed = mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()]);
+  check("6t10h. a trimmed shared-secret token is not resumed by a signature session",
+    (await codeOf(sigForTrimmed.session.resumePoll(trimmedMac))) === "cmp/bad-input" &&
+    sigForTrimmed.transport.calls.length === 0);
+  var macForTrimmed2F = H.fakeCa(pki, [H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()], { macSecret: MAC_SECRET });
+  var macForTrimmed2 = pki.cmp.session({ url: URL, mac: { secret: MAC_SECRET }, transport: macForTrimmed2F.transport,
+    sleep: function () { return Promise.resolve(); } });
+  check("6t10i. and a trimmed token still resumes under the flavor it was made with",
+    (await macForTrimmed2.resumePoll(JSON.parse(JSON.stringify(trimmedMac)))).outcome === "issued");
+
+  check("6t8. and that token resumes to the grant",
+    (await mk([H.pollRep(-1, 1), H.cp(-1, 0, certDer), H.pkiconf()]).session.resumePoll(
+      JSON.parse(JSON.stringify(p10tok)))).outcome === "issued");
+  check("6u. a token omitting the polls count resumes from zero, counting only this process's polls",
+    (await mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()]).session.resumePoll(
+      Object.assign({}, tok, { polls: undefined }))).polls === 2);
+  // A token is state a caller stored, and storage is where it can be edited, so dropping a field must
+  // not drop the check it feeds: the key the grant is bound to and the identity every response is held
+  // to are both required rather than optional.
+  var s6noKey = mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()]);
+  check("6v. a token with the requested key removed is refused before any request, not resumed without the key binding",
+    (await codeOf(s6noKey.session.resumePoll(Object.assign({}, tok, { requestedSpki: null })))) === "cmp/bad-input" &&
+    s6noKey.transport.calls.length === 0);
+  var s6noPin = mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()]);
+  check("6v2. a signature session refuses a token with the signer identity removed, before any request",
+    (await codeOf(s6noPin.session.resumePoll(Object.assign({}, tok, { signer: null })))) === "cmp/bad-input" &&
+    s6noPin.transport.calls.length === 0);
+
+  // A resumed poll reaches the same terminal verdicts the first process could: a rejection the
+  // authority finally issues, and a further timeout that hands back a token again.
+  check("6w. a rejection on a resumed poll is a terminal verdict",
+    (await mk([H.pollRep(0, 1), H.ipRejected(0)]).session.resumePoll(JSON.parse(JSON.stringify(tok)))).outcome === "rejected");
+  var again = await mk([H.pollRep(0, 1), H.pollRep(0, 1), H.pollRep(0, 1)], { maxPolls: 2 })
+    .session.resumePoll(JSON.parse(JSON.stringify(tok)));
+  check("6x. a resumed poll that times out again hands back a token, so a wait spans any number of processes",
+    again.outcome === "poll-timeout" && !!again.resumeToken &&
+    again.resumeToken.transactionId === tok.transactionId && again.polls === tok.polls + 2);
 
   // ===== 7. implicitConfirm granted -> issued WITHOUT a certConf leg (sec. 5.1.1.1) =====
   var s7f = H.fakeCa(pki, [{ body: H.ip(0, 0, certDer), generalInfo: H.IMPLICIT_CONFIRM_GI }]);
@@ -1117,7 +1618,6 @@ async function run() {
   // rides an ERROR body carrying status waiting (sec. 4.4), never an rp or a genp.
   // ============================================================================================
 
-  var B = pki.asn1.build;
   var OWN = pki.schema.x509.parse(CLIENT.cert);             // the session's own protection certificate
   var OTHER = pki.schema.x509.parse(H.leafCert);            // a certificate this session did not protect with
   // A REAL CertificateList. A revocation response and a crlUpdate answer both deliver CRLs to a
