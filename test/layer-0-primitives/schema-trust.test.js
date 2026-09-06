@@ -768,6 +768,93 @@ async function testRealCertdataSlice() {
   Object.defineProperty(accessorEntry, "base", { enumerable: true, configurable: true, get: function () { return dnBase("x"); } });
   check("T28: a subtree entry whose base is an accessor is refused", ncCode({ permitted: [accessorEntry] }) === "trust/bad-input");
   check("T28: a non-integer tag is refused", ncCode({ permitted: [{ tag: 2.5, base: "example.com" }] }) === "trust/bad-input");
+  // A base is refused unless the validator can enforce it. An empty dNSName base matches every
+  // name, so as a permitted subtree it restricts nothing; a base carrying characters no host name
+  // can hold matches none, so as an excluded subtree it keeps nothing out. Both read to the
+  // operator as a namespace that has been applied.
+  check("T28: an empty dNSName base is refused", ncCode({ permitted: [{ tag: 2, base: "" }] }) === "trust/bad-input");
+  check("T28: a bare-dot dNSName base is refused", ncCode({ permitted: [{ tag: 2, base: "." }] }) === "trust/bad-input");
+  check("T28: a dNSName base holding a URI is refused",
+    ncCode({ excluded: [{ tag: 2, base: "https://example.com" }] }) === "trust/bad-input");
+  check("T28: a dNSName base with a space is refused", ncCode({ excluded: [{ tag: 2, base: "ex ample.com" }] }) === "trust/bad-input");
+  check("T28: a dNSName base is accepted", ncCode({ permitted: [{ tag: 2, base: "example.com" }] }) === "NO-THROW");
+  check("T28: a leading-dot dNSName base is accepted", ncCode({ permitted: [{ tag: 2, base: ".example.com" }] }) === "NO-THROW");
+  check("T28: a single-label dNSName base is accepted", ncCode({ permitted: [{ tag: 2, base: "internal" }] }) === "NO-THROW");
+  check("T28: an empty rfc822Name base is refused", ncCode({ excluded: [{ tag: 1, base: "" }] }) === "trust/bad-input");
+  check("T28: an rfc822Name base with two at-signs is refused",
+    ncCode({ excluded: [{ tag: 1, base: "a@b@example.com" }] }) === "trust/bad-input");
+  check("T28: an rfc822Name base with an empty local part is refused",
+    ncCode({ excluded: [{ tag: 1, base: "@example.com" }] }) === "trust/bad-input");
+  check("T28: an rfc822Name base with an empty host is refused",
+    ncCode({ excluded: [{ tag: 1, base: "user@" }] }) === "trust/bad-input");
+  check("T28: a mailbox rfc822Name base is accepted", ncCode({ excluded: [{ tag: 1, base: "user@example.com" }] }) === "NO-THROW");
+  check("T28: a host rfc822Name base is accepted", ncCode({ excluded: [{ tag: 1, base: "example.com" }] }) === "NO-THROW");
+  check("T28: a subtree rfc822Name base is accepted", ncCode({ excluded: [{ tag: 1, base: ".example.com" }] }) === "NO-THROW");
+  // A URI subtree is compared against the host of the URI in a certificate, so its base is a host
+  // rather than a URI, and the comparison needs a name with a dot in it that is not an address.
+  check("T28: a URI base holding a URI is refused", ncCode({ excluded: [{ tag: 6, base: "https://example.com" }] }) === "trust/bad-input");
+  check("T28: a single-label URI base is refused", ncCode({ excluded: [{ tag: 6, base: "localhost" }] }) === "trust/bad-input");
+  check("T28: an address-shaped URI base is refused", ncCode({ excluded: [{ tag: 6, base: "127.0.0.1" }] }) === "trust/bad-input");
+  // A host name is labels, and a label is letters, digits and hyphens with a hyphen at neither
+  // edge. A base outside that grammar names a host no certificate can carry, so an exclusion
+  // written with one keeps nothing out.
+  check("T28: a bare-hyphen dNSName base is refused", ncCode({ excluded: [{ tag: 2, base: "-" }] }) === "trust/bad-input");
+  check("T28: a dNSName base whose label starts with a hyphen is refused",
+    ncCode({ excluded: [{ tag: 2, base: "-.example" }] }) === "trust/bad-input");
+  check("T28: a dNSName base whose label ends with a hyphen is refused",
+    ncCode({ excluded: [{ tag: 2, base: "ex-.example" }] }) === "trust/bad-input");
+  check("T28: a hyphen inside a label is accepted", ncCode({ excluded: [{ tag: 2, base: "ex-ample.com" }] }) === "NO-THROW");
+  check("T28: one trailing dot is accepted", ncCode({ excluded: [{ tag: 2, base: "example.com." }] }) === "NO-THROW");
+  check("T28: two trailing dots are refused", ncCode({ excluded: [{ tag: 2, base: "example.com.." }] }) === "trust/bad-input");
+  check("T28: a URI base with two trailing dots is refused", ncCode({ excluded: [{ tag: 6, base: "example.com.." }] }) === "trust/bad-input");
+  var longLabel = "";
+  for (var li = 0; li < 64; li++) longLabel += "a";
+  check("T28: a label longer than 63 characters is refused",
+    ncCode({ excluded: [{ tag: 2, base: longLabel + ".com" }] }) === "trust/bad-input");
+  check("T28: a 63-character label is accepted",
+    ncCode({ excluded: [{ tag: 2, base: longLabel.slice(1) + ".com" }] }) === "NO-THROW");
+  check("T28: an rfc822Name local part carrying a control byte is refused",
+    ncCode({ excluded: [{ tag: 1, base: String.fromCharCode(10) + "@example.com" }] }) === "trust/bad-input");
+  check("T28: an rfc822Name local part with an empty piece is refused",
+    ncCode({ excluded: [{ tag: 1, base: "a..b@example.com" }] }) === "trust/bad-input");
+  check("T28: a dotted rfc822Name local part is accepted",
+    ncCode({ excluded: [{ tag: 1, base: "a.b@example.com" }] }) === "NO-THROW");
+  // A mailbox may write its local part as a quoted string, which is where a space or a dot at an
+  // edge is allowed to appear.
+  check("T28: a quoted rfc822Name local part is accepted",
+    ncCode({ excluded: [{ tag: 1, base: "\"John Doe\"@example.com" }] }) === "NO-THROW");
+  check("T28: an escaped quote inside a quoted local part is accepted",
+    ncCode({ excluded: [{ tag: 1, base: "\"John\\\"D\"@example.com" }] }) === "NO-THROW");
+  check("T28: an unterminated quoted local part is refused",
+    ncCode({ excluded: [{ tag: 1, base: "\"John@example.com" }] }) === "trust/bad-input");
+  check("T28: a control byte inside a quoted local part is refused",
+    ncCode({ excluded: [{ tag: 1, base: "\"Jo" + String.fromCharCode(9) + "hn\"@example.com" }] }) === "trust/bad-input");
+  check("T28: a bare space in an unquoted local part is refused",
+    ncCode({ excluded: [{ tag: 1, base: "John Doe@example.com" }] }) === "trust/bad-input");
+  check("T28: a URI base with an empty label is refused", ncCode({ excluded: [{ tag: 6, base: "example..com" }] }) === "trust/bad-input");
+  check("T28: a dNSName base with an empty label is refused", ncCode({ excluded: [{ tag: 2, base: "example..com" }] }) === "trust/bad-input");
+  check("T28: an rfc822Name base with an empty label is refused", ncCode({ excluded: [{ tag: 1, base: "user@example..com" }] }) === "trust/bad-input");
+  check("T28: a host URI base is accepted", ncCode({ excluded: [{ tag: 6, base: "example.com" }] }) === "NO-THROW");
+  check("T28: a leading-dot URI base is accepted", ncCode({ excluded: [{ tag: 6, base: ".example.com" }] }) === "NO-THROW");
+  // A directoryName is compared attribute by attribute against a value read out of a certificate,
+  // where every attribute value is a string. An attribute holding anything else compares equal to
+  // nothing, and NaN does not even compare equal to itself.
+  // A name of no relative names is a prefix of every name, so it constrains none of them, and an
+  // attribute type that is not an object identifier matches no attribute a certificate carries.
+  check("T28: a directoryName base naming no relative name is refused",
+    ncCode({ excluded: [{ tag: 4, base: { rdns: [] } }] }) === "trust/bad-input");
+  check("T28: a directoryName base with an empty relative name is refused",
+    ncCode({ excluded: [{ tag: 4, base: { rdns: [[]] } }] }) === "trust/bad-input");
+  check("T28: a directoryName attribute type that is not an object identifier is refused",
+    ncCode({ excluded: [{ tag: 4, base: { rdns: [[{ type: "commonName", value: "Root" }]] } }] }) === "trust/bad-input");
+  check("T28: an empty directoryName attribute type is refused",
+    ncCode({ excluded: [{ tag: 4, base: { rdns: [[{ type: "", value: "Root" }]] } }] }) === "trust/bad-input");
+  check("T28: a directoryName attribute value that is not a string is refused",
+    ncCode({ excluded: [{ tag: 4, base: { rdns: [[{ type: CN, value: NaN }]] } }] }) === "trust/bad-input");
+  check("T28: a directoryName attribute type that is not a string is refused",
+    ncCode({ excluded: [{ tag: 4, base: { rdns: [[{ type: 4, value: "Root" }]] } }] }) === "trust/bad-input");
+  check("T28: a directoryName attribute value carrying a control byte is refused",
+    ncCode({ excluded: [{ tag: 4, base: { rdns: [[{ type: CN, value: "Ro" + String.fromCharCode(0) + "ot" }]] } }] }) === "trust/bad-input");
   check("T28: an overlay naming no subtree is refused", ncCode({}) === "trust/bad-input");
   check("T28: an overlay that is an array is refused", ncCode([]) === "trust/bad-input");
   check("T28: a Proxy overlay is refused", ncCode(new Proxy({ permitted: [] }, {})) === "trust/bad-input");
@@ -837,6 +924,41 @@ async function testRealCertdataSlice() {
   var trapped = Object.create(trapProto);
   trapped.permitted = [{ tag: 2, base: "safe.example.com" }];
   check("T28: an overlay inheriting from a Proxy is refused", ncCode(trapped) === "trust/bad-input");
+  // An iPAddress subtree is an address followed by its mask, so any other length names no range and
+  // the validator refuses it later. The anchor an operator is handed is one that can be enforced.
+  check("T28: an iPAddress base of the wrong length is refused",
+    ncCode({ excluded: [{ tag: 7, base: Buffer.alloc(4) }] }) === "trust/bad-input");
+  check("T28: a 32-byte IPv6 iPAddress base is accepted",
+    ncCode({ excluded: [{ tag: 7, base: Buffer.alloc(32) }] }) === "NO-THROW");
+  // With an accessor planted on Object.prototype under that name, an anchor is refused rather than
+  // built: nothing silently takes the overlay and hands back an anchor carrying no restriction.
+  var stolen = null;
+  var polluted;
+  Object.defineProperty(Object.prototype, "nameConstraints", {
+    configurable: true, set: function (v) { stolen = v; }, get: function () { return undefined; },
+  });
+  try {
+    polluted = codeOf(function () {
+      return pki.trust.anchor(entryA, { purpose: "serverAuth", nameConstraints: { permitted: [{ tag: 2, base: "example.com" }] } });
+    });
+  } finally { delete Object.prototype.nameConstraints; }
+  check("T28: a prototype accessor under the overlay's name leaves the anchor refused, not unrestricted",
+    polluted === "trust/bad-input" && stolen === null);
+  // An overlay carrying no prototype names only its own fields, so the field check passes and the
+  // anchor still has to survive the planted accessor: the restriction is defined on it rather than
+  // assigned, and an anchor an accessor emptied would be trusted for every name.
+  var bareOverlay = Object.assign(Object.create(null), { permitted: [{ tag: 2, base: "example.com" }] });
+  var taken = null;
+  var defended;
+  Object.defineProperty(Object.prototype, "nameConstraints", {
+    configurable: true, set: function (v) { taken = v; }, get: function () { return undefined; },
+  });
+  try {
+    defended = pki.trust.anchor(entryA, { purpose: "serverAuth", nameConstraints: bareOverlay });
+  } finally { delete Object.prototype.nameConstraints; }
+  check("T28: a prototype accessor cannot take the restriction off an anchor as it is built",
+    taken === null && !!defended.nameConstraints && defended.nameConstraints.permitted.length === 1 &&
+    defended.nameConstraints.permitted[0].base === "example.com");
   // The captured name is built with the toolkit's own append, so a setter planted on the array
   // prototype cannot swallow the entries and leave an empty name behind, which would match every DN.
   Object.defineProperty(Array.prototype, "0", {
