@@ -890,6 +890,57 @@ async function run() {
   // RFC 5652 sec. 9.1: a non-data encapsulated type carries authenticated attributes.
   check("AD3. it carries authenticated attributes naming the encapsulated type",
     Array.isArray(macCms.authAttrs) && macCms.authAttrs.length >= 2);
+  // A PasswordRecipientInfo names no recipient, so the request itself has to say whose secret it is or
+  // an authority holding many cannot select one (RFC 5272 sec. 6.2.3).
+  var macControls = pki.schema.cmc.parse(macDer).controls;
+  var macIdent = macControls.filter(function (c) { return c.attrType === ID_CMC_IDENTIFICATION; });
+  check("AD4b. the request names the client whose secret authenticates it",
+    macIdent.length === 1 && pki.asn1.read.string(pki.asn1.decode(macIdent[0].values[0])) === MAC_IDENTITY);
+  // The same name may also arrive through identityProof; two different names for one client is refused
+  // rather than picked between, and the matching pair emits one control, not two.
+  var bothDer = await pki.cmc.build({ requests: [{ tcr: macCsr }],
+    identityProof: { secret: MAC_SECRET, identity: MAC_IDENTITY } }, macProt);
+  check("AD4c. the same name given twice still emits one Identification control",
+    pki.schema.cmc.parse(bothDer).controls.filter(function (c) { return c.attrType === ID_CMC_IDENTIFICATION; }).length === 1);
+  check("AD4d. two different names for one client is refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: macCsr }],
+        identityProof: { secret: MAC_SECRET, identity: "a-different-name" } }, macProt);
+    })) === "cmc/bad-input");
+  // The name can also be written straight into spec.controls, which is the third place one request can
+  // name its client from. All three are held to the same name.
+  var identControl = function (name) { return { type: "id-cmc-identification", value: b.utf8(name) }; };
+  check("AD4e. an Identification control the caller wrote naming a different client is refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: macCsr }], controls: [identControl("bob")] }, macProt);
+    })) === "cmc/bad-input");
+  var sameDer = await pki.cmc.build({ requests: [{ tcr: macCsr }], controls: [identControl(MAC_IDENTITY)] }, macProt);
+  check("AD4f. one the caller wrote naming the same client is kept, and not duplicated",
+    pki.schema.cmc.parse(sameDer).controls.filter(function (c) { return c.attrType === ID_CMC_IDENTIFICATION; }).length === 1);
+  check("AD4g. one whose value does not read as the client's name is refused rather than assumed to agree",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: macCsr }],
+        controls: [{ type: "id-cmc-identification", value: b.integer(7n) }] }, macProt);
+    })) === "cmc/bad-input");
+  // Every supplied name is compared, not just the last one seen.
+  check("AD4h. a second control naming a different client is refused whichever order they arrive in",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: macCsr }],
+        controls: [identControl("bob"), identControl(MAC_IDENTITY)] }, macProt);
+    })) === "cmc/bad-input");
+  // The control is a UTF8String, so the same characters in another string type is a different value on
+  // the wire and cannot stand in for the one the request needs.
+  check("AD4i. a PrintableString carrying the same characters is not accepted as the name",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: macCsr }],
+        controls: [{ type: "id-cmc-identification", value: b.printable(MAC_IDENTITY) }] }, macProt);
+    })) === "cmc/bad-input");
+  // And one request names its client once, however the pieces were assembled.
+  check("AD4j. naming the client through both a control and identityProof is refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: macCsr }], controls: [identControl(MAC_IDENTITY)],
+        identityProof: { secret: MAC_SECRET, identity: MAC_IDENTITY } }, macProt);
+    })) === "cmc/bad-input");
   check("AD4. the message reads back as the same PKIData a signed carrier would carry",
     pki.schema.cmc.parse(macDer).kind === "pkiData" &&
     pki.schema.cmc.parse(macDer).requests.length === 1);
