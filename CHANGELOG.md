@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.43 — 2026-09-06
+
+Path building finds a path through a mesh of cross-certified domains without walking the foreign branches first.
+
+### Changed
+
+- pki.path.build orders candidates in a mesh of cross-certified domains by the two RFC 4158 section 3.5 name heuristics it had not applied. A candidate is ranked by how many leading relative distinguished names it shares with the name the search is heading for: its issuer against a trust anchor's name when building forward (section 3.5.16), and its subject against the leaf's issuer when building in reverse (the section 3.5.16 and section 3.5.19 reverse methods). Names are compared under the RFC 5280 section 7.1 rule, so a certificate in the target's own domain is tried before one from a cross-certified domain. Forward building additionally sorts a candidate under every candidate that can complete the path when its basicConstraints path length constraint cannot cover the certificates already below it in the chain (section 3.5.7), counting the non-self-issued ones the way RFC 5280 section 6.1.4(m) does, so a key-rollover certificate below the candidate spends none of its budget. That ordering outranks the other hints rather than competing with them, so a key identifier match or an anchor-adjacent issuer does not raise a candidate whose constraint the path already exceeds. All of it is ordering alone: no candidate is removed, every assembled path is handed to pki.path.validate, and an unbounded search still reaches every path the pool holds. A build over a mesh reaches a path within a smaller opts.maxCandidatesConsidered budget and reports a lower candidatesConsidered. A bounded search spends that budget on whichever branches the order steers it to, so a build that reports path/build-limit where the earlier order succeeded wants a larger opts.maxCandidatesConsidered, and the same holds for the opts.maxAiaFetches allowance.
+
 ## v0.6.42 — 2026-09-06
 
 A trust anchor carries the namespace a root program trusts a root for, so a certificate outside it is refused even where the root certificate states no such limit.

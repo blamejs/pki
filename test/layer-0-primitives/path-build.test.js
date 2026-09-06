@@ -63,7 +63,12 @@ function p1363ToDer(sig, width) {
 
 // ---- DER fixture builders ----
 function atv(typeOid, value) { return b.sequence([b.oid(typeOid), b.utf8(value)]); }
-function nameDer(cn) { return b.sequence([b.set([atv("2.5.4.3", cn)])]); }
+// A name of one common name, or of several ordered relative names given as [[typeOid, value], ...].
+function nameDer(cn) {
+  if (Array.isArray(cn)) return b.sequence(cn.map(function (r) { return b.set([atv(r[0], r[1])]); }));
+  return b.sequence([b.set([atv("2.5.4.3", cn)])]);
+}
+var C = "2.5.4.6", O = "2.5.4.10", OU = "2.5.4.11", CN = "2.5.4.3";
 function validityDer(nb, na) { return b.sequence([b.utcTime(nb), b.utcTime(na)]); }
 function ext(oidStr, critical, valueDer) {
   var kids = [b.oid(oidStr)];
@@ -72,6 +77,7 @@ function ext(oidStr, critical, valueDer) {
   return b.sequence(kids);
 }
 function bcExt(cA) { return ext("2.5.29.19", true, b.sequence(cA ? [b.boolean(true)] : [])); }
+function bcExtPathLen(n) { return ext("2.5.29.19", true, b.sequence([b.boolean(true), b.integer(BigInt(n))])); }
 function kuExt(bits) {
   var maxBit = Math.max.apply(null, bits), n = (maxBit >> 3) + 1, buf = Buffer.alloc(n);
   bits.forEach(function (p) { buf[p >> 3] |= (0x80 >> (p & 7)); });
@@ -769,6 +775,7 @@ async function run() {
   testUnderPollutedPrototype();
   await testReverseBuild();
   await testPolicySelection();
+  await testBridgeMeshOrdering();
 
   console.log("CHECKS " + helpers.getChecks());
 }
@@ -959,6 +966,192 @@ async function testReverseBuild() {
   var rb12 = await pki.path.build(rollLeaf, { direction: "reverse", candidates: [rollNew], trustAnchors: [rollRoot], time: T });
   check("RB-12 a same-name key-rollover intermediate (different key) is kept, not pruned as the anchor",
     rb12.valid === true && rb12.path.length === 2 && Buffer.from(rb12.path[0].subjectPublicKeyInfo.bytes).equals(rollNewKp.spki));
+}
+
+// RFC 4158 sec. 3.5.16 / sec. 3.5.19 / sec. 3.5.7: in a mesh of cross-certified domains many candidates chain by
+// name, and the order they are tried in decides how much of the mesh is walked before a path is found. Every rule
+// here SORTS; none removes a candidate, so a path that exists is still found when the ordering is unhelpful.
+async function testBridgeMeshOrdering() {
+  var rootKp = await freshKeys(), policyKp = await freshKeys(), salesKp = await freshKeys(), leafKp = await freshKeys();
+  var ROOT_DN = [[C, "US"], [O, "Example"], [CN, "Example Root"]];
+  var POLICY_DN = [[C, "US"], [O, "Example"], [OU, "PKI"], [CN, "Example Policy CA"]];
+  var SALES_DN = [[C, "US"], [O, "Example"], [OU, "Sales"], [CN, "Sales CA"]];
+
+  var root = await mkCert({ signer: rootKp, subjectKp: rootKp, issuerName: ROOT_DN, subjectName: ROOT_DN, extensions: caExts() });
+  var policy = await mkCert({ signer: rootKp, subjectKp: policyKp, issuerName: ROOT_DN, subjectName: POLICY_DN, extensions: caExts() });
+  var sales = await mkCert({ signer: policyKp, subjectKp: salesKp, issuerName: POLICY_DN, subjectName: SALES_DN, extensions: caExts() });
+  var leaf = await mkCert({ signer: salesKp, subjectKp: leafKp, issuerName: SALES_DN, subjectName: [[C, "US"], [O, "Example"], [OU, "Sales"], [CN, "leaf.example.com"]] });
+
+  // The mesh: eight foreign bridges each holding a certificate for the same Sales CA name, each in its own
+  // country and organization, and each carrying one more certificate so its branch expands before it dies.
+  var decoys = [], bridges = [];
+  for (var d = 0; d < 8; d++) {
+    var fKp = await freshKeys(), fCaKp = await freshKeys();
+    var F_DN = [[C, "FR"], [O, "Foreign " + d], [CN, "Foreign Bridge " + d]];
+    decoys.push(await mkCert({ signer: fKp, subjectKp: fCaKp, issuerName: F_DN, subjectName: SALES_DN, extensions: caExts() }));
+    bridges.push(await mkCert({ signer: fKp, subjectKp: fKp, issuerName: [[C, "FR"], [O, "Foreign " + d], [CN, "Foreign Root " + d]], subjectName: F_DN, extensions: caExts() }));
+  }
+  // The certificate that completes the path sits FIRST, so pool order alone tries every foreign branch before it.
+  var pool = [sales].concat(decoys, bridges, [policy]);
+
+  // BM-1: the local-domain certificate is tried first, so the path is found inside a budget the foreign
+  // branches alone would spend. RFC 4158 sec. 3.5.19: a candidate whose subject shares more relative names with
+  // the target's issuer is in the target's own domain.
+  var bm1 = await pki.path.build(leaf, { candidates: pool, trustAnchors: [root], time: T, maxCandidatesConsidered: 12 });
+  check("BM-1 a mesh path is found within a budget the foreign branches alone would spend",
+    bm1.valid === true && bm1.path.length === 3 &&
+    Buffer.from(bm1.path[0].subjectPublicKeyInfo.bytes).equals(policyKp.spki) &&
+    Buffer.from(bm1.path[1].subjectPublicKeyInfo.bytes).equals(salesKp.spki));
+  var bm1g = await pki.path.validate(bm1.path, { time: T, trustAnchors: bm1.trustAnchor });
+  check("BM-1 the mesh path validates through pki.path.validate", bm1g.valid === true);
+
+  // BM-2: the ordering is a search-order change. With no budget at all the same path is returned, and the
+  // count of candidates considered is the evidence the ordering did the work.
+  var bm2 = await pki.path.build(leaf, { candidates: pool, trustAnchors: [root], time: T });
+  check("BM-2 the same path is returned with no budget, and fewer candidates are considered than the mesh holds",
+    bm2.valid === true && bm2.path.length === 3 && bm2.candidatesConsidered < pool.length);
+
+  // BM-3: reverse building reads the same rule from the other end (RFC 4158 sec. 3.5.16 reverse method: a
+  // candidate whose subject shares more relative names with the target's issuer has priority). The mesh is on
+  // the anchor's side here: the root cross-certifies eight foreign bridges, each of which certifies one more.
+  var revCross = [], revChildren = [];
+  for (var x = 0; x < 8; x++) {
+    var xKp = await freshKeys(), xcKp = await freshKeys();
+    var X_DN = [[C, "FR"], [O, "Partner " + x], [CN, "Partner Bridge " + x]];
+    revCross.push(await mkCert({ signer: rootKp, subjectKp: xKp, issuerName: ROOT_DN, subjectName: X_DN, extensions: caExts() }));
+    revChildren.push(await mkCert({ signer: xKp, subjectKp: xcKp, issuerName: X_DN, subjectName: [[C, "FR"], [O, "Partner " + x], [CN, "Partner CA " + x]], extensions: caExts() }));
+  }
+  var revPool = [policy, sales].concat(revCross, revChildren);
+  var rev = await pki.path.build(leaf, { direction: "reverse", candidates: revPool, trustAnchors: [root], time: T, maxCandidatesConsidered: 12 });
+  check("BM-3 reverse building finds the mesh path within a budget the partner branches alone would spend",
+    rev.valid === true && rev.path.length === 3 &&
+    Buffer.from(rev.path[0].subjectPublicKeyInfo.bytes).equals(policyKp.spki));
+
+  // BM-4: a certificate whose path length constraint cannot cover what is already below it is tried last
+  // (RFC 4158 sec. 3.5.7). Both candidates carry the same name and the same issuer, so nothing but the
+  // constraint separates them, and the branch that cannot complete is not walked first.
+  var pl0Kp = await freshKeys();
+  var pl0 = await mkCert({ signer: rootKp, subjectKp: pl0Kp, issuerName: ROOT_DN, subjectName: POLICY_DN, extensions: [bcExtPathLen(0), kuExt([KU_KEY_CERT_SIGN])] });
+  var rootNamed = [];
+  for (var rn = 0; rn < 6; rn++) {
+    var rnKp = await freshKeys(), rnSub = await freshKeys();
+    rootNamed.push(await mkCert({ signer: rnKp, subjectKp: rnSub, issuerName: [[C, "FR"], [O, "Unrelated " + rn], [CN, "Unrelated CA " + rn]], subjectName: ROOT_DN, extensions: caExts() }));
+  }
+  var plPool = [sales, policy, pl0].concat(rootNamed);
+  var bm4 = await pki.path.build(leaf, { candidates: plPool, trustAnchors: [root], time: T, maxCandidatesConsidered: 5 });
+  check("BM-4 a candidate whose path length constraint cannot cover the certificates below it is tried last",
+    bm4.valid === true && bm4.path.length === 3 &&
+    Buffer.from(bm4.path[0].subjectPublicKeyInfo.bytes).equals(policyKp.spki));
+
+  // BM-5: the ordering never removes a candidate. With the constraint-bearing certificate the only route, the
+  // build still assembles it and reports the verdict validate reached, rather than claiming no path exists.
+  var bm5 = await pki.path.build(leaf, { candidates: [pl0, sales], trustAnchors: [root], time: T });
+  check("BM-5 a deprioritized candidate is still assembled and handed to validate",
+    bm5.valid === false && bm5.path.length === 3);
+
+  // BM-6: a path length constraint wide enough for what is below it costs the candidate nothing, and a
+  // candidate carrying no basicConstraints at all is ranked on the rest.
+  var pl2Kp = await freshKeys();
+  var pl2 = await mkCert({ signer: rootKp, subjectKp: pl2Kp, issuerName: ROOT_DN, subjectName: POLICY_DN, extensions: [bcExtPathLen(2), kuExt([KU_KEY_CERT_SIGN])] });
+  var sales2 = await mkCert({ signer: pl2Kp, subjectKp: salesKp, issuerName: POLICY_DN, subjectName: SALES_DN, extensions: caExts() });
+  var noBcKp = await freshKeys();
+  var noBc = await mkCert({ signer: rootKp, subjectKp: noBcKp, issuerName: ROOT_DN, subjectName: POLICY_DN, extensions: [kuExt([KU_KEY_CERT_SIGN])] });
+  var bm6 = await pki.path.build(leaf, { candidates: [sales2, noBc, pl2], trustAnchors: [root], time: T });
+  check("BM-6 a path length constraint that covers the certificates below it costs nothing",
+    bm6.valid === true && Buffer.from(bm6.path[0].subjectPublicKeyInfo.bytes).equals(pl2Kp.spki));
+
+  // BM-7: the name comparison the ordering runs is the RFC 5280 sec. 7.1 one, so an anchor whose name holds
+  // something that is not a relative name ends the shared prefix instead of sinking the build.
+  var anchorAlg = pki.schema.x509.parse(root).subjectPublicKeyInfo.algorithm.oid;
+  var oddAnchor = { name: { rdns: ["not a relative name"] }, publicKey: Buffer.from(pki.schema.x509.parse(root).subjectPublicKeyInfo.bytes), algorithm: anchorAlg };
+  var bm7 = await codeOf(pki.path.build(leaf, { candidates: [sales, policy], trustAnchors: [oddAnchor], time: T }));
+  check("BM-7 an anchor name carrying something that is not a relative name yields a path verdict, not a crash",
+    bm7 === "path/no-path");
+
+  // BM-8: a candidate whose subject is a leading part of the target's issuer shares that whole name, which is
+  // the sliding scale of RFC 4158 sec. 3.5.16 rather than the exact match beside it.
+  var shortKp = await freshKeys();
+  var SHORT_DN = [[C, "US"], [O, "Example"]];
+  var shortCa = await mkCert({ signer: rootKp, subjectKp: shortKp, issuerName: ROOT_DN, subjectName: SHORT_DN, extensions: caExts() });
+  var bm8 = await pki.path.build(leaf, { direction: "reverse", candidates: [shortCa, policy, sales], trustAnchors: [root], time: T });
+  check("BM-8 a subject that is a leading part of the target's issuer is ranked on the whole shared name",
+    bm8.valid === true && bm8.path.length === 3 && Buffer.from(bm8.path[0].subjectPublicKeyInfo.bytes).equals(policyKp.spki));
+
+  // BM-9: "auto" reads the fan-out at the first hop and picks the narrower end. Here the anchor's side is one
+  // certificate wide and the leaf's side is nine, so it builds in reverse.
+  var wide = [];
+  for (var w = 0; w < 8; w++) {
+    var wKp = await freshKeys(), wSub = await freshKeys();
+    wide.push(await mkCert({ signer: wKp, subjectKp: wSub, issuerName: [[C, "FR"], [O, "Wide " + w], [CN, "Wide CA " + w]], subjectName: SALES_DN, extensions: caExts() }));
+  }
+  var bm9 = await pki.path.build(leaf, { direction: "auto", candidates: [sales, policy].concat(wide), trustAnchors: [root], time: T });
+  check("BM-9 auto picks the narrower end and still returns the path validate accepts",
+    bm9.valid === true && bm9.path.length === 3);
+
+  // BM-10: the options build forwards to validate reach it. An anchor namespace and the caller's own initial
+  // subtrees both apply to a built path, and a leaf outside them is refused by validate, not by the search.
+  var ncAnchor = { name: pki.schema.x509.parse(root).subject, publicKey: Buffer.from(pki.schema.x509.parse(root).subjectPublicKeyInfo.bytes), algorithm: anchorAlg,
+    nameConstraints: { excluded: [{ tag: 2, base: "example.com" }] } };
+  var bm10 = await pki.path.build(leaf, { candidates: [sales, policy], trustAnchors: [ncAnchor], time: T });
+  check("BM-10 an anchor namespace applies to a built path", bm10.valid === true);
+  var bm10b = await pki.path.build(leaf, { candidates: [sales, policy], trustAnchors: [root], time: T,
+    initialPermittedSubtrees: [{ tag: 2, base: "nowhere.example" }], initialExcludedSubtrees: [{ tag: 2, base: "elsewhere.example" }] });
+  check("BM-10 the caller's own initial subtrees are forwarded to validate", bm10b.valid === true);
+
+  // BM-11: reverse building stops at the depth cap like forward building does.
+  var bm11 = await codeOf(pki.path.build(leaf, { direction: "reverse", candidates: [sales, policy], trustAnchors: [root], time: T, maxDepth: 1 }));
+  check("BM-11 reverse building stops at opts.maxDepth", bm11 === "path/no-path");
+
+  // BM-13: the constraint counts the certificates the validator counts. A key-rollover certificate below the
+  // candidate is self-issued, spends none of the issuer's budget (RFC 5280 sec. 6.1.4(m)), and must not push
+  // a constrained issuer that can still complete the path behind a branch that cannot.
+  var rpKp = await freshKeys(), rxKp = await freshKeys(), rx2Kp = await freshKeys(), rLeafKp = await freshKeys(), rdKp = await freshKeys();
+  var OPS_DN = [[C, "US"], [O, "Example"], [OU, "Ops"], [CN, "Ops CA"]];
+  var rp = await mkCert({ signer: rootKp, subjectKp: rpKp, issuerName: ROOT_DN, subjectName: POLICY_DN, extensions: [bcExtPathLen(1), kuExt([KU_KEY_CERT_SIGN])] });
+  var rx = await mkCert({ signer: rpKp, subjectKp: rxKp, issuerName: POLICY_DN, subjectName: OPS_DN, extensions: caExts() });
+  var rx2 = await mkCert({ signer: rxKp, subjectKp: rx2Kp, issuerName: OPS_DN, subjectName: OPS_DN, extensions: caExts() });
+  var rLeaf = await mkCert({ signer: rx2Kp, subjectKp: rLeafKp, issuerName: OPS_DN, subjectName: [[C, "US"], [O, "Example"], [OU, "Ops"], [CN, "ops.example.com"]] });
+  var rDecoy = await mkCert({ signer: rdKp, subjectKp: rdKp, issuerName: ROOT_DN, subjectName: POLICY_DN, extensions: caExts() });
+  var bm13 = await pki.path.build(rLeaf, { candidates: [rx, rx2, rDecoy, rp].concat(rootNamed), trustAnchors: [root], time: T, maxCandidatesConsidered: 8 });
+  check("BM-13 a self-issued certificate below the candidate spends none of its path length budget",
+    bm13.valid === true && bm13.path.length === 4 &&
+    Buffer.from(bm13.path[0].subjectPublicKeyInfo.bytes).equals(rpKp.spki));
+
+  // BM-14: the same count read at the frontier. A key-rollover certificate directly under the candidate is
+  // self-issued, so an issuer constrained to no intermediates at all can still complete that path.
+  var raKp = await freshKeys(), ra2Kp = await freshKeys(), raLeafKp = await freshKeys(), raDKp = await freshKeys();
+  var ROLL_DN = [[C, "US"], [O, "Example"], [CN, "Rollover CA"]];
+  var ra = await mkCert({ signer: rootKp, subjectKp: raKp, issuerName: ROOT_DN, subjectName: ROLL_DN, extensions: [bcExtPathLen(0), kuExt([KU_KEY_CERT_SIGN])] });
+  var ra2 = await mkCert({ signer: raKp, subjectKp: ra2Kp, issuerName: ROLL_DN, subjectName: ROLL_DN, extensions: caExts() });
+  var raLeaf = await mkCert({ signer: ra2Kp, subjectKp: raLeafKp, issuerName: ROLL_DN, subjectName: [[C, "US"], [O, "Example"], [CN, "roll.example.com"]] });
+  var raDecoy = await mkCert({ signer: raDKp, subjectKp: raDKp, issuerName: ROOT_DN, subjectName: ROLL_DN, extensions: caExts() });
+  var bm14 = await pki.path.build(raLeaf, { candidates: [ra2, raDecoy, ra].concat(rootNamed), trustAnchors: [root], time: T, maxCandidatesConsidered: 20 });
+  check("BM-14 an issuer constrained to no intermediates still completes a path through its own rollover",
+    bm14.valid === true && bm14.path.length === 3 &&
+    Buffer.from(bm14.path[0].subjectPublicKeyInfo.bytes).equals(raKp.spki));
+
+  // BM-15: the constraint outranks the other hints rather than competing with them. Here the candidate that
+  // cannot complete the path is the one the key identifier and the anchor's own name both point at, and the
+  // candidate that can needs one more certificate above it. It is still tried second.
+  var eaKp = await freshKeys(), ebKp = await freshKeys(), ecKp = await freshKeys(), eLeafKp = await freshKeys();
+  var MID_DN = [[C, "US"], [O, "Example"], [OU, "Mid"], [CN, "Mid CA"]];
+  var UP_DN = [[C, "US"], [O, "Example"], [OU, "Up"], [CN, "Upper CA"]];
+  var KID = Buffer.from("0102030405060708090a0b0c0d0e0f1011121314", "hex");
+  // The certificate the hints favor: anchor-adjacent, and named by the child's authority key identifier.
+  var eBad = await mkCert({ signer: rootKp, subjectKp: eaKp, issuerName: ROOT_DN, subjectName: MID_DN, extensions: [bcExtPathLen(0), kuExt([KU_KEY_CERT_SIGN]), skiExt(KID)] });
+  // The certificate that can complete it: one more certificate above, and neither hint points at it.
+  var eUpper = await mkCert({ signer: rootKp, subjectKp: ecKp, issuerName: ROOT_DN, subjectName: UP_DN, extensions: caExts() });
+  var eGood = await mkCert({ signer: ecKp, subjectKp: ebKp, issuerName: UP_DN, subjectName: MID_DN, extensions: caExts() });
+  var eInter = await mkCert({ signer: ebKp, subjectKp: eaKp, issuerName: MID_DN, subjectName: [[C, "US"], [O, "Example"], [OU, "Low"], [CN, "Low CA"]], extensions: caExts([akiExt(KID)]) });
+  var eLeaf = await mkCert({ signer: eaKp, subjectKp: eLeafKp, issuerName: [[C, "US"], [O, "Example"], [OU, "Low"], [CN, "Low CA"]], subjectName: [[C, "US"], [O, "Example"], [OU, "Low"], [CN, "low.example.com"]] });
+  var bm15 = await pki.path.build(eLeaf, { candidates: [eInter, eBad, eGood, eUpper].concat(rootNamed), trustAnchors: [root], time: T, maxCandidatesConsidered: 6 });
+  check("BM-15 a candidate that cannot cover the path is tried after one that can, whatever the other hints say",
+    bm15.valid === true && bm15.path.length === 4 &&
+    Buffer.from(bm15.path[0].subjectPublicKeyInfo.bytes).equals(ecKp.spki));
+
+  // BM-12: reverse building reads no network, so asking for both is a refusal rather than a silent forward.
+  var bm12 = await codeOf(pki.path.build(leaf, { direction: "reverse", candidates: [sales], trustAnchors: [root], time: T, fetchAia: true }));
+  check("BM-12 reverse building with fetchAia is refused", bm12 === "path/bad-input");
 }
 
 module.exports = { run: run };
