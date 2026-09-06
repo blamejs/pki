@@ -1043,6 +1043,44 @@ async function run() {
     !!macLateObs.report && macLateObs.report.wiped.length > 0 &&
       macLateObs.report.wiped.some(function (e) { return e.hadContent; }) &&
       macLateObs.report.wiped.every(function (e) { return e.allZeroAfter; }));
+  // Carrying an Identification control changes how an Identity Proof witness is derived: the hash is
+  // over the secret and the identity together rather than the secret alone (RFC 5272 sec. 6.2.3). A
+  // shared-secret request always carries that control, so the witness has to be derived that way even
+  // when the caller named no identity on identityProof itself.
+  var proofDer = await pki.cmc.build({ requests: [{ tcr: macCsr }], identityProof: { secret: MAC_SECRET } }, macProt);
+  var namedProofDer = await pki.cmc.build({ requests: [{ tcr: macCsr }],
+    identityProof: { secret: MAC_SECRET, identity: MAC_IDENTITY } },
+  { cert: s.cert, key: s.key });
+  var witnessOf = function (der) {
+    return pki.schema.cmc.parse(der).controls
+      .filter(function (c) { return c.attrType === ID_CMC_IDENTITY_PROOF_V2; })[0].values[0].toString("hex");
+  };
+  check("AD18. the witness is derived with the name the request carries, not with none",
+    witnessOf(proofDer) === witnessOf(namedProofDer));
+  // One client, one secret: the carrier's MAC and the Identity Proof are keyed from the same credential.
+  check("AD19. a request cannot carry one secret for its MAC and another for its Identity Proof",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: macCsr }],
+        identityProof: { identity: MAC_IDENTITY, secret: "a-different-secret-16-chars" } }, macProt);
+    })) === "cmc/bad-input");
+  check("AD19b. the same secret on both sides builds, whether the carrier's was given as bytes or a string",
+    pki.schema.cmc.parse(await pki.cmc.build({ requests: [{ tcr: macCsr }],
+      identityProof: { identity: MAC_IDENTITY, secret: MAC_SECRET } },
+    { mac: { identifier: MAC_IDENTITY, secret: Buffer.from(MAC_SECRET, "utf8") } })).kind === "pkiData");
+  // A comparison that refuses still copied. When one of the two secrets turns out unusable, the copy of
+  // the other one is cleared rather than left behind by the early exit.
+  var macCmpObs = observeWipe({ op: "cmc-build-mac-compare-reject", key: s.key, csr: macCsr,
+    secret: Buffer.from(MAC_SECRET, "utf8") });
+  check("AD20. the wipe observation ran for a refused secret comparison (child exit " + macCmpObs.status + ")",
+    macCmpObs.report !== null);
+  var secretB64 = Buffer.from(MAC_SECRET, "utf8").toString("base64");
+  // Counted, not matched: the argument boundary clears its own copy of the same bytes, so only the
+  // NUMBER of cleared copies distinguishes a comparison that cleaned up from one that did not.
+  var secretWipes = !macCmpObs.report ? 0 : macCmpObs.report.wiped.filter(function (e) {
+    return e.before === secretB64 && e.allZeroAfter;
+  }).length;
+  check("AD20b. the comparison clears the copy it made of the secret even when it refuses",
+    secretWipes >= 2);
   var BAD_MACS = [
     ["a non-object", "just-a-string"],
     ["an array", ["identifier", "secret"]],

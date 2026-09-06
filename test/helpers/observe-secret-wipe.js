@@ -88,6 +88,11 @@ function run(input) {
       get: function () { lateReads += 1; if (lateReads > 1) throw new Error("caller getter"); return true; },
     });
     work = pki.cmc.verify(b64(p.csr), late);
+  } else if (p.op === "cmc-build-mac-compare-reject") {
+    // The comparison copies both secrets, then one input turns out unusable. The copy of the OTHER one
+    // still exists and is the one an early return would leave behind.
+    work = pki.cmc.build({ requests: [{ tcr: b64(p.csr) }], identityProof: { secret: String(b64(p.secret)) } },
+      { mac: { identifier: "cmc-client-17" } });
   } else if (p.op === "cmc-build-mac") {
     work = pki.cmc.build({ requests: [{ tcr: b64(p.csr) }] },
       { mac: { identifier: "cmc-client-17", secret: b64(p.secret) } });
