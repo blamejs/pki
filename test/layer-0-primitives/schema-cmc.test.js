@@ -830,6 +830,35 @@ async function run() {
       .encryptedPOP.cmsRecipientCount === 2);
   // Sec. 6.7 sends the challenge one way and the answer the other, so a message carrying the control
   // for the other direction is not the exchange that section describes.
+  // A malformed algorithm identifier is a malformed challenge, so it carries the code this control's
+  // failures carry rather than a raw codec one.
+  check("G3s2. an algorithm identifier that names no OID is refused as a bad challenge",
+    code(function () {
+      return cmc.parse(signedData(ID_CCT_PKI_RESPONSE, pkiResponse([
+        taggedAttr(1, ID_CMC_ENCRYPTED_POP, [b.sequence([tcr(7, popCsr), envelopedStub,
+          b.sequence([b.integer(1n)]), b.sequence([b.oid(SHA256)]),
+          b.octetString(Buffer.alloc(32, 1))])])], [], [])));
+    }) === "cmc/bad-pop-challenge");
+  check("G3s3. the same holds for the witness algorithm",
+    code(function () {
+      return cmc.parse(signedData(ID_CCT_PKI_RESPONSE, pkiResponse([
+        taggedAttr(1, ID_CMC_ENCRYPTED_POP, [b.sequence([tcr(7, popCsr), envelopedStub,
+          b.sequence([b.oid(HMAC_SHA256_OID)]), b.sequence([b.integer(1n)]),
+          b.octetString(Buffer.alloc(32, 1))])])], [], [])));
+    }) === "cmc/bad-pop-challenge");
+  check("G3s4. and for a Decrypted POP the client sends",
+    code(function () {
+      return cmc.parse(signedData(ID_CCT_PKI_DATA, pkiData([
+        taggedAttr(1, ID_CMC_DECRYPTED_POP, [b.sequence([b.integer(7n),
+          b.sequence([b.integer(1n)]), b.octetString(Buffer.alloc(32, 3))])])], [], [], [])));
+    }) === "cmc/bad-pop-challenge");
+  check("G3s5. a witness that is not an OCTET STRING is refused the same way",
+    code(function () {
+      return cmc.parse(signedData(ID_CCT_PKI_RESPONSE, pkiResponse([
+        taggedAttr(1, ID_CMC_ENCRYPTED_POP, [b.sequence([tcr(7, popCsr), envelopedStub,
+          b.sequence([b.oid(HMAC_SHA256_OID)]), b.sequence([b.oid(SHA256)]),
+          b.integer(1n)])])], [], [])));
+    }) === "cmc/bad-pop-challenge");
   check("G3s. an Encrypted POP in a request is refused, since the authority sends it",
     code(function () {
       return cmc.parse(signedData(ID_CCT_PKI_DATA, pkiData([
