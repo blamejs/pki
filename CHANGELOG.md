@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.42 — 2026-09-06
+
+A trust anchor carries the namespace a root program trusts a root for, so a certificate outside it is refused even where the root certificate states no such limit.
+
+### Added
+
+- pki.trust.anchor(entry, opts) accepts opts.nameConstraints, the namespace a root program applies to a root outside any extension the root certificate carries. It is a { permitted, excluded } pair of { tag, base } subtrees, the shape pki.path.validate takes for opts.initialPermittedSubtrees, and validate seeds it as the RFC 5280 section 6.1.1(h)(i) initial value: it intersects with each certificate's own nameConstraints so a leaf must satisfy both, and an excluded subtree rejects a name whatever the permitted set says. A verdict reports it at anchorConstraints.nameConstraintsApplied. The subtrees are copied out of the caller's object, so changing that object afterwards leaves the namespace an anchor already vouches for unchanged. An overlay naming no subtree, one carrying a malformed subtree, and one supplying its subtrees through an accessor are each refused with trust/bad-input, since carrying any of them would widen the namespace the operator asked to restrict.
+
 ## v0.6.41 — 2026-09-05
 
 A lookup table answers from its own entries, so a name taken off the wire cannot resolve to something the table never registered.

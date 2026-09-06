@@ -1,0 +1,11 @@
+{
+  "version": "0.6.42",
+  "date": "2026-09-06",
+  "headline": "A trust anchor carries the namespace a root program trusts a root for, so a certificate outside it is refused even where the root certificate states no such limit.",
+  "summary": "A root program can trust a root for a narrower namespace than the root certificate itself states. That restriction lives in the program's own data rather than in a nameConstraints extension the certificate carries, so a validator reading only the certificate accepts a leaf that a browser applying the program's data rejects.\n\npki.trust.anchor takes opts.nameConstraints, a { permitted, excluded } pair of { tag, base } subtrees in the shape pki.path.validate already accepts for opts.initialPermittedSubtrees. Validate seeds it as the RFC 5280 section 6.1.1(h)(i) initial value, so the restriction intersects with every certificate's own constraints and a leaf must satisfy both, while an excluded subtree rejects whatever is permitted.\n\nAn anchor given no overlay is the object the verb returned before, and validates exactly as it did.",
+  "sections": {
+    "Added": [
+      "pki.trust.anchor(entry, opts) accepts opts.nameConstraints, the namespace a root program applies to a root outside any extension the root certificate carries. It is a { permitted, excluded } pair of { tag, base } subtrees, the shape pki.path.validate takes for opts.initialPermittedSubtrees, and validate seeds it as the RFC 5280 section 6.1.1(h)(i) initial value: it intersects with each certificate's own nameConstraints so a leaf must satisfy both, and an excluded subtree rejects a name whatever the permitted set says. A verdict reports it at anchorConstraints.nameConstraintsApplied. The subtrees are copied out of the caller's object, so changing that object afterwards leaves the namespace an anchor already vouches for unchanged. An overlay naming no subtree, one carrying a malformed subtree, and one supplying its subtrees through an accessor are each refused with trust/bad-input, since carrying any of them would widen the namespace the operator asked to restrict."
+    ]
+  }
+}

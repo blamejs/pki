@@ -694,6 +694,162 @@ async function testRealCertdataSlice() {
   check("T27: a leaf issued AFTER the distrust date is rejected",
     resAfter.valid === false && failCodes(resAfter).indexOf("path/distrusted-after") !== -1);
 
+  // A root program can trust a root for a namespace narrower than the root certificate itself
+  // states, and that restriction lives in the program's data rather than in any nameConstraints
+  // extension the certificate carries. An anchor accepts that overlay so the restriction reaches
+  // the path validator, which already seeds it as the RFC 5280 sec. 6.1.1(h)(i) initial value.
+  // The subject DN is the name form these leaves carry, so the subtrees are directoryName ones.
+  var CN = "2.5.4.3";
+  function dnBase(cn) { return { rdns: [[{ type: CN, value: cn }]] }; }
+  var ncAnchor = pki.trust.anchor(entryA, {
+    purpose: "serverAuth",
+    nameConstraints: { permitted: [{ tag: 4, base: dnBase("T27 Leaf Before") }] },
+  });
+  check("T28: an anchor carries the name-constraint overlay it was given",
+    !!ncAnchor.nameConstraints && ncAnchor.nameConstraints.permitted.length === 1);
+  var ncIn = await pki.path.validate([fx.leafBefore], { time: T, trustAnchors: ncAnchor, checkPurpose: "serverAuth" });
+  check("T28: a leaf inside the overlay namespace validates, and the verdict reports the overlay",
+    ncIn.valid === true && ncIn.anchorConstraints.nameConstraintsApplied === true);
+  var ncOutAnchor = pki.trust.anchor(entryA, {
+    purpose: "serverAuth",
+    nameConstraints: { permitted: [{ tag: 4, base: dnBase("Some Other Namespace") }] },
+  });
+  var ncOut = await pki.path.validate([fx.leafBefore], { time: T, trustAnchors: ncOutAnchor, checkPurpose: "serverAuth" });
+  check("T28: a leaf outside the overlay namespace is refused",
+    ncOut.valid === false && failCodes(ncOut).indexOf("path/name-constraint-not-permitted") !== -1);
+  // An excluded subtree rejects regardless of what is permitted (RFC 5280 sec. 4.2.1.10).
+  var ncExAnchor = pki.trust.anchor(entryA, {
+    purpose: "serverAuth",
+    nameConstraints: { excluded: [{ tag: 4, base: dnBase("T27 Leaf Before") }] },
+  });
+  var ncEx = await pki.path.validate([fx.leafBefore], { time: T, trustAnchors: ncExAnchor, checkPurpose: "serverAuth" });
+  check("T28: a leaf inside an excluded overlay subtree is refused",
+    ncEx.valid === false && failCodes(ncEx).indexOf("path/name-constraint-excluded") !== -1);
+  // An anchor with no overlay is what it was before the option existed, and says so.
+  check("T28: an anchor with no overlay carries no nameConstraints field",
+    Object.prototype.hasOwnProperty.call(anchorA, "nameConstraints") === false);
+  check("T28: and its verdict reports no overlay applied",
+    resBefore.anchorConstraints.nameConstraintsApplied === false);
+  // The overlay is copied out, so a caller that keeps its object and widens it afterwards does not
+  // widen the namespace an anchor already handed out.
+  var mutable = { permitted: [{ tag: 4, base: dnBase("T27 Leaf Before") }] };
+  var copied = pki.trust.anchor(entryA, { purpose: "serverAuth", nameConstraints: mutable });
+  mutable.permitted.length = 0;
+  mutable.excluded = [{ tag: 4, base: dnBase("T27 Leaf Before") }];
+  check("T28: the anchor keeps the subtrees it was given after the caller's object changes",
+    copied.nameConstraints.permitted.length === 1 && copied.nameConstraints.excluded.length === 0);
+  var stillIn = await pki.path.validate([fx.leafBefore], { time: T, trustAnchors: copied, checkPurpose: "serverAuth" });
+  check("T28: and still validates the leaf the original overlay permitted", stillIn.valid === true);
+  // A restriction supplied through an accessor could answer one way to the copy and another later,
+  // and dropping it would widen the namespace, so it is refused rather than read.
+  var accessorOverlay = {};
+  Object.defineProperty(accessorOverlay, "permitted", {
+    enumerable: true, configurable: true,
+    get: function () { return [{ tag: 4, base: dnBase("T27 Leaf Before") }]; },
+  });
+  check("T28: an overlay supplying its subtrees through an accessor is refused",
+    codeOf(function () { pki.trust.anchor(entryA, { purpose: "serverAuth", nameConstraints: accessorOverlay }); }) === "trust/bad-input");
+  check("T28: an overlay that is not an object is refused",
+    codeOf(function () { pki.trust.anchor(entryA, { purpose: "serverAuth", nameConstraints: 42 }); }) === "trust/bad-input");
+  check("T28: a malformed subtree entry is refused",
+    codeOf(function () { pki.trust.anchor(entryA, { purpose: "serverAuth", nameConstraints: { permitted: [{ tag: 99, base: "x" }] } }); }) === "trust/bad-input");
+  // Every way an overlay can fail to describe itself in plain values, each refused rather than
+  // carried, because carrying a restriction the anchor read wrongly widens the namespace.
+  function ncCode(nc) { return codeOf(function () { pki.trust.anchor(entryA, { purpose: "serverAuth", nameConstraints: nc }); }); }
+  check("T28: a subtree list that is not an array is refused", ncCode({ permitted: "example.com" }) === "trust/bad-input");
+  check("T28: a Proxy subtree list is refused", ncCode({ permitted: new Proxy([], {}) }) === "trust/bad-input");
+  var sparse = [{ tag: 4, base: dnBase("T27 Leaf Before") }];
+  sparse.length = 3;
+  check("T28: a sparse subtree list is refused", ncCode({ permitted: sparse }) === "trust/bad-input");
+  check("T28: a subtree entry that is not an object is refused", ncCode({ permitted: [42] }) === "trust/bad-input");
+  check("T28: a Proxy subtree entry is refused", ncCode({ permitted: [new Proxy({ tag: 4, base: dnBase("x") }, {})] }) === "trust/bad-input");
+  check("T28: a subtree entry missing its base is refused", ncCode({ permitted: [{ tag: 4 }] }) === "trust/bad-input");
+  var accessorEntry = { tag: 4 };
+  Object.defineProperty(accessorEntry, "base", { enumerable: true, configurable: true, get: function () { return dnBase("x"); } });
+  check("T28: a subtree entry whose base is an accessor is refused", ncCode({ permitted: [accessorEntry] }) === "trust/bad-input");
+  check("T28: a non-integer tag is refused", ncCode({ permitted: [{ tag: 2.5, base: "example.com" }] }) === "trust/bad-input");
+  check("T28: an overlay naming no subtree is refused", ncCode({}) === "trust/bad-input");
+  check("T28: an overlay that is an array is refused", ncCode([]) === "trust/bad-input");
+  check("T28: a Proxy overlay is refused", ncCode(new Proxy({ permitted: [] }, {})) === "trust/bad-input");
+  // A byte-valued base, the iPAddress form, is snapshotted rather than referenced, and a string
+  // base is already a value. Both reach the anchor unchanged.
+  var ipBase = Buffer.from([10, 0, 0, 0, 255, 0, 0, 0]);
+  var ipAnchor = pki.trust.anchor(entryA, { purpose: "serverAuth", nameConstraints: { excluded: [{ tag: 7, base: ipBase }] } });
+  ipBase[0] = 192;
+  check("T28: an iPAddress base is snapshotted, not referenced",
+    ipAnchor.nameConstraints.excluded[0].base[0] === 10);
+  var strAnchor = pki.trust.anchor(entryA, { purpose: "serverAuth", nameConstraints: { permitted: [{ tag: 2, base: "example.com" }] } });
+  check("T28: a dNSName base is carried as the string it is",
+    strAnchor.nameConstraints.permitted[0].base === "example.com");
+  // A byte source that is not a Buffer is still a byte source: the anchor snapshots it, so bytes
+  // the caller changes afterwards do not move the subnet the anchor excludes.
+  var ipView = new Uint8Array([10, 0, 0, 0, 255, 0, 0, 0]);
+  var viewAnchor = pki.trust.anchor(entryA, { purpose: "serverAuth", nameConstraints: { excluded: [{ tag: 7, base: ipView }] } });
+  ipView[0] = 192;
+  check("T28: a Uint8Array iPAddress base is snapshotted like a Buffer one",
+    viewAnchor.nameConstraints.excluded[0].base[0] === 10);
+  // Reading a directoryName is caller code when the name is built out of accessors, and the name
+  // being read here IS the restriction, so a getter could clear the exclusions it is describing and
+  // hand back an unrestricted namespace. Such a name is refused rather than read.
+  var trapDn = {};
+  var overlayUnderAttack = { permitted: [{ tag: 4, base: trapDn }], excluded: [{ tag: 4, base: dnBase("T27 Leaf Before") }] };
+  Object.defineProperty(trapDn, "rdns", {
+    enumerable: true, configurable: true,
+    get: function () { overlayUnderAttack.excluded.length = 0; return []; },
+  });
+  check("T28: a directoryName base supplying its rdns through an accessor is refused",
+    codeOf(function () { pki.trust.anchor(entryA, { purpose: "serverAuth", nameConstraints: overlayUnderAttack }); }) === "trust/bad-input");
+  check("T28: and the refusal happens before the accessor can clear the rest of the overlay",
+    overlayUnderAttack.excluded.length === 1);
+  check("T28: a Proxy directoryName base is refused",
+    codeOf(function () { pki.trust.anchor(entryA, { purpose: "serverAuth", nameConstraints: { permitted: [{ tag: 4, base: new Proxy(dnBase("x"), {}) }] } }); }) === "trust/bad-input");
+  var atvAccessor = [[{ type: CN }]];
+  Object.defineProperty(atvAccessor[0][0], "value", { enumerable: true, configurable: true, get: function () { return "x"; } });
+  check("T28: an attribute value supplied through an accessor is refused",
+    codeOf(function () { pki.trust.anchor(entryA, { purpose: "serverAuth", nameConstraints: { permitted: [{ tag: 4, base: { rdns: atvAccessor } }] } }); }) === "trust/bad-input");
+  // The captured name is a copy, so mutating the caller's rdns afterwards leaves it alone.
+  var liveDn = dnBase("T27 Leaf Before");
+  var dnAnchor = pki.trust.anchor(entryA, { purpose: "serverAuth", nameConstraints: { permitted: [{ tag: 4, base: liveDn }] } });
+  liveDn.rdns[0][0].value = "Somewhere Else";
+  var stillPermitted = await pki.path.validate([fx.leafBefore], { time: T, trustAnchors: dnAnchor, checkPurpose: "serverAuth" });
+  check("T28: a directoryName base is copied, so changing the caller's name does not move the namespace",
+    stillPermitted.valid === true);
+  // A list the overlay only inherits is refused rather than read as absent: reading it as absent
+  // drops the restriction, and dropping an exclusion admits the namespace it was written to keep out.
+  var inheritedExcluded = Object.create({ excluded: [{ tag: 2, base: "blocked.example.com" }] });
+  inheritedExcluded.permitted = [{ tag: 2, base: "example.com" }];
+  check("T28: an overlay whose excluded list is only inherited is refused, not silently dropped",
+    ncCode(inheritedExcluded) === "trust/bad-input");
+  // A base is held to the form its tag names, so none falls through to being carried by reference
+  // and completed by the caller afterwards.
+  check("T28: a directoryName base with no rdns is refused", ncCode({ permitted: [{ tag: 4, base: {} }] }) === "trust/bad-input");
+  check("T28: a dNSName base that is not a string is refused", ncCode({ permitted: [{ tag: 2, base: 42 }] }) === "trust/bad-input");
+  check("T28: an iPAddress base that is not bytes is refused", ncCode({ excluded: [{ tag: 7, base: "10.0.0.0" }] }) === "trust/bad-input");
+  check("T28: a tag naming a form the overlay cannot constrain is refused",
+    ncCode({ permitted: [{ tag: 0, base: "x" }] }) === "trust/bad-input");
+  // A misspelled field would be read as an absent list, and an absent excluded list admits the
+  // namespace the operator wrote it to keep out, so an unknown field is named rather than ignored.
+  check("T28: a misspelled overlay field is refused rather than read as an absent list",
+    ncCode({ permitted: [{ tag: 2, base: "example.com" }], exlcuded: [{ tag: 2, base: "blocked.example.com" }] }) === "trust/bad-input");
+  // Asking whether the overlay carries a list is a membership test, which an inherited Proxy answers
+  // with its own code. That code runs mid-read, so such an overlay is refused before it is asked.
+  var trapProto = new Proxy({}, { has: function () { return false; } });
+  var trapped = Object.create(trapProto);
+  trapped.permitted = [{ tag: 2, base: "safe.example.com" }];
+  check("T28: an overlay inheriting from a Proxy is refused", ncCode(trapped) === "trust/bad-input");
+  // The captured name is built with the toolkit's own append, so a setter planted on the array
+  // prototype cannot swallow the entries and leave an empty name behind, which would match every DN.
+  Object.defineProperty(Array.prototype, "0", {
+    configurable: true, set: function () { /* swallows a plain index assignment */ }, get: function () { return undefined; },
+  });
+  var underSetter;
+  try {
+    underSetter = pki.trust.anchor(entryA, { purpose: "serverAuth", nameConstraints: { permitted: [{ tag: 4, base: dnBase("T27 Leaf Before") }] } });
+  } finally { delete Array.prototype[0]; }
+  check("T28: a prototype index setter cannot empty the captured name",
+    underSetter.nameConstraints.permitted[0].base.rdns.length === 1 &&
+    underSetter.nameConstraints.permitted[0].base.rdns[0].length === 1);
+
   // anchor() fail-fast: root A is NOT an email delegator.
   check("T27: anchor(entry, { purpose }) fail-fasts on an untrusted purpose",
     codeOf(function () { pki.trust.anchor(entryA, { purpose: "emailProtection" }); }) === "trust/purpose-not-trusted");
