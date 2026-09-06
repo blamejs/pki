@@ -1,0 +1,11 @@
+{
+  "version": "0.6.45",
+  "date": "2026-09-06",
+  "headline": "A certification path reaching a certificate signed with a stateful hash-based key validates without a separate call.",
+  "summary": "The toolkit has verified HSS/LMS signatures since v0.4, but only as raw blobs: a caller holding a certificate signed with one had to pull the key and the signature out of it and hand them to pki.shbs.verify, then decide for itself what the answer meant for the path. pki.path.validate refused the same certificate with path/unsupported-algorithm.\n\nIt now verifies one directly. A certificate whose signature algorithm is id-alg-hss-lms-hashsig (RFC 9802) goes through the toolkit's own HSS engine, with every other RFC 5280 section 6.1 check unchanged, and a certificate revocation list naming the same algorithm takes the same route. The wiring is proven against the self-signed certificate RFC 9802 Appendix A publishes.",
+  "sections": {
+    "Added": [
+      "pki.path.validate verifies a certificate signed with the RFC 9802 stateful hash-based algorithm id-alg-hss-lms-hashsig, and pki.crl.verify a certificate revocation list signed with it, which RFC 9802 section 6 provides for alongside the certificate. The signature covers the whole tbsCertificate rather than a digest of it (section 7.1); the RFC 8554 public key is read from the subjectPublicKey BIT STRING and the signature from signatureValue, neither carrying further ASN.1 wrapping (sections 5 and 6); the algorithm identifier carries no parameters; and the subject public key must name the algorithm the signature names, so a certificate advertising one algorithm over a key of another is refused. A key or signature the engine cannot read is a path/bad-signature verdict, never a pass. Every other section 6.1 check is unchanged, so an expired or otherwise faulty HSS certificate fails for the reason it should. The end-to-end proof is the self-signed certificate published in RFC 9802 Appendix A, which now validates through pki.path.validate. Signing remains out of scope: a stateful key's one-time state belongs in hardware that owns it."
+    ]
+  }
+}

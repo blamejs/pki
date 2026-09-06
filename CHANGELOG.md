@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.45 — 2026-09-06
+
+A certification path reaching a certificate signed with a stateful hash-based key validates without a separate call.
+
+### Added
+
+- pki.path.validate verifies a certificate signed with the RFC 9802 stateful hash-based algorithm id-alg-hss-lms-hashsig, and pki.crl.verify a certificate revocation list signed with it, which RFC 9802 section 6 provides for alongside the certificate. The signature covers the whole tbsCertificate rather than a digest of it (section 7.1); the RFC 8554 public key is read from the subjectPublicKey BIT STRING and the signature from signatureValue, neither carrying further ASN.1 wrapping (sections 5 and 6); the algorithm identifier carries no parameters; and the subject public key must name the algorithm the signature names, so a certificate advertising one algorithm over a key of another is refused. A key or signature the engine cannot read is a path/bad-signature verdict, never a pass. Every other section 6.1 check is unchanged, so an expired or otherwise faulty HSS certificate fails for the reason it should. The end-to-end proof is the self-signed certificate published in RFC 9802 Appendix A, which now validates through pki.path.validate. Signing remains out of scope: a stateful key's one-time state belongs in hardware that owns it.
+
 ## v0.6.44 — 2026-09-06
 
 An enrollment client reaches a certification authority through a proxy that demands Digest authentication.
