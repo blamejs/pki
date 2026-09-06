@@ -1148,8 +1148,10 @@ function testRegistryTablesCarryNoPrototype() {
   // Out of scope are the shapes that are not a declaration at all: a literal assigned to a
   // property, nested inside another literal, or returned from a factory. Those have no binding to
   // anchor on, and a converted outer table copies an inner literal by reference, so the inner one
-  // keeps its prototype. Nesting one is the residual under the rule; lib holds none that serve as
-  // a lookup table.
+  // keeps its prototype. Nesting one is the residual under the rule, and it hides best when the
+  // inner table is reached by indexing the outer (`T[a][b]`), since the inner name never appears at
+  // a read. Either build the inner one the same way, or ask it with hasOwn before believing the
+  // answer; lib holds none that serve as a lookup table without one of the two.
   //
   // A declaration is read across the line break as well as along the line: the initializer may
   // open on the next line, and a comma declarator may sit on one of its own. Matching only what
