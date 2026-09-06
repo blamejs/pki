@@ -1149,6 +1149,29 @@ async function testBridgeMeshOrdering() {
     bm15.valid === true && bm15.path.length === 4 &&
     Buffer.from(bm15.path[0].subjectPublicKeyInfo.bytes).equals(ecKp.spki));
 
+  // BM-16: the shared-prefix rank is the weaker signal and stays under an exact match on the anchor's own
+  // name, however long that name is. A name of many relative names would otherwise let a candidate that
+  // merely leads with the anchor's name outrank the certificate the anchor actually issued.
+  var LONG_ROOT = [];
+  for (var q = 0; q < 24; q++) LONG_ROOT.push([OU, "Level " + q]);
+  var LONG_CHILD = LONG_ROOT.concat([[CN, "Deep CA"]]);
+  var lrKp = await freshKeys(), laKp = await freshKeys(), lbKp = await freshKeys(), lLeafKp = await freshKeys();
+  var LEAF_ISSUER = [[C, "US"], [O, "Example"], [CN, "Issuing CA"]];
+  var longRoot = await mkCert({ signer: lrKp, subjectKp: lrKp, issuerName: LONG_ROOT, subjectName: LONG_ROOT, extensions: caExts() });
+  var exact = await mkCert({ signer: lrKp, subjectKp: laKp, issuerName: LONG_ROOT, subjectName: LEAF_ISSUER, extensions: caExts() });
+  var deepKp = await freshKeys();
+  var deep = await mkCert({ signer: deepKp, subjectKp: lbKp, issuerName: LONG_CHILD, subjectName: LEAF_ISSUER, extensions: caExts() });
+  var longLeaf = await mkCert({ signer: laKp, subjectKp: lLeafKp, issuerName: LEAF_ISSUER, subjectName: [[C, "US"], [O, "Example"], [CN, "long.example.com"]] });
+  var deepFill = [];
+  for (var df = 0; df < 6; df++) {
+    var dfKp = await freshKeys(), dfSub = await freshKeys();
+    deepFill.push(await mkCert({ signer: dfKp, subjectKp: dfSub, issuerName: [[C, "FR"], [O, "Filler " + df], [CN, "Filler CA " + df]], subjectName: LONG_CHILD, extensions: caExts() }));
+  }
+  var bm16 = await pki.path.build(longLeaf, { candidates: [exact, deep].concat(deepFill), trustAnchors: [longRoot], time: T, maxCandidatesConsidered: 4 });
+  check("BM-16 an exact match on the anchor's name outranks a candidate that merely leads with it",
+    bm16.valid === true && bm16.path.length === 2 &&
+    Buffer.from(bm16.path[0].subjectPublicKeyInfo.bytes).equals(laKp.spki));
+
   // BM-12: reverse building reads no network, so asking for both is a refusal rather than a silent forward.
   var bm12 = await codeOf(pki.path.build(leaf, { direction: "reverse", candidates: [sales], trustAnchors: [root], time: T, fetchAia: true }));
   check("BM-12 reverse building with fetchAia is refused", bm12 === "path/bad-input");
