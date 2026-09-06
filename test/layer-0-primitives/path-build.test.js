@@ -498,6 +498,18 @@ async function run() {
   check("AIA B1: the fetched intermediate is on the built path (accepted through validate, not a raw insert)", Buffer.from(b1.path[0].subjectPublicKeyInfo.bytes).equals(aInterKp.spki));
   check("AIA B1: aiaFetches counts the single GET and only the caIssuers URL was fetched", b1.aiaFetches === 1 && b1t.calls.length === 1 && b1t.calls[0] === AIA_URL);
   check("AIA B1: WITHOUT fetchAia the same empty-pool build fails path/no-path (the fetch is load-bearing)", (await codeOf(pki.path.build(aLeaf, { candidates: [], trustAnchors: [aRoot], time: T }))) === "path/no-path");
+  // AIA is a best-effort issuer source, so every fetch failure is skipped and the next URL tried.
+  // A transport that THROWS is the same failure as one that REJECTS, reported differently, so both
+  // leave the build reporting that it found no path rather than one of them ending it early. The
+  // transport has to advertise the address guard for a DNS-name URL to be fetched at all, so these
+  // carry that flag; otherwise the URL is skipped before anything is called.
+  var boundClass = (class T {}).bind(null);
+  boundClass.blocksPrivateAddresses = true;
+  check("AIA B1: a transport that throws when called is skipped like any other failed fetch",
+    (await codeOf(pki.path.build(aLeaf, Object.assign({}, aBase, { transport: boundClass })))) === "path/no-path");
+  var downT = mkTransport(function () { return Promise.reject(new Error("ECONNREFUSED")); });
+  check("AIA B1: a transport that rejects is skipped the same way",
+    (await codeOf(pki.path.build(aLeaf, Object.assign({}, aBase, { transport: downT })))) === "path/no-path");
   // B2 CERTS-ONLY CMS response supplies the intermediate.
   var b2t = mkTransport(function () { return { status: 200, headers: { "content-type": "application/pkcs7-mime" }, body: certsOnlyCms([aInter]) }; });
   check("AIA B2: a certs-only CMS response supplies the intermediate (valid:true)", (await pki.path.build(aLeaf, Object.assign({}, aBase, { transport: b2t }))).valid === true);
