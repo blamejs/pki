@@ -45,6 +45,18 @@ function trustMaterial() {
   return { fulcioRoots: fulcioRoots, rekorKeys: rekorKeys };
 }
 
+// The certificate-transparency logs the same document pins, in the shape verifyBundle takes for the
+// Rekor keys: an operator builds both from the one trusted_root.json.
+function ctLogMaterial() {
+  return (TRUST.ctlogs || []).map(function (l) {
+    return {
+      keyId: Buffer.from((l.logId && l.logId.keyId) || "", "base64"),
+      spki: Buffer.from((l.publicKey && l.publicKey.rawBytes) || "", "base64"),
+      validFor: l.publicKey && l.publicKey.validFor,
+    };
+  });
+}
+
 function codeOf(p) { return p.then(function () { return "NO-THROW"; }, function (e) { return e.code || e.message; }); }
 
 // ---------------------------------------------------------------------------
@@ -135,6 +147,74 @@ function buildSynBundle(opts) {
   return { bundle: bundle, trust: { fulcioRoots: [{ der: rootDer }], rekorKeys: [{ keyId: keyId, spki: rekorSpki }] } };
 }
 
+// A synthetic bundle whose leaf is issued by an INTERMEDIATE the bundle carries, with a real embedded
+// certificate-transparency receipt over that leaf. The caller pins only the root, so the certificate
+// that issued the leaf is a link in the chain rather than the anchor, which is the shape the receipt's
+// issuer-key hash is computed from. The receipt is signed with a log key the test holds, so both the
+// accepting and the refusing case are decidable here rather than against the public log.
+async function buildSctChainBundle(o) {
+  o = o || {};
+  var rootKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var interKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var leafKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var rekorKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var logKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var NB = new Date("2026-01-01T00:00:00Z"), NA = new Date("2030-01-01T00:00:00Z");
+  var integratedTime = Math.floor(new Date("2027-06-01T00:00:00Z").getTime() / 1000);
+  var caExts = [synExt("basicConstraints", true, B.sequence([B.boolean(true)])), synExt("keyUsage", true, synKuVal([5, 6]))];
+  var rootDer = synCert({ serial: 1n, issuer: "syn-root", subject: "syn-root", notBefore: NB, notAfter: NA,
+    subjectKey: rootKp.publicKey, signerKey: rootKp.privateKey, extensions: caExts });
+  var interDer = synCert({ serial: 2n, issuer: "syn-root", subject: "syn-inter", notBefore: NB, notAfter: NA,
+    subjectKey: interKp.publicKey, signerKey: rootKp.privateKey, extensions: caExts });
+
+  // The receipt covers the certificate as it stood before the receipt was added, so the leaf is built
+  // twice: once without the extension, to sign over, and once with it, to ship (RFC 6962 sec. 3.2).
+  var leafExts = [synExt("keyUsage", true, synKuVal([0])), synExt("extKeyUsage", false, B.sequence([synOid("codeSigning")])),
+    synExt("subjectAltName", false, B.sequence([gnUriDer("https://github.com/synthetic/repo")]))];
+  function mkLeaf(exts) {
+    return synCert({ serial: 3n, issuer: "syn-inter", subject: "syn-leaf", notBefore: NB, notAfter: NA,
+      subjectKey: leafKp.publicKey, signerKey: interKp.privateKey, extensions: exts });
+  }
+  var preLeaf = pki.schema.x509.parse(mkLeaf(leafExts));
+  var interSpki = interKp.publicKey.export({ format: "der", type: "spki" });
+  var entry = { entryType: 1, tbsCertificate: Buffer.from(preLeaf.tbsBytes),
+    issuerKeyHash: crypto.createHash("sha256").update(interSpki).digest() };
+  var sct = await pki.ct.signSct(entry, logKp.privateKey.export({ format: "der", type: "pkcs8" }),
+    { timestamp: o.sctTimestamp !== undefined ? o.sctTimestamp : new Date("2027-01-01T00:00:00Z").getTime() });
+  var leafDer = mkLeaf(leafExts.concat([synExt("signedCertificateTimestampList", false, pki.ct.encodeSctList([sct]))]));
+
+  var payloadType = "application/vnd.in-toto+json";
+  var payload = Buffer.from(JSON.stringify({ _type: "https://in-toto.io/Statement/v1",
+    predicateType: "https://slsa.dev/provenance/v1", subject: [{ name: "pkg", digest: { sha512: "ab".repeat(64) } }], predicate: {} }));
+  var derSig = crypto.sign("sha256", pki.sigstore.pae(payloadType, payload), { key: leafKp.privateKey, dsaEncoding: "der" });
+  var env = { payload: payload.toString("base64"), payloadType: payloadType, signatures: [{ sig: derSig.toString("base64") }] };
+  var body = { apiVersion: "0.0.1", kind: "dsse", spec: { signatures: [{ signature: derSig.toString("base64"), verifier: Buffer.from(synPem(leafDer)).toString("base64") }],
+    payloadHash: { algorithm: "sha256", value: crypto.createHash("sha256").update(payload).digest("hex") } } };
+  var canonBuf = Buffer.from(JSON.stringify(body));
+  var rootHash = merkle.leafHash(canonBuf);
+  var rekorSpki = rekorKp.publicKey.export({ format: "der", type: "spki" });
+  var keyId = crypto.createHash("sha256").update(rekorSpki).digest();
+  var cpBody = Buffer.from("rekor.local\n1\n" + rootHash.toString("base64") + "\n", "utf8");
+  var cpSig = crypto.sign("sha256", cpBody, { key: rekorKp.privateKey, dsaEncoding: "der" });
+  var cpEnvelope = cpBody.toString("utf8") + "\n" + String.fromCharCode(0x2014) + " rekor.local " +
+    Buffer.concat([keyId.subarray(0, 4), cpSig]).toString("base64") + "\n";
+  var setCanon = JSON.stringify({ body: canonBuf.toString("base64"), integratedTime: integratedTime, logID: keyId.toString("hex"), logIndex: 1234 });
+  var setSig = crypto.sign("sha256", Buffer.from(setCanon, "utf8"), { key: rekorKp.privateKey, dsaEncoding: "der" });
+  var te = { logId: { keyId: keyId.toString("base64") }, integratedTime: integratedTime, logIndex: 1234,
+    inclusionPromise: { signedEntryTimestamp: setSig.toString("base64") },
+    inclusionProof: { logIndex: 0, treeSize: 1, hashes: [], rootHash: rootHash.toString("base64"), checkpoint: { envelope: cpEnvelope } },
+    canonicalizedBody: canonBuf.toString("base64") };
+  var bundle = { mediaType: "application/vnd.dev.sigstore.bundle.v0.3+json",
+    verificationMaterial: { tlogEntries: [te],
+      x509CertificateChain: { certificates: [{ rawBytes: leafDer.toString("base64") }, { rawBytes: interDer.toString("base64") }] } },
+    dsseEnvelope: env };
+  return {
+    bundle: bundle,
+    trust: { fulcioRoots: [{ der: rootDer }], rekorKeys: [{ keyId: keyId, spki: rekorSpki }] },
+    ctLogs: [{ keyId: Buffer.from(sct.logId), spki: logKp.publicKey.export({ format: "der", type: "spki" }) }],
+  };
+}
+
 // A structurally-parseable intermediate with the given subject/issuer DNs (a
 // throwaway self-key; the chain-building walk inspects only DN linkage, never the
 // signature, for these cases). Used to build cyclic / over-deep DN graphs.
@@ -173,6 +253,98 @@ async function run() {
   // inherited accessor the verdict as a receiver. verdict-shield.test.js drives that behavior.
   check("the sigstore verdict owns then", Object.prototype.hasOwnProperty.call(v, "then") && v.then === undefined);
   check("verifyBundle surfaces the in-toto subject digest", v && v.subjects && v.subjects.length >= 1 && /^[0-9a-f]{64,128}$/.test(v.subjects[0].digest.sha512 || v.subjects[0].digest.sha256 || ""));
+
+  // --- Embedded certificate-transparency SCTs (RFC 6962 sec. 3.2) -----------------------------
+  // Fulcio logs every certificate it issues and embeds the log's receipt in the certificate. Checking
+  // it is what says the signing certificate was public when it was issued, rather than handed out
+  // quietly. It is opt-in, so a caller that pins no log is unaffected.
+  check("SCT-1 with no ctLogs the bundle still verifies and says the receipt was not checked",
+    v.sctChecked === false && v.validScts === 0);
+
+  var CT = ctLogMaterial();
+  var vSct = await pki.sigstore.verifyBundle(BUNDLE, Object.assign({}, TM, { ctLogs: CT }));
+  check("SCT-2 the embedded receipt verifies against the logs the same trusted root pins",
+    vSct.verified === true && vSct.sctChecked === true && vSct.validScts >= 1);
+
+  // A pinned log set that does not include the log that issued the receipt is a refusal, not a pass:
+  // an unverifiable receipt must not read as a verified one.
+  var otherLog = CT.filter(function (l) { return l.keyId.toString("base64") !== "3T0wasbHETJjGR4cmWc3AqJKXrjePK3/h4pygC8p7o4="; });
+  check("SCT-3 a log set that does not cover the receipt is refused",
+    (await codeOf(pki.sigstore.verifyBundle(BUNDLE, Object.assign({}, TM, { ctLogs: otherLog })))) === "sigstore/sct-unverified");
+
+  // A tampered receipt signature must not verify. The extension bytes sit inside the certificate the
+  // Fulcio chain leg authenticates, so this is checked on the certificate the bundle actually carries.
+  var badSctTrust = CT.map(function (l) {
+    var spki = Buffer.from(l.spki);
+    spki[spki.length - 1] ^= 0x01;
+    return { keyId: l.keyId, spki: spki, validFor: l.validFor };
+  });
+  check("SCT-4 a receipt that does not verify under the pinned log key is refused",
+    (await codeOf(pki.sigstore.verifyBundle(BUNDLE, Object.assign({}, TM, { ctLogs: badSctTrust })))) === "sigstore/sct-unverified");
+
+  // An operator pins the Fulcio ROOT and the bundle carries the intermediate, which is the shape
+  // cosign produces. The receipt is bound to the key that issued the certificate, so the check has to
+  // read that issuer off the chain it just validated rather than off the anchor at the top of it.
+  var sctChain = await buildSctChainBundle();
+  var vChain = await pki.sigstore.verifyBundle(sctChain.bundle, Object.assign({}, sctChain.trust, { ctLogs: sctChain.ctLogs }));
+  check("SCT-4b a receipt verifies when the intermediate that issued the leaf is not the pinned anchor",
+    vChain.verified === true && vChain.sctChecked === true && vChain.validScts === 1);
+  check("SCT-4c the same bundle without ctLogs verifies and reports the receipt unchecked",
+    (await pki.sigstore.verifyBundle(sctChain.bundle, sctChain.trust)).sctChecked === false);
+
+  check("SCT-5 an empty ctLogs array is refused rather than read as no policy",
+    (await codeOf(pki.sigstore.verifyBundle(BUNDLE, Object.assign({}, TM, { ctLogs: [] })))) === "sigstore/bad-input");
+  check("SCT-6 a ctLogs entry missing its key is refused",
+    (await codeOf(pki.sigstore.verifyBundle(BUNDLE, Object.assign({}, TM, { ctLogs: [{ keyId: CT[0].keyId }] })))) === "sigstore/bad-input");
+  check("SCT-6b ctLogs that is not an array is refused",
+    (await codeOf(pki.sigstore.verifyBundle(BUNDLE, Object.assign({}, TM, { ctLogs: { keyId: CT[0].keyId } })))) === "sigstore/bad-input");
+  check("SCT-6c a ctLogs entry that is not an object is refused",
+    (await codeOf(pki.sigstore.verifyBundle(BUNDLE, Object.assign({}, TM, { ctLogs: ["not a log"] })))) === "sigstore/bad-input");
+  check("SCT-6d a ctLogs entry whose keyId is not a Buffer is refused",
+    (await codeOf(pki.sigstore.verifyBundle(BUNDLE, Object.assign({}, TM, { ctLogs: [{ keyId: "3T0was", spki: CT[0].spki }] })))) === "sigstore/bad-input");
+
+  // A certificate carrying no receipt at all, when the caller asked for the check, is its own refusal:
+  // the absence must not read as a receipt that passed. The synthetic builder makes a leaf without one.
+  var noSct = buildSynBundle({});
+  check("SCT-7 a certificate carrying no receipt is refused when ctLogs was supplied",
+    (await codeOf(pki.sigstore.verifyBundle(noSct.bundle, Object.assign({}, noSct.trust, { ctLogs: CT })))) === "sigstore/sct-missing");
+  check("SCT-7b the same bundle verifies when no logs are pinned",
+    (await pki.sigstore.verifyBundle(noSct.bundle, noSct.trust)).verified === true);
+
+  // A receipt dated after the time being validated at is one the log could not have issued yet, so it
+  // is not counted (RFC 6962 sec. 5.2). Checking the chain at a time before the receipt leaves nothing
+  // that verifies, which is a refusal rather than a pass.
+  check("SCT-8 a receipt dated after the caller's validation instant is not counted",
+    (await codeOf(pki.sigstore.verifyBundle(sctChain.bundle,
+      Object.assign({}, sctChain.trust, { ctLogs: sctChain.ctLogs, time: new Date("2026-06-01T00:00:00Z") })))) === "sigstore/sct-unverified");
+  // The reference is the caller's own instant, never the Rekor entry time: that records whole seconds
+  // while a receipt carries milliseconds, so a certificate logged in the same second as its entry would
+  // otherwise read as dated after it. The published bundle is exactly that case, 64 ms apart.
+  check("SCT-8b the published bundle's receipt is 64 ms after its Rekor entry and still counts",
+    vSct.sctChecked === true && vSct.validScts >= 1);
+
+  // A log key's window says when that key was the log's, so the receipt is held to the window as it
+  // stood when the receipt was SIGNED. The synthetic receipt is dated 2027-01-01 and its artifact was
+  // logged on 2027-06-01, so a window that opens between the two covers the logging but not the signing.
+  check("SCT-9 a log whose key window opens after the receipt was signed does not count",
+    (await codeOf(pki.sigstore.verifyBundle(sctChain.bundle, Object.assign({}, sctChain.trust, {
+      ctLogs: sctChain.ctLogs.map(function (l) { return { keyId: l.keyId, spki: l.spki, validFor: { start: "2027-03-01T00:00:00Z" } }; }),
+    })))) === "sigstore/sct-unverified");
+  check("SCT-9b a log whose key window closes after the receipt was signed still counts",
+    (await pki.sigstore.verifyBundle(sctChain.bundle, Object.assign({}, sctChain.trust, {
+      ctLogs: sctChain.ctLogs.map(function (l) { return { keyId: l.keyId, spki: l.spki, validFor: { start: "2026-01-01T00:00:00Z", end: "2027-03-01T00:00:00Z" } }; }),
+    }))).validScts === 1);
+
+  // With no caller instant the bound is the authenticated log-entry time, whose whole second counts.
+  // A receipt dated after that second is not accepted just because no instant was pinned.
+  var future = await buildSctChainBundle({ sctTimestamp: new Date("2028-01-01T00:00:00Z").getTime() });
+  check("SCT-10 a receipt dated after the log entry is refused even with no validation instant",
+    (await codeOf(pki.sigstore.verifyBundle(future.bundle,
+      Object.assign({}, future.trust, { ctLogs: future.ctLogs })))) === "sigstore/sct-unverified");
+  var sameSecond = await buildSctChainBundle({ sctTimestamp: new Date("2027-06-01T00:00:00Z").getTime() + 640 });
+  check("SCT-10b a receipt in the same second as the log entry counts, which is the granularity case",
+    (await pki.sigstore.verifyBundle(sameSecond.bundle,
+      Object.assign({}, sameSecond.trust, { ctLogs: sameSecond.ctLogs }))).validScts === 1);
   check("verifyBundle surfaces the SLSA predicateType", v && v.predicateType === "https://slsa.dev/provenance/v1");
   check("#78 predicateTypeChecked is false when no predicateType is pinned", v.predicateTypeChecked === false);
   check("#78 the verdict identifies the attested Rekor entry (logIndex + logId)",

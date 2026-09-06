@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.46 — 2026-09-06
+
+A Sigstore bundle can be checked against the certificate-transparency logs that recorded the signing certificate.
+
+### Added
+
+- pki.sigstore.verifyBundle accepts opts.ctLogs, an array of { keyId, spki, validFor? } in the same shape it takes for the Rekor keys, so an operator builds both from the one trusted-root document. When supplied, the certificate-transparency receipt Fulcio embeds in the signing certificate (RFC 6962 section 3.2) is verified: the logged entry is reconstructed from the certificate as it stood before the receipt was added, bound to the key hash of the certificate that issued it, and checked under the key of the pinned log the receipt names. At least one receipt must verify against a pinned log, which is the RFC 6962 section 3.3 floor. A log's validFor window is read at the instant the receipt was signed, since that is when the key was the log's rather than when the artifact was later logged, and a receipt dated after the instant being validated at is not counted (section 5.2); with no opts.time that instant is the end of the Rekor entry's own second, which allows for the entry recording whole seconds while a receipt carries milliseconds and accepts nothing beyond it. The verdict gains sctChecked, saying whether the check ran, and validScts, counting the receipts that verified. A receipt that verifies against no pinned log, and a certificate carrying no receipt at all, are each refused with sigstore/sct-unverified or sigstore/sct-missing rather than passing quietly. The check is opt-in: a caller that supplies no ctLogs verifies exactly as before and reads sctChecked false, while an empty array is refused with sigstore/bad-input rather than read as a policy that checks nothing.
+
 ## v0.6.45 — 2026-09-06
 
 A certification path reaching a certificate signed with a stateful hash-based key validates without a separate call.
