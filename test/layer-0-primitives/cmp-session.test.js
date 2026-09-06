@@ -326,6 +326,30 @@ async function run() {
     sNeg.transport.calls.length > 0);
   check("6t3b. a token whose certReqId is longer than the widest identifier a request can carry is refused",
     await codeOf(mk([]).session.resumePoll(Object.assign({}, tok, { certReqId: "9".repeat(49153) }))) === "cmp/bad-input");
+  // A wait split across processes reads the same as one held in a single process: a resumed poll that
+  // read no certificate response of its own still reports the waiting status, because that is the status
+  // a transaction a token can continue is in.
+  var sTimeoutA = mk([H.ip(0, 3), H.pollRep(0, 1)], { maxPolls: 1 });
+  var timeoutStraight = await sTimeoutA.session.enroll(H.irRequest(CLIENT.spki));
+  var sTimeoutB = mk([H.pollRep(0, 1)], { maxPolls: 1 });
+  var timeoutResumed = await sTimeoutB.session.resumePoll(JSON.parse(JSON.stringify(timeoutStraight.resumeToken)));
+  check("6t3d. a resumed timeout that read no certificate response still reports the waiting status",
+    timeoutStraight.outcome === "poll-timeout" && timeoutStraight.status.status.code === 3 &&
+    timeoutResumed.outcome === "poll-timeout" && timeoutResumed.status.status.code === 3 &&
+    timeoutResumed.status.status.name === timeoutStraight.status.status.name &&
+    timeoutResumed.resumeToken != null);
+  // The authority's own diagnostics are not reproduced from stored state, so a verdict never presents
+  // text as the authority's that the authority did not send in this exchange.
+  check("6t3d2. and it reports no diagnostic string of its own",
+    timeoutResumed.status.statusString === null && timeoutResumed.status.failInfo === null);
+  // The due-time handoff, which sends no request at all, reports the same status.
+  var farTok = JSON.parse(JSON.stringify(timeoutStraight.resumeToken));
+  farTok.nextPollAt = Date.now() + 3600000;
+  var sFar = mk([H.pollRep(0, 1)], { maxTotalWait: 1 });
+  var farOut = await sFar.session.resumePoll(farTok);
+  check("6t3d3. a resume whose remaining wait exceeds the budget reports it too, sending no request",
+    farOut.outcome === "poll-timeout" && farOut.status.status.code === 3 && sFar.transport.calls.length === 0);
+
   // A nonce shorter than a received message is allowed to carry could not have come from a response, so
   // it is refused before it is echoed into a request that cannot continue the chain.
   var SHORT_NONCES = ["AA==", Buffer.alloc(15, 7).toString("base64"), ""];
