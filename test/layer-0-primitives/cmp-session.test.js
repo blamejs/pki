@@ -461,6 +461,17 @@ async function run() {
   var splitCode = splitTok == null ? "NO-TOKEN" : await codeOf(splitB.session.resumePoll(JSON.parse(JSON.stringify(splitTok))));
   check("6t8. the same response sequence reaches the same verdict whether it runs in one process or two",
     splitTok != null && splitTok.signerCache == null && splitCode === straightCode);
+  // The equivalence holds in both directions, including where the transaction fails. A session that
+  // authenticated bare responses through opts.expectedSender is configuration, not transaction state, so
+  // a resumed session without it refuses exactly where an uninterrupted one without it refuses, and the
+  // pinned identity does not quietly stand in for the certificate the option supplied.
+  var bareSeq = [waitLeg, pollLeg, grantLeg, confLeg];
+  var noOptStraight = await codeOf(mk(bareSeq).session.enroll(H.irRequest(CLIENT.spki)));
+  var noOptA = mk([waitLeg, pollLeg], { expectedSender: H.signerCert, maxPolls: 1 });
+  var noOptTok = (await noOptA.session.enroll(H.irRequest(CLIENT.spki))).resumeToken;
+  var noOptResumed = await codeOf(mk([grantLeg, confLeg]).session.resumePoll(JSON.parse(JSON.stringify(noOptTok))));
+  check("6t8b. a session that does not carry the sender pin refuses a bare response the same way in one process or two",
+    noOptStraight === "cmp/signer-cert-not-found" && noOptResumed === noOptStraight);
 
   // The chain is bounded by the path length rather than by the response size, so a token naming more
   // certificates than a path can hold is refused while a caller's own oversized intermediate is not.
