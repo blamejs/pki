@@ -1939,6 +1939,8 @@ function testNoDuplicateCodeBlocks() {
         "lib/est.js:_knownOpts", "lib/scep.js:getCACaps", "lib/scep.js:getCACert",
         "lib/cmp-session.js:session", "lib/path-validate.js:build", "lib/scep.js:parse",
         "lib/cms-verify.js:_verify", "lib/cms-verify.js:parseCertsOnly",
+        "lib/scep.js:getNextCACert", "lib/cms-verify.js:verify", "lib/ocsp.js:_signerVerdict",
+        "lib/scep.js:_assertStrongProfile", "lib/scep.js:_buildIssuerAndSerial",
       ],
       reason: "The options door a public verb opens with: settle the caller's options object, then refuse any key the verb does not accept. Both steps ARE the shared primitives, already factored into guard-identifier, so what repeats is the pair of calls and nothing else; the arguments differ at every site, since each verb has its own accepted-key table and its own label. Settling has to happen at the verb, before it reads anything, so the call cannot move inside the key check. family-subset so any 3+ match as more verbs adopt the door.",
     },
