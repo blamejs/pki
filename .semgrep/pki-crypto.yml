@@ -66,3 +66,21 @@ rules:
       - metavariable-regex:
           metavariable: $MAC
           regex: (?i)(hmac|\bmac\b|auth[_-]?tag|gcm[_-]?tag|secret|expected(mac|tag|digest|hmac)|computed(mac|tag|digest|hmac))
+      # A size test is not a value comparison. `secretBytes.length === 0` asks whether a secret was
+      # supplied at all, and `mac.length === expected.length` is the size check that PRECEDES a
+      # constant-time compare, which is how one is meant to be written. Neither reads a secret byte,
+      # so neither is the oracle this rule exists to catch; matching them only trains the reader to
+      # ignore it. A comparison of the values themselves still matches, since it names no `.length`.
+      - pattern-not: $X.length === $Y
+      - pattern-not: $X.length !== $Y
+      - pattern-not: $Y === $X.length
+      - pattern-not: $Y !== $X.length
+      # The same reasoning the note above gives for bare tag / digest, applied to the fields that
+      # carry them. An ASN.1 tag number and an algorithm OID are public structure: every parser
+      # compares them, on bytes an attacker already holds, and the comparison reveals nothing the
+      # message did not. The identifier they are compared AGAINST is often named expectedTag or
+      # hmacSha1, which is what draws the rule to a line that reads no secret at all.
+      - pattern-not: $X.tagNumber === $Y
+      - pattern-not: $X.tagNumber !== $Y
+      - pattern-not: $X.oid === $Y
+      - pattern-not: $X.oid !== $Y

@@ -872,6 +872,233 @@ async function run() {
   check("PoP3. a valid tcr alongside a bad-PoP tcr still fails the whole build (no partial acceptance)",
     (await _cmcCode({ requests: [{ tcr: await csrFor(s) }, { tcr: badPopCsr }] })) === "cmc/bad-popo");
 
+  // A Full PKI Request is carried in a SignedData or an AuthenticatedData (RFC 5272 sec. 3.2). The
+  // second is what a client enrolling under a shared secret uses: the MAC authenticates the request in
+  // place of a signature, so no key or certificate is needed to send one.
+  var MAC_IDENTITY = "cmc-client-17";
+  var MAC_SECRET = "a-shared-secret-at-least-16-chars";
+  var macProt = { mac: { identifier: MAC_IDENTITY, secret: MAC_SECRET } };
+  var macCsr = await csrFor(s);
+  var macDer = await pki.cmc.build({ requests: [{ tcr: macCsr }] }, macProt);
+  var macCms = pki.schema.cms.parse(macDer);
+  check("AD1. a shared-secret request is carried in an AuthenticatedData encapsulating a PKIData",
+    macCms.contentTypeName === "authData" &&
+    (macCms.encapContentInfo.eContentTypeName || macCms.encapContentInfo.eContentType) === ID_CCT_PKI_DATA);
+  // RFC 5272 sec. 3.2(a): the Password Recipient Info option MUST be used.
+  check("AD2. its recipient is a PasswordRecipientInfo",
+    macCms.recipientInfos.length === 1 && macCms.recipientInfos[0].type === "pwri");
+  // RFC 5652 sec. 9.1: a non-data encapsulated type carries authenticated attributes.
+  check("AD3. it carries authenticated attributes naming the encapsulated type",
+    Array.isArray(macCms.authAttrs) && macCms.authAttrs.length >= 2);
+  // A PasswordRecipientInfo names no recipient, so the request itself has to say whose secret it is or
+  // an authority holding many cannot select one (RFC 5272 sec. 6.2.3).
+  var macControls = pki.schema.cmc.parse(macDer).controls;
+  var macIdent = macControls.filter(function (c) { return c.attrType === ID_CMC_IDENTIFICATION; });
+  check("AD4b. the request names the client whose secret authenticates it",
+    macIdent.length === 1 && pki.asn1.read.string(pki.asn1.decode(macIdent[0].values[0])) === MAC_IDENTITY);
+  // The same name may also arrive through identityProof; two different names for one client is refused
+  // rather than picked between, and the matching pair emits one control, not two.
+  var bothDer = await pki.cmc.build({ requests: [{ tcr: macCsr }],
+    identityProof: { secret: MAC_SECRET, identity: MAC_IDENTITY } }, macProt);
+  check("AD4c. the same name given twice still emits one Identification control",
+    pki.schema.cmc.parse(bothDer).controls.filter(function (c) { return c.attrType === ID_CMC_IDENTIFICATION; }).length === 1);
+  check("AD4d. two different names for one client is refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: macCsr }],
+        identityProof: { secret: MAC_SECRET, identity: "a-different-name" } }, macProt);
+    })) === "cmc/bad-input");
+  // The name can also be written straight into spec.controls, which is the third place one request can
+  // name its client from. All three are held to the same name.
+  var identControl = function (name) { return { type: "id-cmc-identification", value: b.utf8(name) }; };
+  check("AD4e. an Identification control the caller wrote naming a different client is refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: macCsr }], controls: [identControl("bob")] }, macProt);
+    })) === "cmc/bad-input");
+  var sameDer = await pki.cmc.build({ requests: [{ tcr: macCsr }], controls: [identControl(MAC_IDENTITY)] }, macProt);
+  check("AD4f. one the caller wrote naming the same client is kept, and not duplicated",
+    pki.schema.cmc.parse(sameDer).controls.filter(function (c) { return c.attrType === ID_CMC_IDENTIFICATION; }).length === 1);
+  check("AD4g. one whose value does not read as the client's name is refused rather than assumed to agree",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: macCsr }],
+        controls: [{ type: "id-cmc-identification", value: b.integer(7n) }] }, macProt);
+    })) === "cmc/bad-input");
+  // Every supplied name is compared, not just the last one seen.
+  check("AD4h. a second control naming a different client is refused whichever order they arrive in",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: macCsr }],
+        controls: [identControl("bob"), identControl(MAC_IDENTITY)] }, macProt);
+    })) === "cmc/bad-input");
+  // The control is a UTF8String, so the same characters in another string type is a different value on
+  // the wire and cannot stand in for the one the request needs.
+  check("AD4i. a PrintableString carrying the same characters is not accepted as the name",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: macCsr }],
+        controls: [{ type: "id-cmc-identification", value: b.printable(MAC_IDENTITY) }] }, macProt);
+    })) === "cmc/bad-input");
+  // And one request names its client once, however the pieces were assembled.
+  check("AD4j. naming the client through both a control and identityProof is refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: macCsr }], controls: [identControl(MAC_IDENTITY)],
+        identityProof: { secret: MAC_SECRET, identity: MAC_IDENTITY } }, macProt);
+    })) === "cmc/bad-input");
+  // A control is a caller object, so its value is read once: what the name is checked against has to be
+  // what the request carries. A value that answers differently on a second read cannot slip a different
+  // name into the message than the one the check saw.
+  var twoFaced = { type: "id-cmc-identification" };
+  var reads = 0;
+  Object.defineProperty(twoFaced, "value", {
+    enumerable: true,
+    get: function () { reads += 1; return reads === 1 ? b.utf8("bob") : b.utf8(MAC_IDENTITY); },
+  });
+  check("AD4k. a control whose value answers differently on a second read cannot pass the name check",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: macCsr }], controls: [twoFaced] }, macProt);
+    })) === "cmc/bad-input");
+  check("AD4. the message reads back as the same PKIData a signed carrier would carry",
+    pki.schema.cmc.parse(macDer).kind === "pkiData" &&
+    pki.schema.cmc.parse(macDer).requests.length === 1);
+  // RFC 5272 sec. 3.2(c): the derivation input is the identifier and the shared secret together, so
+  // changing either one alone must fail to authenticate.
+  // The authority authenticates the request through the CMS layer, keyed by what sec. 3.2(c) derives.
+  // Pinning it byte-for-byte is what proves the derivation is the identifier AND the secret: an
+  // implementation that concatenated them itself reaches the same key.
+  var derived = Buffer.concat([Buffer.from(MAC_IDENTITY, "utf8"), Buffer.from(MAC_SECRET, "utf8")]);
+  check("AD5. the authority authenticates it under the identifier and secret concatenated",
+    (await pki.cms.decrypt(macDer, { password: derived })).authenticated === true);
+  check("AD6. a different identifier with the same secret does not authenticate",
+    (await acode(function () {
+      return pki.cms.decrypt(macDer, { password: Buffer.concat([Buffer.from("someone-else", "utf8"), Buffer.from(MAC_SECRET, "utf8")]) });
+    })) !== "NO-THROW");
+  check("AD7. a different secret with the same identifier does not authenticate",
+    (await acode(function () {
+      return pki.cms.decrypt(macDer, { password: Buffer.concat([Buffer.from(MAC_IDENTITY, "utf8"), Buffer.from("another-shared-secret-16", "utf8")]) });
+    })) !== "NO-THROW");
+  // The secret alone is NOT the key, which is the half of sec. 3.2(c) an implementation forgets.
+  check("AD8. the secret alone does not authenticate it",
+    (await acode(function () { return pki.cms.decrypt(macDer, { password: Buffer.from(MAC_SECRET, "utf8") }); })) !== "NO-THROW");
+  check("AD9. a tampered encapsulated byte does not authenticate",
+    (await acode(function () {
+      var t = Buffer.from(macDer);
+      t[t.length - 1] ^= 0x01;
+      return pki.cms.decrypt(t, { password: derived });
+    })) !== "NO-THROW");
+  // One carrier per request, and the shared secret is refused unless it can key a derivation.
+  check("AD10. naming both a signature and a shared secret is refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: macCsr }] },
+        { cert: s.cert, key: s.key, mac: { identifier: MAC_IDENTITY, secret: MAC_SECRET } });
+    })) === "cmc/bad-input");
+  // The secret may arrive as bytes rather than a string, which is what a caller holding it in a
+  // buffer passes; it derives the same key as the string spelling of the same bytes.
+  var macBytesDer = await pki.cmc.build({ requests: [{ tcr: macCsr }] },
+    { mac: { identifier: MAC_IDENTITY, secret: Buffer.from(MAC_SECRET, "utf8") } });
+  check("AD12. a secret given as bytes derives the same key as the same bytes given as a string",
+    (await pki.cms.decrypt(macBytesDer, { password: derived })).authenticated === true);
+  // A renewal's identity is the certificate it is signed with, which is why it carries no Identification
+  // or Identity Proof control (RFC 5272 sec. 3.2(a)). A shared secret names no certificate, so it cannot
+  // stand in for one: the combination is refused rather than producing a renewal asserting nothing.
+  check("AD13. a renewal cannot be carried by a shared secret",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: macCsr }], renewal: true }, macProt);
+    })) === "cmc/bad-signer");
+  check("AD13b. the same renewal signed with the certificate being renewed still builds",
+    pki.schema.cmc.parse(await pki.cmc.build({ requests: [{ tcr: macCsr }], renewal: true },
+      { cert: s.cert, key: s.key })).kind === "pkiData");
+  // Every copy the toolkit takes of a byte-valued shared secret is cleared, observed in a child
+  // process because the wipe cannot be watched from inside this one. The verify case is the one that
+  // matters most: the options snapshot owns its copy from before the response is parsed, so the copy
+  // exists even on an exit that never reaches the MAC.
+  var macBuildObs = observeWipe({ op: "cmc-build-mac", key: s.key, csr: macCsr, secret: Buffer.from(MAC_SECRET, "utf8") });
+  check("AD14. the wipe observation ran for the shared-secret build (child exit " + macBuildObs.status + ")",
+    macBuildObs.report !== null);
+  check("AD14b. every copy the shared-secret build takes is cleared",
+    !!macBuildObs.report && macBuildObs.report.wiped.length > 0 &&
+      macBuildObs.report.wiped.some(function (e) { return e.hadContent; }) &&
+      macBuildObs.report.wiped.every(function (e) { return e.allZeroAfter; }));
+  var macVerifyObs = observeWipe({ op: "cmc-verify-mac", key: s.key, csr: Buffer.from([0x30, 0x03, 0x02, 0x01, 0x01]),
+    secret: Buffer.from(MAC_SECRET, "utf8") });
+  check("AD15. the wipe observation ran for a verification that never reaches the MAC (child exit " + macVerifyObs.status + ")",
+    macVerifyObs.report !== null);
+  check("AD15b. the secret copy is cleared even when the response never parses",
+    !!macVerifyObs.report && macVerifyObs.report.wiped.length > 0 &&
+      macVerifyObs.report.wiped.some(function (e) { return e.hadContent; }) &&
+      macVerifyObs.report.wiped.every(function (e) { return e.allZeroAfter; }));
+  // The narrowest window of all: the snapshot takes the secret copy and the next step of the same
+  // synchronous prologue throws, before any promise exists to attach cleanup to.
+  var macDetachedObs = observeWipe({ op: "cmc-verify-mac-detached", key: s.key, csr: macCsr,
+    secret: Buffer.from(MAC_SECRET, "utf8") });
+  check("AD16. the wipe observation ran for a prologue failure (child exit " + macDetachedObs.status + ")",
+    macDetachedObs.report !== null);
+  check("AD16b. the secret copy is cleared when the prologue fails after taking it",
+    !!macDetachedObs.report && macDetachedObs.report.wiped.length > 0 &&
+      macDetachedObs.report.wiped.some(function (e) { return e.hadContent; }) &&
+      macDetachedObs.report.wiped.every(function (e) { return e.allZeroAfter; }));
+  // Furthest out: the LAST option the snapshot reads throws, several steps after the secret copy was
+  // taken. Everything from the copy to the return is protected, so this clears it too.
+  var macLateObs = observeWipe({ op: "cmc-verify-mac-late-throw", key: s.key,
+    csr: Buffer.from([0x30, 0x03, 0x02, 0x01, 0x01]), secret: Buffer.from(MAC_SECRET, "utf8") });
+  check("AD17. the wipe observation ran for a throw in the last option read (child exit " + macLateObs.status + ")",
+    macLateObs.report !== null);
+  check("AD17b. the secret copy is cleared when a later option read throws",
+    !!macLateObs.report && macLateObs.report.wiped.length > 0 &&
+      macLateObs.report.wiped.some(function (e) { return e.hadContent; }) &&
+      macLateObs.report.wiped.every(function (e) { return e.allZeroAfter; }));
+  // Carrying an Identification control changes how an Identity Proof witness is derived: the hash is
+  // over the secret and the identity together rather than the secret alone (RFC 5272 sec. 6.2.3). A
+  // shared-secret request always carries that control, so the witness has to be derived that way even
+  // when the caller named no identity on identityProof itself.
+  var proofDer = await pki.cmc.build({ requests: [{ tcr: macCsr }], identityProof: { secret: MAC_SECRET } }, macProt);
+  var namedProofDer = await pki.cmc.build({ requests: [{ tcr: macCsr }],
+    identityProof: { secret: MAC_SECRET, identity: MAC_IDENTITY } },
+  { cert: s.cert, key: s.key });
+  var witnessOf = function (der) {
+    return pki.schema.cmc.parse(der).controls
+      .filter(function (c) { return c.attrType === ID_CMC_IDENTITY_PROOF_V2; })[0].values[0].toString("hex");
+  };
+  check("AD18. the witness is derived with the name the request carries, not with none",
+    witnessOf(proofDer) === witnessOf(namedProofDer));
+  // One client, one secret: the carrier's MAC and the Identity Proof are keyed from the same credential.
+  check("AD19. a request cannot carry one secret for its MAC and another for its Identity Proof",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: macCsr }],
+        identityProof: { identity: MAC_IDENTITY, secret: "a-different-secret-16-chars" } }, macProt);
+    })) === "cmc/bad-input");
+  check("AD19b. the same secret on both sides builds, whether the carrier's was given as bytes or a string",
+    pki.schema.cmc.parse(await pki.cmc.build({ requests: [{ tcr: macCsr }],
+      identityProof: { identity: MAC_IDENTITY, secret: MAC_SECRET } },
+    { mac: { identifier: MAC_IDENTITY, secret: Buffer.from(MAC_SECRET, "utf8") } })).kind === "pkiData");
+  // A comparison that refuses still copied. When one of the two secrets turns out unusable, the copy of
+  // the other one is cleared rather than left behind by the early exit.
+  var macCmpObs = observeWipe({ op: "cmc-build-mac-compare-reject", key: s.key, csr: macCsr,
+    secret: Buffer.from(MAC_SECRET, "utf8") });
+  check("AD20. the wipe observation ran for a refused secret comparison (child exit " + macCmpObs.status + ")",
+    macCmpObs.report !== null);
+  var secretB64 = Buffer.from(MAC_SECRET, "utf8").toString("base64");
+  // Counted, not matched: the argument boundary clears its own copy of the same bytes, so only the
+  // NUMBER of cleared copies distinguishes a comparison that cleaned up from one that did not.
+  var secretWipes = !macCmpObs.report ? 0 : macCmpObs.report.wiped.filter(function (e) {
+    return e.before === secretB64 && e.allZeroAfter;
+  }).length;
+  check("AD20b. the comparison clears the copy it made of the secret even when it refuses",
+    secretWipes >= 2);
+  var BAD_MACS = [
+    ["a non-object", "just-a-string"],
+    ["an array", ["identifier", "secret"]],
+    ["a buffer", Buffer.from("both")],
+    ["no identifier", { secret: MAC_SECRET }],
+    ["an empty identifier", { identifier: "", secret: MAC_SECRET }],
+    ["a non-string identifier", { identifier: 42, secret: MAC_SECRET }],
+    ["no secret", { identifier: MAC_IDENTITY }],
+    ["an empty secret", { identifier: MAC_IDENTITY, secret: "" }],
+    ["an unknown field", { identifier: MAC_IDENTITY, secret: MAC_SECRET, bogus: 1 }],
+  ];
+  for (var bm = 0; bm < BAD_MACS.length; bm++) {
+    check("AD11. a shared secret with " + BAD_MACS[bm][0] + " is refused",
+      (await acode((function (m) {
+        return function () { return pki.cmc.build({ requests: [{ tcr: macCsr }] }, { mac: m }); };
+      }(BAD_MACS[bm][1])))) === "cmc/bad-input");
+  }
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

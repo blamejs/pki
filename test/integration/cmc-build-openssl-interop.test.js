@@ -158,6 +158,34 @@ async function run() {
   bad[bad.length - 1] ^= 0xff;
   check("a flipped signature byte fails the independent verify",
     signedAttrsVerify(bad, t.spki, "ec-p256") === false);
+
+  // The other carrier RFC 5272 sec. 3.2 gives a Full PKI Request: an AuthenticatedData keyed by a
+  // shared secret. OpenSSL has no CMC template either, but it does fully understand this CMS shape,
+  // so the oracle here is stronger than the asn1parse dump above: `openssl cms -cmsout` accepts the
+  // message as a CMS structure it recognizes, and the dump names the recipient kind sec. 3.2(a)
+  // requires from OpenSSL's own OID table rather than from ours.
+  var m = signing.makeSigner("ec-p256");
+  var mcsr = await pki.csr.sign({ subject: "shared-secret.example", subjectPublicKey: m.spki }, { key: m.key });
+  var macDer = await pki.cmc.build({ requests: [{ tcr: mcsr }] },
+    { mac: { identifier: "cmc-client-17", secret: "a-shared-secret-at-least-16-chars" } });
+  ctx.withTmp(Buffer.from(macDer), "cmc-req-authdata.der", function (p) {
+    var d = opensslDump(p);
+    check("openssl asn1parse structurally accepts the shared-secret Full PKI Request", d.code === 0);
+    check("openssl names the AuthenticatedData carrier from its own table",
+      /id-smime-ct-authData/.test(d.out));
+    check("openssl names the encapsulated content type id-cct-PKIData on that carrier",
+      /id-cct-PKIData/.test(d.out));
+    // RFC 5272 sec. 3.2(a): the Password Recipient Info option, which OpenSSL names by its
+    // key-encryption algorithm id-alg-PWRI-KEK.
+    check("openssl names the password recipient's key-encryption algorithm",
+      /id-alg-PWRI-KEK/.test(d.out) && /PBKDF2/.test(d.out));
+    // The stronger half: a CMS-aware verb, not a generic DER dumper, reads the whole message.
+    var cmsout = ctx.runOpenssl(["cms", "-cmsout", "-inform", "DER", "-in", p, "-noout"],
+      { allowNonZero: true });
+    check("openssl cms reads the shared-secret request as a CMS message", cmsout.code === 0);
+  });
+  check("the shared-secret Full PKI Request round-trips through the strict parser",
+    pki.schema.cmc.parse(macDer).kind === "pkiData");
 }
 
 Promise.resolve().then(run).then(
