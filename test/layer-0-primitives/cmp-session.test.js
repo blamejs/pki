@@ -413,6 +413,55 @@ async function run() {
   check("6t7b. a response cap below that certificate does not refuse the token that names it",
     (await codeOf(tightSess.resumePoll(JSON.parse(JSON.stringify(bareTok))))) !== "cmp/bad-input" &&
     tightF.transport.calls.length > 0);
+  // A resumed transaction is held to what the first process actually had. Driving the SAME response
+  // sequence both ways, a token that names no cached verification certificate must not let the pinned
+  // identity stand in for one: the grant is validated from the certificates the authority sent, and a
+  // sequence that leaves none of them behind is refused in one process and in two alike.
+  // Implicit confirmation is negotiated in the request the token continues, so the token carries it and
+  // the resumed poll confirms the way that request asked, whatever the resuming session's options say.
+  var icA = mk([H.ip(0, 3), H.pollRep(0, 1)], { implicitConfirm: true, maxPolls: 1 });
+  var icTok = (await icA.session.enroll(H.irRequest(CLIENT.spki))).resumeToken;
+  check("6t13. a token records that its request asked for implicit confirmation", icTok != null && icTok.implicitConfirm === true);
+  var icB = mk([{ body: H.ip(0, 0, certDer), generalInfo: H.IMPLICIT_CONFIRM_GI }]);
+  var icOut = await icB.session.resumePoll(JSON.parse(JSON.stringify(icTok)));
+  check("6t13b. a session that never set the option still confirms that grant implicitly, sending no certConf",
+    icOut.outcome === "issued" && icOut.implicitConfirm === true && icB.transport.calls.length === 1);
+  // The other direction is the one that must not open: a session setting the option cannot make a
+  // transaction whose request never asked for it accept an implicit-confirm indication.
+  var plainA = mk([H.ip(0, 3), H.pollRep(0, 1)], { maxPolls: 1 });
+  var plainTok = (await plainA.session.enroll(H.irRequest(CLIENT.spki))).resumeToken;
+  var plainB = mk([{ body: H.ip(0, 0, certDer), generalInfo: H.IMPLICIT_CONFIRM_GI }, H.pkiconf()], { implicitConfirm: true });
+  var plainOut = await plainB.session.resumePoll(JSON.parse(JSON.stringify(plainTok)));
+  check("6t13c. a token whose request did not ask for implicit confirmation still sends its certConf",
+    plainTok.implicitConfirm === false && plainOut.outcome === "issued" &&
+    plainOut.implicitConfirm === false && plainB.transport.calls.length === 2);
+  check("6t13d. a token that says how its transaction confirms in anything but a boolean is refused",
+    await codeOf(mk([]).session.resumePoll(Object.assign({}, plainTok, { implicitConfirm: "yes" }))) === "cmp/bad-input");
+  var sOmit = mk([H.pollRep(0, 1), { body: H.ip(0, 0, certDer), generalInfo: H.IMPLICIT_CONFIRM_GI }, H.pkiconf()],
+    { implicitConfirm: true });
+  var omitTok = JSON.parse(JSON.stringify(icTok));
+  delete omitTok.implicitConfirm;
+  var omitOut = await sOmit.session.resumePoll(omitTok);
+  check("6t13f. a token omitting it resumes as though the request asked for nothing, so the grant is confirmed explicitly",
+    omitOut.outcome === "issued" && omitOut.implicitConfirm === false);
+  var sVet = mk([{ body: H.ip(0, 0, certDer), generalInfo: H.IMPLICIT_CONFIRM_GI }], { acceptCert: function () { return true; } });
+  check("6t13e. an implicit-confirm token handed to a session that vets grants is refused before any request",
+    (await codeOf(sVet.session.resumePoll(JSON.parse(JSON.stringify(icTok))))) === "cmp/bad-input" &&
+    sVet.transport.calls.length === 0);
+
+  var waitLeg = { body: H.ip(0, 3), noExtraCerts: true };
+  var pollLeg = { body: H.pollRep(0, 1), noExtraCerts: true };
+  var grantLeg = { body: H.ip(0, 0, certDer), noExtraCerts: true };
+  var confLeg = { body: H.pkiconf(), noExtraCerts: true };
+  var straight = mk([waitLeg, pollLeg, grantLeg, confLeg], { expectedSender: H.signerCert });
+  var straightCode = await codeOf(straight.session.enroll(H.irRequest(CLIENT.spki)));
+  var splitA = mk([waitLeg, pollLeg], { expectedSender: H.signerCert, maxPolls: 1 });
+  var splitTok = (await splitA.session.enroll(H.irRequest(CLIENT.spki))).resumeToken;
+  var splitB = mk([grantLeg, confLeg], { expectedSender: H.signerCert });
+  var splitCode = splitTok == null ? "NO-TOKEN" : await codeOf(splitB.session.resumePoll(JSON.parse(JSON.stringify(splitTok))));
+  check("6t8. the same response sequence reaches the same verdict whether it runs in one process or two",
+    splitTok != null && splitTok.signerCache == null && splitCode === straightCode);
+
   // The chain is bounded by the path length rather than by the response size, so a token naming more
   // certificates than a path can hold is refused while a caller's own oversized intermediate is not.
   var longChain = [];
@@ -473,6 +522,22 @@ async function run() {
     sleep: function () { return Promise.resolve(); } });
   check("6t10. and it resumes under the same secret",
     (await s6macR.resumePoll(JSON.parse(JSON.stringify(macTok)))).outcome === "issued");
+  // How a transaction authenticates is fixed when it opens. The two flavors bind a response by different
+  // things, the pinned signer identity and the shared secret, so neither resumes the other's transaction.
+  check("6t10b. a shared-secret token names its protection", macTok.protection === "mac");
+  var sigTokP = JSON.parse(JSON.stringify(tok));
+  check("6t10c. a signature token names its protection", sigTokP.protection === "signature");
+  var sSigForMac = mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()]);
+  check("6t10d. a shared-secret transaction is not resumed by a signature session",
+    (await codeOf(sSigForMac.session.resumePoll(JSON.parse(JSON.stringify(macTok))))) === "cmp/bad-input" &&
+    sSigForMac.transport.calls.length === 0);
+  var macForSigF = H.fakeCa(pki, [H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()], { macSecret: MAC_SECRET });
+  var macForSig = pki.cmp.session({ url: URL, mac: { secret: MAC_SECRET }, transport: macForSigF.transport,
+    sleep: function () { return Promise.resolve(); } });
+  check("6t10e. a signature transaction is not resumed by a shared-secret session",
+    (await codeOf(macForSig.resumePoll(sigTokP))) === "cmp/bad-input" && macForSigF.transport.calls.length === 0);
+  check("6t10f. a token naming a protection that is neither is refused",
+    await codeOf(mk([]).session.resumePoll(Object.assign({}, tok, { protection: "none" }))) === "cmp/bad-input");
 
   check("6t8. and that token resumes to the grant",
     (await mk([H.pollRep(-1, 1), H.cp(-1, 0, certDer), H.pkiconf()]).session.resumePoll(
