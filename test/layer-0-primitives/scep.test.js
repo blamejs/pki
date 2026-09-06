@@ -541,6 +541,14 @@ async function testResponseShapeArms() {
   // The media type is matched on the type alone, so a charset parameter does not defeat it.
   var withParams = await pki.scep.getCACaps(BASE, { transport: fakeTransport({ status: 200, headers: { "content-type": "text/plain; charset=utf-8" }, body: "AES\r\n" }) });
   check("response: a content-type parameter is ignored when matching the media type", withParams.AES === true);
+  // A CA that advertises nothing answers with one of several statuses. The capabilities map it
+  // yields has the same shape as one built from a 200, so a consumer's lookup behaves the same
+  // whichever answer arrived.
+  var empty204 = await pki.scep.getCACaps(BASE, { transport: fakeTransport({ status: 204, headers: {}, body: "" }) });
+  check("response: a 204 yields a capabilities map shaped like a 200's",
+    Object.getPrototypeOf(empty204) === Object.getPrototypeOf(withParams) && empty204.AES === undefined);
+  var empty404 = await pki.scep.getCACaps(BASE, { transport: fakeTransport({ status: 404, headers: {}, body: "" }) });
+  check("response: a 404 yields the same shape", Object.getPrototypeOf(empty404) === Object.getPrototypeOf(withParams));
   // A duplicate content-type cannot be resolved to one media type, so the response is refused rather
   // than answered from whichever copy happened to be scanned last.
   var dupCode = await codeOf(pki.scep.getCACaps(BASE, {
