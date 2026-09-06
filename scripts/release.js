@@ -756,7 +756,8 @@ function _ghJson(rv, what) {
 //   (2) when it is CLEAN, an issue comment ("Reviewed commit: `<sha>` — Didn't
 //       find any major issues") with NO formal review node and NO commit.oid.
 // Recognizing only (1) means every clean review times out — the gate would
-// only ever pass when Codex complains, which is backwards.
+// only ever pass when Codex complains, which is backwards. The comment's sha is
+// abbreviated to a width Codex picks, so match a prefix rather than a fixed one.
 function _codexReviewedHead(prNum) {
   var slug = _repoSlug();
   var head = (_capture("gh", ["pr", "view", prNum, "--json", "headRefOid",
@@ -775,13 +776,16 @@ function _codexReviewedHead(prNum) {
            r.commit && r.commit.oid === head;
   })) return true;
 
-  // (2) Clean-verdict issue comment citing the current head's commit sha.
+  // (2) Clean-verdict issue comment citing the current head's commit sha. The abbreviation length is
+  // Codex's to choose: the prose verdict prints ten characters and the status table prints seven, so a
+  // fixed-width prefix search matches one shape and blocks forever on the other. Read the hex runs the
+  // comment carries and accept one that is a prefix of THIS head, which an unrelated sha cannot be.
   var cv = _capture("gh", ["pr", "view", prNum, "--json", "comments", "--jq", ".comments"]);
   var comments = _ghJson(cv, "PR #" + prNum + " comment list");
-  var headPrefix = head.slice(0, 10);
   return (comments || []).some(function (c) {
-    return c && c.author && _isCodexLogin(c.author.login) &&
-           typeof c.body === "string" && c.body.indexOf(headPrefix) !== -1;
+    if (!c || !c.author || !_isCodexLogin(c.author.login) || typeof c.body !== "string") return false;
+    var runs = c.body.match(/[0-9a-f]{7,40}/g) || [];
+    return runs.some(function (r) { return head.indexOf(r) === 0; });
   });
 }
 

@@ -32,6 +32,17 @@ function makePX() {
   return { url: "https://proxy.example:8080", auth: { username: "puser", password: "psecret" }, tls: { anchors: [Buffer.from("ANCHORBYTES")] } };
 }
 
+// The Digest scheme and its policy knobs are part of the auth record, so they reach the transport by the
+// same copy the credentials do. A knob left behind would silently answer an MD5 challenge the caller
+// refused, or refuse one the caller allowed.
+function makeDigestPX() {
+  return { url: "https://proxy.example:8080", auth: { scheme: "digest", username: "puser", password: "psecret", allowMD5: true, allowLegacyQop: false }, tls: { anchors: [Buffer.from("ANCHORBYTES")] } };
+}
+function carriesDigestPolicy(p) {
+  return !!p && !!p.auth && p.auth.scheme === "digest" && p.auth.allowMD5 === true && p.auth.allowLegacyQop === false &&
+    p.auth.username === "puser" && p.auth.password === "psecret";
+}
+
 // The threaded proxy carries the caller's values (by value)...
 function carriesValue(p) {
   return !!p && p.url === "https://proxy.example:8080" &&
@@ -83,6 +94,12 @@ async function testEst() {
   await codeOf(pEst);
   check("est reuses the snapshot on the followed redirect (two requests carry proxy)", t2.calls.length === 2 && !!t2.calls[0].proxy && !!t2.calls[1].proxy);
   check("est snapshot is isolated from a synchronous post-call mutation", t2.calls.length === 2 && t2.calls[1].proxy.auth.password === "psecret" && t2.calls[1].proxy.tls.anchors[0].toString("latin1") === "ANCHORBYTES");
+
+  // 3a the Digest scheme and its policy knobs ride the same snapshot as the credentials.
+  var pxD = makeDigestPX();
+  var tD = fakeTransport({ status: 200, headers: { "content-type": "application/pkcs7-mime" }, body: "" });
+  await codeOf(pki.est.cacerts(BASE, { proxy: pxD, transport: tD }));
+  check("est threads the Digest scheme and its policy knobs to the transport", tD.calls.length === 1 && carriesDigestPolicy(tD.calls[0].proxy));
 
   // 3b the same synchronous-mutation isolation on the enroll path (verb -> _enroll -> _client).
   var px3 = makePX();
