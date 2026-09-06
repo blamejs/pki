@@ -510,6 +510,13 @@ async function run() {
   var downT = mkTransport(function () { return Promise.reject(new Error("ECONNREFUSED")); });
   check("AIA B1: a transport that rejects is skipped the same way",
     (await codeOf(pki.path.build(aLeaf, Object.assign({}, aBase, { transport: downT })))) === "path/no-path");
+  // Supplying a transport that cannot be called is a wiring fault when it is written, so it is named
+  // whether or not AIA fetching is on. Checking it only under fetchAia would leave the mistake
+  // sitting until the day that option is turned on.
+  for (var badT of [42, null, 0]) {
+    check("AIA B1: an unusable transport is refused even with fetchAia off (" + String(badT) + ")",
+      (await codeOf(pki.path.build(aLeaf, { candidates: [], trustAnchors: [aRoot], time: T, transport: badT }))) === "path/bad-input");
+  }
   // B2 CERTS-ONLY CMS response supplies the intermediate.
   var b2t = mkTransport(function () { return { status: 200, headers: { "content-type": "application/pkcs7-mime" }, body: certsOnlyCms([aInter]) }; });
   check("AIA B2: a certs-only CMS response supplies the intermediate (valid:true)", (await pki.path.build(aLeaf, Object.assign({}, aBase, { transport: b2t }))).valid === true);
