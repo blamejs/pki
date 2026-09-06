@@ -35,6 +35,11 @@ async function codeOf(promise) {
   catch (e) { return (e && e.code) || ("RAW:" + (e && e.constructor && e.constructor.name)); }
 }
 
+async function messageOf(promise) {
+  try { await promise; return "NO-THROW"; }
+  catch (e) { return String(e && e.message); }
+}
+
 // ---- signature plumbing: Ed25519 workhorse + a P-256 arm; each entity a FRESH keypair ----
 var ALG = {
   ed25519: { gen: { name: "Ed25519" }, sign: { name: "Ed25519" }, sigOid: "1.3.101.112", params: "omit" },
@@ -517,6 +522,11 @@ async function run() {
     check("AIA B1: an unusable transport is refused even with fetchAia off (" + String(badT) + ")",
       (await codeOf(pki.path.build(aLeaf, { candidates: [], trustAnchors: [aRoot], time: T, transport: badT }))) === "path/bad-input");
   }
+  // ...and it is named at the door, before any certificate is parsed, so the message points at the
+  // option the caller got wrong rather than at whichever input happened to be looked at first.
+  var bothWrong = await messageOf(pki.path.build(Buffer.from([0]), { candidates: [], trustAnchors: [aRoot], time: T, transport: null }));
+  check("AIA B1: with both a bad transport and an unparseable leaf, the option is what is named",
+    bothWrong.indexOf("opts.transport") !== -1);
   // B2 CERTS-ONLY CMS response supplies the intermediate.
   var b2t = mkTransport(function () { return { status: 200, headers: { "content-type": "application/pkcs7-mime" }, body: certsOnlyCms([aInter]) }; });
   check("AIA B2: a certs-only CMS response supplies the intermediate (valid:true)", (await pki.path.build(aLeaf, Object.assign({}, aBase, { transport: b2t }))).valid === true);
