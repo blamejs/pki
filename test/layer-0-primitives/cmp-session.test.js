@@ -567,6 +567,20 @@ async function run() {
   var p10tok = (await mk([H.cp(-1, 3), H.pollRep(-1, 1), H.pollRep(-1, 1), H.pollRep(-1, 1)], { maxPolls: 2 })
     .session.enroll({ p10cr: p10req })).resumeToken;
   check("6t7. a PKCS#10 enrollment's token names the whole-message sentinel", p10tok.certReqId === "-1");
+  // Whatever an enrollment arm puts in a token, its own reader accepts: an arm that emitted a field the
+  // reader refuses would produce a timeout no operator could resume. Driven per arm, token straight back.
+  var ROUND_TRIP = [
+    ["ir", function () { return H.irRequest(CLIENT.spki); }, H.ip, 0],
+    ["p10cr", function () { return { p10cr: p10req }; }, H.cp, -1],
+  ];
+  for (var rt = 0; rt < ROUND_TRIP.length; rt++) {
+    var rtArm = ROUND_TRIP[rt][0], rtReq = ROUND_TRIP[rt][1], rtResp = ROUND_TRIP[rt][2], rtId = ROUND_TRIP[rt][3];
+    var rtTok = (await mk([rtResp(rtId, 3), H.pollRep(rtId, 1)], { maxPolls: 1 }).session.enroll(rtReq())).resumeToken;
+    var rtOut = await mk([H.pollRep(rtId, 1), rtResp(rtId, 0, certDer), H.pkiconf()])
+      .session.resumePoll(JSON.parse(JSON.stringify(rtTok)));
+    check("6t7b. a " + rtArm + " enrollment's own token resumes to the outcome the arm reaches",
+      rtTok != null && rtOut.outcome === "issued" && rtOut.confirmed === true);
+  }
   // A shared-secret session pins no signer certificate, since there is none, so its token carries none
   // and the resumed poll authenticates the same way the first process did: by the secret.
   var MAC_SECRET = "shared-secret-resume";
