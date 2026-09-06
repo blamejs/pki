@@ -163,12 +163,182 @@ function testOid() {
   check("XMSS params MUST be absent", pki.oid.paramsMustBeAbsent(pki.oid.byName("id-alg-xmss-hashsig")) === true);
 }
 
-function run() {
+// -- RFC 9802 Appendix A: an HSS-signed certificate through pki.path.validate ------------------
+// The published example is self-signed, so the certificate is its own issuer and validating it
+// checks the signature under the key it carries. That is the end-to-end proof the raw-blob verify
+// cannot give: it exercises the certificate parse, the algorithm dispatch, and the verdict.
+async function testHssCertificatePath() {
+  var fx = readFixture("rfc9802-appA-hss-cert.json");
+  var pem = fx.pem.join("\n");
+  var parsed = pki.schema.x509.parse(pem);
+  var T = new Date("2030-01-01T00:00:00Z");
+
+  check("HSS-1 the RFC 9802 certificate names id-alg-hss-lms-hashsig for both its signature and its key",
+    parsed.signatureAlgorithm.oid === pki.oid.byName("id-alg-hss-lms-hashsig") &&
+    parsed.subjectPublicKeyInfo.algorithm.oid === pki.oid.byName("id-alg-hss-lms-hashsig"));
+
+  var r = await pki.path.validate([parsed], { time: T, trustAnchors: [pem] });
+  check("HSS-2 pki.path.validate accepts the self-signed HSS certificate", r.valid === true);
+
+  // The signature is over the whole tbsCertificate, not a digest of it (RFC 9802 sec. 7.1), so a
+  // single changed byte anywhere in it must fail. der-surgery is not needed: the anchor carries the
+  // key, and flipping a byte of the signature is the same falsification.
+  var der = pki.schema.x509.pemDecode(pem);
+  var tampered = Buffer.from(der);
+  tampered[tampered.length - 1] ^= 0x01;
+  var rBad = await pki.path.validate([pki.schema.x509.parse(tampered)], { time: T, trustAnchors: [pem] });
+  var badCodes = [];
+  (rBad.results || []).forEach(function (res) { (res.checks || []).forEach(function (c) { if (c.ok === false) badCodes.push(c.code); }); });
+  check("HSS-3 a tampered signature is refused, not accepted",
+    rBad.valid === false && badCodes.indexOf("path/bad-signature") !== -1);
+
+  // The advertised algorithm is bound to the key: the certificate's own subject public key must be
+  // the HSS key the signature algorithm names (RFC 9802 sec. 5.1 / sec. 7.1, PARAMS ARE absent).
+  check("HSS-4 the signature algorithm carries no parameters", parsed.signatureAlgorithm.parameters === null);
+
+  // An anchor may be given as a tuple rather than a certificate, so its public key is whatever bytes the
+  // caller passed. Bytes that are not a SubjectPublicKeyInfo never reach the signature engine: the anchor
+  // door refuses them, which is why the engine's own read guard cannot be driven from here.
+  var junkErr = null;
+  try {
+    await pki.path.validate([parsed], { time: T, trustAnchors: [{
+      name: parsed.issuer, algorithm: pki.oid.byName("id-alg-hss-lms-hashsig"), publicKey: Buffer.from([0x30, 0x00]),
+    }] });
+  } catch (e) { junkErr = e; }
+  check("HSS-6 an anchor public key that is not a SubjectPublicKeyInfo is refused at the door",
+    !!junkErr && junkErr.code === "path/bad-input");
+
+  // A SubjectPublicKeyInfo the door accepts can still carry key material the engine cannot read. The
+  // engine's refusal is a verdict on the signature, never a pass.
+  var spki = Buffer.from(pki.asn1.decode(der).children[0].children[6].bytes);
+  var keyAt = spki.indexOf(Buffer.from("000000010000000500000004", "hex"));
+  var brokenSpki = Buffer.from(spki);
+  brokenSpki[keyAt + 3] = 0x7f;   // an HSS level count no parameter set defines
+  var rBrokenKey = await pki.path.validate([parsed], { time: T, trustAnchors: [{
+    name: parsed.issuer, algorithm: pki.oid.byName("id-alg-hss-lms-hashsig"), publicKey: brokenSpki,
+  }] });
+  var brokenCodes = [];
+  (rBrokenKey.results || []).forEach(function (res) { (res.checks || []).forEach(function (c) { if (c.ok === false) brokenCodes.push(c.code); }); });
+  check("HSS-7 an unreadable HSS public key is a signature refusal, not a pass",
+    rBrokenKey.valid === false && brokenCodes.indexOf("path/bad-signature") !== -1);
+
+  // The codec accepts a BIT STRING that declares unused bits as long as they are zero, so a key would
+  // otherwise admit a second encoding of itself. An RFC 8554 public key is a whole number of octets.
+  var alignKey = Buffer.from(parsed.subjectPublicKeyInfo.publicKey.bytes);
+  alignKey[alignKey.length - 1] &= 0xF0;
+  var unalignedSpki = pki.asn1.build.sequence([
+    pki.asn1.build.sequence([pki.asn1.build.oid(pki.oid.byName("id-alg-hss-lms-hashsig"))]),
+    pki.asn1.build.bitString(alignKey, 4),
+  ]);
+  var rUnaligned = await pki.path.validate([parsed], { time: T, trustAnchors: [{
+    name: parsed.issuer, algorithm: pki.oid.byName("id-alg-hss-lms-hashsig"), publicKey: unalignedSpki,
+  }] });
+  var alignCodes = [];
+  (rUnaligned.results || []).forEach(function (res) { (res.checks || []).forEach(function (c) { if (c.ok === false) alignCodes.push(c.code); }); });
+  check("HSS-9 a subjectPublicKey declaring unused bits is refused, not read as the whole-octet key",
+    rUnaligned.valid === false && alignCodes.indexOf("path/bad-signature") !== -1);
+
+  // The engine the path validator calls is the one it captured at load, not the property the public
+  // surface exposes. Both are the same module object, so a replaced `pki.shbs.verify` would otherwise
+  // decide whether a tampered certificate validates.
+  var realVerify = pki.shbs.verify;
+  var swapped;
+  pki.shbs.verify = function () { return true; };
+  try {
+    swapped = await pki.path.validate([pki.schema.x509.parse(tampered)], { time: T, trustAnchors: [pem] });
+  } finally { pki.shbs.verify = realVerify; }
+  check("HSS-10 replacing the public verify verb does not make a tampered certificate validate",
+    swapped.valid === false);
+
+  // Resolving a promise reads `then` off the value it is given, so a verdict built as a plain object
+  // would be assimilated by an accessor planted on Object.prototype, and whatever that accessor resolved
+  // to would become the answer. The verdict carries its own `then`, which ends that lookup.
+  // The options object carries no prototype, so the unknown-option gate does not see the planted name
+  // and refuse the call before the verdict is built.
+  var polluted;
+  var bareOpts = Object.assign(Object.create(null), { time: T, trustAnchors: [pem] });
+  Object.defineProperty(Object.prototype, "then", {
+    configurable: true, writable: true,
+    value: function (resolve) { resolve({ ok: true, valid: true }); },
+  });
+  try {
+    polluted = await pki.path.validate([pki.schema.x509.parse(tampered)], bareOpts);
+  } finally { delete Object.prototype.then; }
+  check("HSS-11 a then planted on Object.prototype cannot turn a tampered certificate into a pass",
+    polluted.valid === false);
+
+  // RFC 9802 sec. 6 names the CertificateList beside the Certificate, so a revocation list claiming the
+  // algorithm reaches the same engine and is answered with a signature verdict. There is no published
+  // HSS-signed CRL to accept, and the toolkit does not sign stateful keys, so what is pinned here is the
+  // route and the refusal.
+  var bld = pki.asn1.build;
+  var hssAlgId = bld.sequence([bld.oid(pki.oid.byName("id-alg-hss-lms-hashsig"))]);
+  var tbsCertList = bld.sequence([
+    bld.integer(1n), hssAlgId, bld.raw(Buffer.from(parsed.subject.bytes)),
+    bld.utcTime(new Date("2027-01-01T00:00:00Z")),
+  ]);
+  var crlDer = bld.sequence([tbsCertList, hssAlgId, bld.bitString(Buffer.alloc(64), 0)]);
+  var crlVerdict = await pki.crl.verify(crlDer, { cert: pem });
+  check("HSS-8 a CertificateList naming the HSS algorithm is answered with a signature verdict",
+    crlVerdict.valid === false && crlVerdict.signatureValid === false && crlVerdict.issuerMaySign === true);
+
+  // RFC 9802 sec. 6 states the key-usage rule twice and the two differ: a certification authority's
+  // certificate may assert keyCertSign, an end entity's may not, and neither may assert a value outside
+  // its list. The published certificate is a certification authority asserting keyCertSign and cRLSign,
+  // which HSS-2 already accepts; these drive the refusals. The extension is rewritten in place, so the
+  // signature no longer covers it, and the assertion is on the key-usage verdict rather than the path.
+  function kuVerdict(certDer) {
+    return pki.path.validate([pki.schema.x509.parse(certDer)], { time: T, trustAnchors: [pem] })
+      .then(function (res) {
+        var codes = [];
+        (res.results || []).forEach(function (r) { (r.checks || []).forEach(function (c) { if (c.name === "hbsKeyUsage") codes.push(c.ok ? "ok" : c.code); }); });
+        return codes.join(",");
+      });
+  }
+  // The published extension is `03 02 01 06` (keyCertSign + cRLSign). Rewriting the bits in place keeps
+  // the length, so every other field of the certificate stays where it was.
+  var kuAt = der.indexOf(Buffer.from("03020106", "hex"));
+  check("HSS-12 the fixture's keyUsage bits are where the rewrite expects them", kuAt > 0);
+  function withKeyUsage(unused, bits) {
+    var out = Buffer.from(der);
+    out[kuAt + 2] = unused;
+    out[kuAt + 3] = bits;
+    return out;
+  }
+  check("HSS-13 the published certification-authority key usage is accepted",
+    (await kuVerdict(der)) === "ok");
+  check("HSS-14 a stateful hash-based key asserting only keyEncipherment is refused",
+    (await kuVerdict(withKeyUsage(5, 0x20))) === "path/hbs-key-usage");
+  check("HSS-15 a stateful hash-based key asserting a signature bit alongside a forbidden one is refused",
+    (await kuVerdict(withKeyUsage(5, 0xa0))) === "path/hbs-key-usage");
+  check("HSS-16 digitalSignature alone is accepted",
+    (await kuVerdict(withKeyUsage(7, 0x80))) === "ok");
+  // The two lists differ by exactly this bit: keyCertSign satisfies the rule for a certification
+  // authority and is a value an end entity may not assert at all.
+  check("HSS-17 keyCertSign alone is accepted for a certification authority",
+    (await kuVerdict(withKeyUsage(2, 0x04))) === "ok");
+  var bcAt = der.indexOf(Buffer.from("30030101ff", "hex"));
+  check("HSS-18 the fixture's basicConstraints are where the rewrite expects them", bcAt > 0);
+  function asEndEntity(certDer) { var out = Buffer.from(certDer); out[bcAt + 4] = 0x00; return out; }
+  check("HSS-19 keyCertSign is refused for an end entity, which the same bits allow for a certification authority",
+    (await kuVerdict(asEndEntity(withKeyUsage(2, 0x04)))) === "path/hbs-key-usage" &&
+    (await kuVerdict(withKeyUsage(2, 0x04))) === "ok");
+  check("HSS-20 an end entity asserting digitalSignature is accepted",
+    (await kuVerdict(asEndEntity(withKeyUsage(7, 0x80)))) === "ok");
+
+  // Outside the validity window the verdict is the ordinary one, so the new dispatch did not become
+  // a way around the rest of section 6.1.
+  var rExpired = await pki.path.validate([parsed], { time: new Date("2040-01-01T00:00:00Z"), trustAnchors: [pem] });
+  check("HSS-5 an expired HSS certificate is refused like any other", rExpired.valid === false);
+}
+
+async function run() {
   testOid();
   testRfcAppendixF();
   testAcvpLmsSigVer();
   testMalformed();
   testStructuralBounds();
+  await testHssCertificatePath();
 }
 
 module.exports = { run: run };
