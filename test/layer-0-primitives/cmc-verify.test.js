@@ -289,6 +289,55 @@ async function run() {
     authVerdict.outcome === "issued" && authVerdict.certificates.length === 1 &&
     Buffer.compare(authVerdict.certificates[0], certDer) === 0);
 
+  // A response an authority MACs under the shared secret the client enrolled with authenticates on the
+  // identifier and the secret together (RFC 5272 sec. 3.2(c)), which is the same derivation the request
+  // side builds under, so a caller names what it enrolled with rather than deriving the key by hand.
+  var RESP_IDENTITY = "cmc-client-17";
+  var RESP_SECRET = "a-shared-secret-at-least-16-chars";
+  var respBody = b.sequence([b.sequence([]), b.sequence([]), b.sequence([])]);
+  var macResp = await pki.cms.authenticate(respBody, [{ password: RESP_SECRET }],
+    { contentType: "id-cct-PKIResponse" });
+  var macRespDerived = await pki.cms.authenticate(respBody,
+    [{ password: Buffer.concat([Buffer.from(RESP_IDENTITY, "utf8"), Buffer.from(RESP_SECRET, "utf8")]) }],
+    { contentType: "id-cct-PKIResponse" });
+  check("PR5d. a response MACed under the derived key authenticates when the caller names what it enrolled with",
+    (await pki.cmc.verify(macRespDerived, { recipient: { identifier: RESP_IDENTITY, secret: RESP_SECRET }, allowUnbound: true })).signatureVerified === true);
+  check("PR5e. a caller that derived the key itself is still taken as it was",
+    (await pki.cmc.verify(macRespDerived, { recipient: { password: Buffer.concat([Buffer.from(RESP_IDENTITY, "utf8"), Buffer.from(RESP_SECRET, "utf8")]) }, allowUnbound: true })).signatureVerified === true);
+  check("PR5f. a response MACed under the secret alone does not authenticate against the derivation",
+    (await acode(function () { return pki.cmc.verify(macResp, { recipient: { identifier: RESP_IDENTITY, secret: RESP_SECRET }, allowUnbound: true }); })) === "cmc/unverified-response");
+  // Every copy the toolkit makes of a byte-valued secret is wiped once the verification settles, and
+  // the caller's own buffer is left as it was.
+  var callerSecret = Buffer.from(RESP_SECRET, "utf8");
+  await pki.cmc.verify(macRespDerived, { recipient: { identifier: RESP_IDENTITY, secret: callerSecret }, allowUnbound: true });
+  check("PR5g2. the caller's own secret buffer is not wiped by a successful verification",
+    callerSecret.equals(Buffer.from(RESP_SECRET, "utf8")));
+  var callerSecret2 = Buffer.from(RESP_SECRET, "utf8");
+  await acode(function () {
+    return pki.cmc.verify(macRespDerived, { recipient: { identifier: RESP_IDENTITY, secret: callerSecret2 }, allowUnbound: true });
+  });
+  check("PR5g3. and it survives a refusal too",
+    callerSecret2.equals(Buffer.from(RESP_SECRET, "utf8")));
+  // The copy is owned from the moment the options are snapshotted, so it is wiped however the
+  // verification settles: on a carrier that never needs the secret, and on a response that never
+  // parses, neither of which reaches the MAC at all.
+  var callerSecret3 = Buffer.from(RESP_SECRET, "utf8");
+  await acode(function () {
+    return pki.cmc.verify(response([statusV2(1, "success")], [certDer]),
+      { recipient: { identifier: RESP_IDENTITY, secret: callerSecret3 }, allowUnverified: true, allowUnbound: true });
+  });
+  check("PR5g4. a signed carrier, which never needs the secret, leaves the caller's buffer intact",
+    callerSecret3.equals(Buffer.from(RESP_SECRET, "utf8")));
+  var callerSecret4 = Buffer.from(RESP_SECRET, "utf8");
+  await acode(function () {
+    return pki.cmc.verify(Buffer.from([0x30, 0x03, 0x02, 0x01, 0x01]),
+      { recipient: { identifier: RESP_IDENTITY, secret: callerSecret4 } });
+  });
+  check("PR5g5. and a response that never parses leaves it intact too",
+    callerSecret4.equals(Buffer.from(RESP_SECRET, "utf8")));
+  check("PR5g. a different identifier with the same secret does not authenticate",
+    (await acode(function () { return pki.cmc.verify(macRespDerived, { recipient: { identifier: "someone-else", secret: RESP_SECRET }, allowUnbound: true }); })) === "cmc/unverified-response");
+
   // ---- duplicate binding controls are AMBIGUOUS, not first-wins ---------
   // Body-part identity is unique, so a responder may legally carry TWO
   // Transaction Identifier controls under different bodyPartIDs. A verifier that

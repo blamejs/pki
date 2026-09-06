@@ -1933,6 +1933,18 @@ function testNoDuplicateCodeBlocks() {
   //     reason: "why these are not extractable" }
   var KNOWN_CLUSTERS = [
     {
+      // The run of module-level accepted-key tables a producing module declares before its verbs: one
+      // `intrinsic.assign(intrinsic.create(null), {...})` per object the module will admit. The
+      // uniformity is the convention, and the tables are what cannot be shared, since each names a
+      // different set of fields for a different structure; extracting the run would leave the same
+      // declarations behind a helper that still has to be called once per table. The qualifier is the
+      // nearest preceding function rather than the run itself, which is why three unrelated names
+      // appear here. family-subset so any 3+ match as more modules grow their door tables.
+      mode: "family-subset",
+      files: ["lib/cmc-build.js:assertValid", "lib/est.js:_withClient", "lib/pkcs12-build.js:_err"],
+      reason: "Per-module accepted-key tables declared as a uniform run of null-prototype literals; each table names a different structure's fields, so the repetition is the declaration shape and nothing shareable.",
+    },
+    {
       mode: "family-subset",
       files: [
         "lib/acme.js:client", "lib/key.js:import_", "lib/ocsp.js:verifyRequest",
@@ -3188,7 +3200,7 @@ function testGuardReadsRuntimeLive() {
     "lib/cms-verify.js": 20,
     "lib/cms-encrypt.js": 66,
     "lib/crl-sign.js": 67,
-    "lib/cmc-build.js": 59,
+    "lib/cmc-build.js": 58,
     "lib/pki-build.js": 36,
     "lib/hpke.js": 52,
     "lib/cms-decrypt.js": 50,

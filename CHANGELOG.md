@@ -4,6 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.48 — 2026-09-07
+
+A CMC enrollment request can be authenticated by a shared secret instead of a signature.
+
+### Added
+
+- pki.cmc.build(spec, { mac: { identifier, secret } }) carries a Full PKI Request in a CMS AuthenticatedData rather than a SignedData (RFC 5272 section 3.2). The recipient is the PasswordRecipientInfo that section requires, the MAC key is generated for the message, and the encapsulated content type stays id-cct-PKIData. The secret is taken as a string or as bytes. Naming a signature and a shared secret in the same call is refused: a request has one carrier, and a client with a key to sign with does not need the other. A renewal cannot use the shared-secret carrier at all, because a renewal carries no Identification or Identity Proof control and its identity comes instead from being signed with the certificate being renewed (RFC 5272 section 3.2(a)); a shared secret names no certificate, so that request would assert an identity by nothing. Every copy the toolkit makes of the secret and of the derived key is wiped once the message is built.
+- The key is derived from the identifier encoded as UTF-8 followed by the shared secret (RFC 5272 section 3.2(c)), and pki.cmc.verify applies the same derivation to an opts.recipient given as { identifier, secret }. An implementation that derived the key itself still passes raw key material and is read as before. Deriving it in one place is what keeps a request this toolkit builds and a response it authenticates agreeing about the key: the secret alone is not it, and neither is the identifier alone.
+
+### Changed
+
+- An AuthenticatedData Full PKI Request this toolkit emits is read by OpenSSL: the interop suite checks that openssl cms accepts the message and that openssl names the AuthenticatedData carrier, the id-cct-PKIData content type and the password recipient's key-encryption algorithm from its own tables.
+
 ## v0.6.47 — 2026-09-06
 
 A CMP enrollment left waiting can be picked up by a later process instead of started again.
