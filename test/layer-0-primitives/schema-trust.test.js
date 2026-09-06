@@ -836,6 +836,18 @@ async function testRealCertdataSlice() {
   // anchor refuses the base rather than carrying a restriction that applies to nothing.
   check("T28: a quoted local part carrying an at-sign is refused",
     ncCode({ excluded: [{ tag: 1, base: "\"foo@bar\"@example.com" }] }) === "trust/bad-input");
+  // A mailbox may name its domain as a bracketed address rather than a host name, and the
+  // comparison holds a full mailbox's domain to an exact match, so it reaches a verdict on one.
+  check("T28: an IPv4 address literal domain is accepted",
+    ncCode({ excluded: [{ tag: 1, base: "user@[192.0.2.1]" }] }) === "NO-THROW");
+  check("T28: an IPv6 address literal domain is accepted",
+    ncCode({ excluded: [{ tag: 1, base: "user@[IPv6:2001:db8::1]" }] }) === "NO-THROW");
+  check("T28: a bracketed domain that is not an address is refused",
+    ncCode({ excluded: [{ tag: 1, base: "user@[example.com]" }] }) === "trust/bad-input");
+  check("T28: a domain closing a bracket it never opened is refused",
+    ncCode({ excluded: [{ tag: 1, base: "user@x192.0.2.1]" }] }) === "trust/bad-input");
+  check("T28: an unbracketed dotted domain is accepted, the comparison matching it exactly",
+    ncCode({ excluded: [{ tag: 1, base: "user@192.0.2.1" }] }) === "NO-THROW");
   check("T28: a URI base with an empty label is refused", ncCode({ excluded: [{ tag: 6, base: "example..com" }] }) === "trust/bad-input");
   check("T28: a dNSName base with an empty label is refused", ncCode({ excluded: [{ tag: 2, base: "example..com" }] }) === "trust/bad-input");
   check("T28: an rfc822Name base with an empty label is refused", ncCode({ excluded: [{ tag: 1, base: "user@example..com" }] }) === "trust/bad-input");

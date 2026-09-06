@@ -79,7 +79,7 @@
   "lib/ocsp-verify.js": "2026-09-05",
   "lib/ocsp.js": "2026-09-05",
   "lib/oid.js": "2026-09-05",
-  "lib/path-validate.js": "2026-09-06",
+  "lib/path-validate.js": "2026-09-05",
   "lib/pbes2.js": "2026-09-05",
   "lib/pkcs12-build.js": "2026-09-05",
   "lib/pki-build.js": "2026-09-05",
