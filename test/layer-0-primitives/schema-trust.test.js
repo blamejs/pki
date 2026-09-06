@@ -831,6 +831,11 @@ async function testRealCertdataSlice() {
     ncCode({ excluded: [{ tag: 1, base: "\"Jo" + String.fromCharCode(9) + "hn\"@example.com" }] }) === "trust/bad-input");
   check("T28: a bare space in an unquoted local part is refused",
     ncCode({ excluded: [{ tag: 1, base: "John Doe@example.com" }] }) === "trust/bad-input");
+  // A quoted local part may hold an at-sign, and the comparison splits a mailbox on the only
+  // at-sign it finds. It reads that address as two separators and reaches no verdict, so the
+  // anchor refuses the base rather than carrying a restriction that applies to nothing.
+  check("T28: a quoted local part carrying an at-sign is refused",
+    ncCode({ excluded: [{ tag: 1, base: "\"foo@bar\"@example.com" }] }) === "trust/bad-input");
   check("T28: a URI base with an empty label is refused", ncCode({ excluded: [{ tag: 6, base: "example..com" }] }) === "trust/bad-input");
   check("T28: a dNSName base with an empty label is refused", ncCode({ excluded: [{ tag: 2, base: "example..com" }] }) === "trust/bad-input");
   check("T28: an rfc822Name base with an empty label is refused", ncCode({ excluded: [{ tag: 1, base: "user@example..com" }] }) === "trust/bad-input");
