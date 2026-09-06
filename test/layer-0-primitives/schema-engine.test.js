@@ -81,6 +81,16 @@ function testSeqAssertAndArity() {
     { assert: "sequence", arity: { exact: 2 }, code: "t/bad-seq", build: function (m) { return [m.fields.a.value, m.fields.b.value]; } });
   check("seq(sequence) builds .result", (function () { var r = walk(seqExact2, b.sequence([b.integer(1n), b.integer(2n)])).result; return r[0] === 1n && r[1] === 2n; })());
   check("seq(sequence) rejects a SET (t/bad-seq)", code(function () { walk(seqExact2, b.set([b.integer(1n), b.integer(2n)])); }) === "t/bad-seq");
+  // A schema's own build and check callbacks read m.fields by the field names that schema declared,
+  // so it is a record rather than a table keyed by anything the input carries, and it keeps an
+  // ordinary prototype: a callback calling m.fields.hasOwnProperty would otherwise throw.
+  var protoSeen = null;
+  var probeShape = S.seq([S.field("a", S.integerLeaf()), S.field("b", S.integerLeaf())], {
+    assert: "sequence", code: "t/bad-seq",
+    build: function (m) { protoSeen = Object.getPrototypeOf(m.fields); return Object.prototype.hasOwnProperty.call(m.fields, "a"); },
+  });
+  check("seq hands its callbacks an ordinary fields record",
+    walk(probeShape, b.sequence([b.integer(1n), b.integer(2n)])).result === true && protoSeen === Object.prototype);
   check("seq arity exact rejects a 3-element SEQUENCE", code(function () { walk(seqExact2, b.sequence([b.integer(1n), b.integer(2n), b.integer(3n)])); }) === "t/bad-seq");
   check("seq missing required field throws the seq code", code(function () { walk(seqExact2, b.sequence([b.integer(1n)])); }) === "t/bad-seq");
 

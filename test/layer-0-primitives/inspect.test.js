@@ -249,6 +249,13 @@ function run() {
     b.octetString(b.sequence([b.sequence([b.oid("1.3.6.1.4.1.99999.5"), b.contextPrimitive(6, Buffer.from("http://x.test"))])]))])));
   check("inspect: an unregistered AIA accessMethod keeps its dotted OID",
     /1\.3\.6\.1\.4\.1\.99999\.5 - URI:http:\/\/x\.test/.test(aiaUnk));
+  // An accessMethod registered under a name Object.prototype also carries resolves to that name
+  // and to no label, so the rendered line names the method rather than Object's own constructor.
+  pki.oid.register("1.3.6.1.4.1.99999.6", "constructor");
+  var aiaProto = pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("authorityInfoAccess")),
+    b.octetString(b.sequence([b.sequence([b.oid("1.3.6.1.4.1.99999.6"), b.contextPrimitive(6, Buffer.from("http://p.test"))])]))])));
+  check("inspect: an AIA accessMethod named for an Object.prototype member renders its own name",
+    /constructor - URI:http:\/\/p\.test/.test(aiaProto) && aiaProto.indexOf("native code") === -1);
 
   // An RFC 4514 separator (a comma) in a DN attribute value must be escaped so it
   // cannot masquerade as an extra RDN. Mutate the issuer CN "pkijs.com" (the first

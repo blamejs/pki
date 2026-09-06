@@ -35,6 +35,11 @@ async function codeOf(promise) {
   catch (e) { return (e && e.code) || ("RAW:" + (e && e.constructor && e.constructor.name)); }
 }
 
+async function messageOf(promise) {
+  try { await promise; return "NO-THROW"; }
+  catch (e) { return String(e && e.message); }
+}
+
 // ---- signature plumbing: Ed25519 workhorse + a P-256 arm; each entity a FRESH keypair ----
 var ALG = {
   ed25519: { gen: { name: "Ed25519" }, sign: { name: "Ed25519" }, sigOid: "1.3.101.112", params: "omit" },
@@ -498,6 +503,30 @@ async function run() {
   check("AIA B1: the fetched intermediate is on the built path (accepted through validate, not a raw insert)", Buffer.from(b1.path[0].subjectPublicKeyInfo.bytes).equals(aInterKp.spki));
   check("AIA B1: aiaFetches counts the single GET and only the caIssuers URL was fetched", b1.aiaFetches === 1 && b1t.calls.length === 1 && b1t.calls[0] === AIA_URL);
   check("AIA B1: WITHOUT fetchAia the same empty-pool build fails path/no-path (the fetch is load-bearing)", (await codeOf(pki.path.build(aLeaf, { candidates: [], trustAnchors: [aRoot], time: T }))) === "path/no-path");
+  // AIA is a best-effort issuer source, so every fetch failure is skipped and the next URL tried.
+  // A transport that THROWS is the same failure as one that REJECTS, reported differently, so both
+  // leave the build reporting that it found no path rather than one of them ending it early. The
+  // transport has to advertise the address guard for a DNS-name URL to be fetched at all, so these
+  // carry that flag; otherwise the URL is skipped before anything is called.
+  var boundClass = (class T {}).bind(null);
+  boundClass.blocksPrivateAddresses = true;
+  check("AIA B1: a transport that throws when called is skipped like any other failed fetch",
+    (await codeOf(pki.path.build(aLeaf, Object.assign({}, aBase, { transport: boundClass })))) === "path/no-path");
+  var downT = mkTransport(function () { return Promise.reject(new Error("ECONNREFUSED")); });
+  check("AIA B1: a transport that rejects is skipped the same way",
+    (await codeOf(pki.path.build(aLeaf, Object.assign({}, aBase, { transport: downT })))) === "path/no-path");
+  // Supplying a transport that cannot be called is a wiring fault when it is written, so it is named
+  // whether or not AIA fetching is on. Checking it only under fetchAia would leave the mistake
+  // sitting until the day that option is turned on.
+  for (var badT of [42, null, 0]) {
+    check("AIA B1: an unusable transport is refused even with fetchAia off (" + String(badT) + ")",
+      (await codeOf(pki.path.build(aLeaf, { candidates: [], trustAnchors: [aRoot], time: T, transport: badT }))) === "path/bad-input");
+  }
+  // ...and it is named at the door, before any certificate is parsed, so the message points at the
+  // option the caller got wrong rather than at whichever input happened to be looked at first.
+  var bothWrong = await messageOf(pki.path.build(Buffer.from([0]), { candidates: [], trustAnchors: [aRoot], time: T, transport: null }));
+  check("AIA B1: with both a bad transport and an unparseable leaf, the option is what is named",
+    bothWrong.indexOf("opts.transport") !== -1);
   // B2 CERTS-ONLY CMS response supplies the intermediate.
   var b2t = mkTransport(function () { return { status: 200, headers: { "content-type": "application/pkcs7-mime" }, body: certsOnlyCms([aInter]) }; });
   check("AIA B2: a certs-only CMS response supplies the intermediate (valid:true)", (await pki.path.build(aLeaf, Object.assign({}, aBase, { transport: b2t }))).valid === true);

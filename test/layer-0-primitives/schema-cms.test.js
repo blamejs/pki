@@ -462,6 +462,11 @@ function testEnvelopedOtherArms() {
   var mkeko = parse(envCI({ version: 2, recips: [kekri({ version: 4, other: otherKeyAttr() })] }));
   check("EnvelopedData kekri kekid other surfaced raw", mkeko.recipientInfos[0].kekid.other.equals(otherKeyAttr()));
   check("EnvelopedData kekri kekid other absent -> null", mkek.recipientInfos[0].kekid.other === null);
+  // A recipient identifier is a record an operator reads by field name, so it keeps an ordinary
+  // prototype and every Object.prototype method still works on it.
+  check("EnvelopedData kekri kekid is an ordinary object",
+    Object.getPrototypeOf(mkek.recipientInfos[0].kekid) === Object.prototype &&
+    Object.prototype.hasOwnProperty.call(mkek.recipientInfos[0].kekid, "date") === true);
   var mp = parse(envCI({ version: 3, recips: [pwri({ version: 0, kdf: "1.2.840.113549.1.5.12" })] }));
   check("EnvelopedData pwri -> envelope v3", mp.version === 3 && mp.recipientInfos[0].type === "pwri" && mp.recipientInfos[0].keyDerivationAlgorithm.oid === "1.2.840.113549.1.5.12");
   check("EnvelopedData pwri kdf omitted -> null", parse(envCI({ version: 3, recips: [pwri({ version: 0 })] })).recipientInfos[0].keyDerivationAlgorithm === null);

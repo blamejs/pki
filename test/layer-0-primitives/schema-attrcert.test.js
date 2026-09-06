@@ -401,6 +401,14 @@ function testAttributeValueDecoders() {
   var clSecret = attrDecoded(CLEARANCE, b.sequence([b.oid("2.16.840.1.101.2.1"), b.bitString(Buffer.from([0x08]), 3)]));
   check("av clearance: present classList decodes named bit (secret)", clSecret.classList.flags.secret === true && clSecret.classList.names.indexOf("secret") !== -1);
   check("av clearance: classList == DEFAULT {unclassified} -> bad-clearance (non-canonical)", attrCode(CLEARANCE, b.sequence([b.oid("2.16.840.1.101.2.1"), b.bitString(Buffer.from([0x40]), 6)])) === "attrcert/bad-clearance");
+  // The classList record is read by field name, so it keeps an ordinary prototype, and it keeps the
+  // SAME one whether the classList was encoded or synthesized from the default. A record whose
+  // prototype depended on which valid value the certificate carried would make a consumer's
+  // hasOwnProperty or deep-equality check pass on one certificate and fail on the next.
+  check("av clearance: an encoded classList record is an ordinary object",
+    Object.getPrototypeOf(clSecret.classList.flags) === Object.prototype);
+  check("av clearance: the synthesized default classList record has the same prototype",
+    Object.getPrototypeOf(cl.classList.flags) === Object.getPrototypeOf(clSecret.classList.flags));
   check("av clearance: legacy OID 2.5.1.5.55 decodes as clearance (RFC 5755 4.4.6)", attrDecoded("2.5.1.5.55", b.sequence([b.oid("2.16.840.1.101.2.1")])).classList.flags.unclassified === true);
 
   // SvceAuthInfo

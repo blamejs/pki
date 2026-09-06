@@ -150,6 +150,10 @@ var VALID_ALLOW_CLASSES = {
   "schema-build-drops-parsed-field": 1,
   "guard-shape-reinlined": 1,
   "guard-reads-runtime-live": 1,
+  // A record an operator receives whose computed key comes from the code rather than the input.
+  // The marker states which argument supplies the key and that every caller passes a literal, so
+  // the claim is read off the call sites rather than taken on the category.
+  "registry-table-inherits-object-prototype": 1,
   "ocsp-responder-auth-reinlined": 1,
   "constant-time-compare-short-circuited": 1,
   "guard-without-enforcement": 1,
@@ -1115,6 +1119,109 @@ function testAlgorithmLookupNoDefault() {
   _report("algorithm-table lookups throw on a miss (no OR-defaults, no weak literal presets surviving unknown OIDs)", bad);
 }
 
+function testRegistryTablesCarryNoPrototype() {
+  // class: registry-table-inherits-object-prototype
+  // A module-level lookup table declared as a plain object literal inherits Object.prototype, so
+  // `TABLE[nameFromTheMessage]` resolves to a member the table never registered: `constructor`
+  // yields a function, and any name a co-resident planted yields whatever it planted. In a table
+  // that decides how a signature is verified, that lets a message name an algorithm the toolkit
+  // does not implement and have the verification proceed under a descriptor it did not write.
+  //
+  // The shape is the DECLARATION, which no rename touches: a module-level binding whose right-hand
+  // side opens an object literal. Every one of them is flagged, whether or not a lookup by that
+  // name is visible. Pairing the declaration with a computed read of its own name would answer for
+  // the binding rather than the object: a table handed to a lookup helper is indexed through the
+  // parameter (`_algorithm(byInt)` reading `byInt[i]`), and one stored into another structure is
+  // indexed through the property (`profile.algs[alg]`), so both read as unused and pass. Declaring
+  // the whole class means no alias can carry a table past the gate.
+  //
+  // Nothing in lib needs an inherited member from one of these, so the rule costs a binding no
+  // capability.
+  //
+  // A literal inside a function body is the same class when something reads it with a computed
+  // key: an accumulator asked `seen[nameFromTheWire]` answers truthy for a name nobody added, and
+  // a label table asked for one hands back the member Object.prototype carries. Those are flagged
+  // by pairing the declaration with a computed read of that name in the same file, which is where
+  // a local's readers are. Declaring the whole class the way the module-level rule does would
+  // reach every short-lived object a function builds, none of which is a lookup table.
+  //
+  // Out of scope are the shapes that are not a declaration at all: a literal assigned to a
+  // property, nested inside another literal, or returned from a factory. Those have no binding to
+  // anchor on, and a converted outer table copies an inner literal by reference, so the inner one
+  // keeps its prototype. Nesting one is the residual under the rule, and it hides best when the
+  // inner table is reached by indexing the outer (`T[a][b]`), since the inner name never appears at
+  // a read. Either build the inner one the same way, or ask it with hasOwn before believing the
+  // answer; lib holds none that serve as a lookup table without one of the two.
+  //
+  // A declaration is read across the line break as well as along the line: the initializer may
+  // open on the next line, and a comma declarator may sit on one of its own. Matching only what
+  // fits on the declaring line would let either spelling carry a table past the gate.
+  var bad = [];
+  var files = _libFiles();
+  function _flag(list, rel, line, name) {
+    list.push({ file: rel, line: line,
+      content: "the table `" + name + "` is an object literal, so it inherits Object.prototype and a computed lookup answers with a member it never registered — build it on Object.create(null) (or the module's captured create)" });
+  }
+  files.forEach(function (f) {
+    var rel = path.relative(REPO_ROOT, f);
+    var lines = _stripCommentsAndLiterals(fs.readFileSync(f, "utf8")).split("\n");
+    // Names used with a computed key, per enclosing function. A local's users are inside the
+    // function that declares it, and a file-wide map would let a lookup on one function's `out`
+    // answer for every other function's. The boundary is the closing brace at column 0, the same
+    // structural anchor the other cross-token detectors use.
+    //
+    // A write counts as well as a read. `t[name] = 1` where name is `__proto__` sets the object's
+    // prototype instead of recording the name, so a duplicate check that asks for it afterwards is
+    // told the name was never added, even one that asks with hasOwn.
+    var region = [];
+    var start = 0;
+    for (var b = 0; b < lines.length; b++) {
+      if (/^\}/.test(lines[b])) { for (var r0 = start; r0 <= b; r0++) region[r0] = start; start = b + 1; }
+    }
+    for (var t0 = start; t0 < lines.length; t0++) region[t0] = start;
+    var readsIn = Object.create(null);
+    lines.forEach(function (line, li) {
+      var key = region[li];
+      var r, re = /([A-Za-z_$][A-Za-z0-9_$]*)\s*\[/g;
+      while ((r = re.exec(line)) !== null) readsIn[key + "|" + r[1]] = true;
+    });
+    function readsLocal(name, li) { return !!readsIn[region[li] + "|" + name]; }
+    for (var i = 0; i < lines.length; i++) {
+      var next = i + 1 < lines.length ? lines[i + 1] : "";
+      if (!/^(?:var|let|const)\s/.test(lines[i]) && /^\s+(?:var|let|const)\s/.test(lines[i])) {
+        // Every declarator on the line, the same as at module level: a table declared after a
+        // comma is the same class, and reading only the first lets one hide behind another.
+        var locals = /(?:^\s+(?:var|let|const)|,)\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*\{/g;
+        var lm, hit = false;
+        while ((lm = locals.exec(lines[i])) !== null) {
+          if (readsLocal(lm[1], i)) { _flag(bad, rel, i + 1, lm[1]); hit = true; }
+        }
+        if (hit) continue;
+      }
+      // A declarator whose literal opens on the following line, in either spelling: the keyword
+      // form at column 0, or a continued declarator indented under a trailing comma.
+      var open = /^(?:var|let|const)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*$/.exec(lines[i]);
+      if (!open && /,\s*$/.test(lines[i === 0 ? 0 : i - 1])) {
+        open = /^\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*$/.exec(lines[i]);
+      }
+      if (open && /^\s*\{/.test(next)) { _flag(bad, rel, i + 1, open[1]); continue; }
+      // A continued declarator carrying its literal on the same line.
+      if (/,\s*$/.test(lines[i === 0 ? 0 : i - 1])) {
+        var cont = /^\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*\{/.exec(lines[i]);
+        if (cont) { _flag(bad, rel, i + 1, cont[1]); continue; }
+      }
+      if (!/^(?:var|let|const) /.test(lines[i])) continue;
+      // Every declarator on the line, not just the one after the keyword: a comma-declared table
+      // is the same class, and reading only the first would let one hide behind another.
+      var decl = /(?:^(?:var|let|const)|,)\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*\{/g;
+      var d;
+      while ((d = decl.exec(lines[i])) !== null) _flag(bad, rel, i + 1, d[1]);
+    }
+  });
+  bad = _filterMarkers(bad, "registry-table-inherits-object-prototype");
+  _report("no module-level object literal in lib carries Object.prototype", bad);
+}
+
 function testNoRemovedWebCryptoNamespace() {
   // class: removed-namespace-reference
   // pki.WebCrypto was removed in favor of pki.webcrypto.* — its classes now hang off
@@ -1745,6 +1852,18 @@ function _isBoilerplate(slice) {
   var delegationReturns = (joined.match(/\breturn\s+_ID\s+\.\s+_ID\s+\(/g) || []).length;
   if (delegationReturns >= 2) return true;
   if (kvPairs >= 2 && delegationReturns >= 1) return true;
+  // The module-level table-declaration run. Every table in lib is built as
+  // `assign(create(null), { … })` (the registry-table-inherits-object-prototype rule), in either
+  // the bare `Object.` spelling or a module's captured-intrinsic one, which tokenize identically.
+  // A run of those declarations repeats the construction idiom and its key-value entries, neither
+  // of which has a body to extract. The match is on `create(null),` rather than the whole
+  // construction because a window lands mid-run: it opens inside one literal and closes inside the
+  // next, so the leading `assign(` of the first is outside the window. Two constructions are the
+  // run on their own; one is the run when the rest of the window is the entries of the tables
+  // around it, which keeps a lone construction inside real logic clustered.
+  var nullProtoTables = (joined.match(/_ID\s+\.\s+_ID\s+\(\s+null\s+\)\s+,/g) || []).length;
+  if (nullProtoTables >= 2) return true;
+  if (nullProtoTables >= 1 && kvPairs >= 2) return true;
   if (/\bclass\s+_ID\s+extends\s+_ID/.test(joined)) return true;
   var declTokens = toks.filter(function (t) {
     return t === "=" || t === ";" || t === "," || t === ":" ||
@@ -1813,6 +1932,18 @@ function testNoDuplicateCodeBlocks() {
   //     mode?: "family-subset",   // default: exact set match
   //     reason: "why these are not extractable" }
   var KNOWN_CLUSTERS = [
+    {
+      mode: "family-subset",
+      files: [
+        "lib/acme.js:client", "lib/key.js:import_", "lib/ocsp.js:verifyRequest",
+        "lib/est.js:_knownOpts", "lib/scep.js:getCACaps", "lib/scep.js:getCACert",
+        "lib/cmp-session.js:session", "lib/path-validate.js:build", "lib/scep.js:parse",
+        "lib/cms-verify.js:_verify", "lib/cms-verify.js:parseCertsOnly",
+        "lib/scep.js:getNextCACert", "lib/cms-verify.js:verify", "lib/ocsp.js:_signerVerdict",
+        "lib/scep.js:_assertStrongProfile", "lib/scep.js:_buildIssuerAndSerial",
+      ],
+      reason: "The options door a public verb opens with: settle the caller's options object, then refuse any key the verb does not accept. Both steps ARE the shared primitives, already factored into guard-identifier, so what repeats is the pair of calls and nothing else; the arguments differ at every site, since each verb has its own accepted-key table and its own label. Settling has to happen at the verb, before it reads anything, so the call cannot move inside the key check. family-subset so any 3+ match as more verbs adopt the door.",
+    },
     {
       // The per-module capture header: a run of `var _x = intrinsic.y;` bindings taking what the
       // module reads from the runtime before any caller code can reach it. The uniformity IS the
@@ -3951,6 +4082,7 @@ function run() {
   testWorkflowScanFailureMasked();
   testSharedLeafOptionScope();
   testAlgorithmLookupNoDefault();
+  testRegistryTablesCarryNoPrototype();
   testNumberNarrowsUnboundedInteger();
   testNanDateComparisonUnguarded();
   testEddsaVerifyGate();

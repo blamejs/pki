@@ -454,6 +454,13 @@ async function run() {
   // verify: an unknown fmt with valid attestedCredentialData -> unsupported-format.
   check("verify: an unsupported attestation format -> webauthn/unsupported-format",
     (await codeOfAsync(function () { return pki.webauthn.verify(attObjOf("no-such-fmt", [], realAuthData), packedHash); })) === "webauthn/unsupported-format");
+  // The format name is a CBOR text string the attestation supplies, and it selects the verifier
+  // to run. The verifier table answers from its own entries alone, so a format naming an
+  // Object.prototype member is unsupported rather than a function the table never registered.
+  for (var inherited of ["constructor", "toString", "valueOf", "hasOwnProperty", "__proto__"]) {
+    check("verify: an attestation format naming Object.prototype." + inherited + " is unsupported",
+      (await codeOfAsync(function () { return pki.webauthn.verify(attObjOf(inherited, [], realAuthData), packedHash); })) === "webauthn/unsupported-format");
+  }
   // sec. 6.5.4 -- the attestation object MUST be a CBOR map.
   check("parse: an attestation object that is not a CBOR map -> webauthn/bad-attestation-object",
     codeOf(function () { pki.webauthn.parseAttestationObject(cInt(5)); }) === "webauthn/bad-attestation-object");

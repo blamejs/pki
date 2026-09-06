@@ -75,6 +75,30 @@ async function run() {
   check("1p. a session refuses an unknown option (proxy whitelist did not widen the gate)",
     (await codeOf(Promise.resolve().then(function () { return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: mk([]).transport, bogusOpt: 1 }); }))) === "cmp/bad-input");
 
+  // 1p2. A transport the caller supplied but that cannot be called is named at construction. It
+  // would otherwise be dropped when the session forwards its options, and the transfer leg would
+  // install the real HTTPS client, reaching the CA the caller meant to replace.
+  async function badSessionTransport(v) {
+    var code = await codeOf(Promise.resolve().then(function () {
+      return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: v });
+    }));
+    return code === "cmp/bad-input" ? "typed" : code;
+  }
+  check("1p2. a session refuses a non-callable transport", (await badSessionTransport(42)) === "typed");
+  check("1p2. a session refuses an explicit null transport", (await badSessionTransport(null)) === "typed");
+  check("1p2. a session refuses a present-but-undefined transport", (await badSessionTransport(undefined)) === "typed");
+  // A defaults bag carries its options on a prototype. The session keeps own properties only when it
+  // copies, so the transport is taken from the caller's object first: reading it off the copy would
+  // find none and send every leg to the default client, reaching the CA the caller meant to replace.
+  var inheritedCalls = 0;
+  var inheritedTransport = function () { inheritedCalls += 1; return Promise.reject(new Error("inherited transport reached")); };
+  var bag = Object.create({ transport: inheritedTransport });
+  bag.url = URL; bag.key = CLIENT.key; bag.cert = CLIENT.cert; bag.trustAnchors = [H.caCert];
+  var inheritedSession = pki.cmp.session(bag);
+  var inheritedCode = await codeOf(inheritedSession.enroll(H.irRequest(CLIENT.spki)));
+  check("1p3. a session uses a transport inherited from a defaults bag rather than the default client",
+    inheritedCalls === 1 && inheritedCode !== "cmp/no-trust-anchors");
+
   // ===== 1q. the proxy is snapshotted at construction; a mutation during the transaction cannot repoint or re-credential a leg =====
   var pxy = { url: "https://p.example", auth: { username: "u", password: "s3cret" } };
   var sQ = mk([H.ip(0, 0, certDer), H.pkiconf()], { proxy: pxy });
