@@ -238,6 +238,18 @@ async function testHssCertificatePath() {
   check("HSS-9 a subjectPublicKey declaring unused bits is refused, not read as the whole-octet key",
     rUnaligned.valid === false && alignCodes.indexOf("path/bad-signature") !== -1);
 
+  // The engine the path validator calls is the one it captured at load, not the property the public
+  // surface exposes. Both are the same module object, so a replaced `pki.shbs.verify` would otherwise
+  // decide whether a tampered certificate validates.
+  var realVerify = pki.shbs.verify;
+  var swapped;
+  pki.shbs.verify = function () { return true; };
+  try {
+    swapped = await pki.path.validate([pki.schema.x509.parse(tampered)], { time: T, trustAnchors: [pem] });
+  } finally { pki.shbs.verify = realVerify; }
+  check("HSS-10 replacing the public verify verb does not make a tampered certificate validate",
+    swapped.valid === false);
+
   // RFC 9802 sec. 6 names the CertificateList beside the Certificate, so a revocation list claiming the
   // algorithm reaches the same engine and is answered with a signature verdict. There is no published
   // HSS-signed CRL to accept, and the toolkit does not sign stateful keys, so what is pinned here is the
