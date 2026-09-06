@@ -326,6 +326,29 @@ async function run() {
     sNeg.transport.calls.length > 0);
   check("6t3b. a token whose certReqId is longer than the widest identifier a request can carry is refused",
     await codeOf(mk([]).session.resumePoll(Object.assign({}, tok, { certReqId: "9".repeat(49153) }))) === "cmp/bad-input");
+  // A nonce shorter than a received message is allowed to carry could not have come from a response, so
+  // it is refused before it is echoed into a request that cannot continue the chain.
+  var SHORT_NONCES = ["AA==", Buffer.alloc(15, 7).toString("base64"), ""];
+  for (var sn = 0; sn < SHORT_NONCES.length; sn++) {
+    var sShort = mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()]);
+    check("6t3e. a token whose recipNonce is shorter than a response nonce is refused before any request (" + sn + ")",
+      (await codeOf(sShort.session.resumePoll(Object.assign({}, tok, { recipNonce: SHORT_NONCES[sn] })))) === "cmp/bad-input" &&
+      sShort.transport.calls.length === 0);
+  }
+  // The same question of the identifier: a first message opens a transaction with 128 bits, so a token
+  // naming any other width names a transaction it cannot have opened.
+  var ODD_TXNS = [Buffer.alloc(8, 3).toString("hex"), Buffer.alloc(17, 3).toString("hex"), ""];
+  for (var ot = 0; ot < ODD_TXNS.length; ot++) {
+    var sTxn = mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()]);
+    check("6t3g. a token whose transactionId is not the width a first message opens with is refused (" + ot + ")",
+      (await codeOf(sTxn.session.resumePoll(Object.assign({}, tok, { transactionId: ODD_TXNS[ot] })))) === "cmp/bad-input" &&
+      sTxn.transport.calls.length === 0);
+  }
+  var sAtFloor = mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()]);
+  check("6t3f. a token whose recipNonce is exactly at that floor is read",
+    (await codeOf(sAtFloor.session.resumePoll(Object.assign({}, tok, { recipNonce: Buffer.alloc(16, 7).toString("base64") })))) !== "cmp/bad-input" &&
+    sAtFloor.transport.calls.length > 0);
+
   // The door accepts exactly the widths the next request can encode, so an identifier the encoder
   // refuses cannot pass the door and consume the session before the encoding is attempted.
   var sWide = mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()]);

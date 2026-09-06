@@ -50,6 +50,12 @@
             "CBOR_MAX_ITEMS": {
               "kind": "number"
             },
+            "CMP_MIN_NONCE_BYTES": {
+              "kind": "number"
+            },
+            "CMP_TRANSACTION_ID_BYTES": {
+              "kind": "number"
+            },
             "COMPRESS_MAX_BYTES": {
               "kind": "number"
             },
@@ -1365,6 +1371,12 @@
               "kind": "number"
             },
             "CBOR_MAX_ITEMS": {
+              "kind": "number"
+            },
+            "CMP_MIN_NONCE_BYTES": {
+              "kind": "number"
+            },
+            "CMP_TRANSACTION_ID_BYTES": {
               "kind": "number"
             },
             "COMPRESS_MAX_BYTES": {
