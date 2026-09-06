@@ -326,6 +326,14 @@ async function run() {
     sNeg.transport.calls.length > 0);
   check("6t3b. a token whose certReqId is longer than the widest identifier a request can carry is refused",
     await codeOf(mk([]).session.resumePoll(Object.assign({}, tok, { certReqId: "9".repeat(49153) }))) === "cmp/bad-input");
+  // The door accepts exactly the widths the next request can encode, so an identifier the encoder
+  // refuses cannot pass the door and consume the session before the encoding is attempted.
+  var sWide = mk([H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()]);
+  var wideCode = await codeOf(sWide.session.resumePoll(Object.assign({}, tok, { certReqId: "9".repeat(45000) })));
+  var wideSent = sWide.transport.calls.length;
+  await codeOf(sWide.session.resumePoll(JSON.parse(JSON.stringify(tok))));
+  check("6t3b1. a token whose certReqId is wider than a request identifier encodes is refused, and the session it was handed to still resumes",
+    wideCode === "cmp/bad-input" && wideSent === 0 && sWide.transport.calls.length > 0);
   // Every spelling a numeric conversion would read but a session never writes. Each names a different
   // request than it appears to, so each is refused before the saved nonce is spent.
   var NOT_DECIMAL = ["0x10", "0b10", "0o10", "+10", " 10", "10 ", "\t10", "007", "-0", "-", "1_0", "1e3", "", "10.0"];
