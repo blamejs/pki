@@ -797,27 +797,62 @@ async function run() {
         b.set([]), b.sequence([b.oid("1.2.840.113549.1.7.1")])]))])) === "cmc/bad-pop-challenge");
   // The count is what a client uses to know how many recipients to try, so an entry that is not a
   // RecipientInfo must not be counted as one.
+  // The minimum element counts RFC 5652 sec. 6.2 gives each RecipientInfo alternative. Nothing inside
+  // one is decoded, which is what leaves sec. 6.7's NULL issuer alone.
+  var RECIPIENT_MIN = { 1: 4, 2: 4, 3: 3, 4: 2 };
+  function filler(n) {
+    var kids = [];
+    for (var i = 0; i < n; i++) kids.push(b.integer(BigInt(i)));
+    return Buffer.concat(kids);
+  }
+  function taggedRecipient(tag, n) { return b.contextConstructed(tag, filler(n)); }
+  function ktriRecipient(n) {
+    var kids = [];
+    for (var i = 0; i < n; i++) kids.push(b.integer(BigInt(i)));
+    return b.sequence(kids);
+  }
+  function envelopeWith(recipients, eci) {
+    return b.sequence([b.oid(ENVELOPED_DATA_OID),
+      b.explicit(0, b.sequence([b.integer(0n), b.set(recipients),
+        eci || b.sequence([b.oid("1.2.840.113549.1.7.1"), b.sequence([b.oid(SHA256)])])]))]);
+  }
   check("G3o. a recipientInfos entry that is no RecipientInfo alternative is refused",
-    popWithEnvelope(b.sequence([b.oid(ENVELOPED_DATA_OID),
-      b.explicit(0, b.sequence([b.integer(0n),
-        b.set([b.contextConstructed(0, b.integer(0n)), b.contextConstructed(9, Buffer.alloc(0))]),
-        b.sequence([b.oid("1.2.840.113549.1.7.1"), b.sequence([b.oid(SHA256)])])]))])) ===
+    popWithEnvelope(envelopeWith([ktriRecipient(4), b.contextConstructed(9, filler(4))])) ===
     "cmc/bad-pop-challenge");
   check("G3p. an encryptedContentInfo naming neither a content type nor an algorithm is refused",
-    popWithEnvelope(b.sequence([b.oid(ENVELOPED_DATA_OID),
-      b.explicit(0, b.sequence([b.integer(0n),
-        b.set([b.contextConstructed(1, b.integer(3n))]), b.sequence([])]))])) === "cmc/bad-pop-challenge");
-  check("G3q. every RecipientInfo alternative is recognized as one",
+    popWithEnvelope(envelopeWith([taggedRecipient(1, 4)], b.sequence([]))) === "cmc/bad-pop-challenge");
+  check("G3q. every RecipientInfo alternative carrying its own fields is recognized as one",
     (function () {
+      if (popWithEnvelope(envelopeWith([ktriRecipient(4)])) !== "NO-THROW") return false;
       for (var t = 1; t <= 4; t++) {
-        if (popWithEnvelope(b.sequence([b.oid(ENVELOPED_DATA_OID),
-          b.explicit(0, b.sequence([b.integer(0n), b.set([b.contextConstructed(t, b.integer(3n))]),
-            b.sequence([b.oid("1.2.840.113549.1.7.1"), b.sequence([b.oid(SHA256)])])]))])) !== "NO-THROW") {
-          return false;
-        }
+        if (popWithEnvelope(envelopeWith([taggedRecipient(t, RECIPIENT_MIN[t])])) !== "NO-THROW") return false;
       }
       return true;
     })());
+  // A tag alone is not a RecipientInfo: an alternative missing the fields its own definition names
+  // could never be opened, so it is refused rather than counted as a recipient to try.
+  check("G3r. an alternative carrying fewer fields than its definition names is refused",
+    (function () {
+      if (popWithEnvelope(envelopeWith([ktriRecipient(3)])) !== "cmc/bad-pop-challenge") return false;
+      for (var t = 1; t <= 4; t++) {
+        if (popWithEnvelope(envelopeWith([taggedRecipient(t, RECIPIENT_MIN[t] - 1)])) !==
+          "cmc/bad-pop-challenge") return false;
+      }
+      return true;
+    })());
+  // Sec. 6.7 sends the challenge one way and the answer the other, so a message carrying the control
+  // for the other direction is not the exchange that section describes.
+  check("G3s. an Encrypted POP in a request is refused, since the authority sends it",
+    code(function () {
+      return cmc.parse(signedData(ID_CCT_PKI_DATA, pkiData([
+        taggedAttr(1, ID_CMC_ENCRYPTED_POP, [encryptedPop])], [], [], [])));
+    }) === "cmc/control-misplaced");
+  check("G3t. a Decrypted POP in a response is refused, since the client sends it",
+    code(function () {
+      return cmc.parse(signedData(ID_CCT_PKI_RESPONSE, pkiResponse([
+        taggedAttr(1, ID_CMC_DECRYPTED_POP, [b.sequence([b.integer(7n),
+          b.sequence([b.oid(HMAC_SHA256_OID)]), b.octetString(Buffer.alloc(32, 3))])])], [], [])));
+    }) === "cmc/control-misplaced");
   check("G3k. the recipient count the parser read is surfaced for the client that answers",
     g1c.encryptedPOP.cmsRecipientCount === 1);
 
