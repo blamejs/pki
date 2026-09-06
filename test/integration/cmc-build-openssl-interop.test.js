@@ -186,6 +186,40 @@ async function run() {
   });
   check("the shared-secret Full PKI Request round-trips through the strict parser",
     pki.schema.cmc.parse(macDer).kind === "pkiData");
+
+  // A request answering a challenge-response proof of possession (RFC 5272 sec. 6.7). The oracle here
+  // is weaker than for the controls above and the difference is worth stating: OpenSSL's OID table
+  // carries RFC 5272's original controls but NOT id-cmc-decryptedPOP, so it accepts and walks the
+  // message without naming this control. What that establishes is that the message is well-formed CMS
+  // carrying a well-formed PKIData, not that a second implementation agrees what the control is.
+  var p = signing.makeSigner("ec-p256");
+  var ppcsr = await pki.csr.sign({ subject: "pop.example", subjectPublicKey: p.spki }, { key: p.key });
+  var proofValue = Buffer.alloc(48, 0x21);
+  var envelope = await pki.cms.encrypt(proofValue, [{ cert: p.cert }],
+    { contentEncryptionAlgorithm: "aes-256-cbc" });
+  var challengeDer = pki.asn1.build.sequence([
+    pki.asn1.build.contextConstructed(0,
+      Buffer.concat([pki.asn1.build.integer(11n), ppcsr])),
+    envelope,
+    pki.asn1.build.sequence([pki.asn1.build.oid(pki.oid.byName("hmacWithSHA256"))]),
+    pki.asn1.build.sequence([pki.asn1.build.oid(pki.oid.byName("sha256"))]),
+    pki.asn1.build.octetString(nodeCrypto.createHash("sha256").update(proofValue).digest()),
+  ]);
+  var popDer = await pki.cmc.build({ requests: [{ tcr: ppcsr }],
+    popChallenge: { challenge: challengeDer, recipient: { key: p.key, cert: p.cert } } },
+  { cert: p.cert, key: p.key });
+  ctx.withTmp(Buffer.from(popDer), "cmc-req-pop.der", function (path2) {
+    var d = opensslDump(path2);
+    check("openssl asn1parse structurally accepts a request answering a POP challenge", d.code === 0);
+    check("openssl names the encapsulated content type on that request too",
+      /id-cct-PKIData/.test(d.out));
+    check("openssl parses the encapsulated PKIData carrying the answer", d.innerCode === 0);
+    var cmsout = ctx.runOpenssl(["cms", "-cmsout", "-inform", "DER", "-in", path2, "-noout"],
+      { allowNonZero: true });
+    check("openssl cms reads the answering request as a CMS message", cmsout.code === 0);
+  });
+  check("the answering request round-trips through the strict parser, control and all",
+    pki.schema.cmc.parse(popDer).controls.some(function (c) { return !!c.decryptedPOP; }));
 }
 
 Promise.resolve().then(run).then(

@@ -201,10 +201,57 @@ async function run() {
   var mrEc = makeRecipient("ec-p256");
   var mrEnv = _prependDummyKariRek(await pki.cms.encrypt(MSG, [{ cert: mrEc.cert }], { contentEncryptionAlgorithm: "aes-256-cbc" }));
   check("a multi-rek kari selects this recipient's encrypted key (not element 0)", Buffer.compare((await pki.cms.decrypt(mrEnv, { key: mrEc.key, cert: mrEc.cert })).content, MSG) === 0);
+  // Naming the recipient by index leaves no rid to select the encrypted key by, which is the case a
+  // certificate-free enrollment is in. Every entry is offered to the derived key-encryption key, and the
+  // key wrap's own integrity check settles which one belongs to this key.
+  check("a multi-rek kari opens with the key alone, with no rid to select by",
+    Buffer.compare((await pki.cms.decrypt(mrEnv, { key: mrEc.key }, { recipientIndex: 0 })).content, MSG) === 0);
+  // A supplied certificate still selects the entry, so a key whose entry is present but whose
+  // certificate names none of them does not reach the other entries through this route.
+  var otherEc = makeRecipient("ec-p256");
+  var certCode = null;
+  try { await pki.cms.decrypt(mrEnv, { key: mrEc.key, cert: otherEc.cert }, { recipientIndex: 0 }); }
+  catch (e) { certCode = e.code; }
+  check("a certificate that matches no encrypted key does not fall through to the others",
+    certCode === "cms/decrypt-failed");
+  var wideEnv = _widenKariReks(mrEnv, pki.C.LIMITS.CMS_MAX_KARI_ENCRYPTED_KEYS + 1);
+  var wideCode = null;
+  try { await pki.cms.decrypt(wideEnv, { key: mrEc.key }, { recipientIndex: 0 }); }
+  catch (e) { wideCode = e.code; }
+  check("a multi-rek kari whose openable entry sits past the attempt bound is refused",
+    wideCode === "cms/too-many-recipient-keys");
+  // Offering every encrypted key is confined to the caller with no certificate, and such a caller
+  // reaches exactly one recipient info: without a certificate there is no identifier to select by, and
+  // recipientIndex names one. So which recipient info a message opens under is decided as it always
+  // was, by the identifier or by the caller, never by which one happens to unwrap first.
+  var twoRi = await pki.cms.encrypt(MSG, [{ cert: mrEc.cert }, { cert: makeRecipient("ec-p256").cert }],
+    { contentEncryptionAlgorithm: "aes-256-cbc" });
+  var twoRiCode = null;
+  try { await pki.cms.decrypt(twoRi, { key: mrEc.key }); }
+  catch (e) { twoRiCode = e.code; }
+  check("a key with no certificate reaches no recipient info unless one is named",
+    twoRiCode === "cms/no-matching-recipient");
+
+  // The bound caps the attempts, not the list: an entry within it opens the message it always opened.
+  var wideEarly = _widenKariReks(mrEnv, 8);
+  check("a long recipientEncryptedKeys list still opens on an entry within the bound",
+    Buffer.compare((await pki.cms.decrypt(wideEarly, { key: mrEc.key }, { recipientIndex: 0 })).content, MSG) === 0);
   // a kari whose originator EC key omits its curve parameters inherits the curve from the recipient.
   var poEc = makeRecipient("ec-p256");
   var poEnv = _stripOrigCurve(await pki.cms.encrypt(MSG, [{ cert: poEc.cert }], { contentEncryptionAlgorithm: "aes-256-cbc" }));
   check("a kari with a parameterless originator EC key inherits the recipient's curve", Buffer.compare((await pki.cms.decrypt(poEnv, { key: poEc.key, cert: poEc.cert })).content, MSG) === 0);
+  // The curve the originator omitted is in the recipient's own key, so a caller with no certificate
+  // still has it. RFC 5753 sec. 7.1 omits it precisely because the recipient knows it.
+  check("a parameterless originator EC key takes its curve from the recipient key alone",
+    Buffer.compare((await pki.cms.decrypt(poEnv, { key: poEc.key }, { recipientIndex: 0 })).content, MSG) === 0);
+  // A key that names no curve at all cannot supply the one the originator omitted, so the message
+  // stays undecryptable rather than being opened under a guessed curve.
+  var poX25519 = makeRecipient("x25519");
+  var poNoCurveCode = null;
+  try { await pki.cms.decrypt(poEnv, { key: poX25519.key }, { recipientIndex: 0 }); }
+  catch (e) { poNoCurveCode = e.code; }
+  check("a recipient key that names no curve does not supply the originator's",
+    poNoCurveCode === "cms/unsupported-algorithm");
   var ukmKem = makeRecipient("ml-kem-768");
   var ukmKemEnv = await pki.cms.encrypt(MSG, [{ cert: ukmKem.cert }], { contentEncryptionAlgorithm: "aes-256-cbc", ukm: Buffer.from("kem-ukm") });
   check("kemri with ukm round-trips", Buffer.compare((await pki.cms.decrypt(ukmKemEnv, { key: ukmKem.key, cert: ukmKem.cert })).content, MSG) === 0);
@@ -588,6 +635,24 @@ function _prependDummyKariRek(der) {
   var dummyRek = b2.sequence([b2.sequence([b2.raw(issuerBytes), b2.integer(99999n)]), b2.octetString(Buffer.alloc(40))]);
   var newReks = b2.sequence([dummyRek, b2.raw(realRek.bytes)]);
   var kariContent = Buffer.concat(kari.children.slice(0, kari.children.length - 1).map(function (c) { return c.bytes; }).concat([newReks]));
+  var newKari = b2.contextConstructed(1, kariContent);
+  var edKids = ed.children.map(function (c) { return (c.tagNumber === 17 && c.tagClass === "universal") ? b2.setOf([newKari]) : b2.raw(c.bytes); });
+  return b2.sequence([b2.raw(ci.children[0].bytes), b2.explicit(0, b2.sequence(edKids))]);
+}
+
+// Pad a kari's recipientEncryptedKeys out to `total` entries with copies of its FIRST (non-matching)
+// entry, leaving the openable one last, so the openable entry sits beyond the attempt bound.
+function _widenKariReks(der, total) {
+  var b2 = pki.asn1.build;
+  var ci = pki.asn1.decode(der);
+  var ed = ci.children[1].children[0];
+  var riSet = ed.children.filter(function (c) { return c.tagNumber === 17 && c.tagClass === "universal"; })[0];
+  var kari = riSet.children[0];
+  var reks = kari.children[kari.children.length - 1];
+  var padded = [];
+  for (var i = 0; i < total - 1; i++) padded.push(b2.raw(reks.children[0].bytes));
+  padded.push(b2.raw(reks.children[reks.children.length - 1].bytes));
+  var kariContent = Buffer.concat(kari.children.slice(0, kari.children.length - 1).map(function (c) { return c.bytes; }).concat([b2.sequence(padded)]));
   var newKari = b2.contextConstructed(1, kariContent);
   var edKids = ed.children.map(function (c) { return (c.tagNumber === 17 && c.tagClass === "universal") ? b2.setOf([newKari]) : b2.raw(c.bytes); });
   return b2.sequence([b2.raw(ci.children[0].bytes), b2.explicit(0, b2.sequence(edKids))]);
