@@ -1335,6 +1335,26 @@ async function run() {
   check("EP19g. a compressed curve point in the request is the same key the challenge opened with",
     decryptedPopOf(compressedAnswered).thePOP.equals(expectedPop(proof, compressedTagged)));
 
+  // The other-message arm binds the same way, on the type together with the value: a value alone
+  // could belong to a different request type.
+  var ormType = "1.3.6.1.5.5.7.7.9";
+  var ormValue = b.octetString(Buffer.from("an out-of-band request"));
+  var ormTagged = b.contextConstructed(2, Buffer.concat([b.integer(11n), b.oid(ormType), ormValue]));
+  var ormChallenge = await popChallengeFor(proof, { tagged: ormTagged });
+  var ormAnswered = await pki.cmc.build({ requests: [{ orm: { type: ormType,
+    value: ormValue }, bodyPartID: 11 }],
+  popChallenge: { challenge: ormChallenge, recipient: { key: popKey.key } } },
+  { cert: s.cert, key: s.key });
+  check("EP19h. a challenge quoting an other-message request is answered for it",
+    decryptedPopOf(ormAnswered).thePOP.equals(expectedPop(proof, ormTagged)));
+  check("EP19i. an other-message request of a different type is not the request the challenge quoted",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ orm: { type: "1.3.6.1.5.5.7.7.10",
+        value: ormValue }, bodyPartID: 11 }],
+      popChallenge: { challenge: ormChallenge, recipient: { key: popKey.key } } },
+      { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+
   check("EP19f. a challenge with no recipient key material is an input error, not a POP failure",
     (await acode(function () {
       return pki.cmc.build({ requests: [{ tcr: popCsr }], popChallenge: { challenge: challenge } },
