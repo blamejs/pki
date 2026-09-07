@@ -20,6 +20,8 @@
     "Fixed": [
       "pki.cms.decrypt opens a key-agreement recipient whose encrypted key is not the first one listed. One KeyAgreeRecipientInfo can carry an encrypted key for several recipients under a single originator, and a caller decrypting with a private key alone has no recipient identifier to select its own entry by, so only the first entry was tried and a message addressed to that caller was refused as undecryptable. A caller with no certificate is now offered every entry, and AES key wrap's integrity check settles which one belongs to the key, so an entry opens only for the key it was encrypted to. A caller that supplies a certificate is unaffected: its entry is still chosen by recipient identifier. At most 64 entries are tried, since the list arrives with the message; a longer list still opens on an entry within that bound, and one whose only openable entry sits past it is refused with cms/too-many-recipient-keys.",
 
+      "pki.schema.cms.parse refuses a key-agreement recipient that names no encrypted key. Such a recipient names nobody, so nothing could open the content it is attached to; it now fails with cms/bad-recipient-encrypted-keys while parsing rather than reaching a decrypt that has nothing to try.",
+
       "pki.cms.decrypt takes the curve of a key-agreement originator that omitted its parameters from the recipient's own private key. RFC 5753 section 7.1 allows the originator to omit them because the recipient knows the curve, but the curve was read only from a recipient certificate, so a caller decrypting with a key alone was refused with cms/unsupported-algorithm."
     ]
   }
