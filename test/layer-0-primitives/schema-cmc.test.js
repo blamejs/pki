@@ -859,6 +859,24 @@ async function run() {
           b.sequence([b.oid(HMAC_SHA256_OID)]), b.sequence([b.oid(SHA256)]),
           b.integer(1n)])])], [], [])));
     }) === "cmc/bad-pop-challenge");
+  // The request a challenge quotes is one the client answers for, so an arm carrying something that is
+  // not a request of that kind is refused rather than surfaced as a challenge nothing can answer.
+  check("G3s6. a challenge quoting an empty CertificationRequest is refused",
+    code(function () {
+      return cmc.parse(signedData(ID_CCT_PKI_RESPONSE, pkiResponse([
+        taggedAttr(1, ID_CMC_ENCRYPTED_POP, [b.sequence([
+          b.contextConstructed(0, Buffer.concat([b.integer(7n), b.sequence([])])), envelopedStub,
+          b.sequence([b.oid(HMAC_SHA256_OID)]), b.sequence([b.oid(SHA256)]),
+          b.octetString(Buffer.alloc(32, 1))])])], [], [])));
+    }) === "cmc/bad-pop-challenge");
+  check("G3s7. the same holds for a CRMF arm that is not a CertReqMsg",
+    code(function () {
+      return cmc.parse(signedData(ID_CCT_PKI_RESPONSE, pkiResponse([
+        taggedAttr(1, ID_CMC_ENCRYPTED_POP, [b.sequence([
+          b.contextConstructed(1, b.sequence([b.integer(7n)])), envelopedStub,
+          b.sequence([b.oid(HMAC_SHA256_OID)]), b.sequence([b.oid(SHA256)]),
+          b.octetString(Buffer.alloc(32, 1))])])], [], [])));
+    }) === "cmc/bad-pop-challenge");
   check("G3s. an Encrypted POP in a request is refused, since the authority sends it",
     code(function () {
       return cmc.parse(signedData(ID_CCT_PKI_DATA, pkiData([
