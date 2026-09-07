@@ -1017,6 +1017,12 @@ async function run() {
   check("51c8. an RSA delivery is accepted when its two halves are a pair",
     (await mk([H.ip(0, 0, kgaRsa.deliveredCert, { privateKey: kgaRsa.container }), H.pkiconf()],
       { acceptCentralKeyGeneration: true }).session.enroll(H.irCentralRequest(pki))).outcome === "issued");
+  // RFC 4055 sec. 1.2 lets one RSA key pair be identified by rsaEncryption or by id-RSASSA-PSS, and
+  // the authority and the CA need not have chosen the same one. The pair is still a pair.
+  var kgaPss = await H.centralKeyGeneration(pki, CLIENT, { rsa: true, pssCert: true });
+  check("51c8a. a delivered rsaEncryption key and an id-RSASSA-PSS certificate for it are a pair",
+    (await mk([H.ip(0, 0, kgaPss.deliveredCert, { privateKey: kgaPss.container }), H.pkiconf()],
+      { acceptCentralKeyGeneration: true }).session.enroll(H.irCentralRequest(pki))).outcome === "issued");
   var kgaBroken = await H.centralKeyGeneration(pki, CLIENT, { rsa: true, breakPrivate: true });
   check("51c9. and refused when its private components cannot use the modulus it states",
     await codeOf(mk([H.ip(0, 0, kgaBroken.deliveredCert, { privateKey: kgaBroken.container }), H.pkiconf()],

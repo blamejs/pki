@@ -205,6 +205,17 @@ async function testOptionValueRendering() {
   void pk;
 }
 
+// The same key under a different AlgorithmIdentifier: child 1 of a PKCS#8 PrivateKeyInfo, child 0 of a
+// SubjectPublicKeyInfo. RFC 4055 sec. 1.2 lets one RSA key pair be named either way.
+function withAlgorithmIdentifier(der, algDer) {
+  var node = asn1.decode(der);
+  var kids = node.children.map(function (c) { return b.raw(c.bytes); });
+  var first = node.children[0];
+  var at = (first.tagClass === "universal" && first.tagNumber === TAGS.INTEGER) ? 1 : 0;
+  kids[at] = algDer;
+  return b.sequence(kids);
+}
+
 // An RSA PKCS#8 whose private exponent and CRT components are replaced with 1, leaving the modulus and
 // public exponent the structure states. The public half derives unchanged; the key cannot be used.
 function breakRsaPrivateComponents(pk8) {
@@ -261,6 +272,27 @@ async function testCorrespondsTo(keyInternal) {
     Buffer.compare(await pki.key.publicFromPrivate(brokenRsa), rsaSpki) === 0);
   check("and correspondsTo refuses it, because those components cannot sign under that modulus",
     (await keyInternal.correspondsTo(brokenRsa, rsaSpki)) === false);
+  // RFC 4055 sec. 1.2: one RSA key pair may be identified by rsaEncryption OR by id-RSASSA-PSS, and a
+  // delivered private key and the certificate that certifies it need not have chosen the same one. The
+  // key engine reports the two encodings as different types, so comparing types alone would call a
+  // usable pair no pair at all.
+  var pssRsa = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  var plainPk8 = pssRsa.privateKey.export({ format: "der", type: "pkcs8" });
+  var plainSpki = pssRsa.publicKey.export({ format: "der", type: "spki" });
+  var pssPk8 = withAlgorithmIdentifier(plainPk8, b.sequence([b.oid(byName("rsassaPss"))]));
+  var pssSpki = withAlgorithmIdentifier(plainSpki, b.sequence([b.oid(byName("rsassaPss"))]));
+  check("the two encodings really are read as different key types",
+    nodeCrypto.createPrivateKey({ key: plainPk8, format: "der", type: "pkcs8" }).asymmetricKeyType === "rsa" &&
+    nodeCrypto.createPublicKey({ key: pssSpki, format: "der", type: "spki" }).asymmetricKeyType === "rsa-pss");
+  check("correspondsTo pairs an rsaEncryption private key with an id-RSASSA-PSS certificate key",
+    (await keyInternal.correspondsTo(plainPk8, pssSpki)) === true);
+  check("and an id-RSASSA-PSS private key with an rsaEncryption public key",
+    (await keyInternal.correspondsTo(pssPk8, plainSpki)) === true);
+  check("while a different modulus under the same cross-encoding is still refused",
+    (await keyInternal.correspondsTo(plainPk8, withAlgorithmIdentifier(
+      nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 }).publicKey.export({ format: "der", type: "spki" }),
+      b.sequence([b.oid(byName("rsassaPss"))])))) === false);
+
   // Two halves of different algorithms are not a pair, and are told apart before either is exercised.
   check("correspondsTo refuses a private key whose type is not the public key's",
     (await keyInternal.correspondsTo(

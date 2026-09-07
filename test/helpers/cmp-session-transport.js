@@ -542,8 +542,19 @@ async function centralKeyGeneration(pki, client, o) {
   // The certificate granted alongside a centrally generated key certifies THAT key: the two are one
   // pair, and a session that accepted an unpaired certificate would confirm an enrollment whose
   // certificate the entity has no private key for.
+  // `o.pssCert` certifies the same RSA modulus under id-RSASSA-PSS while the delivered key keeps its
+  // rsaEncryption encoding. RFC 4055 sec. 1.2 allows either identifier for one key pair, so the two
+  // are a pair even though the key engine reports different types for them.
+  var deliveredSpki = deliveredKp.publicKey.export({ format: "der", type: "spki" });
+  if (o.pssCert) {
+    var spkiNode = pki.asn1.decode(deliveredSpki);
+    deliveredSpki = pki.asn1.build.sequence([
+      pki.asn1.build.sequence([pki.asn1.build.oid(pki.oid.byName("rsassaPss"))]),
+      pki.asn1.build.raw(spkiNode.children[1].bytes),
+    ]);
+  }
   var deliveredCert = await pki.x509.sign({ subject: [{ commonName: "leaf" }],
-    subjectPublicKey: deliveredKp.publicKey.export({ format: "der", type: "spki" }),
+    subjectPublicKey: deliveredSpki,
     serialNumber: 0x6b6c, notBefore: NB, notAfter: NA,
     extensions: { authorityKeyIdentifier: true } }, { key: _caKeyPk8, cert: _caCertDer });
   // `o.extraKey` packages a SECOND key beside the delivered one. RFC 5958 allows the package to carry
