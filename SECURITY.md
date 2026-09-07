@@ -1207,7 +1207,10 @@ security-only patches after the next major releases.
   from both sides, or a key encapsulation the private half decapsulates. The delivered key is what binds
   the grant for such a transaction, in place of the requested public key an
   ordinary enrollment is held to, and the resume token records which of the two
-  applies, so a restart cannot drop to neither.
+  applies, so a restart cannot drop to neither. The session also requires the
+  package to carry exactly one key, the sequence of one §4.1.6 profiles RFC 5958's
+  `SIZE (1..MAX)` down to: one grant certifies one key, so a package carrying more
+  would hand the entity keys the issued certificate says nothing about.
 - **JWS algorithm confusion and JSON smuggling (ACME).** The `pki.jose` layer
   binds every `alg` to its key type in a registry, so the classic JWS attacks
   have no code path: there is no `none` row (CVE-2015-9235), the HMAC algorithms

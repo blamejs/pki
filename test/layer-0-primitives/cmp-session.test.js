@@ -991,6 +991,16 @@ async function run() {
   // The pair is decided from the private material, not from the public point the key structure states
   // about itself: a key whose scalar was replaced while its stored point was left alone matches the
   // certificate on paper and cannot use it.
+  // One grant certifies one key. A package carrying more would hand this entity keys the issued
+  // certificate says nothing about, so the session holds the sec. 4.1.6 count even though the
+  // standalone verb surfaces a whole RFC 5958 package.
+  var kgaTwoKeys = await H.centralKeyGeneration(pki, CLIENT, { extraKey: true });
+  check("51c6a. a delivered package carrying a second key is refused, not delivered unbound",
+    await codeOf(mk([H.ip(0, 0, kgaTwoKeys.deliveredCert, { privateKey: kgaTwoKeys.container }), H.pkiconf()],
+      { acceptCentralKeyGeneration: true }).session.enroll(H.irCentralRequest(pki))) === "cmp/bad-key-package");
+  check("51c6b. and the same container opens through the standalone verb, which surfaces both keys",
+    (await pki.cmp.openKeyPackage(kgaTwoKeys.contentInfo,
+      { key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [kgaTwoKeys.anchor] })).keys.length === 2);
   var kgaSwapped = await H.centralKeyGeneration(pki, CLIENT, { swapScalar: true });
   check("51c7. a delivered key whose stored public point is not the one its scalar generates is refused",
     await codeOf(mk([H.ip(0, 0, kgaSwapped.deliveredCert, { privateKey: kgaSwapped.container }), H.pkiconf()],

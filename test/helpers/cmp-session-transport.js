@@ -542,7 +542,15 @@ async function centralKeyGeneration(pki, client, o) {
     subjectPublicKey: deliveredKp.publicKey.export({ format: "der", type: "spki" }),
     serialNumber: 0x6b6c, notBefore: NB, notAfter: NA,
     extensions: { authorityKeyIdentifier: true } }, { key: _caKeyPk8, cert: _caCertDer });
-  var signed = await pki.cms.sign(pki.asn1.build.sequence([pki.asn1.build.raw(deliveredKey)]),
+  // `o.extraKey` packages a SECOND key beside the delivered one. RFC 5958 allows the package to carry
+  // several, and one grant certifies one of them, so the others are keys the issued certificate says
+  // nothing about.
+  var packaged = [pki.asn1.build.raw(deliveredKey)];
+  if (o.extraKey) {
+    packaged.push(pki.asn1.build.raw(nodeCrypto.generateKeyPairSync("ed25519")
+      .privateKey.export({ format: "der", type: "pkcs8" })));
+  }
+  var signed = await pki.cms.sign(pki.asn1.build.sequence(packaged),
     [{ key: kgaKey, cert: kgaCert }], { eContentType: "aKeyPackage", sid: "ski" });
   // The client's own enrollment certificate is the recipient, which is what a signature-protected
   // request selects: its EC key makes this the key agreement technique (sec. 4.1.6.2).
