@@ -1,0 +1,23 @@
+{
+  "version": "0.6.51",
+  "date": "2026-09-07",
+  "headline": "A CMP message that names one key and is protected by another no longer verifies.",
+  "summary": "RFC 9483 requires the senderKID of a received message to identify the key material that verified its protection. pki.cmp.verify applied that when it picked a certificate out of extraCerts, and skipped it when the caller supplied the certificate: a message declaring one key identifier and signed by another verified, so a relying party reading senderKID to attribute the message could attribute it to the wrong entity.\n\nThe rule now holds however the verifying key was resolved, and it reaches MAC-protected messages too, where the same field names the shared secret. The message freshness check the profile leaves to local policy is available as a stated window.",
+  "sections": {
+    "Fixed": [
+      "pki.cmp.verify holds a declared senderKID to the key that actually verified the protection, on every path (RFC 9483 section 3.5). A certificate passed as opts.signerCert is now checked against the header's senderKID exactly as one selected from extraCerts already was, so a message naming one key identifier and signed under another is refused with cmp/bad-sender-kid instead of verifying. A signer certificate carrying no subjectKeyIdentifier offers nothing for a declared identifier to name and cannot satisfy one; a message declaring no senderKID is unaffected, since the rule is conditioned on the field being present.",
+
+      "A message whose extraCerts carry no certificate matching the declared senderKID reports cmp/bad-sender-kid rather than cmp/signer-cert-not-found. The two failures are different: nothing was offered, versus nothing offered carries the identifier the message declares. Reporting them apart keeps one defect from carrying two codes depending on how the certificate would have arrived. pki.cmp.session treats the new code the same way it treated the old one, so a transaction whose response declares a signer the response did not carry still falls back to the certificate the session already holds, and that certificate is put through the same identifier check."
+    ],
+    "Added": [
+      "pki.cmp.verify checks the senderKID of a MAC-protected message against the commonName of its sender field, which is how such a message names the shared secret it was protected with (RFC 9483 section 4.1.5). A senderKID naming another entity, or a sender carrying no commonName to match, is refused with cmp/bad-sender-kid. An anonymous sender is the exception the base protocol names: where the sender is the NULL-DN a requester uses before it knows its own name, the senderKID is a reference number rather than a name (RFC 9810 section 5.1.1), so it is carried and not compared. A KEM-protected message's senderKID is likewise carried and not compared, since no specification says what it names there.",
+
+      "pki.cmp.verify refuses an opts.time that is not a Date with cmp/bad-input, at the door, rather than letting whichever check reads it first throw a bare TypeError.",
+
+      "pki.cmp.verify takes opts.messageTimeTolerance, the accepted messageTime skew in seconds. RFC 9483 section 3.5 requires a present messageTime to be close to the receiver's current time but leaves the threshold to the use case, so stating a window turns the check on and a message outside it in either direction is a cmp/bad-message-time verdict. A clock runs fast as readily as slow, so a message dated ahead of the receiver is judged the same as one dated behind it. Without the option the messageTime is not judged, and a message carrying none is unaffected."
+    ],
+    "Changed": [
+      "A caller that passes opts.signerCert for a message whose senderKID does not match that certificate now receives a cmp/bad-sender-kid verdict where the message previously verified. A sender that sets senderKID to its certificate's subjectKeyIdentifier, which is what the field is for, is unaffected."
+    ]
+  }
+}

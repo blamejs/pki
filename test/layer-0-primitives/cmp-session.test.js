@@ -1304,6 +1304,15 @@ async function run() {
   var s102k = H.fakeCa(pki, [{ body: H.ip(0, 0, certDer), stripSignerExtra: true }, H.pkiconf()], { deepSigner: true });   // extraCerts = [intCaCert] only; the deep signer resolves via expectedSender
   var sess102k = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], intermediates: DISTINCT, transport: s102k.transport, expectedSender: H.deepSignerCert, sleep: function () { return Promise.resolve(); } });   // 1000 caller certs AT the ceiling
   check("102k. an extraCerts-carries-only-the-issuer response (signer via expectedSender) + a ceiling-filling caller pool -> the override reserves ALL issuer slots -> issued (reserving one fewer truncates the delivered issuer to cmp/untrusted-signer)", (await sess102k.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
+  // The same response DECLARING its signer by senderKID: nothing in extraCerts carries that identifier,
+  // which is now reported as cmp/bad-sender-kid rather than a bare lookup miss. The session must still
+  // fall back to the signer it already holds, and the fallback certificate is put through the same
+  // identifier check, so the retry can only succeed on a certificate the message actually names.
+  var s102k2 = H.fakeCa(pki, [{ body: H.ip(0, 0, certDer), stripSignerExtra: true, senderKid: H.deepSignerSki }, H.pkiconf()], { deepSigner: true });
+  var sess102k2 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], intermediates: DISTINCT, transport: s102k2.transport, expectedSender: H.deepSignerCert });
+  check("102k2. a senderKID-declaring response whose extraCerts lack that certificate still falls back to the held signer -> issued",
+    (await sess102k2.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
+
   // An EMPTY-subject signature-protection cert cannot name the requester -> opts.sender is required at construction.
   check("102l. an empty-subject signature-protection cert without opts.sender -> cmp/bad-input at construction (the empty subject cannot name the sender)", await codeOf(Promise.resolve().then(function () { return pki.cmp.session({ url: URL, key: H.sanSignerAKey, cert: H.sanSignerACert, trustAnchors: [H.caCert] }); })) === "cmp/bad-input");
   check("102m. the same empty-subject cert WITH an explicit opts.sender -> constructs (the SAN identity names the requester)", typeof pki.cmp.session({ url: URL, key: H.sanSignerAKey, cert: H.sanSignerACert, trustAnchors: [H.caCert], sender: { directoryName: [{ commonName: "san-ca-a" }] } }).enroll === "function");

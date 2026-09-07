@@ -231,15 +231,21 @@ async function run() {
   var malKuMsg = await pki.cmp.build({ header: HDR, body: await p10Body(signerSpki, signerKey) }, { key: signerKey, cert: signerCert });
   var t9d2 = await pki.cmp.verify(malKuMsg, { signerCert: malKuCert, trustAnchors: [caCert], time: T });
   check("9d2. a signer cert with a non-minimal KeyUsage encoding -> cmp/untrusted-signer (not authorized to sign)", t9d2.trusted === false && t9d2.code === "cmp/untrusted-signer");
-  // An EXPLICIT opts.signerCert is resolved WITHOUT the senderKID SKI gate (the senderKID only narrows a
-  // candidate search): a valid message from a signer certificate that omits an SKI, carrying an arbitrary
-  // header senderKID, still resolves to its exact opts.signerCert and verifies (the signature is the gate).
+  // A declared senderKID must identify the key that verified, whichever way the verifier came by the
+  // certificate (RFC 9483 sec. 3.5). A signer certificate that omits a subjectKeyIdentifier offers
+  // nothing for the declared value to identify, so the message is refused rather than accepted on the
+  // signature alone: an explicit opts.signerCert does not exempt the message from the rule.
   var noSkiKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   var noSkiKey = noSkiKp.privateKey.export({ format: "der", type: "pkcs8" });
   var noSkiSpki = noSkiKp.publicKey.export({ format: "der", type: "spki" });
   var noSkiCert = await pki.x509.sign({ subject: [{ commonName: "Test Signer" }], subjectPublicKey: noSkiSpki, serialNumber: 52, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"] } }, { key: caKey, cert: caCert });
   var kidMsg = await pki.cmp.build({ header: hdr({ senderKID: Buffer.alloc(20, 0xab) }), body: await p10Body(noSkiSpki, noSkiKey) }, { key: noSkiKey, cert: noSkiCert });
-  check("9d3. an explicit opts.signerCert with no SKI resolves despite a header senderKID -> valid", (await pki.cmp.verify(kidMsg, { signerCert: noSkiCert })).valid === true);
+  var t9d3 = await pki.cmp.verify(kidMsg, { signerCert: noSkiCert });
+  check("9d3. an explicit opts.signerCert with no SKI cannot satisfy a header senderKID -> cmp/bad-sender-kid",
+    t9d3.valid === false && t9d3.code === "cmp/bad-sender-kid");
+  check("9d3b. the same certificate verifies a message that declares no senderKID",
+    (await pki.cmp.verify(await pki.cmp.build({ header: hdr({}), body: await p10Body(noSkiSpki, noSkiKey) },
+      { key: noSkiKey, cert: noSkiCert }), { signerCert: noSkiCert })).valid === true);
   // A signer cert EXPIRED at the current time whose message backdates messageTime into the cert's old
   // validity window MUST NOT be trusted: the path is validated at a TRUSTED current time, not the sender's
   // self-asserted messageTime (an expired-cert holder could otherwise backdate to stay trusted).
@@ -1191,6 +1197,132 @@ async function run() {
   }
   check("23ap. a lying kind test cannot make the verb wipe the caller's own secret",
     callerOwned.toString("utf8") === "hunter2");
+
+  // ===== 25. The remaining RFC 9483 receiving-side rules: a declared key identifier is bound to the
+  //           key that actually verified, and a stated freshness window is honored. =====
+  // sec. 3.5: "If present, the senderKID MUST identify the key material needed for verifying the
+  // message protection." The rule is conditioned on presence and applies however the verifier came by
+  // the certificate, so both resolution paths answer the same way.
+  var kidSigner = makeSigner("ec-p256", { ski: true });
+  var kidHdr = { sender: { directoryName: [{ commonName: "Test Signer" }] },
+    recipient: { directoryName: [{ commonName: "CA" }] },
+    transactionID: Buffer.alloc(16, 7), senderNonce: Buffer.alloc(16, 5) };
+  var kidBody = { ir: { certTemplate: { subject: [{ commonName: "leaf" }], publicKey: kidSigner.spki } } };
+  var trueSki = pki.schema.x509.parse(kidSigner.cert).extensions
+    .filter(function (e) { return e.extnID === pki.oid.byName("subjectKeyIdentifier"); })[0];
+  var trueSkiBytes = trueSki && pki.asn1.read.octetString(pki.asn1.decode(trueSki.extnValue));
+  var wrongKid = Buffer.alloc(20, 0xEE);
+
+  async function buildWithKid(kid) {
+    return pki.cmp.build({ header: Object.assign({}, kidHdr, kid === null ? {} : { senderKID: kid }), body: kidBody },
+      { key: kidSigner.key, cert: kidSigner.cert });
+  }
+  var kidWrong = await buildWithKid(wrongKid);
+  var kidRight = await buildWithKid(trueSkiBytes);
+  var kidAbsent = await buildWithKid(null);
+
+  var w1 = await pki.cmp.verify(kidWrong, { signerCert: kidSigner.cert });
+  check("25a. a senderKID naming another key is refused even when the caller supplies the certificate",
+    w1.valid === false && w1.code === "cmp/bad-sender-kid");
+  var w2 = await pki.cmp.verify(kidWrong, {});
+  check("25b. and the same message resolved from extraCerts is refused the same way",
+    w2.valid === false && w2.code === "cmp/bad-sender-kid");
+  check("25c. the matching senderKID verifies on both paths",
+    (await pki.cmp.verify(kidRight, { signerCert: kidSigner.cert })).valid === true &&
+    (await pki.cmp.verify(kidRight, {})).valid === true);
+  check("25d. a message carrying no senderKID is unaffected, since the rule is conditioned on presence",
+    (await pki.cmp.verify(kidAbsent, { signerCert: kidSigner.cert })).valid === true &&
+    (await pki.cmp.verify(kidAbsent, {})).valid === true);
+  // A certificate with no subject key identifier gives nothing to compare, so a declared one cannot be
+  // said to identify it.
+  var noSkiSigner = makeSigner("ec-p256");
+  var noSkiMsg = await pki.cmp.build({ header: Object.assign({}, kidHdr, { senderKID: wrongKid }),
+    body: { ir: { certTemplate: { subject: [{ commonName: "leaf" }], publicKey: noSkiSigner.spki } } } },
+  { key: noSkiSigner.key, cert: noSkiSigner.cert });
+  var w3 = await pki.cmp.verify(noSkiMsg, { signerCert: noSkiSigner.cert });
+  check("25e. a signer certificate with no subject key identifier cannot satisfy a declared one",
+    w3.valid === false && w3.code === "cmp/bad-sender-kid");
+
+  // sec. 4.1.5 item 2: under MAC protection the senderKID names the shared secret, and "MUST contain
+  // the same name as in the commonName field of the sender field".
+  var macHdrName = { sender: { directoryName: [{ commonName: "ee-17" }] },
+    recipient: { directoryName: [{ commonName: "CA" }] },
+    transactionID: Buffer.alloc(16, 7), senderNonce: Buffer.alloc(16, 5) };
+  async function buildMacKid(kid, hdrOver) {
+    return pki.cmp.build({ header: Object.assign({}, macHdrName, hdrOver || {},
+      kid === null ? {} : { senderKID: kid }), body: kidBody },
+    { mac: { secret: "hunter2", salt: Buffer.alloc(16, 9), iterationCount: 2048 } });
+  }
+  var m1 = await pki.cmp.verify(await buildMacKid(Buffer.from("ee-17", "utf8")), { sharedSecret: "hunter2" });
+  check("25f. a MAC senderKID equal to the sender commonName verifies", m1.valid === true);
+  var m2 = await pki.cmp.verify(await buildMacKid(Buffer.from("ee-99", "utf8")), { sharedSecret: "hunter2" });
+  check("25g. a MAC senderKID naming another entity is refused",
+    m2.valid === false && m2.code === "cmp/bad-sender-kid");
+  var m3 = await pki.cmp.verify(await buildMacKid(null), { sharedSecret: "hunter2" });
+  check("25h. a MAC message carrying no senderKID is unaffected", m3.valid === true);
+  var m4 = await pki.cmp.verify(await buildMacKid(Buffer.from("ee-17", "utf8"),
+    { sender: { directoryName: [{ organizationName: "no-cn" }] } }), { sharedSecret: "hunter2" });
+  check("25i. a sender with no commonName cannot match a declared senderKID",
+    m4.valid === false && m4.code === "cmp/bad-sender-kid");
+
+  // sec. 5.1.1: a sender that knows nothing about its own name sends the anonymous NULL-DN and carries
+  // "an identifier (i.e., a reference number)" in senderKID instead. That is a reference, not a name,
+  // so the commonName rule does not govern it: comparing one would turn a conforming anonymous
+  // requester away for failing a match the base protocol never asks of it.
+  var nullDnHdr = { sender: { directoryName: [] }, recipient: { directoryName: [{ commonName: "CA" }] },
+    transactionID: Buffer.alloc(16, 7), senderNonce: Buffer.alloc(16, 5) };
+  var anonKid = await pki.cmp.build({ header: Object.assign({}, nullDnHdr, { senderKID: Buffer.from("ref-42", "utf8") }), body: kidBody },
+    { mac: { secret: "hunter2", salt: Buffer.alloc(16, 9), iterationCount: 2048 } });
+  check("25i2. an anonymous sender's senderKID is a reference number, left uncompared",
+    (await pki.cmp.verify(anonKid, { sharedSecret: "hunter2" })).valid === true);
+  check("25i3. and an anonymous message carrying none still verifies",
+    (await pki.cmp.verify(await pki.cmp.build({ header: nullDnHdr, body: kidBody },
+      { mac: { secret: "hunter2", salt: Buffer.alloc(16, 9), iterationCount: 2048 } }),
+    { sharedSecret: "hunter2" })).valid === true);
+
+  // sec. 3.5: a present messageTime "MUST be close to the current time of the receiving system, where
+  // the threshold will vary by use case". The window is the caller's, so the check is theirs to state.
+  var NOW = new Date("2026-06-01T12:00:00Z");
+  async function buildAt(t) {
+    return pki.cmp.build({ header: Object.assign({}, kidHdr, { messageTime: t }), body: kidBody },
+      { key: kidSigner.key, cert: kidSigner.cert });
+  }
+  var fresh = await buildAt(new Date(NOW.getTime() - 30 * 1000));
+  var stale = await buildAt(new Date(NOW.getTime() - 3600 * 1000));
+  var ahead = await buildAt(new Date(NOW.getTime() + 3600 * 1000));
+  check("25j. a messageTime inside the stated window verifies",
+    (await pki.cmp.verify(fresh, { signerCert: kidSigner.cert, time: NOW, messageTimeTolerance: 300 })).valid === true);
+  var t1 = await pki.cmp.verify(stale, { signerCert: kidSigner.cert, time: NOW, messageTimeTolerance: 300 });
+  check("25k. one older than the window is refused, and the verdict names the skew it measured",
+    t1.valid === false && t1.code === "cmp/bad-message-time" && t1.reason.indexOf("3600 seconds") !== -1);
+  // The reason is built after an awaited verification, so it reads only captured operations: a
+  // replaced Math.round must not turn a documented verdict into an arbitrary throw.
+  var realRound = Math.round;
+  var roundedVerdict;
+  try {
+    Math.round = function () { throw new Error("poisoned"); };
+    roundedVerdict = await pki.cmp.verify(stale, { signerCert: kidSigner.cert, time: NOW, messageTimeTolerance: 300 });
+  } finally { Math.round = realRound; }
+  check("25k2. and it is still that verdict when the rounding global is replaced",
+    roundedVerdict.valid === false && roundedVerdict.code === "cmp/bad-message-time");
+  var t2 = await pki.cmp.verify(ahead, { signerCert: kidSigner.cert, time: NOW, messageTimeTolerance: 300 });
+  check("25l. one ahead of the window is refused too, since a clock can run either way",
+    t2.valid === false && t2.code === "cmp/bad-message-time");
+  check("25m. without a stated window the messageTime is not judged",
+    (await pki.cmp.verify(stale, { signerCert: kidSigner.cert, time: NOW })).valid === true);
+  check("25n. a message carrying no messageTime is unaffected by a stated window",
+    (await pki.cmp.verify(kidAbsent, { signerCert: kidSigner.cert, messageTimeTolerance: 300 })).valid === true);
+  check("25o. a tolerance that is not a non-negative number is an input error",
+    (await codeOf(pki.cmp.verify(fresh, { signerCert: kidSigner.cert, messageTimeTolerance: -1 }))) === "cmp/bad-input");
+  // A verification instant that is not a Date is a caller error, named at the door rather than thrown
+  // raw from whichever comparison happens to read it first.
+  check("25p. a non-Date opts.time is a typed input error, not a raw throw",
+    (await codeOf(pki.cmp.verify(fresh, { signerCert: kidSigner.cert, time: "nonsense" }))) === "cmp/bad-input" &&
+    (await codeOf(pki.cmp.verify(fresh, { signerCert: kidSigner.cert, time: 12345 }))) === "cmp/bad-input");
+  // An Invalid Date IS a Date, so it passes the door and is caught where the instants are compared.
+  var t3 = await pki.cmp.verify(fresh, { signerCert: kidSigner.cert, time: new Date("bad"), messageTimeTolerance: 300 });
+  check("25q. an instant that cannot be read is a verdict, not a comparison against NaN",
+    t3.valid === false && t3.code === "cmp/bad-message-time");
 
   // ===== 24. KEM-based protection (RFC 9810 sec. 5.1.3.4) =====
   // A client whose key is ML-KEM cannot sign and may hold no shared secret, so this is the only
