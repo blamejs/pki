@@ -861,6 +861,19 @@ async function run() {
     }) === "cmc/bad-pop-challenge");
   // The request a challenge quotes is one the client answers for, so an arm carrying something that is
   // not a request of that kind is refused rather than surfaced as a challenge nothing can answer.
+  check("G3s9. a Decrypted POP whose body part is not one is refused as a bad challenge",
+    (function () {
+      var slots = [b.octetString(Buffer.alloc(2)), b.integer(0n)];
+      for (var i = 0; i < slots.length; i++) {
+        var slot = slots[i];
+        if (code(function () {
+          return cmc.parse(signedData(ID_CCT_PKI_DATA, pkiData([
+            taggedAttr(1, ID_CMC_DECRYPTED_POP, [b.sequence([slot,
+              b.sequence([b.oid(HMAC_SHA256_OID)]), b.octetString(Buffer.alloc(32, 3))])])], [], [], [])));
+        }) !== "cmc/bad-pop-challenge") return false;
+      }
+      return true;
+    })());
   check("G3s8. a request slot that is no TaggedRequest is refused as a bad challenge",
     code(function () {
       return cmc.parse(signedData(ID_CCT_PKI_RESPONSE, pkiResponse([
