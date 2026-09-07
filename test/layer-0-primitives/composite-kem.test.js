@@ -395,6 +395,101 @@ async function run() {
   } finally { schemaPkcs8.parse = origParse; }
   check("draft sec. 3.5: the snapshotted PKCS#8 buffer is wiped after decapsulation",
     capturedP8 !== null && capturedP8.length > 0 && capturedP8.every(function (byte) { return byte === 0; }));
+
+  // ---- pki.key.publicFromPrivate over the composite families ----
+  // The composite private key is `seed || tradSK` and the public key is `mlkemEK || tradPK` under the
+  // same OID (draft sec. 4.1, sec. 5.1). The runtime key decoder does not know a composite OID, so
+  // deriving one has to split the key and derive each half. The oracle is Appendix G's own `ek`.
+  for (var pf = 0; pf < composites.length; pf++) {
+    var pt = composites[pf];
+    var derived = await pki.key.publicFromPrivate(b64(pt.dk_pkcs8));
+    check("publicFromPrivate " + pt.tcId + " returns the SPKI Appendix G publishes",
+      Buffer.isBuffer(derived) && derived.equals(spkiFrom(pt.tcId, b64(pt.ek))));
+  }
+  // The derived SPKI is the one the encapsulation side accepts, which is what a caller does with it.
+  var rt = composites[0];
+  var rtSpki = await pki.key.publicFromPrivate(b64(rt.dk_pkcs8));
+  var rtEnc = await pki.kem.encapsulate(rtSpki);
+  var rtSs = await pki.kem.decapsulate(b64(rt.dk_pkcs8), rtEnc.ciphertext);
+  check("a composite SPKI derived from the private key round-trips through encapsulate/decapsulate",
+    Buffer.from(rtSs).equals(Buffer.from(rtEnc.sharedSecret)));
+  // opts.pem is honored for a composite key as it is for every other family.
+  var rtPem = await pki.key.publicFromPrivate(b64(rt.dk_pkcs8), { pem: true });
+  check("and opts.pem returns the same key armored",
+    typeof rtPem === "string" && rtPem.indexOf("-----BEGIN PUBLIC KEY-----") === 0);
+  check("and the armored form decodes to the same bytes",
+    Buffer.from(rtPem.split("-----")[2].split("\n").join(""), "base64").equals(rtSpki));
+
+  // Fail-closed, each on the shipped verb. A composite AlgorithmIdentifier carries absent parameters
+  // (draft sec. 5.3), a key shorter than the ML-KEM seed cannot be split, and an unregistered
+  // composite-shaped OID is refused rather than guessed at.
+  var goodInfo = schemaPkcs8.parse(b64(rt.dk_pkcs8));
+  var rawSk = Buffer.from(goodInfo.privateKey);
+  function pk8With(algSeq, keyOctets) {
+    return pki.asn1.build.sequence([
+      pki.asn1.build.integer(0n), algSeq, pki.asn1.build.octetString(keyOctets),
+    ]);
+  }
+  var withParams = pk8With(pki.asn1.build.sequence([
+    pki.asn1.build.oid(pki.oid.byName(rt.tcId)), pki.asn1.build.nullValue(),
+  ]), rawSk);
+  check("a composite private key whose AlgorithmIdentifier carries parameters is refused",
+    (await codeOf(pki.key.publicFromPrivate(withParams))) === "kem/bad-algorithm");
+  var tooShort = pk8With(pki.asn1.build.sequence([pki.asn1.build.oid(pki.oid.byName(rt.tcId))]),
+    rawSk.subarray(0, 64));
+  check("a composite private key no longer than the ML-KEM seed is refused",
+    (await codeOf(pki.key.publicFromPrivate(tooShort))) === "kem/bad-key");
+  var unknownOid = pk8With(pki.asn1.build.sequence([pki.asn1.build.oid("2.16.840.1.114027.80.5.2.99")]), rawSk);
+  check("an unregistered composite-shaped OID is refused, not guessed",
+    (await codeOf(pki.key.publicFromPrivate(unknownOid))) !== null);
+
+  // A SEC1 ECPrivateKey names its own curve and the composite OID names the curve the component must
+  // be on. A key whose component is on another curve would otherwise export that point under this OID,
+  // stating a public key nothing can use: the encapsulation the derived key exists for refuses it.
+  var ecRow = composites.filter(function (t) { return t.tcId.indexOf("ECDH-P256") !== -1; })[0];
+  if (ecRow) {
+    var ecInfo = schemaPkcs8.parse(b64(ecRow.dk_pkcs8));
+    var ecSk = Buffer.from(ecInfo.privateKey);
+    var wrongCurve = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "secp384r1" })
+      .privateKey.export({ format: "der", type: "sec1" });
+    var swapped = pk8With(pki.asn1.build.sequence([pki.asn1.build.oid(pki.oid.byName(ecRow.tcId))]),
+      Buffer.concat([ecSk.subarray(0, 64), wrongCurve]));
+    check("an EC component on a curve the composite OID does not name is refused",
+      (await codeOf(pki.key.publicFromPrivate(swapped))) === "kem/bad-key");
+    check("and the unmodified key still derives",
+      (await pki.key.publicFromPrivate(b64(ecRow.dk_pkcs8))).equals(spkiFrom(ecRow.tcId, b64(ecRow.ek))));
+    // RFC 5915 gives an ECPrivateKey an optional public point, and it may be written compressed. The
+    // composite public key carries the uncompressed point at a fixed width, so the point is generated
+    // from the scalar: a stored point in another form, or of another key, does not reach the result.
+    var ecSec1 = pki.asn1.decode(ecSk.subarray(64));
+    var scalar = Buffer.from(pki.asn1.read.octetString(ecSec1.children[1]));
+    var ecdh = nodeCrypto.createECDH("prime256v1");
+    ecdh.setPrivateKey(scalar);
+    var compressed = ecdh.getPublicKey(null, "compressed");
+    var withCompressed = pki.asn1.build.sequence([
+      pki.asn1.build.integer(1n), pki.asn1.build.octetString(scalar),
+      pki.asn1.build.explicit(0, pki.asn1.build.oid(pki.oid.byName("prime256v1"))),
+      pki.asn1.build.explicit(1, pki.asn1.build.bitString(compressed, 0)),
+    ]);
+    var compositeCompressed = pk8With(pki.asn1.build.sequence([pki.asn1.build.oid(pki.oid.byName(ecRow.tcId))]),
+      Buffer.concat([ecSk.subarray(0, 64), withCompressed]));
+    var fromCompressed = await pki.key.publicFromPrivate(compositeCompressed);
+    check("an EC component storing a compressed public point still derives the uncompressed one",
+      fromCompressed.equals(spkiFrom(ecRow.tcId, b64(ecRow.ek))));
+    // The combiner hashes the traditional public key, so the derivation and the decapsulation must
+    // spell the point the same way. Encapsulating to the derived key and decapsulating with the key it
+    // came from is what proves they do: two spellings reach two different secrets and nothing says so.
+    var ccEnc = await pki.kem.encapsulate(fromCompressed);
+    var ccSs = await pki.kem.decapsulate(compositeCompressed, ccEnc.ciphertext);
+    check("and encapsulating to it round-trips with the key that stored the compressed point",
+      Buffer.from(ccSs).equals(Buffer.from(ccEnc.sharedSecret)));
+    // The same key written with the uncompressed point reaches the same secret, so the stored spelling
+    // changes nothing about what the pair establishes.
+    var uncompressedEnc = await pki.kem.encapsulate(spkiFrom(ecRow.tcId, b64(ecRow.ek)));
+    check("and the uncompressed spelling of the same key decapsulates it too",
+      Buffer.from(await pki.kem.decapsulate(compositeCompressed, uncompressedEnc.ciphertext))
+        .equals(Buffer.from(uncompressedEnc.sharedSecret)));
+  }
 }
 
 module.exports = { run: run };
