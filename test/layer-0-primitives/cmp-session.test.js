@@ -1780,6 +1780,16 @@ async function run() {
     (await codeOf(mk([H.genpOf("kemCiphertextInfo", B.sequence([
       B.sequence([B.oid(pki.oid.byName("id-ml-kem-768"))]), B.octetString(Buffer.alloc(0))]))])
       .session.info({ kemCiphertext: true }))) === "cmp/bad-info-value");
+  // An ML-KEM ciphertext is a fixed size, so a length the named algorithm never produces could not be
+  // decapsulated and is refused rather than surfaced as usable material.
+  check("162l. a ciphertext of the wrong length for the named algorithm is refused",
+    (await codeOf(mk([H.genpOf("kemCiphertextInfo", B.sequence([
+      B.sequence([B.oid(pki.oid.byName("id-ml-kem-768"))]), B.octetString(Buffer.alloc(768, 1))]))])
+      .session.info({ kemCiphertext: true }))) === "cmp/bad-info-value");
+  check("162m. the length each parameter set does produce is accepted",
+    (await mk([H.genpOf("kemCiphertextInfo", B.sequence([
+      B.sequence([B.oid(pki.oid.byName("id-ml-kem-512"))]), B.octetString(Buffer.alloc(768, 1))]))])
+      .session.info({ kemCiphertext: true })).value.ct.length === 768);
 
   // ===== 163/164. caCerts (sec. 4.3.1): the request infoValue MUST be absent; the response
   //                carries a sequence of certificates, or nothing when none are available. =====

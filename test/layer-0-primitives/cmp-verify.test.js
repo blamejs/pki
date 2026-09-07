@@ -1436,6 +1436,15 @@ async function run() {
     (await pki.cmp.verify(await pki.cmp.build({ header: kemHdr, body: IRBODY },
       { kem: { key: kemKey.key, ciphertext: kemEncap.ct, kemAlgorithm: pki.oid.byName("id-ml-kem-768") } }),
     { kem: { sharedSecret: kemEncap.ss } })).valid === true);
+  // The dispatch is keyed on the OID, which cannot be re-pointed, so renaming the display name in the
+  // registry changes what an algorithm is CALLED and not whether this client supports it.
+  var kemOidStr = pki.oid.byName("id-ml-kem-768");
+  pki.oid.register(kemOidStr, "ml-kem-768-renamed");
+  var kemAfterRename = await pki.cmp.build({ header: kemHdr, body: IRBODY },
+    { kem: { key: kemKey.key, ciphertext: kemEncap.ct, kemAlgorithm: kemOidStr } });
+  check("24z2b. a renamed registry entry does not disable a supported algorithm",
+    (await pki.cmp.verify(kemAfterRename, { kem: { sharedSecret: kemEncap.ss } })).valid === true);
+  pki.oid.register(kemOidStr, "id-ml-kem-768");   // the registry is process-wide; put the name back
   check("24z3. a kemAlgorithm that is not a string is refused",
     (await codeOf(pki.cmp.build({ header: kemHdr, body: IRBODY },
       { kem: { key: kemKey.key, ciphertext: kemEncap.ct, kemAlgorithm: 768 } }))) === "cmp/bad-input");
@@ -1448,6 +1457,9 @@ async function run() {
   check("24ab. a derived key length outside the accepted range is refused",
     (await codeOf(pki.cmp.build({ header: kemHdr, body: IRBODY },
       { kem: { key: kemKey.key, ciphertext: kemEncap.ct, kemAlgorithm: kemEncap.algorithm, len: 0 } }))) === "cmp/bad-input");
+  check("24ac2. a message spec with no header at all is refused before the derivation",
+    (await codeOf(pki.cmp.build({ body: IRBODY },
+      { kem: { key: kemKey.key, ciphertext: kemEncap.ct, kemAlgorithm: kemEncap.algorithm } }))) === "cmp/bad-input");
   check("24ac. a message with no transaction identifier and no named one is refused",
     (await codeOf(pki.cmp.build({ header: { sender: { directoryName: "CN=c" }, recipient: { directoryName: "CN=CA" } }, body: IRBODY },
       { kem: { key: kemKey.key, ciphertext: kemEncap.ct, kemAlgorithm: kemEncap.algorithm } }))) === "cmp/bad-input");
