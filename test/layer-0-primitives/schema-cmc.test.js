@@ -861,6 +861,10 @@ async function run() {
     }) === "cmc/bad-pop-challenge");
   // The request a challenge quotes is one the client answers for, so an arm carrying something that is
   // not a request of that kind is refused rather than surfaced as a challenge nothing can answer.
+  // Every format parser answers for its own input in its own domain, so bytes that are not a CMS
+  // message report a CMC code rather than the carrier parser's.
+  check("G3s10. bytes that are not a CMS carrier are refused in this parser's own domain",
+    code(function () { return cmc.parse(Buffer.from([0x30, 0x03, 0x01])); }) === "cmc/bad-der");
   check("G3s9. a Decrypted POP whose body part is not one is refused as a bad challenge",
     (function () {
       var slots = [b.octetString(Buffer.alloc(2)), b.integer(0n)];

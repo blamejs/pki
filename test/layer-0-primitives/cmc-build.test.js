@@ -1355,6 +1355,12 @@ async function run() {
       { cert: s.cert, key: s.key });
     })) === "cmc/bad-input");
 
+  check("EP19k. challenge bytes that are not DER are a malformed challenge, not a codec error",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: popCsr }],
+        popChallenge: { challenge: Buffer.from([0x30, 0x03, 0x01]), recipient: { key: popKey.key } } },
+      { cert: s.cert, key: s.key });
+    })) === "cmc/bad-pop-challenge");
   check("EP19f. a challenge with no recipient key material is an input error, not a POP failure",
     (await acode(function () {
       return pki.cmc.build({ requests: [{ tcr: popCsr }], popChallenge: { challenge: challenge } },
