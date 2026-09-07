@@ -1192,6 +1192,213 @@ async function run() {
   check("23ap. a lying kind test cannot make the verb wipe the caller's own secret",
     callerOwned.toString("utf8") === "hunter2");
 
+  // ===== 24. KEM-based protection (RFC 9810 sec. 5.1.3.4) =====
+  // A client whose key is ML-KEM cannot sign and may hold no shared secret, so this is the only
+  // protection available to it. The key is derived from the KEM shared secret through a KDF whose
+  // context is a DER KemOtherInfo, and the two sides must derive the same one.
+  var kemKey = signing.makeRecipient("ml-kem-768");
+  var KEM_TXID = Buffer.alloc(16, 0x2b);
+  var kemHdr = Object.assign({}, HDR, { transactionID: KEM_TXID });
+
+  // Bob's half, run through node's own WebCrypto rather than the toolkit, so the client is proven to
+  // answer an encapsulation it did not produce.
+  var kemEncap = await (async function () {
+    var pub = await nodeCrypto.subtle.importKey("spki", kemKey.spki, { name: "ML-KEM-768" }, false,
+      ["encapsulateBits"]);
+    var r = await nodeCrypto.subtle.encapsulateBits({ name: "ML-KEM-768" }, pub);
+    return { ct: Buffer.from(r.ciphertext), ss: Buffer.from(r.sharedKey), algorithm: "id-ml-kem-768" };
+  })();
+  function kemOtherInfo(txid, context) {
+    var kids = [b.sequence([b.utf8("CMP-KEM")]), b.octetString(txid)];
+    if (context) kids.push(b.contextConstructed(0, b.octetString(context)));
+    return b.sequence(kids);
+  }
+  async function expectedSsk(ss, len, txid, context) {
+    var k = await nodeCrypto.subtle.importKey("raw", ss, "HKDF", false, ["deriveBits"]);
+    return Buffer.from(await nodeCrypto.subtle.deriveBits(
+      { name: "HKDF", hash: "SHA-256", salt: Buffer.alloc(0), info: kemOtherInfo(txid, context) },
+      k, len * 8));
+  }
+
+  var kemMsg = await pki.cmp.build({ header: kemHdr, body: IRBODY },
+    { kem: { key: kemKey.key, ciphertext: kemEncap.ct, kemAlgorithm: kemEncap.algorithm } });
+  var kemV = await pki.cmp.verify(kemMsg, { kem: { sharedSecret: kemEncap.ss } });
+  check("24a. a KEM-protected message verifies under the same shared secret",
+    kemV.valid === true && kemV.protectionType === "kem" && kemV.protectionAlg.name === "kemBasedMac");
+  check("24b. the derived key is the HKDF of the shared secret over a DER KemOtherInfo",
+    (await (async function () {
+      var parsed = parse(kemMsg);
+      var want = await expectedSsk(kemEncap.ss, 32, KEM_TXID, null);
+      var mac = nodeCrypto.createHmac("sha256", want).update(reconProtectedPart(parsed)).digest();
+      return mac.equals(parsed.protection.bytes);
+    })()) === true);
+  // The protection covers the ORIGINAL body, so a spliced one is recomputed over and fails.
+  var kemOther = await pki.cmp.build({ header: kemHdr,
+    body: { ir: { certTemplate: { subject: [{ commonName: "OTHER" }], publicKey: s.spki } } } },
+  { kem: { key: kemKey.key, ciphertext: kemEncap.ct, kemAlgorithm: kemEncap.algorithm } });
+  var kk = msgKids(kemMsg), ok = msgKids(kemOther);
+  var kemTampered = rebuild([kk[0].bytes, ok[1].bytes, kk[2].bytes]);
+  var kemT = await pki.cmp.verify(kemTampered, { kem: { sharedSecret: kemEncap.ss } });
+  check("24c. a swapped body does not verify",
+    kemT.valid === false && kemT.code === "cmp/protection-failed");
+  check("24d. a different shared secret does not verify",
+    (await pki.cmp.verify(kemMsg, { kem: { sharedSecret: Buffer.alloc(kemEncap.ss.length, 9) } })).valid === false);
+  // The context is domain-separated by the transaction id of the message that carried the ciphertext,
+  // so a peer that derived under another id cannot reproduce the key.
+  check("24e. a context built on a different transaction id derives a different key",
+    !(await expectedSsk(kemEncap.ss, 32, KEM_TXID, null))
+      .equals(await expectedSsk(kemEncap.ss, 32, Buffer.alloc(16, 0x2c), null)));
+  check("24f. the static string is exactly CMP-KEM",
+    !(await expectedSsk(kemEncap.ss, 32, KEM_TXID, null)).equals(await (async function () {
+      var k = await nodeCrypto.subtle.importKey("raw", kemEncap.ss, "HKDF", false, ["deriveBits"]);
+      var info = b.sequence([b.sequence([b.utf8("CMP-KEMX")]), b.octetString(KEM_TXID)]);
+      return Buffer.from(await nodeCrypto.subtle.deriveBits(
+        { name: "HKDF", hash: "SHA-256", salt: Buffer.alloc(0), info: info }, k, 256));
+    })()));
+  // A kemContext is carried in the protectionAlg AND fed to the derivation. A round trip cannot show
+  // the second half, since both sides would share the same omission, so the MAC is checked against an
+  // independent HKDF that does include it.
+  var KEM_CTX = Buffer.from("algorithm-specific context");
+  var kemCtxMsg = await pki.cmp.build({ header: kemHdr, body: IRBODY },
+    { kem: { key: kemKey.key, ciphertext: kemEncap.ct, kemAlgorithm: kemEncap.algorithm,
+      kemContext: KEM_CTX } });
+  check("24g. a kemContext travels into the derivation, not just into the parameters",
+    (await (async function () {
+      var parsed = parse(kemCtxMsg);
+      var want = await expectedSsk(kemEncap.ss, 32, KEM_TXID, KEM_CTX);
+      var k = await nodeCrypto.subtle.importKey("raw", want, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+      var mac = Buffer.from(await nodeCrypto.subtle.sign({ name: "HMAC" }, k, reconProtectedPart(parsed)));
+      return mac.equals(parsed.protection.bytes);
+    })()) === true);
+  check("24g2. and it round-trips through verify",
+    (await pki.cmp.verify(kemCtxMsg, { kem: { sharedSecret: kemEncap.ss } })).valid === true);
+  // A ciphertext the algorithm cannot even read is a decapsulation error, which the section says
+  // terminates the operation.
+  check("24h. a ciphertext the KEM cannot decapsulate is a terminal badMessageCheck verdict",
+    (await codeOf(pki.cmp.build({ header: kemHdr, body: IRBODY },
+      { kem: { key: kemKey.key, ciphertext: Buffer.alloc(16, 3),
+        kemAlgorithm: kemEncap.algorithm } }))) === "cmp/bad-message-check");
+  // ML-KEM rejects a wrong ciphertext implicitly: decapsulation returns a different secret rather
+  // than an error, so a wrong ciphertext of the right length is caught by the peer's MAC check and
+  // not at build time. The operator consequence is that a bad ciphertext surfaces as a failed
+  // verification, not as a refusal to build.
+  var kemWrongCt = await pki.cmp.build({ header: kemHdr, body: IRBODY },
+    { kem: { key: kemKey.key, ciphertext: Buffer.alloc(kemEncap.ct.length, 3),
+      kemAlgorithm: kemEncap.algorithm } });
+  check("24h2. a wrong ciphertext of the right length builds, and does not verify",
+    (await pki.cmp.verify(kemWrongCt, { kem: { sharedSecret: kemEncap.ss } })).valid === false);
+  check("24i. a message carries one protection: kem alongside a signature is refused",
+    (await codeOf(pki.cmp.build({ header: kemHdr, body: IRBODY },
+      { key: s.key, cert: s.cert, kem: { key: kemKey.key, ciphertext: kemEncap.ct,
+        kemAlgorithm: kemEncap.algorithm } }))) === "cmp/bad-input");
+  check("24j. kem alongside a shared secret is refused too",
+    (await codeOf(pki.cmp.build({ header: kemHdr, body: IRBODY },
+      { mac: { secret: "s3cret" }, kem: { key: kemKey.key, ciphertext: kemEncap.ct,
+        kemAlgorithm: kemEncap.algorithm } }))) === "cmp/bad-input");
+  check("24k. verifying a KEM-protected message with no shared secret is refused",
+    (await codeOf(pki.cmp.verify(kemMsg, {}))) === "cmp/bad-input");
+  check("24l. an empty shared secret is refused rather than derived from",
+    (await codeOf(pki.cmp.verify(kemMsg, { kem: { sharedSecret: Buffer.alloc(0) } }))) === "cmp/bad-input");
+  check("24m. opts.kem that is not an object is refused",
+    (await codeOf(pki.cmp.verify(kemMsg, { kem: Buffer.alloc(4) }))) === "cmp/bad-input");
+  check("24n. an unknown opts.kem field is refused",
+    (await codeOf(pki.cmp.verify(kemMsg, { kem: { sharedSecret: kemEncap.ss, nonce: 1 } }))) === "cmp/bad-input");
+  check("24o. opts.kem on a message protected another way is refused",
+    (await codeOf(pki.cmp.verify(await buildMac("hunter2"), { kem: { sharedSecret: kemEncap.ss } }))) === "cmp/bad-input");
+  check("24p. a KEM-protected message with signature credentials is refused",
+    (await codeOf(pki.cmp.verify(kemMsg, { signerCert: s.cert }))) === "cmp/bad-input");
+  check("24q. a KEM-protected message with the PBMAC1 secret option is refused",
+    (await codeOf(pki.cmp.verify(kemMsg, { sharedSecret: "hunter2" }))) === "cmp/bad-input");
+
+  // The protectionAlg is read from the wire, so a KemBMParameter that is absent, malformed, or names
+  // an algorithm this client does not derive under is a verdict rather than a throw.
+  function kemAlgId(inner) { return b.sequence([b.oid(pki.oid.byName("kemBasedMac"))].concat(inner ? [inner] : [])); }
+  function kemParams(kdfOid, macOid) {
+    return b.sequence([b.sequence([b.oid(pki.oid.byName(kdfOid))]), b.integer(32n),
+      b.sequence([b.oid(pki.oid.byName(macOid))])]);
+  }
+  var kemNoParams = await pki.cmp.verify(substituteAlg(kemMsg, kemAlgId(null)), { kem: { sharedSecret: kemEncap.ss } });
+  check("24r. a KEM protectionAlg with no KemBMParameter is a failed verdict",
+    kemNoParams.valid === false && kemNoParams.code === "cmp/protection-failed");
+  var kemBadParams = await pki.cmp.verify(substituteAlg(kemMsg, kemAlgId(b.integer(1n))), { kem: { sharedSecret: kemEncap.ss } });
+  check("24s. a KemBMParameter that does not decode is a failed verdict",
+    kemBadParams.valid === false && !!kemBadParams.code);
+  var kemBadKdf = await pki.cmp.verify(substituteAlg(kemMsg, kemAlgId(kemParams("hkdfWithSha512", "hmacWithSHA256"))),
+    { kem: { sharedSecret: kemEncap.ss } });
+  check("24t. a key-derivation this client does not run is refused, not defaulted",
+    kemBadKdf.valid === false && kemBadKdf.code === "cmp/unsupported-algorithm");
+  var kemBadMac = await pki.cmp.verify(substituteAlg(kemMsg, kemAlgId(kemParams("hkdfWithSha256", "hmacWithSHA512"))),
+    { kem: { sharedSecret: kemEncap.ss } });
+  check("24u. a message-authentication algorithm outside the set is refused, not defaulted",
+    kemBadMac.valid === false && kemBadMac.code === "cmp/unsupported-algorithm");
+  // An algorithm the registry has no name for is reported by its OID rather than as nothing.
+  var kemUnnamed = await pki.cmp.verify(substituteAlg(kemMsg, b.sequence([b.oid(pki.oid.byName("kemBasedMac")),
+    b.sequence([b.sequence([b.oid("1.2.3.4.5")]), b.integer(32n), b.sequence([b.oid("1.2.3.4.6")])])])),
+  { kem: { sharedSecret: kemEncap.ss } });
+  check("24u2. an unnamed key-derivation OID is reported by its OID",
+    kemUnnamed.valid === false && kemUnnamed.code === "cmp/unsupported-algorithm" &&
+    kemUnnamed.reason.indexOf("1.2.3.4.5") !== -1);
+  var kemUnnamedMac = await pki.cmp.verify(substituteAlg(kemMsg, b.sequence([b.oid(pki.oid.byName("kemBasedMac")),
+    b.sequence([b.sequence([b.oid(pki.oid.byName("hkdfWithSha256"))]), b.integer(32n), b.sequence([b.oid("1.2.3.4.6")])])])),
+  { kem: { sharedSecret: kemEncap.ss } });
+  check("24u3. an unnamed message-authentication OID is reported by its OID",
+    kemUnnamedMac.valid === false && kemUnnamedMac.reason.indexOf("1.2.3.4.6") !== -1);
+  // A KEM-derived key is bound to a transaction identifier, so a message carrying none and a caller
+  // naming none leaves nothing to bind to, which is a refusal rather than an unbound derivation.
+  var kemNoTxid = (function () {
+    var kids = msgKids(kemMsg);
+    // pvno, sender and recipient come first, and the last two are context-tagged GeneralNames, so the
+    // optional [4] transactionID is only the one past that fixed prefix.
+    var hk = asn1.decode(kids[0].bytes).children.filter(function (c, i) {
+      return i < 3 || !(c.tagClass === "context" && c.tagNumber === 4);
+    });
+    return rebuild([b.sequence(hk.map(function (c) { return b.raw(c.bytes); })), kids[1].bytes, kids[2].bytes]);
+  })();
+  var kemNoTx = await pki.cmp.verify(kemNoTxid, { kem: { sharedSecret: kemEncap.ss } });
+  check("24u4. a message with no transaction identifier and no named one is refused",
+    kemNoTx.valid === false && kemNoTx.code === "cmp/protection-failed");
+
+  // The caller can name the transaction of the message that carried the ciphertext when it differs.
+  var kemNamedTx = await pki.cmp.build({ header: Object.assign({}, kemHdr, { transactionID: Buffer.alloc(16, 0x5a) }), body: IRBODY },
+    { kem: { key: kemKey.key, ciphertext: kemEncap.ct, kemAlgorithm: kemEncap.algorithm, transactionID: KEM_TXID } });
+  check("24v. a named transaction identifier binds the derivation, not the message's own",
+    (await pki.cmp.verify(kemNamedTx, { kem: { sharedSecret: kemEncap.ss, transactionID: KEM_TXID } })).valid === true &&
+    (await pki.cmp.verify(kemNamedTx, { kem: { sharedSecret: kemEncap.ss } })).valid === false);
+  // A header rule violation is reported on the KEM path too, not only on the other two.
+  var kemShortNonce = await pki.cmp.build({ header: Object.assign({}, kemHdr, { senderNonce: Buffer.alloc(8, 1) }), body: IRBODY },
+    { kem: { key: kemKey.key, ciphertext: kemEncap.ct, kemAlgorithm: kemEncap.algorithm } });
+  var kemSn = await pki.cmp.verify(kemShortNonce, { kem: { sharedSecret: kemEncap.ss } });
+  check("24w. the receiving-side header rules apply to a KEM-protected message",
+    kemSn.valid === false && kemSn.code === "cmp/bad-sender-nonce");
+
+  check("24x. opts.kem that is not an object is refused at build too",
+    (await codeOf(pki.cmp.build({ header: kemHdr, body: IRBODY }, { kem: Buffer.alloc(4) }))) === "cmp/bad-input");
+  check("24y. a build without opts.kem.key is refused",
+    (await codeOf(pki.cmp.build({ header: kemHdr, body: IRBODY },
+      { kem: { ciphertext: kemEncap.ct, kemAlgorithm: kemEncap.algorithm } }))) === "cmp/bad-input");
+  check("24z. a KEM this client cannot decapsulate under is refused",
+    (await codeOf(pki.cmp.build({ header: kemHdr, body: IRBODY },
+      { kem: { key: kemKey.key, ciphertext: kemEncap.ct, kemAlgorithm: "id-ml-dsa-65" } }))) === "cmp/unsupported-algorithm");
+  check("24z2. a KEM named by its dotted OID resolves the same way as by name",
+    (await pki.cmp.verify(await pki.cmp.build({ header: kemHdr, body: IRBODY },
+      { kem: { key: kemKey.key, ciphertext: kemEncap.ct, kemAlgorithm: pki.oid.byName("id-ml-kem-768") } }),
+    { kem: { sharedSecret: kemEncap.ss } })).valid === true);
+  check("24z3. a kemAlgorithm that is not a string is refused",
+    (await codeOf(pki.cmp.build({ header: kemHdr, body: IRBODY },
+      { kem: { key: kemKey.key, ciphertext: kemEncap.ct, kemAlgorithm: 768 } }))) === "cmp/bad-input");
+  check("24z4. an unregistered algorithm name is refused rather than resolved to nothing",
+    (await codeOf(pki.cmp.build({ header: kemHdr, body: IRBODY },
+      { kem: { key: kemKey.key, ciphertext: kemEncap.ct, kemAlgorithm: "1.2.3.4.5" } }))) === "cmp/unsupported-algorithm");
+  check("24aa. an unknown opts.kem field is refused at build",
+    (await codeOf(pki.cmp.build({ header: kemHdr, body: IRBODY },
+      { kem: { key: kemKey.key, ciphertext: kemEncap.ct, kemAlgorithm: kemEncap.algorithm, salt: 1 } }))) === "cmp/bad-input");
+  check("24ab. a derived key length outside the accepted range is refused",
+    (await codeOf(pki.cmp.build({ header: kemHdr, body: IRBODY },
+      { kem: { key: kemKey.key, ciphertext: kemEncap.ct, kemAlgorithm: kemEncap.algorithm, len: 0 } }))) === "cmp/bad-input");
+  check("24ac. a message with no transaction identifier and no named one is refused",
+    (await codeOf(pki.cmp.build({ header: { sender: { directoryName: "CN=c" }, recipient: { directoryName: "CN=CA" } }, body: IRBODY },
+      { kem: { key: kemKey.key, ciphertext: kemEncap.ct, kemAlgorithm: kemEncap.algorithm } }))) === "cmp/bad-input");
+
   // A STRING secret is converted to bytes once, at the door, and that copy is recorded in the same
   // wipe list as the byte form -- so it is cleared on every path out rather than left behind by the
   // MAC path, which is where the conversion used to happen with nothing owning the result. The

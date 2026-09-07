@@ -4,6 +4,22 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.50 — 2026-09-07
+
+A client whose key can only establish secrets can now authenticate its CMP messages with that key.
+
+### Added
+
+- pki.cmp.build(message, { kem }) protects a PKIMessage with a KEM-based message authentication code (RFC 9810 section 5.1.3.4). Pass the KEM private key, the ciphertext the peer encapsulated to it, and the ML-KEM parameter set it was produced under; the ciphertext is decapsulated, a key is derived from the resulting shared secret, and the message authentication code is computed over the exact ProtectedPart. The protectionAlg is id-KemBasedMac carrying the KemBMParameter that names the derivation, so a peer can reproduce the key from the message alone.
+- The derived key is bound to the transaction it belongs to. RFC 9810 requires the derivation context to carry the identifier of the message that delivered the ciphertext, which keeps a key established in one PKI management operation from authenticating another. That is this message's own transaction identifier unless the ciphertext arrived under a different one, which spec kem transactionID names. A message carrying no transaction identifier and naming none is refused rather than bound to nothing, and an optional kemContext travels into the derivation as well as into the parameters.
+- pki.cmp.verify(message, { kem: { sharedSecret, transactionID? } }) checks that protection, reporting protectionType kem. The shared secret is the one this side encapsulated to the sender's KEM public key. Verification recomputes over the raw header and body bytes the parser surfaced, never a re-serialization, and compares in constant time. A KemBMParameter that is absent or does not decode, and a key-derivation or message-authentication algorithm outside the accepted set, are failed verdicts rather than defaults; the receiving-side header rules apply as they do to the other two flavors.
+- pki.schema.cmp.parse reads the two structures the exchange uses: KemBMParameter, the parameters of the protectionAlg, and KemCiphertextInfo, the algorithm and ciphertext a peer sends under id-it-KemCiphertextInfo (RFC 9810 section 5.3.19.18). Both are surfaced through pki.schema.cmp so a caller reading a general message can act on the ciphertext it carries.
+- A message carries one protection. Naming kem alongside a signature or a shared secret is refused rather than resolved by precedence, and opts.kem passed for a message protected another way is refused too. The KEM the client decapsulates under is ML-KEM-512, 768 or 1024, under HKDF-SHA256 and HMAC-SHA256; anything else is refused rather than defaulted.
+
+### Changed
+
+- pki.cmp.verify no longer reports id-KemBasedMac as an unsupported protection algorithm, since it now verifies it. id-PasswordBasedMac and id-DHBasedMac are still refused as before.
+
 ## v0.6.49 — 2026-09-07
 
 A key that cannot sign for itself can still prove possession, by answering the authority's encrypted challenge.
