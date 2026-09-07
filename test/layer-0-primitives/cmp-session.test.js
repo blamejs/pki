@@ -1200,6 +1200,35 @@ async function run() {
     r51p.outcome === "issued" && sent51p.header.pvno === 2 &&
     sentTemplate.publicKey != null && sentTemplate.publicKey.publicKey.bytes.length > 0);
 
+  // The proof of possession is copied with the arm, so the form the session refused is the form the
+  // builder is handed. A `pop` whose `type` answers null while the check reads it and a non-signature
+  // mode afterwards would otherwise send a request carrying no cryptographic proof of possession, in
+  // the very mode the session refuses, under the session's own signature protection.
+  var s51q = mk([H.ip(0, 0, certDer), H.pkiconf()]);
+  var movingPop = { raVerified: true };
+  var popReads = 0;
+  Object.defineProperty(movingPop, "type", {
+    enumerable: true,
+    get: function () { popReads += 1; return popReads === 1 ? null : "raVerified"; },
+  });
+  var q51code = await codeOf(s51q.session.enroll({ ir: { certTemplate: { subject: [{ commonName: "leaf" }], publicKey: CLIENT.spki }, pop: movingPop } }));
+  check("51q. a pop whose type answers differently on a second read sends nothing",
+    q51code === "cmp/bad-input" && s51q.transport.calls.length === 0 && popReads === 1);
+  // A pop names its arm by the keys it carries, not only by `type`, so the arm is refused even when
+  // no type is stated at all. This form needs no accessor: it is the plain object a caller can write.
+  var s51r2 = mk([H.ip(0, 0, certDer), H.pkiconf()]);
+  check("51r. a pop naming the raVerified arm without stating a type is refused, and sends nothing",
+    await codeOf(s51r2.session.enroll({ ir: { certTemplate: { subject: [{ commonName: "leaf" }], publicKey: CLIENT.spki }, pop: { raVerified: true } } })) === "cmp/bad-input" &&
+    s51r2.transport.calls.length === 0);
+  // The stated form is still refused, so neither change turned a refusal into an acceptance.
+  var s51r = mk([H.ip(0, 0, certDer), H.pkiconf()]);
+  check("51r2. and a stated non-signature pop mode is still refused",
+    await codeOf(s51r.session.enroll({ ir: { certTemplate: { subject: [{ commonName: "leaf" }], publicKey: CLIENT.spki }, pop: { type: "raVerified", raVerified: true } } })) === "cmp/bad-input");
+  // The signature arm the session does send is unaffected, stated or defaulted.
+  var s51s = mk([H.ip(0, 0, certDer), H.pkiconf()]);
+  check("51s. and a stated signature pop still enrolls",
+    (await s51s.session.enroll({ ir: { certTemplate: { subject: [{ commonName: "leaf" }], publicKey: CLIENT.spki }, pop: { type: "signature" } } })).outcome === "issued");
+
   // A session certificate option takes DER, PEM, or an already-parsed certificate. The KGA chain is
   // built from the same pool, so an intermediate given in any of the three reaches it.
   var kgaDeep = await H.centralKeyGeneration(pki, CLIENT, { viaIntermediate: true });

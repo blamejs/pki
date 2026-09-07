@@ -332,6 +332,16 @@ async function testCorrespondsTo(keyInternal) {
     (await keyInternal.correspondsTo(withAlgorithmIdentifier(plainPk8, pinnedA), pssSpki)) === true);
   check("and two unrestricted id-RSASSA-PSS halves",
     (await keyInternal.correspondsTo(pssPk8, pssSpki)) === true);
+  // sec. 3.1 makes the hash and the mask generator independent fields. The engine derives MGF1 from
+  // the digest and takes no option for it, so a half pinning a mask generator other than its own hash
+  // names an operation the pair cannot perform, which is undecided rather than a different key.
+  var mgfSplit = pssAlgId("sha256", "sha512", 32);
+  check("a half pinning a mask generator apart from its hash is unexercisable, not a different key",
+    (await codeOf(keyInternal.correspondsTo(withAlgorithmIdentifier(plainPk8, mgfSplit), plainSpki))) === "key/unsupported-algorithm");
+  check("and the same when the certificate half carries it",
+    (await codeOf(keyInternal.correspondsTo(plainPk8, withAlgorithmIdentifier(plainSpki, mgfSplit)))) === "key/unsupported-algorithm");
+  check("while a mask generator matching its hash still exercises the pair",
+    (await keyInternal.correspondsTo(withAlgorithmIdentifier(plainPk8, pssAlgId("sha384", "sha384", 48)), plainSpki)) === true);
   check("while an unrestricted half over a different modulus is still refused",
     (await keyInternal.correspondsTo(pssPk8, withAlgorithmIdentifier(
       nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 }).publicKey.export({ format: "der", type: "spki" }),
@@ -358,6 +368,21 @@ async function testCorrespondsTo(keyInternal) {
   check("and the same for a different mask generator",
     (await codeOf(keyInternal.correspondsTo(withAlgorithmIdentifier(plainPk8, pinnedA),
       withAlgorithmIdentifier(plainSpki, pssAlgId("sha256", "sha512", 32))))) === "key/unsupported-algorithm");
+  // sec. 3.3 holds the hash and the mask generator to an exact match and the salt length to a floor:
+  // "The saltLength field in the signature parameters MUST be greater or equal to that in the key
+  // parameters field", and sec. 3.1 adds that it "does not need to be fixed for a given RSA key
+  // pair". Two halves naming different salt lengths are both satisfied by the larger, so they are a
+  // pair, not an unexercisable conflict.
+  check("two halves naming different salt lengths are exercised at the larger of the two",
+    (await keyInternal.correspondsTo(withAlgorithmIdentifier(plainPk8, pssAlgId("sha256", "sha256", 32)),
+      withAlgorithmIdentifier(plainSpki, pssAlgId("sha256", "sha256", 48)))) === true);
+  check("and in the other direction",
+    (await keyInternal.correspondsTo(withAlgorithmIdentifier(plainPk8, pssAlgId("sha256", "sha256", 48)),
+      withAlgorithmIdentifier(plainSpki, pssAlgId("sha256", "sha256", 32)))) === true);
+  check("while a different modulus under differing salt lengths is still no pair",
+    (await keyInternal.correspondsTo(withAlgorithmIdentifier(plainPk8, pssAlgId("sha256", "sha256", 32)),
+      withAlgorithmIdentifier(nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 }).publicKey.export({ format: "der", type: "spki" }),
+        pssAlgId("sha256", "sha256", 48)))) === false);
 
   // The stand-ins for a half that pins nothing are read by name, so an inherited property must not
   // answer as a restriction the key never carried.

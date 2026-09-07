@@ -22,9 +22,14 @@ var pki = require("..");
 var makeRecipient = require("../test/helpers/signing").makeRecipient;
 var makeSigner = require("../test/helpers/signing").makeSigner;
 
-// A fixed recipient set and anchor, generated once (no committed private keys). The fuzzer selects
-// among them so a mutation reaching any of the three key management techniques is exercised, and so
-// both authorization rules (a chain to an anchor, and the shared-secret exemption) are driven.
+// A recipient set and anchor generated once per process, so no private key is committed. What the
+// committed seeds reach follows from that: the password technique opens, since the secret below is
+// fixed, and the shared-secret exemption authorizes, so a seed drives the CMS decrypt, the SignedData
+// signature and the key package all the way through. The key transport and key agreement techniques
+// cannot decrypt a committed seed, because the keys differ every run, and a seed naming a chain to an
+// anchor cannot authorize against an anchor minted this run. Mutations reach those arms as malformed
+// input rather than as a container that opens. Closing that needs containers built in-process from
+// these credentials; `.references/backlog/fuzz-key-package-live-containers.md` carries the plan.
 var RSA = makeRecipient("rsa");
 var EC = makeRecipient("ec-p256");
 var ANCHOR = makeSigner("ec-p256").cert;
