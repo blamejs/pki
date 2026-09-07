@@ -1142,16 +1142,17 @@ async function testSelfIssuedAndConstraints() {
   check("a fully qualified URI subtree base admits a URI beneath it",
     (await run([fqInter, fqLeaf], { time: T2027, trustAnchors: anchor })).valid === true);
 
-  // A constraint base arrives two ways. A caller states one, and the door refuses a base outside the
-  // form its tag names. A certificate carries one in its own nameConstraints extension, where there
-  // is no door, and the comparison is what reads it. A base the comparison cannot read is answered
-  // with no verdict (path/name-constraint-unsupported) rather than with no match: an excluded subtree
-  // whose base matches nothing excludes nothing, so a stray dot or a leading hyphen in the base of a
-  // CA's own exclusion would leave the exclusion visible to inspection and inert in validation.
+  // A constraint base arrives two ways. A caller states one, and the door holds it to a well-formed
+  // host name. A certificate carries one in its own nameConstraints extension, where there is no
+  // door, and the comparison is what reads it. The comparison asks the narrower question: a base
+  // carrying an empty label asks for a name carrying one, and no name carries one, so it is answered
+  // with no verdict (path/name-constraint-unsupported) rather than with no match. An excluded subtree
+  // whose base matches nothing excludes nothing, so a stray dot in the base of a CA's own exclusion
+  // would otherwise leave the exclusion visible to inspection and inert in validation.
   var wireBad = [
-    ["uri", gnUri, "https://host.example.com/x", [".example.com..", "..example.com", ".example.com...", "-bad.example.com"]],
-    ["dns", gnDns, "host.example.com", ["..example.com", "-bad.example.com", "exa mple.com"]],
-    ["mail", gnEmail, "user@host.example.com", ["..example.com", "-bad.example.com"]],
+    ["uri", gnUri, "https://host.example.com/x", [".example.com..", "..example.com", ".example.com...", ".."]],
+    ["dns", gnDns, "host.example.com", ["..example.com", ".example.com..", "..", "a..b.example.com"]],
+    ["mail", gnEmail, "user@host.example.com", ["..example.com", "..", "user@..example.com"]],
   ];
   for (var wk = 0; wk < wireBad.length; wk++) {
     var wc = wireBad[wk];
@@ -1171,12 +1172,21 @@ async function testSelfIssuedAndConstraints() {
   }
 
   // A base the comparison CAN read keeps answering as it did, in both directions and for a trailing
-  // dot, which is the one form the door strips rather than refuses.
+  // dot, which is the one form the door strips rather than refuses. The last three are bases the door
+  // refuses a caller and the comparison still applies: an underscore, a label edged with a hyphen and
+  // a label over the 63 characters a host name allows are all names a suffix comparison places
+  // exactly, so a certificate constrained to a namespace holding one keeps validating.
+  var longLabel = "";
+  for (var lp = 0; lp < 64; lp++) longLabel += "a";
   var wireOk = [
     ["uri", gnUri, "https://host.example.com/x", ".example.com", ".example.org"],
     ["dns", gnDns, "host.example.com", "example.com", "example.org"],
     ["dns", gnDns, "host.example.com", "example.com.", "example.org."],
     ["mail", gnEmail, "user@host.example.com", "host.example.com", "other.example.com"],
+    ["dns", gnDns, "host._x.example.com", "_x.example.com", "_y.example.com"],
+    ["dns", gnDns, "host.-bad.example.com", "-bad.example.com", "-other.example.com"],
+    ["dns", gnDns, "host." + longLabel + ".example.com", longLabel + ".example.com", longLabel + ".example.org"],
+    ["mail", gnEmail, "user@host.ex_ample.com", "host.ex_ample.com", "other.ex_ample.com"],
   ];
   for (var ok = 0; ok < wireOk.length; ok++) {
     var oc = wireOk[ok], ofn = oc[1], covers = oc[3], misses = oc[4];
