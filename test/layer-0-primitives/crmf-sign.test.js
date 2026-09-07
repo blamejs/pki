@@ -522,6 +522,9 @@ async function testPopoPrivKeyArms() {
     ["a fourth field that is neither a cofactor nor validationParms",
       x942With(23n, 2n, 11n, 4n, [pki.asn1.build.oid("1.2.3")]),
       "neither a cofactor nor validationParms"],
+    // 15 = 3*5, with q = 2 prime and dividing 14, and 4*4 = 16 = 1 mod 15, so every relation above
+    // holds and only the modulus itself is left to answer for.
+    ["a modulus that is not prime", x942With(15n, 4n, 2n, 11n), "modulus is not prime"],
   ];
   for (var xb = 0; xb < x942Bad.length; xb++) {
     var xErr = null;
@@ -553,6 +556,13 @@ async function testPopoPrivKeyArms() {
     (await codeOf(pki.crmf.build({ certReqId: 24n, certTemplate: tpl(eeDhSpki),
       pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8,
         caCert: await dhCertFor(x942WithVp, { serialNumber: 33 }) } }))) === null);
+
+  // The requested key reaches the same reader, and it is whatever the caller passed. A value that is
+  // not DER at all, and one whose algorithm field holds no OID, are each read as "not the X9.42 form"
+  // and fall through to the comparison, which refuses them for not being the requested key.
+  check("V6b. a requested key that is not DER is refused at the door, before any key reader sees it",
+    (await codeOf(pki.crmf.build({ certReqId: 26n, certTemplate: tpl(Buffer.from([0xff, 0xff])),
+      pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: dhCaCert } }))) === "crmf/bad-input");
 
   // A certificate stating q = p-1 satisfies every structural test: p-1 divides itself, and g^(p-1)
   // and y^(p-1) are 1 for the whole group by Fermat. Only q being prime makes the subgroup test say

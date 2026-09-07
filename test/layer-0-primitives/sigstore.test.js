@@ -672,6 +672,13 @@ async function run() {
   }
   check("verificationMaterial carrying both certificate arms is refused",
     await codeOf(pki.sigstore.verifyBundle(bothVm, TM)) === "sigstore/bad-bundle");
+
+  // The oneof has a third arm. A publicKey beside a certificate names a second signer identity, and
+  // reading the certificate while passing over it reports a verdict about only one of the two.
+  var vmPlusKey = JSON.parse(JSON.stringify(BUNDLE));
+  vmPlusKey.verificationMaterial.publicKey = { hint: "AAAA" };
+  check("verificationMaterial carrying a publicKey beside a certificate arm is refused",
+    await codeOf(pki.sigstore.verifyBundle(vmPlusKey, TM)) === "sigstore/bad-bundle");
   var phMiss = cl();
   (function () { var te = phMiss.verificationMaterial.tlogEntries[0]; var bo = JSON.parse(Buffer.from(te.canonicalizedBody, "base64").toString("utf8")); delete bo.spec.payloadHash; te.canonicalizedBody = Buffer.from(JSON.stringify(bo)).toString("base64"); })();
   check("Rekor dsse entry missing payloadHash -> sigstore/bad-tlog-entry", await codeOf(pki.sigstore.verifyBundle(phMiss, TM)) === "sigstore/bad-tlog-entry");
