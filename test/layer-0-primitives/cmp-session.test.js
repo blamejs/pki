@@ -1756,6 +1756,41 @@ async function run() {
   check("162e. a certDetails whose issuer is not a name -> cmp/bad-rev-req", await codeOf(mk([H.rp(0)]).session.revoke({ certDetails: { issuer: 12345, serialNumber: 1n } })) === "cmp/bad-rev-req");
   check("162f. a certDetails omitting serialNumber -> refused before the transport engages", /^cmp\//.test(await codeOf(mk([H.rp(0)]).session.revoke({ certDetails: { issuer: OWN.issuer.bytes } }))));
 
+  // ===== 162g. KEM ciphertext (sec. 5.3.19.18): the support message a client whose key can only
+  //             establish secrets asks for, so it can protect its own messages with that key. =====
+  var kemCtValue = B.sequence([B.sequence([B.oid(pki.oid.byName("id-ml-kem-768"))]),
+    B.octetString(Buffer.alloc(1088, 0x2a))]);
+  var s162g = mk([H.genpOf("kemCiphertextInfo", kemCtValue)]);
+  var r162g = await s162g.session.info({ kemCiphertext: true });
+  check("162g. info({kemCiphertext}) answers with the algorithm and the ciphertext",
+    r162g.outcome === "answered" && r162g.operation === "kemCiphertext" && r162g.present === true &&
+    r162g.value.kem.name === "id-ml-kem-768" && r162g.value.ct.length === 1088);
+  var genm162g = sentRr(s162g.transport, 0);
+  check("162h. the genm asks under id-it-KemCiphertextInfo and carries no value",
+    Array.isArray(genm162g) && genm162g.length === 1 && genm162g[0].name === "kemCiphertextInfo");
+  var r162i = await mk([H.genpOf("kemCiphertextInfo", null)]).session.info({ kemCiphertext: true });
+  check("162i. an answer carrying no ciphertext is the absence, not a value",
+    r162i.outcome === "answered" && r162i.present === false);
+  // A ciphertext is only an answer if this client can decapsulate it and there is something to open.
+  check("162j. a KEM this client cannot decapsulate under is refused",
+    (await codeOf(mk([H.genpOf("kemCiphertextInfo", B.sequence([
+      B.sequence([B.oid(pki.oid.byName("id-ml-dsa-65"))]), B.octetString(Buffer.alloc(64, 1))]))])
+      .session.info({ kemCiphertext: true }))) === "cmp/bad-info-value");
+  check("162k. an empty ciphertext is refused",
+    (await codeOf(mk([H.genpOf("kemCiphertextInfo", B.sequence([
+      B.sequence([B.oid(pki.oid.byName("id-ml-kem-768"))]), B.octetString(Buffer.alloc(0))]))])
+      .session.info({ kemCiphertext: true }))) === "cmp/bad-info-value");
+  // An ML-KEM ciphertext is a fixed size, so a length the named algorithm never produces could not be
+  // decapsulated and is refused rather than surfaced as usable material.
+  check("162l. a ciphertext of the wrong length for the named algorithm is refused",
+    (await codeOf(mk([H.genpOf("kemCiphertextInfo", B.sequence([
+      B.sequence([B.oid(pki.oid.byName("id-ml-kem-768"))]), B.octetString(Buffer.alloc(768, 1))]))])
+      .session.info({ kemCiphertext: true }))) === "cmp/bad-info-value");
+  check("162m. the length each parameter set does produce is accepted",
+    (await mk([H.genpOf("kemCiphertextInfo", B.sequence([
+      B.sequence([B.oid(pki.oid.byName("id-ml-kem-512"))]), B.octetString(Buffer.alloc(768, 1))]))])
+      .session.info({ kemCiphertext: true })).value.ct.length === 768);
+
   // ===== 163/164. caCerts (sec. 4.3.1): the request infoValue MUST be absent; the response
   //                carries a sequence of certificates, or nothing when none are available. =====
   var caCertsValue = B.sequence([B.raw(H.caCert), B.raw(H.intCaCert)]);
