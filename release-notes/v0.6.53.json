@@ -1,0 +1,25 @@
+{
+  "version": "0.6.53",
+  "date": "2026-09-07",
+  "headline": "A composite ML-KEM private key states its public half, so a holder can name the recipient it is.",
+  "summary": "pki.key.publicFromPrivate derives the SubjectPublicKeyInfo for the twelve composite ML-KEM families. Every other key family reaches the node key engine, which reads the algorithm out of the key structure; a composite algorithm is one it does not know, so a composite key answered that it could not be read at all. It is now derived from its two components, and the result is the recipient key pki.cms.encrypt takes and pki.kem.encapsulate establishes a secret for.",
+  "sections": {
+    "Added": [
+      "pki.key.publicFromPrivate derives the public key of a composite ML-KEM private key (draft-ietf-lamps-pq-composite-kem section 4.1). A composite private key is the ML-KEM seed followed by the traditional private key, and the public key is the ML-KEM encapsulation key followed by the traditional public key under the same OID. Each half states its own: the seed generates the encapsulation key, and the traditional half is read in the encoding its algorithm uses, an RSAPrivateKey, a SEC1 ECPrivateKey, or the raw scalar of an OKP curve. All twelve registered families are covered, and each derives byte-for-byte the public key the draft's own Appendix G test vectors publish for that key. opts.pem returns it armored, as it does for every other family.",
+
+      "The derived key is the one the rest of the toolkit takes. It is the recipient pki.cms.encrypt accepts for a composite KEM recipient, and pki.kem.encapsulate establishes a shared secret for it that the private key it came from decapsulates to the same value."
+    ],
+    "Fixed": [
+      "The X25519 and X448 component of a composite ML-KEM key is imported through an encoding that is now cleared once the import has read it. That encoding holds the component's private scalar and is allocated inside the helper both pki.kem.decapsulate and the new derivation reach the curve through, so a decapsulation left a copy of it behind."
+    ],
+    "Changed": [
+      "A composite ML-KEM private key reports why it cannot be read, rather than reporting that a public key could not be derived from it. An AlgorithmIdentifier carrying parameters is kem/bad-algorithm, since the draft requires them absent (section 5.3); a key no longer than the ML-KEM seed is kem/bad-key; and an OID no registered family claims is refused rather than guessed at. The private key material and the copy taken of it are wiped before the call returns, on the refusing paths as well as the deriving one.",
+
+      "Each component is held to what the composite OID names it must be. The RSA component's modulus must be the size that family states, and the EC component must be on the curve it states: a SEC1 ECPrivateKey carries its own curve, and exporting the point of one curve under an OID naming another would state a public key nothing can use. Decapsulation reaches the same conclusion by failing the agreement, and a derivation performs no operation that would notice, so it is checked.",
+
+      "Every copy of private key material the derivation allocates is cleared before it returns, on the refusing paths as well as the deriving one: the caller's snapshot, the key octets, and the ML-KEM seed re-encoded for the key engine to read. The EC component adds two more, the scalar taken out of the ECPrivateKey and the copy a width check rejects, and a decapsulation refused after its Diffie-Hellman has already run clears that agreement's secret before reporting the refusal.",
+
+      "The EC component's point is generated from its scalar rather than read from the key, in the derivation and in pki.kem.decapsulate alike. RFC 5915 section 3 gives an ECPrivateKey an optional public point, which may be written compressed, and the composite public key carries the uncompressed point at a fixed width. The combiner hashes that public key, so the two sides read one function for it: a key storing a compressed point now establishes the same shared secret whichever spelling of it a sender encapsulated to. Generating the point also means the answer is the one the scalar produces, so a point stored beside a scalar that does not produce it does not reach the result."
+    ]
+  }
+}

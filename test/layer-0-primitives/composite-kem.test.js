@@ -395,6 +395,199 @@ async function run() {
   } finally { schemaPkcs8.parse = origParse; }
   check("draft sec. 3.5: the snapshotted PKCS#8 buffer is wiped after decapsulation",
     capturedP8 !== null && capturedP8.length > 0 && capturedP8.every(function (byte) { return byte === 0; }));
+
+  // ---- pki.key.publicFromPrivate over the composite families ----
+  // The composite private key is `seed || tradSK` and the public key is `mlkemEK || tradPK` under the
+  // same OID (draft sec. 4.1, sec. 5.1). The runtime key decoder does not know a composite OID, so
+  // deriving one has to split the key and derive each half. The oracle is Appendix G's own `ek`.
+  for (var pf = 0; pf < composites.length; pf++) {
+    var pt = composites[pf];
+    var derived = await pki.key.publicFromPrivate(b64(pt.dk_pkcs8));
+    check("publicFromPrivate " + pt.tcId + " returns the SPKI Appendix G publishes",
+      Buffer.isBuffer(derived) && derived.equals(spkiFrom(pt.tcId, b64(pt.ek))));
+  }
+  // The derived SPKI is the one the encapsulation side accepts, which is what a caller does with it.
+  var rt = composites[0];
+  var rtSpki = await pki.key.publicFromPrivate(b64(rt.dk_pkcs8));
+  var rtEnc = await pki.kem.encapsulate(rtSpki);
+  var rtSs = await pki.kem.decapsulate(b64(rt.dk_pkcs8), rtEnc.ciphertext);
+  check("a composite SPKI derived from the private key round-trips through encapsulate/decapsulate",
+    Buffer.from(rtSs).equals(Buffer.from(rtEnc.sharedSecret)));
+  // Deriving allocates copies of private material beyond the caller's snapshot: the key octets, and
+  // the ML-KEM seed re-encoded for the key engine to read. Every one is cleared before the call
+  // returns, counted from outside the toolkit because the wipe goes through a captured fill.
+  var derivWipe = require("node:child_process").spawnSync(process.execPath,
+    [path.join(__dirname, "..", "helpers", "observe-secret-wipe.js")],
+    { encoding: "utf8", input: JSON.stringify({
+      op: "composite-kem-public-from-private",
+      key: Buffer.from(b64(rt.dk_pkcs8)).toString("base64"),
+    }) });
+  var derivReport = null;
+  if (!derivWipe.error && derivWipe.status === 0) {
+    try { derivReport = JSON.parse(String(derivWipe.stdout).trim().split("\n").pop()); } catch (_e) { derivReport = null; }
+  }
+  check("deriving a composite public key clears every private copy it allocated",
+    derivReport !== null && derivReport.wiped.length === 3 &&
+    derivReport.wiped.every(function (w) { return w.allZeroAfter === true && w.hadContent === true; }));
+  // An X25519 or X448 component is imported through an encoding its own helper allocates, which the
+  // list above never sees. That helper clears it, so the OKP families clear one copy more than the
+  // three an RSA component does. Counted, since a copy that is never wiped leaves no trace to inspect.
+  var okpRow = composites.filter(function (t) { return t.tcId.indexOf("X25519") !== -1; })[0];
+  if (okpRow) {
+    var okpWipe = require("node:child_process").spawnSync(process.execPath,
+      [path.join(__dirname, "..", "helpers", "observe-secret-wipe.js")],
+      { encoding: "utf8", input: JSON.stringify({
+        op: "composite-kem-public-from-private",
+        key: Buffer.from(b64(okpRow.dk_pkcs8)).toString("base64"),
+      }) });
+    var okpReport = null;
+    if (!okpWipe.error && okpWipe.status === 0) {
+      try { okpReport = JSON.parse(String(okpWipe.stdout).trim().split("\n").pop()); } catch (_e) { okpReport = null; }
+    }
+    check("and an OKP component's own key encoding is cleared with them",
+      okpReport !== null && okpReport.wiped.length === 4 &&
+      okpReport.wiped.every(function (w) { return w.allZeroAfter === true && w.hadContent === true; }));
+  }
+
+  // opts.pem is honored for a composite key as it is for every other family.
+  var rtPem = await pki.key.publicFromPrivate(b64(rt.dk_pkcs8), { pem: true });
+  check("and opts.pem returns the same key armored",
+    typeof rtPem === "string" && rtPem.indexOf("-----BEGIN PUBLIC KEY-----") === 0);
+  check("and the armored form decodes to the same bytes",
+    Buffer.from(rtPem.split("-----")[2].split("\n").join(""), "base64").equals(rtSpki));
+
+  // Fail-closed, each on the shipped verb. A composite AlgorithmIdentifier carries absent parameters
+  // (draft sec. 5.3), a key shorter than the ML-KEM seed cannot be split, and an unregistered
+  // composite-shaped OID is refused rather than guessed at.
+  var goodInfo = schemaPkcs8.parse(b64(rt.dk_pkcs8));
+  var rawSk = Buffer.from(goodInfo.privateKey);
+  function pk8With(algSeq, keyOctets) {
+    return pki.asn1.build.sequence([
+      pki.asn1.build.integer(0n), algSeq, pki.asn1.build.octetString(keyOctets),
+    ]);
+  }
+  var withParams = pk8With(pki.asn1.build.sequence([
+    pki.asn1.build.oid(pki.oid.byName(rt.tcId)), pki.asn1.build.nullValue(),
+  ]), rawSk);
+  check("a composite private key whose AlgorithmIdentifier carries parameters is refused",
+    (await codeOf(pki.key.publicFromPrivate(withParams))) === "kem/bad-algorithm");
+  var tooShort = pk8With(pki.asn1.build.sequence([pki.asn1.build.oid(pki.oid.byName(rt.tcId))]),
+    rawSk.subarray(0, 64));
+  check("a composite private key no longer than the ML-KEM seed is refused",
+    (await codeOf(pki.key.publicFromPrivate(tooShort))) === "kem/bad-key");
+  // An OID no family claims is not read as a composite key. The composite arc is PKIX id-alg
+  // (1.3.6.1.5.5.7.6), which also holds unrelated algorithms such as id-alg-noSignature at .2, so
+  // membership of the arc says nothing; only the registered set does. Such a key reaches the runtime
+  // decoder, which reports that it cannot read it, and that is the verdict pinned here.
+  var unknownOid = pk8With(pki.asn1.build.sequence([pki.asn1.build.oid("2.16.840.1.114027.80.5.2.99")]), rawSk);
+  check("an unregistered OID is not read as a composite key, and is refused",
+    (await codeOf(pki.key.publicFromPrivate(unknownOid))) === "key/bad-input");
+  var unclaimedInArc = pk8With(pki.asn1.build.sequence([pki.asn1.build.oid("1.3.6.1.5.5.7.6.250")]), rawSk);
+  check("and neither is an unclaimed OID inside the arc the composite families use",
+    (await codeOf(pki.key.publicFromPrivate(unclaimedInArc))) === "key/bad-input");
+
+  // A SEC1 ECPrivateKey names its own curve and the composite OID names the curve the component must
+  // be on. A key whose component is on another curve would otherwise export that point under this OID,
+  // stating a public key nothing can use: the encapsulation the derived key exists for refuses it.
+  var ecRow = composites.filter(function (t) { return t.tcId.indexOf("ECDH-P256") !== -1; })[0];
+  if (ecRow) {
+    var ecInfo = schemaPkcs8.parse(b64(ecRow.dk_pkcs8));
+    var ecSk = Buffer.from(ecInfo.privateKey);
+    var wrongCurve = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "secp384r1" })
+      .privateKey.export({ format: "der", type: "sec1" });
+    var swapped = pk8With(pki.asn1.build.sequence([pki.asn1.build.oid(pki.oid.byName(ecRow.tcId))]),
+      Buffer.concat([ecSk.subarray(0, 64), wrongCurve]));
+    check("an EC component on a curve the composite OID does not name is refused",
+      (await codeOf(pki.key.publicFromPrivate(swapped))) === "kem/bad-key");
+    check("and the unmodified key still derives",
+      (await pki.key.publicFromPrivate(b64(ecRow.dk_pkcs8))).equals(spkiFrom(ecRow.tcId, b64(ecRow.ek))));
+    // RFC 5915 gives an ECPrivateKey an optional public point, and it may be written compressed. The
+    // composite public key carries the uncompressed point at a fixed width, so the point is generated
+    // from the scalar: a stored point in another form, or of another key, does not reach the result.
+    var ecSec1 = pki.asn1.decode(ecSk.subarray(64));
+    var scalar = Buffer.from(pki.asn1.read.octetString(ecSec1.children[1]));
+    var ecdh = nodeCrypto.createECDH("prime256v1");
+    ecdh.setPrivateKey(scalar);
+    var compressed = ecdh.getPublicKey(null, "compressed");
+    var withCompressed = pki.asn1.build.sequence([
+      pki.asn1.build.integer(1n), pki.asn1.build.octetString(scalar),
+      pki.asn1.build.explicit(0, pki.asn1.build.oid(pki.oid.byName("prime256v1"))),
+      pki.asn1.build.explicit(1, pki.asn1.build.bitString(compressed, 0)),
+    ]);
+    var compositeCompressed = pk8With(pki.asn1.build.sequence([pki.asn1.build.oid(pki.oid.byName(ecRow.tcId))]),
+      Buffer.concat([ecSk.subarray(0, 64), withCompressed]));
+    var fromCompressed = await pki.key.publicFromPrivate(compositeCompressed);
+    check("an EC component storing a compressed public point still derives the uncompressed one",
+      fromCompressed.equals(spkiFrom(ecRow.tcId, b64(ecRow.ek))));
+    // The combiner hashes the traditional public key, so the derivation and the decapsulation must
+    // spell the point the same way. Encapsulating to the derived key and decapsulating with the key it
+    // came from is what proves they do: two spellings reach two different secrets and nothing says so.
+    var ccEnc = await pki.kem.encapsulate(fromCompressed);
+    var ccSs = await pki.kem.decapsulate(compositeCompressed, ccEnc.ciphertext);
+    check("and encapsulating to it round-trips with the key that stored the compressed point",
+      Buffer.from(ccSs).equals(Buffer.from(ccEnc.sharedSecret)));
+    // The same key written with the uncompressed point reaches the same secret, so the stored spelling
+    // changes nothing about what the pair establishes.
+    var uncompressedEnc = await pki.kem.encapsulate(spkiFrom(ecRow.tcId, b64(ecRow.ek)));
+    check("and the uncompressed spelling of the same key decapsulates it too",
+      Buffer.from(await pki.kem.decapsulate(compositeCompressed, uncompressedEnc.ciphertext))
+        .equals(Buffer.from(uncompressedEnc.sharedSecret)));
+
+    // The scalar taken out of the ECPrivateKey is a copy of private key material that the PKCS#8 and
+    // key-octet wipes do not cover, so it is wiped where it is made. Observed through the buffer the
+    // point generation is handed.
+    var seenScalar = null;
+    var origSetPrivateKey = nodeCrypto.ECDH.prototype.setPrivateKey;
+    nodeCrypto.ECDH.prototype.setPrivateKey = function (buf) {
+      seenScalar = buf; return origSetPrivateKey.apply(this, arguments);
+    };
+    try { await pki.key.publicFromPrivate(b64(ecRow.dk_pkcs8)); }
+    finally { nodeCrypto.ECDH.prototype.setPrivateKey = origSetPrivateKey; }
+    check("the EC scalar copy taken to generate the point is wiped",
+      seenScalar !== null && seenScalar.length > 0 && seenScalar.every(function (byte) { return byte === 0; }));
+
+    // A scalar OpenSSL accepts and this module refuses (an over-wide encoding) rejects AFTER the
+    // agreement has produced a secret, so that secret is wiped on the way out rather than left behind.
+    var wide = Buffer.concat([Buffer.alloc(1), scalar]);
+    var wideSec1 = pki.asn1.build.sequence([
+      pki.asn1.build.integer(1n), pki.asn1.build.octetString(wide),
+      pki.asn1.build.explicit(0, pki.asn1.build.oid(pki.oid.byName("prime256v1"))),
+    ]);
+    var wideKey = pk8With(pki.asn1.build.sequence([pki.asn1.build.oid(pki.oid.byName(ecRow.tcId))]),
+      Buffer.concat([ecSk.subarray(0, 64), wideSec1]));
+    check("an EC component scalar wider than the field is refused",
+      (await codeOf(pki.key.publicFromPrivate(wideKey))) === "kem/bad-key");
+    // The same key refused during DECAPSULATION is refused after the agreement has already produced a
+    // secret, since OpenSSL accepts the over-wide encoding the point generation then rejects. The
+    // module wipes that secret on the way out; the settle-or-wipe it would otherwise rely on is handed
+    // nothing by a rejected promise. Observed through the module's own wipe of its own buffer.
+    var wideCt = await pki.kem.encapsulate(spkiFrom(ecRow.tcId, b64(ecRow.ek)));
+    check("decapsulating with that key is refused after the agreement has run",
+      (await codeOf(pki.kem.decapsulate(wideKey, wideCt.ciphertext))) === "kem/bad-key");
+    // The guard family freezes its exports and captures the fill it wipes through, so the wipe is
+    // observed from outside the toolkit, in a child process that installs the recorder before the
+    // toolkit loads. Every buffer this path cleared must have held something and be zero afterwards.
+    var wipeRun = require("node:child_process").spawnSync(process.execPath,
+      [path.join(__dirname, "..", "helpers", "observe-secret-wipe.js")],
+      { encoding: "utf8", input: JSON.stringify({
+        op: "composite-kem-decaps-late-reject",
+        key: Buffer.from(wideKey).toString("base64"),
+        secret: Buffer.from(wideCt.ciphertext).toString("base64"),
+      }) });
+    var wipeReport = null;
+    if (!wipeRun.error && wipeRun.status === 0) {
+      try { wipeReport = JSON.parse(String(wipeRun.stdout).trim().split("\n").pop()); } catch (_e) { wipeReport = null; }
+    }
+    // Counted, not merely inspected. A secret that is never wiped simply does not appear in the list,
+    // so "every buffer cleared was left zero" holds just as well when one was skipped; only the number
+    // of distinct copies cleared tells the two apart. Six here: the caller's snapshot, the key octets,
+    // the scalar read out of the ECPrivateKey, the copy the width check rejected, the agreement's own
+    // secret, and the ML-KEM component's. Each held something, and each is zero afterwards.
+    check("and every secret that path allocated is cleared before it reports the refusal",
+      wipeReport !== null && wipeReport.code === "kem/bad-key" &&
+      wipeReport.wiped.length === 6 &&
+      wipeReport.wiped.every(function (w) { return w.allZeroAfter === true && w.hadContent === true; }));
+  }
 }
 
 module.exports = { run: run };

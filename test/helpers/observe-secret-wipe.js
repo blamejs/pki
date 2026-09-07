@@ -126,6 +126,15 @@ function run(input) {
     // authorization rules, after the copy exists.
     work = pki.cmp.openKeyPackage(b64(p.csr),
       { password: b64(p.secret), trustAnchors: [b64(p.cert)], authorizedBySharedSecret: true });
+  } else if (p.op === "composite-kem-decaps-late-reject") {
+    // The EC component agreement produces a secret, and the point generation that follows rejects the
+    // over-wide scalar OpenSSL accepted. The refusal therefore lands AFTER the secret exists, on a
+    // path whose promise rejects rather than settles, so the module clears the secret itself.
+    work = pki.kem.decapsulate(callerKey, b64(p.secret));
+  } else if (p.op === "composite-kem-public-from-private") {
+    // The derivation re-encodes the ML-KEM seed as a OneAsymmetricKey for the key engine to read,
+    // which is a second copy of the seed alongside the caller's snapshot and the key octets.
+    work = pki.key.publicFromPrivate(callerKey);
   } else if (p.op === "cmc-build-mac") {
     work = pki.cmc.build({ requests: [{ tcr: b64(p.csr) }] },
       { mac: { identifier: "cmc-client-17", secret: b64(p.secret) } });
