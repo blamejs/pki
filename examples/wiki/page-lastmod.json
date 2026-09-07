@@ -106,7 +106,7 @@
   "lib/schema-x509.js": "2026-09-03",
   "lib/shbs.js": "2026-09-05",
   "lib/sign-scheme.js": "2026-09-06",
-  "lib/sigstore.js": "2026-09-06",
+  "lib/sigstore.js": "2026-09-07",
   "lib/sleep.js": "2026-09-01",
   "lib/smime.js": "2026-09-05",
   "lib/tls-cert-compress.js": "2026-09-05",

@@ -430,6 +430,20 @@ async function testPopoPrivKeyArms() {
   // public key, so a private key from another pair agrees a secret with the authority perfectly well
   // and yields a MAC the authority cannot reproduce. That is a proof of possession of something this
   // request never asked to have certified, and it is refused rather than emitted.
+  // A keyUsage extension restricts the certified key to the purposes it asserts, and this proof
+  // agrees a secret with the authority's key. A certificate that states its purposes without stating
+  // this one is refused; one carrying no keyUsage states no restriction.
+  var noAgreeCa = await dhCertFor(caDhSpki, {
+    serialNumber: 24, extensions: { keyUsage: ["digitalSignature"] },
+  });
+  check("V6b. an authority certificate whose keyUsage omits keyAgreement is refused",
+    (await codeOf(pki.crmf.build({ certReqId: 19n, certTemplate: tpl(eeDhSpki),
+      pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: noAgreeCa } }))) === "crmf/bad-popo");
+  var noKuCa = await dhCertFor(caDhSpki, { serialNumber: 25, extensions: {} });
+  check("V6b. an authority certificate carrying no keyUsage is still accepted",
+    (await codeOf(pki.crmf.build({ certReqId: 20n, certTemplate: tpl(eeDhSpki),
+      pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: noKuCa } }))) === null);
+
   // A finite-field key reaches a certificate in two encodings. This runtime classifies the PKCS#3
   // dhKeyAgreement form and imports the X9.42 dhpublicnumber form without classifying it, and refuses
   // to agree with what it did not classify. The refusal names the side it could not read rather than
@@ -447,18 +461,155 @@ async function testPopoPrivKeyArms() {
       pki.asn1.build.raw(n.children[1].bytes),
     ]);
   }());
-  check("V6b. the X9.42 form really is imported without a key type",
+  check("V6b. the X9.42 form really is the encoding this runtime does not classify",
     nodeCrypto.createPublicKey({ key: Buffer.from(x942Spki), format: "der", type: "spki" })
       .asymmetricKeyType === undefined);
   var x942Ca = await dhCertFor(x942Spki, { serialNumber: 23 });
-  var x942Err = null;
+  var x942Der = await pki.crmf.build({ certReqId: 18n, certTemplate: tpl(eeDhSpki),
+    pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: x942Ca } });
+  check("V6b. an X9.42 dhpublicnumber authority certificate agrees and proves",
+    parse(x942Der)[0].popo.method === "agreeMAC");
+  // The proof is the same secret either way: the two encodings name one key.
+  check("V6b. the X9.42 and PKCS#3 spellings of one authority key MAC identically",
+    dhPopStaticOf(parse(x942Der)[0].popo.bytes).hashValue.equals(
+      dhPopStaticOf(parse(await pki.crmf.build({ certReqId: 18n, certTemplate: tpl(eeDhSpki),
+        pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8,
+          caCert: await dhCertFor(caDhSpki, { serialNumber: 23 }) } }))[0].popo.bytes).hashValue));
+
+  // The requested key is read in both encodings on the same footing. A template naming the key in
+  // the X9.42 form and a pop.key holding its PKCS#3 private half are one key.
+  var eeX942Spki = (function () {
+    var n = pki.asn1.decode(eeDhSpki);
+    var prm = pki.asn1.decode(n.children[0].children[1].bytes);
+    var p = pki.asn1.read.integer(prm.children[0]);
+    var domain = pki.asn1.build.sequence([
+      pki.asn1.build.integer(p), pki.asn1.build.integer(pki.asn1.read.integer(prm.children[1])),
+      pki.asn1.build.integer((p - 1n) / 2n),
+    ]);
+    return pki.asn1.build.sequence([
+      pki.asn1.build.sequence([pki.asn1.build.oid("1.2.840.10046.2.1"), pki.asn1.build.raw(domain)]),
+      pki.asn1.build.raw(n.children[1].bytes),
+    ]);
+  }());
+  check("V6b. a template naming the requested key in the X9.42 form is still proven",
+    (await codeOf(pki.crmf.build({ certReqId: 22n, certTemplate: tpl(eeX942Spki),
+      pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: dhCaCert } }))) === null);
+
+  // q arrives in the certificate, so it is held against p and g rather than believed. Each shape
+  // below states an order the group does not have, or a cofactor its own p and q contradict.
+  function x942With(pv, gv, qv, yv, extra) {
+    var fields = [pki.asn1.build.integer(pv), pki.asn1.build.integer(gv), pki.asn1.build.integer(qv)];
+    for (var i = 0; extra && i < extra.length; i++) fields.push(extra[i]);
+    return pki.asn1.build.sequence([
+      pki.asn1.build.sequence([pki.asn1.build.oid("1.2.840.10046.2.1"),
+        pki.asn1.build.raw(pki.asn1.build.sequence(fields))]),
+      pki.asn1.build.bitString(Buffer.from(pki.asn1.build.integer(yv))),
+    ]);
+  }
+  // Each case names the reason it is refused for, not just the code every refusal on this path
+  // shares: the parameters are read before the runtime sees the key, so a case that stopped being
+  // caught here would still be refused later and a code-only assertion would not notice.
+  var x942Bad = [
+    ["a generator whose order is not the stated q", x942With(23n, 5n, 11n, 4n),
+      "state a subgroup order its own p and g do not have"],
+    ["a generator equal to p-1", x942With(23n, 22n, 11n, 4n),
+      "are not a Diffie-Hellman group"],
+    ["a cofactor its own p and q contradict", x942With(23n, 2n, 11n, 4n, [pki.asn1.build.integer(3n)]),
+      "cofactor does not match"],
+    ["a validationParms field that is not a SEQUENCE",
+      x942With(23n, 2n, 11n, 4n, [pki.asn1.build.integer(2n), pki.asn1.build.integer(9n)]),
+      "validationParms is not a SEQUENCE"],
+    ["a fourth field that is neither a cofactor nor validationParms",
+      x942With(23n, 2n, 11n, 4n, [pki.asn1.build.oid("1.2.3")]),
+      "neither a cofactor nor validationParms"],
+  ];
+  for (var xb = 0; xb < x942Bad.length; xb++) {
+    var xErr = null;
+    try {
+      await pki.crmf.build({ certReqId: 23n, certTemplate: tpl(eeDhSpki),
+        pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8,
+          caCert: await dhCertFor(x942Bad[xb][1], { serialNumber: 27 + xb }) } });
+    } catch (e) { xErr = e; }
+    check("V6b. X9.42 domain parameters stating " + x942Bad[xb][0] + " are refused for that reason",
+      xErr !== null && xErr.code === "crmf/bad-popo" && xErr.message.indexOf(x942Bad[xb][2]) !== -1);
+  }
+
+  // j and validationParms are independently optional, so validationParms can stand where a reader
+  // keying on position would expect the cofactor. Built over the real group so it reaches agreement.
+  var x942WithVp = (function () {
+    var n = pki.asn1.decode(x942Spki);
+    var prm = pki.asn1.decode(n.children[0].children[1].bytes);
+    return pki.asn1.build.sequence([
+      pki.asn1.build.sequence([pki.asn1.build.oid("1.2.840.10046.2.1"),
+        pki.asn1.build.raw(pki.asn1.build.sequence([
+          pki.asn1.build.raw(prm.children[0].bytes), pki.asn1.build.raw(prm.children[1].bytes),
+          pki.asn1.build.raw(prm.children[2].bytes),
+          pki.asn1.build.sequence([pki.asn1.build.bitString(Buffer.from([0x00])), pki.asn1.build.integer(1n)]),
+        ]))]),
+      pki.asn1.build.raw(n.children[1].bytes),
+    ]);
+  }());
+  check("V6b. X9.42 validationParms with no cofactor before it still agrees",
+    (await codeOf(pki.crmf.build({ certReqId: 24n, certTemplate: tpl(eeDhSpki),
+      pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8,
+        caCert: await dhCertFor(x942WithVp, { serialNumber: 33 }) } }))) === null);
+
+  // A certificate stating q = p-1 satisfies every structural test: p-1 divides itself, and g^(p-1)
+  // and y^(p-1) are 1 for the whole group by Fermat. Only q being prime makes the subgroup test say
+  // anything, since y^q = 1 otherwise bounds the order of y to a divisor of q rather than to q.
+  var vacuousQ = (function () {
+    var n = pki.asn1.decode(x942Spki);
+    var prm = pki.asn1.decode(n.children[0].children[1].bytes);
+    var p = pki.asn1.read.integer(prm.children[0]);
+    return pki.asn1.build.sequence([
+      pki.asn1.build.sequence([pki.asn1.build.oid("1.2.840.10046.2.1"),
+        pki.asn1.build.raw(pki.asn1.build.sequence([
+          pki.asn1.build.raw(prm.children[0].bytes), pki.asn1.build.raw(prm.children[1].bytes),
+          pki.asn1.build.integer(p - 1n),
+        ]))]),
+      pki.asn1.build.raw(n.children[1].bytes),
+    ]);
+  }());
+  var vqErr = null;
   try {
-    await pki.crmf.build({ certReqId: 18n, certTemplate: tpl(eeDhSpki),
-      pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: x942Ca } });
-  } catch (e) { x942Err = e; }
-  check("V6b. an authority key this runtime cannot classify is refused, naming that side",
-    x942Err !== null && x942Err.code === "crmf/bad-popo" &&
-    x942Err.message.indexOf("the authority certificate's key carries an algorithm this runtime does not recognize") !== -1);
+    await pki.crmf.build({ certReqId: 25n, certTemplate: tpl(eeDhSpki),
+      pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8,
+        caCert: await dhCertFor(vacuousQ, { serialNumber: 34 }) } });
+  } catch (e) { vqErr = e; }
+  check("V6b. a stated subgroup order that is not prime is refused for that reason",
+    vqErr !== null && vqErr.code === "crmf/bad-popo" &&
+    vqErr.message.indexOf("subgroup order that is not prime") !== -1);
+
+  // DomainParameters state the subgroup the key must live in, and the PKCS#3 form this is rewritten
+  // into cannot carry it. A key outside that subgroup is refused while the parameter stating it is
+  // still present, since agreeing with one leaks the private exponent modulo its true order.
+  var badSubgroupSpki = (function () {
+    function modPow(base, e, m) {
+      var r = 1n, bb = base % m;
+      while (e > 0n) { if (e & 1n) r = (r * bb) % m; e >>= 1n; bb = (bb * bb) % m; }
+      return r;
+    }
+    var n = pki.asn1.decode(x942Spki);
+    var prm = pki.asn1.decode(n.children[0].children[1].bytes);
+    var p = pki.asn1.read.integer(prm.children[0]);
+    var q = pki.asn1.read.integer(prm.children[2]);
+    // Search rather than assume: a value is outside the order-q subgroup exactly when y^q != 1,
+    // and whether any particular constant satisfies that depends on the group.
+    var y = 0n;
+    for (var cand = 2n; cand < 200n; cand++) {
+      if (modPow(cand, q, p) !== 1n) { y = cand; break; }
+    }
+    check("V6b. the subgroup vector really is outside the subgroup",
+      y > 1n && y < p - 1n && modPow(y, q, p) !== 1n);
+    return pki.asn1.build.sequence([
+      pki.asn1.build.raw(n.children[0].bytes),
+      pki.asn1.build.bitString(Buffer.from(pki.asn1.build.integer(y))),
+    ]);
+  }());
+  check("V6b. an authority public value outside its stated subgroup is refused",
+    (await codeOf(pki.crmf.build({ certReqId: 21n, certTemplate: tpl(eeDhSpki),
+      pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8,
+        caCert: await dhCertFor(badSubgroupSpki, { serialNumber: 26 }) } }))) === "crmf/bad-popo");
 
   // pop.caCert reaches a decoder before anything reads it as a certificate. Every shape that decoder
   // refuses is a verdict on the caller's input, so each one names its reason instead of escaping as
