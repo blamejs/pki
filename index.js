@@ -138,8 +138,8 @@ module.exports = {
   // `key` is the key-material lifecycle domain -- pki.key.encrypt / decrypt a private key under RFC 8018
   // PBES2 (EncryptedPrivateKeyInfo), pki.key.export / import a PKCS#8 private or SPKI public key, and
   // pki.key.generate / publicFromPrivate over every WebCrypto algorithm. Parsing lives at pki.schema.pkcs8.
-  // Curated: publicFromPrivateMaterial is the @internal derivation pki.cmp.session pairs a delivered key
-  // with its certificate through, and stays off the public surface.
+  // Curated: correspondsTo is the @internal check pki.cmp.session holds a delivered key and its
+  // certificate to each other with, and stays off the public surface.
   key:       { encrypt: key.encrypt, decrypt: key.decrypt, export: key.export, import: key.import,
     generate: key.generate, publicFromPrivate: key.publicFromPrivate },
   // `pkcs12` is the RFC 7292 / RFC 9579 PKCS#12 (.p12/.pfx) producing side -- pki.pkcs12.build assembles a

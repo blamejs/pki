@@ -293,6 +293,52 @@ async function testCorrespondsTo(keyInternal) {
       nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 }).publicKey.export({ format: "der", type: "spki" }),
       b.sequence([b.oid(byName("rsassaPss"))])))) === false);
 
+  // RFC 7748 masks the top bit of an X25519 u-coordinate before the ladder, so a public value that
+  // differs from the real one only in a masked bit reaches the same secret from both sides. The
+  // agreement proves the scalar; the certificate would still carry bytes this key does not produce.
+  for (var agreeAlg of ["x25519", "x448"]) {
+    var agreePair = nodeCrypto.generateKeyPairSync(agreeAlg);
+    var agreePk8 = agreePair.privateKey.export({ format: "der", type: "pkcs8" });
+    var agreeSpki = agreePair.publicKey.export({ format: "der", type: "spki" });
+    var maskedSpki = Buffer.from(agreeSpki);
+    maskedSpki[maskedSpki.length - 1] ^= 0x80;
+    check("correspondsTo pairs a genuine " + agreeAlg + " pair",
+      (await keyInternal.correspondsTo(agreePk8, agreeSpki)) === true);
+    check("and refuses a " + agreeAlg + " public value the scalar does not generate",
+      (await keyInternal.correspondsTo(agreePk8, maskedSpki)) === false);
+  }
+
+  // RFC 4055 sec. 3.1: an id-RSASSA-PSS key may pin the hash, mask generator and salt length it is
+  // usable with, and the engine enforces each against its own key. Two encodings of ONE modulus that
+  // pin incompatible parameters describe no operation the pair can perform together, which is not the
+  // same as being different keys.
+  function pssAlgId(hash, mgf, salt) {
+    return b.sequence([b.oid(byName("rsassaPss")), b.sequence([
+      b.explicit(0, b.sequence([b.oid(byName(hash)), b.nullValue()])),
+      b.explicit(1, b.sequence([b.oid(byName("mgf1")), b.sequence([b.oid(byName(mgf)), b.nullValue()])])),
+      b.explicit(2, b.integer(BigInt(salt))),
+    ])]);
+  }
+  var pinnedA = pssAlgId("sha256", "sha256", 32);
+  check("correspondsTo pairs two halves pinned to the same PSS parameters",
+    (await keyInternal.correspondsTo(withAlgorithmIdentifier(plainPk8, pinnedA),
+      withAlgorithmIdentifier(plainSpki, pinnedA))) === true);
+  check("and reports halves pinned to a different hash as unexercisable, not as no pair",
+    (await codeOf(keyInternal.correspondsTo(withAlgorithmIdentifier(plainPk8, pinnedA),
+      withAlgorithmIdentifier(plainSpki, pssAlgId("sha384", "sha384", 48))))) === "key/unsupported-algorithm");
+  check("and the same for a different mask generator",
+    (await codeOf(keyInternal.correspondsTo(withAlgorithmIdentifier(plainPk8, pinnedA),
+      withAlgorithmIdentifier(plainSpki, pssAlgId("sha256", "sha512", 32))))) === "key/unsupported-algorithm");
+
+  // The stand-ins for a half that pins nothing are read by name, so an inherited property must not
+  // answer as a restriction the key never carried.
+  Object.prototype.hashAlgorithm = "sha512";
+  var pollutedAnswer;
+  try { pollutedAnswer = await codeOf(keyInternal.correspondsTo(plainPk8, withAlgorithmIdentifier(plainSpki, pinnedA))); }
+  finally { delete Object.prototype.hashAlgorithm; }
+  check("an inherited hashAlgorithm does not answer as the private half's pinned PSS restriction",
+    pollutedAnswer === null);
+
   // Two halves of different algorithms are not a pair, and are told apart before either is exercised.
   check("correspondsTo refuses a private key whose type is not the public key's",
     (await keyInternal.correspondsTo(

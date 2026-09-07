@@ -1193,9 +1193,9 @@ security-only patches after the next major releases.
   which certificate the key inside belongs with. A session that accepted the two
   independently would confirm an enrollment whose certificate certifies a key the
   entity does not hold, and would send the `certConf` that accepts it. So
-  `pki.cmp.session` derives the delivered private key's public half and compares
-  it with the granted certificate BEFORE the confirmation leg; a mismatch is
-  `cmp/bad-key-package` and the transaction stops. The pair is proven by USING it,
+  `pki.cmp.session` holds the delivered private key and the granted certificate to
+  each other BEFORE the confirmation leg; a mismatch is `cmp/bad-key-package` and
+  the transaction stops. The pair is proven by USING it,
   not by deriving the public half and comparing. A key structure states its own
   public half and the key engine reads what it is told: RFC 5958 §2 gives a
   `OneAsymmetricKey` an optional `publicKey`, an EC key's RFC 5915 `ECPrivateKey`

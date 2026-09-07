@@ -1055,10 +1055,35 @@ async function run() {
   var s51g = pki.cmp.session({ url: URL, mac: { secret: KGA_MAC_SECRET },
     transport: H.fakeCa(pki, [H.ip(0, 0, kgaMac.deliveredCert, { privateKey: kgaMac.container }), H.pkiconf()],
       { macSecret: KGA_MAC_SECRET }).transport,
-    sleep: function () { return Promise.resolve(); }, acceptCentralKeyGeneration: true });
+    sleep: function () { return Promise.resolve(); }, acceptCentralKeyGeneration: true,
+    authorizedBySharedSecret: true });
   var r51g = await s51g.enroll(H.irCentralRequest(pki));
-  check("51g. and with no anchors it authorizes by the secret, reporting the chain unproven",
+  check("51g. and with the stated exemption it authorizes by the secret, reporting the chain unproven",
     r51g.outcome === "issued" && !!r51g.deliveredKey && r51g.deliveredKey.trusted === false);
+  // The exemption is what the caller SAID, never what the session inferred from its own configuration.
+  // Reading it off an absent trustAnchors would turn a missing option into a decision to drop both the
+  // chain check and the id-kp-cmKGA assertion, and would admit containers the standalone verb refuses.
+  var kgaForeignMac = await H.centralKeyGeneration(pki, CLIENT, { password: KGA_MAC_SECRET, foreign: true });
+  for (var noStatement of [["omitted", {}], ["an empty list", { trustAnchors: [] }]]) {
+    var sNo = pki.cmp.session(Object.assign({ url: URL, mac: { secret: KGA_MAC_SECRET },
+      transport: H.fakeCa(pki, [H.ip(0, 0, kgaForeignMac.deliveredCert, { privateKey: kgaForeignMac.container }), H.pkiconf()],
+        { macSecret: KGA_MAC_SECRET }).transport,
+      sleep: function () { return Promise.resolve(); }, acceptCentralKeyGeneration: true }, noStatement[1]));
+    check("51g2. a MAC session with trustAnchors " + noStatement[0] + " and no stated exemption refuses the delivery",
+      await codeOf(sNo.enroll(H.irCentralRequest(pki))) === "cmp/bad-input");
+  }
+  check("51g3. and the exemption is refused on a signature session, which authorizes by a chain",
+    codeOfSync(function () {
+      return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert],
+        transport: function () { return Promise.resolve({ responseBytes: Buffer.alloc(0), status: 200 }); },
+        acceptCentralKeyGeneration: true, authorizedBySharedSecret: true });
+    }) === "cmp/bad-input");
+  check("51g4. and it is a boolean, not any truthy value",
+    codeOfSync(function () {
+      return pki.cmp.session({ url: URL, mac: { secret: KGA_MAC_SECRET },
+        transport: function () { return Promise.resolve({ responseBytes: Buffer.alloc(0), status: 200 }); },
+        acceptCentralKeyGeneration: true, authorizedBySharedSecret: "yes" });
+    }) === "cmp/bad-input");
   // The technique follows the request's protection: a signature session holds a private key and does
   // not open a password container, whatever the authority sent.
   check("51h. a signature session does not open a password-technique container",

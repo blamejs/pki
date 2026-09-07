@@ -38,9 +38,14 @@ var OPTS = [
 
 function isPki(e) { return e instanceof pki.errors.PkiError; }
 
+// The FIRST byte selects the key material and the REST is the container, so the selector is a byte the
+// fuzzer owns rather than one the input format fixes. Selecting on the container's own first byte
+// reached one arm only: every input that survives the DER decode opens with 0x30, so the remaining
+// arms were entered by nothing that got as far as the key-management code. Each committed seed carries
+// its selector prefix.
 module.exports.fuzz = async function (data) {
-  if (data.length < 1) return;
-  var buf = Buffer.from(data);
+  if (data.length < 2) return;
+  var buf = Buffer.from(data.subarray(1));
   var opts = OPTS[data[0] % OPTS.length];
   try {
     await pki.cmp.openKeyPackage(buf, opts);
