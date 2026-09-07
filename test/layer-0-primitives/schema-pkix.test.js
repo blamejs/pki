@@ -980,6 +980,36 @@ function run() {
   testCertExtensionDecodersLoadGuard();
   testSignedEnvelopeTbs();
   testDecisionsSurviveSubstitution();
+  testCoerceToDerRequiresItsOptions();
+}
+
+// coerceToDer builds each of its refusals out of opts, so a caller that misspells a key keeps a
+// working accept path and loses every refusal to `undefined is not a constructor`, with the PEM label
+// silently unchecked. The options are read once, at entry, before any of that can be reached.
+function testCoerceToDerRequiresItsOptions() {
+  var der = Buffer.from([0x30, 0x00]);
+  var good = { pemLabel: null, PemError: TypeError, ErrorClass: TypeError, prefix: "t" };
+  function refusalOf(opts) {
+    try { pkix.coerceToDer(der, opts); return null; } catch (e) { return e; }
+  }
+  var bad = [
+    ["no options at all", undefined],
+    ["options that are not an object", "CERTIFICATE"],
+    ["a misspelled label key", { pem: "CERTIFICATE" }],
+    ["no PemError", { pemLabel: null, ErrorClass: TypeError, prefix: "t" }],
+    ["no ErrorClass", { pemLabel: null, PemError: TypeError, prefix: "t" }],
+    ["no prefix", { pemLabel: null, PemError: TypeError, ErrorClass: TypeError }],
+    ["an empty prefix", { pemLabel: null, PemError: TypeError, ErrorClass: TypeError, prefix: "" }],
+    ["a pemLabel that is neither a string nor null", { pemLabel: 7, PemError: TypeError, ErrorClass: TypeError, prefix: "t" }],
+  ];
+  for (var i = 0; i < bad.length; i++) {
+    var e = refusalOf(bad[i][1]);
+    check("coerceToDer names " + bad[i][0] + " instead of failing on it later",
+      e instanceof TypeError && e.message.indexOf("coerceToDer requires") === 0);
+  }
+  check("coerceToDer accepts the options its callers pass", refusalOf(good) === null);
+  check("coerceToDer accepts an enforced PEM label",
+    refusalOf({ pemLabel: "CERTIFICATE", PemError: TypeError, ErrorClass: TypeError, prefix: "t" }) === null);
 }
 
 module.exports = { run: run };

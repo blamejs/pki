@@ -430,6 +430,45 @@ async function testPopoPrivKeyArms() {
   // public key, so a private key from another pair agrees a secret with the authority perfectly well
   // and yields a MAC the authority cannot reproduce. That is a proof of possession of something this
   // request never asked to have certified, and it is refused rather than emitted.
+  // pop.caCert reaches a decoder before anything reads it as a certificate. Every shape that decoder
+  // refuses is a verdict on the caller's input, so each one names its reason instead of escaping as
+  // whatever the runtime happened to throw.
+  var caCertDoors = [
+    ["malformed PEM", "-----BEGIN CERTIFICATE-----\nnot base64 !!!\n-----END CERTIFICATE-----"],
+    ["a number", 12345],
+    ["a plain object", { nope: true }],
+    ["a PEM under another label", "-----BEGIN PRIVATE KEY-----\n" +
+      Buffer.from(dhCaCert).toString("base64") + "\n-----END PRIVATE KEY-----"],
+  ];
+  for (var cd = 0; cd < caCertDoors.length; cd++) {
+    check("V6b. pop.caCert as " + caCertDoors[cd][0] + " is refused as a typed verdict",
+      (await codeOf(pki.crmf.build({ certReqId: 17n, certTemplate: tpl(eeDhSpki),
+        pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: caCertDoors[cd][1] } }))) === "crmf/bad-popo");
+  }
+
+  // One finite-field key has more than one valid SubjectPublicKeyInfo, because a PKCS#3 DHParameter
+  // carries an optional privateValueLength. The template may spell the key one way and the private
+  // key export the other; they are the same key, and the proof is about the key.
+  var dhParamsWithLen = (function () {
+    var n = pki.asn1.decode(eeDhSpki);
+    var alg = n.children[0], params = pki.asn1.decode(alg.children[1].bytes);
+    var withLen = pki.asn1.build.sequence([
+      pki.asn1.build.raw(params.children[0].bytes), pki.asn1.build.raw(params.children[1].bytes),
+      pki.asn1.build.integer(BigInt(256)),
+    ]);
+    return pki.asn1.build.sequence([
+      pki.asn1.build.sequence([pki.asn1.build.raw(alg.children[0].bytes), pki.asn1.build.raw(withLen)]),
+      pki.asn1.build.raw(n.children[1].bytes),
+    ]);
+  }());
+  var reSpelled = nodeCrypto.createPublicKey({ key: dhParamsWithLen, format: "der", type: "spki" });
+  check("V6b. the re-spelled SPKI really is the same key",
+    reSpelled.asymmetricKeyType === "dh" &&
+    !Buffer.from(dhParamsWithLen).equals(Buffer.from(eeDhSpki)));
+  check("V6b. a template spelling the requested key another valid way is still proven",
+    (await codeOf(pki.crmf.build({ certReqId: 16n, certTemplate: tpl(dhParamsWithLen),
+      pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: dhCaCert } }))) === null);
+
   var strayDh = nodeCrypto.generateKeyPairSync("dh", { group: "modp14" });
   check("V6b. a pop.key from another pair than the requested key is refused",
     (await codeOf(pki.crmf.build({ certReqId: 12n, certTemplate: tpl(eeDhSpki),
