@@ -1371,6 +1371,59 @@ async function run() {
   check("24w. the receiving-side header rules apply to a KEM-protected message",
     kemSn.valid === false && kemSn.code === "cmp/bad-sender-nonce");
 
+  // A PEM or Uint8Array key is decoded into a new buffer that holds the private key; that copy is the
+  // builder's to wipe. A caller's own Buffer is only viewed and is left intact.
+  check("24w2. a PEM private key works and the message still verifies",
+    (await pki.cmp.verify(await pki.cmp.build({ header: kemHdr, body: IRBODY },
+      { kem: { key: pki.schema.pkcs8.pemEncode(kemKey.key), ciphertext: kemEncap.ct,
+        kemAlgorithm: kemEncap.algorithm } }),
+    { kem: { sharedSecret: kemEncap.ss } })).valid === true);
+  var callerKeyBuf = Buffer.from(kemKey.key);
+  await pki.cmp.build({ header: kemHdr, body: IRBODY },
+    { kem: { key: callerKeyBuf, ciphertext: kemEncap.ct, kemAlgorithm: kemEncap.algorithm } });
+  check("24w3. a caller's own key Buffer is not wiped by the build",
+    callerKeyBuf.equals(Buffer.from(kemKey.key)));
+
+  // Counted, not merely observed: a wipe of one buffer cannot be told from a wipe of a decoy, so the
+  // number of distinct buffers cleared is what shows the shared secret, the derived key AND the
+  // decoded private key were all cleared.
+  var kemWipe = (function () {
+    var enc = { op: "cmp-kem-protection",
+      key: Buffer.from(s.key).toString("base64"),
+      identity: Buffer.from(kemKey.key).toString("base64"),
+      secret: Buffer.from(kemEncap.ct).toString("base64") };
+    var r = require("node:child_process").spawnSync(process.execPath,
+      [require("node:path").join(__dirname, "../helpers/observe-secret-wipe.js")],
+      { encoding: "utf8", input: JSON.stringify(enc) });
+    if (r.error || r.status !== 0) return null;
+    // A malformed report is a broken observation, not a silent null: let the parse throw so the
+    // failure names itself rather than reading as a missing wipe.
+    return JSON.parse(String(r.stdout).trim().split("\n").pop());
+  })();
+  // Only the COUNT discriminates. The argument boundary deep-copies the key and clears its own copy,
+  // whose bytes are identical to the one the builder decodes, so matching on content passes either
+  // way; dropping the builder's own cleanup takes this from 9 distinct buffers to 8.
+  check("24w4. the shared secret, the derived key and the decoded private key are each cleared",
+    !!kemWipe && kemWipe.code === "NO-THROW" && kemWipe.callerKeyIntact === true &&
+    kemWipe.wiped.length >= 9);
+
+  // A message refused after the protection is resolved must leave nothing behind either. The copy is
+  // made inside the same region that clears it, so a refusal later in the build cannot strand it.
+  var kemLate = (function () {
+    var enc = { op: "cmp-kem-late-throw",
+      key: Buffer.from(s.key).toString("base64"),
+      identity: Buffer.from(kemKey.key).toString("base64"),
+      secret: Buffer.from(kemEncap.ct).toString("base64") };
+    var r = require("node:child_process").spawnSync(process.execPath,
+      [require("node:path").join(__dirname, "../helpers/observe-secret-wipe.js")],
+      { encoding: "utf8", input: JSON.stringify(enc) });
+    if (r.error || r.status !== 0) return null;
+    return JSON.parse(String(r.stdout).trim().split("\n").pop());
+  })();
+  check("24w5. a build refused after the protection is resolved still leaves nothing behind",
+    !!kemLate && kemLate.code !== "NO-THROW" && kemLate.callerKeyIntact === true &&
+    kemLate.wiped.every(function (w) { return w.allZeroAfter === true; }));
+
   check("24x. opts.kem that is not an object is refused at build too",
     (await codeOf(pki.cmp.build({ header: kemHdr, body: IRBODY }, { kem: Buffer.alloc(4) }))) === "cmp/bad-input");
   check("24y. a build without opts.kem.key is refused",

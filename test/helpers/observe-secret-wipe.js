@@ -99,6 +99,27 @@ function run(input) {
     work = pki.cmc.build({ requests: [{ tcr: b64(p.csr) }],
       popChallenge: { challenge: b64(p.secret), recipient: { key: b64(p.identity), cert: b64(p.cert) } } },
     { cert: b64(p.cert), key: callerKey });
+  } else if (p.op === "cmp-kem-protection") {
+    // KEM-based protection decapsulates a shared secret, derives a key from it, and (for a PEM or
+    // Uint8Array key) decodes the private key into a buffer of its own. All three are the toolkit's
+    // copies and all three are cleared once the message is protected.
+    work = pki.cmp.build({
+      header: { sender: { directoryName: [{ commonName: "kem-client" }] },
+        recipient: { directoryName: [{ commonName: "CA" }] },
+        transactionID: Buffer.alloc(16, 7), senderNonce: Buffer.alloc(16, 5) },
+      body: { genm: [{ infoType: "caCerts" }] },
+    }, { kem: { key: new Uint8Array(b64(p.identity)), ciphertext: b64(p.secret),
+      kemAlgorithm: "id-ml-kem-768" } });
+  } else if (p.op === "cmp-kem-late-throw") {
+    // The message is refused AFTER the protection is resolved, which is the window a cleanup attached
+    // to the successful path alone would miss: nothing the builder decoded may be left behind.
+    work = pki.cmp.build({
+      header: { sender: { directoryName: [{ commonName: "kem-client" }] },
+        recipient: { directoryName: [{ commonName: "CA" }] }, pvno: 99,
+        transactionID: Buffer.alloc(16, 7), senderNonce: Buffer.alloc(16, 5) },
+      body: { genm: [{ infoType: "caCerts" }] },
+    }, { kem: { key: new Uint8Array(b64(p.identity)), ciphertext: b64(p.secret),
+      kemAlgorithm: "id-ml-kem-768" } });
   } else if (p.op === "cmc-build-mac") {
     work = pki.cmc.build({ requests: [{ tcr: b64(p.csr) }] },
       { mac: { identifier: "cmc-client-17", secret: b64(p.secret) } });
