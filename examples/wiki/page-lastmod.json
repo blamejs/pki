@@ -21,7 +21,7 @@
   "lib/byte-reader.js": "2026-09-03",
   "lib/byte-writer.js": "2026-09-03",
   "lib/cbor-det.js": "2026-09-05",
-  "lib/cmc-build.js": "2026-09-06",
+  "lib/cmc-build.js": "2026-09-07",
   "lib/cmc-verify.js": "2026-09-06",
   "lib/cmp-build.js": "2026-09-07",
   "lib/cmp-session.js": "2026-09-07",

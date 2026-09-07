@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.54 — 2026-09-07
+
+A holder of a composite ML-KEM key can enroll for it, proving possession by opening the challenge addressed to it.
+
+### Fixed
+
+- pki.cmc.build completes an unsigned enrollment for a composite ML-KEM key (RFC 5272 App. C.1). The rule is unchanged: the challenge must be addressed to the key the request asks for, and a challenge opened by any other key licenses nothing. What changed is how the two are compared. A key the runtime engine cannot read has no key object to compare, so the composite SubjectPublicKeyInfo answers instead, which is sound because that encoding is canonical: fixed component widths under a single OID, with no compressed-point spelling for two forms of one key to differ over. That ambiguity is the reason the classical comparison uses key objects, and it does not arise here. Every other key type is compared exactly as before.
+
 ## v0.6.53 — 2026-09-07
 
 A composite ML-KEM private key states its public half, so a holder can name the recipient it is.
