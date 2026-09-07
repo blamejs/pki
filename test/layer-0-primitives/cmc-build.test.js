@@ -1355,6 +1355,37 @@ async function run() {
       { cert: s.cert, key: s.key });
     })) === "cmc/bad-input");
 
+  // The four algorithms take no parameters, so a value in that slot names none of them and would be
+  // copied into an answer the authority could not read.
+  async function popChallengeWithAlgs(popAlgDer, witnessAlgDer) {
+    return b.sequence([popTagged,
+      await pki.cms.encrypt(proof, [{ cert: popKey.skiCert, keyIdentifier: "subjectKeyIdentifier" }],
+        { contentEncryptionAlgorithm: "aes-256-cbc" }),
+      popAlgDer, witnessAlgDer,
+      b.octetString(nodeCrypto.createHash("sha256").update(proof).digest())]);
+  }
+  async function popCodeWithChallenge(challengeDer) {
+    return acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: popCsr }],
+        popChallenge: { challenge: challengeDer, recipient: { key: popKey.key } } },
+      { cert: s.cert, key: s.key });
+    });
+  }
+  var paramOnPop = await popChallengeWithAlgs(
+    b.sequence([b.oid(HMAC_SHA256_OID), b.integer(1n)]), b.sequence([b.oid(SHA256_OID)]));
+  var paramOnWitness = await popChallengeWithAlgs(
+    b.sequence([b.oid(HMAC_SHA256_OID)]), b.sequence([b.oid(SHA256_OID), b.integer(1n)]));
+  check("EP19l. a proof algorithm carrying a parameter value is refused",
+    (await popCodeWithChallenge(paramOnPop)) === "cmc/bad-pop-challenge");
+  check("EP19m. a witness algorithm carrying a parameter value is refused",
+    (await popCodeWithChallenge(paramOnWitness)) === "cmc/bad-pop-challenge");
+  // Absent and NULL are both the ordinary encodings, and both are answered.
+  check("EP19n. NULL parameters are the other ordinary encoding and are answered",
+    !!decryptedPopOf(await pki.cmc.build({ requests: [{ tcr: popCsr }],
+      popChallenge: { challenge: await popChallengeWithAlgs(
+        b.sequence([b.oid(HMAC_SHA256_OID), b.nullValue()]),
+        b.sequence([b.oid(SHA256_OID), b.nullValue()])), recipient: { key: popKey.key } } },
+    { cert: s.cert, key: s.key })).thePOP);
   check("EP19k. challenge bytes that are not DER are a malformed challenge, not a codec error",
     (await acode(function () {
       return pki.cmc.build({ requests: [{ tcr: popCsr }],
