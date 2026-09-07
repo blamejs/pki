@@ -323,9 +323,38 @@ async function testCorrespondsTo(keyInternal) {
   check("correspondsTo pairs two halves pinned to the same PSS parameters",
     (await keyInternal.correspondsTo(withAlgorithmIdentifier(plainPk8, pinnedA),
       withAlgorithmIdentifier(plainSpki, pinnedA))) === true);
+  // Parameters are optional (sec. 3.1), so an id-RSASSA-PSS half carrying none pins nothing, exactly
+  // as an rsaEncryption half does. Only two halves that BOTH pin can disagree, and where one pins the
+  // pair is exercised under what that one states.
+  check("correspondsTo pairs an unrestricted id-RSASSA-PSS private key with a pinned certificate key",
+    (await keyInternal.correspondsTo(pssPk8, withAlgorithmIdentifier(plainSpki, pinnedA))) === true);
+  check("and a pinned private key with an unrestricted id-RSASSA-PSS certificate key",
+    (await keyInternal.correspondsTo(withAlgorithmIdentifier(plainPk8, pinnedA), pssSpki)) === true);
+  check("and two unrestricted id-RSASSA-PSS halves",
+    (await keyInternal.correspondsTo(pssPk8, pssSpki)) === true);
+  check("while an unrestricted half over a different modulus is still refused",
+    (await keyInternal.correspondsTo(pssPk8, withAlgorithmIdentifier(
+      nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 }).publicKey.export({ format: "der", type: "spki" }),
+      b.sequence([b.oid(byName("rsassaPss"))])))) === false);
+  // What a half pins is read off the key, never off Object.prototype, so a polluted salt length
+  // cannot invent a restriction an unrestricted half never carried.
+  Object.prototype.saltLength = 4096;
+  try {
+    check("an inherited saltLength does not make an unrestricted PSS pair unexercisable",
+      (await keyInternal.correspondsTo(pssPk8, pssSpki)) === true);
+  } finally { delete Object.prototype.saltLength; }
   check("and reports halves pinned to a different hash as unexercisable, not as no pair",
     (await codeOf(keyInternal.correspondsTo(withAlgorithmIdentifier(plainPk8, pinnedA),
       withAlgorithmIdentifier(plainSpki, pssAlgId("sha384", "sha384", 48))))) === "key/unsupported-algorithm");
+  // The verdict says WHICH of the two unexercisable cases this is. Both carry the same code, so only
+  // the message distinguishes a parameter conflict from a pair the engine could not exercise at all.
+  var conflictMsg = "";
+  try {
+    await keyInternal.correspondsTo(withAlgorithmIdentifier(plainPk8, pinnedA),
+      withAlgorithmIdentifier(plainSpki, pssAlgId("sha384", "sha384", 48)));
+  } catch (e) { conflictMsg = e.message; }
+  check("and names the conflicting parameters rather than reporting a pair it could not exercise",
+    conflictMsg.indexOf("pin incompatible RSASSA-PSS parameters") !== -1);
   check("and the same for a different mask generator",
     (await codeOf(keyInternal.correspondsTo(withAlgorithmIdentifier(plainPk8, pinnedA),
       withAlgorithmIdentifier(plainSpki, pssAlgId("sha256", "sha512", 32))))) === "key/unsupported-algorithm");

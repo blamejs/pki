@@ -1175,6 +1175,30 @@ async function testSelfIssuedAndConstraints() {
   // dNSName it names the root of the namespace and matches every name. For rfc822Name the same
   // reduction leaves no domain, or no local part, and no mailbox has either, so it matches none.
   // Only the second is a subtree that would silently exclude nothing.
+  // A base carrying an at-sign names one mailbox and is compared exactly, so each half is read on its
+  // own terms: an empty atom in the local part, or an empty label in the domain, leaves a base no
+  // well-formed mailbox equals. A base without an at-sign constrains the host and is read as a
+  // subtree instead, which is why the two lists below differ.
+  var mailExact = ["user@.example.com", ".user@example.com", "user.@example.com", "user @example.com", "user@example..com"];
+  for (var xi = 0; xi < mailExact.length; xi++) {
+    var xI = await mkCert({ subject: "MX" + xi, issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt(null, [gnEmail(mailExact[xi])])] });
+    var xL = await mkCert({ subject: "MXL" + xi, issuer: "MX" + xi, signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnEmail("user@example.com")])] });
+    var xR = await run([xI, xL], { time: T2027, trustAnchors: anchor });
+    check("an excluded rfc822 mailbox base " + JSON.stringify(mailExact[xi]) + " no mailbox equals is unsupported",
+      xR.valid === false && failCodes(xR).indexOf("path/name-constraint-unsupported") !== -1);
+  }
+  // A mailbox base a real certificate can carry keeps being compared, including an underscore the
+  // door refuses and an address literal the comparison reads whole.
+  var mailOk = [["user@example.com", true], ["user@ex_ample.com", false], ["user@[192.0.2.1]", false]];
+  for (var oi = 0; oi < mailOk.length; oi++) {
+    var oI = await mkCert({ subject: "MO" + oi, issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt(null, [gnEmail(mailOk[oi][0])])] });
+    var oL = await mkCert({ subject: "MOL" + oi, issuer: "MO" + oi, signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnEmail("user@example.com")])] });
+    var oR = await run([oI, oL], { time: T2027, trustAnchors: anchor });
+    check("an excluded rfc822 mailbox base " + JSON.stringify(mailOk[oi][0]) + " is compared, not refused",
+      failCodes(oR).indexOf("path/name-constraint-unsupported") === -1 &&
+      (mailOk[oi][1] ? (oR.valid === false && failCodes(oR).indexOf("path/name-constraint-excluded") !== -1) : oR.valid === true));
+  }
+
   var mailEmpty = [".", "user@", "@", "@example.com", ".."];
   for (var mi = 0; mi < mailEmpty.length; mi++) {
     var mI = await mkCert({ subject: "MB" + mi, issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt(null, [gnEmail(mailEmpty[mi])])] });
