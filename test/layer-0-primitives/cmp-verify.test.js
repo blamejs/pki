@@ -1293,8 +1293,18 @@ async function run() {
   check("25j. a messageTime inside the stated window verifies",
     (await pki.cmp.verify(fresh, { signerCert: kidSigner.cert, time: NOW, messageTimeTolerance: 300 })).valid === true);
   var t1 = await pki.cmp.verify(stale, { signerCert: kidSigner.cert, time: NOW, messageTimeTolerance: 300 });
-  check("25k. one older than the window is refused",
-    t1.valid === false && t1.code === "cmp/bad-message-time");
+  check("25k. one older than the window is refused, and the verdict names the skew it measured",
+    t1.valid === false && t1.code === "cmp/bad-message-time" && t1.reason.indexOf("3600 seconds") !== -1);
+  // The reason is built after an awaited verification, so it reads only captured operations: a
+  // replaced Math.round must not turn a documented verdict into an arbitrary throw.
+  var realRound = Math.round;
+  var roundedVerdict;
+  try {
+    Math.round = function () { throw new Error("poisoned"); };
+    roundedVerdict = await pki.cmp.verify(stale, { signerCert: kidSigner.cert, time: NOW, messageTimeTolerance: 300 });
+  } finally { Math.round = realRound; }
+  check("25k2. and it is still that verdict when the rounding global is replaced",
+    roundedVerdict.valid === false && roundedVerdict.code === "cmp/bad-message-time");
   var t2 = await pki.cmp.verify(ahead, { signerCert: kidSigner.cert, time: NOW, messageTimeTolerance: 300 });
   check("25l. one ahead of the window is refused too, since a clock can run either way",
     t2.valid === false && t2.code === "cmp/bad-message-time");
