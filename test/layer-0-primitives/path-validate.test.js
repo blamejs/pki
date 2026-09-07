@@ -1171,6 +1171,30 @@ async function testSelfIssuedAndConstraints() {
     }
   }
 
+  // A base that reduces to nothing is read by tag, because the comparisons do not agree on it. For
+  // dNSName it names the root of the namespace and matches every name. For rfc822Name the same
+  // reduction leaves no domain, or no local part, and no mailbox has either, so it matches none.
+  // Only the second is a subtree that would silently exclude nothing.
+  var mailEmpty = [".", "user@", "@", "@example.com", ".."];
+  for (var mi = 0; mi < mailEmpty.length; mi++) {
+    var mI = await mkCert({ subject: "MB" + mi, issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt(null, [gnEmail(mailEmpty[mi])])] });
+    var mL = await mkCert({ subject: "MBL" + mi, issuer: "MB" + mi, signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnEmail("user@host.example.com")])] });
+    var mR = await run([mI, mL], { time: T2027, trustAnchors: anchor });
+    check("an excluded rfc822 base " + JSON.stringify(mailEmpty[mi]) + " no mailbox can match is unsupported",
+      mR.valid === false && failCodes(mR).indexOf("path/name-constraint-unsupported") !== -1);
+  }
+  // RFC 5280 sec. 4.2.1.10 makes a bare host name the constraint on mailboxes AT that host, so a
+  // base naming a parent of the mailbox host is a genuine non-match and stays one.
+  var mHostI = await mkCert({ subject: "MBH", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt(null, [gnEmail("example.com")])] });
+  var mHostL = await mkCert({ subject: "MBHL", issuer: "MBH", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnEmail("user@host.example.com")])] });
+  check("an excluded rfc822 base naming a parent host does not exclude a mailbox below it",
+    (await run([mHostI, mHostL], { time: T2027, trustAnchors: anchor })).valid === true);
+  var mExI = await mkCert({ subject: "MBE", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt(null, [gnEmail("host.example.com")])] });
+  var mExL = await mkCert({ subject: "MBEL", issuer: "MBE", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnEmail("user@host.example.com")])] });
+  var mExR = await run([mExI, mExL], { time: T2027, trustAnchors: anchor });
+  check("and a base naming the mailbox host itself still excludes it",
+    mExR.valid === false && failCodes(mExR).indexOf("path/name-constraint-excluded") !== -1);
+
   // A base the comparison CAN read keeps answering as it did, in both directions and for a trailing
   // dot, which is the one form the door strips rather than refuses. The last three are bases the door
   // refuses a caller and the comparison still applies: an underscore, a label edged with a hyphen and

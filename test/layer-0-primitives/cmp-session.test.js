@@ -1063,15 +1063,36 @@ async function run() {
   // The exemption is what the caller SAID, never what the session inferred from its own configuration.
   // Reading it off an absent trustAnchors would turn a missing option into a decision to drop both the
   // chain check and the id-kp-cmKGA assertion, and would admit containers the standalone verb refuses.
+  // Refused when the session is built, not when the grant arrives. Every input the rule reads is
+  // present at construction, and refusing on the grant would spend the transaction and discard a key
+  // the authority had already generated, so the retry would cost a second generation.
   var kgaForeignMac = await H.centralKeyGeneration(pki, CLIENT, { password: KGA_MAC_SECRET, foreign: true });
   for (var noStatement of [["omitted", {}], ["an empty list", { trustAnchors: [] }]]) {
-    var sNo = pki.cmp.session(Object.assign({ url: URL, mac: { secret: KGA_MAC_SECRET },
-      transport: H.fakeCa(pki, [H.ip(0, 0, kgaForeignMac.deliveredCert, { privateKey: kgaForeignMac.container }), H.pkiconf()],
-        { macSecret: KGA_MAC_SECRET }).transport,
-      sleep: function () { return Promise.resolve(); }, acceptCentralKeyGeneration: true }, noStatement[1]));
-    check("51g2. a MAC session with trustAnchors " + noStatement[0] + " and no stated exemption refuses the delivery",
-      await codeOf(sNo.enroll(H.irCentralRequest(pki))) === "cmp/bad-input");
+    check("51g2. a MAC session with trustAnchors " + noStatement[0] + " and no stated exemption is refused at construction",
+      codeOfSync(function () {
+        return pki.cmp.session(Object.assign({ url: URL, mac: { secret: KGA_MAC_SECRET },
+          transport: function () { return Promise.resolve({ responseBytes: Buffer.alloc(0), status: 200 }); },
+          sleep: function () { return Promise.resolve(); }, acceptCentralKeyGeneration: true }, noStatement[1]));
+      }) === "cmp/bad-input");
   }
+  // The transport is never reached, so the authority generates nothing for a session it cannot accept.
+  var reached = 0;
+  check("51g2b. and the refusal happens before any request is sent",
+    codeOfSync(function () {
+      return pki.cmp.session({ url: URL, mac: { secret: KGA_MAC_SECRET },
+        transport: function () { reached += 1; return Promise.resolve({ responseBytes: Buffer.alloc(0), status: 200 }); },
+        sleep: function () { return Promise.resolve(); }, acceptCentralKeyGeneration: true });
+    }) === "cmp/bad-input" && reached === 0);
+  // A session that states one of the two rules still builds, so the refusal is the missing statement
+  // and not the option itself.
+  check("51g2c. and a MAC session stating the exemption builds",
+    !!pki.cmp.session({ url: URL, mac: { secret: KGA_MAC_SECRET },
+      transport: function () { return Promise.resolve({ responseBytes: Buffer.alloc(0), status: 200 }); },
+      acceptCentralKeyGeneration: true, authorizedBySharedSecret: true }));
+  check("51g2d. and a MAC session naming anchors builds",
+    !!pki.cmp.session({ url: URL, mac: { secret: KGA_MAC_SECRET },
+      transport: function () { return Promise.resolve({ responseBytes: Buffer.alloc(0), status: 200 }); },
+      acceptCentralKeyGeneration: true, trustAnchors: [kgaForeignMac.anchor] }));
   // On a session opts.trustAnchors does two jobs: it authorizes the key generation authority, and it
   // path-validates the issued certificate. The exemption replaces only the first. A caller that
   // authorizes the authority by the secret and still wants the issued certificate chained states both
