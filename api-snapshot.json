@@ -83,6 +83,9 @@
             "DER_MAX_ITEMS": {
               "kind": "number"
             },
+            "DH_MAX_MODULUS_BYTES": {
+              "kind": "number"
+            },
             "HEADER_LINE_MAX_OCTETS": {
               "kind": "number"
             },
@@ -1417,6 +1420,9 @@
               "kind": "number"
             },
             "DER_MAX_ITEMS": {
+              "kind": "number"
+            },
+            "DH_MAX_MODULUS_BYTES": {
               "kind": "number"
             },
             "HEADER_LINE_MAX_OCTETS": {

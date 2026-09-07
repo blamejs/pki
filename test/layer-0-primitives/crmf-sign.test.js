@@ -518,13 +518,23 @@ async function testPopoPrivKeyArms() {
       "cofactor does not match"],
     ["a validationParms field that is not a SEQUENCE",
       x942With(23n, 2n, 11n, 4n, [pki.asn1.build.integer(2n), pki.asn1.build.integer(9n)]),
-      "validationParms is not a SEQUENCE"],
+      "not a seed BIT STRING with a pgenCounter INTEGER"],
+    ["an empty validationParms",
+      x942With(23n, 2n, 11n, 4n, [pki.asn1.build.sequence([])]),
+      "not a seed BIT STRING with a pgenCounter INTEGER"],
+    ["validationParms whose two fields are the wrong types",
+      x942With(23n, 2n, 11n, 4n, [pki.asn1.build.sequence([
+        pki.asn1.build.integer(1n), pki.asn1.build.bitString(Buffer.from([0x00]))])]),
+      "not a seed BIT STRING with a pgenCounter INTEGER"],
     ["a fourth field that is neither a cofactor nor validationParms",
       x942With(23n, 2n, 11n, 4n, [pki.asn1.build.oid("1.2.3")]),
       "neither a cofactor nor validationParms"],
     // 15 = 3*5, with q = 2 prime and dividing 14, and 4*4 = 16 = 1 mod 15, so every relation above
     // holds and only the modulus itself is left to answer for.
     ["a modulus that is not prime", x942With(15n, 4n, 2n, 11n), "modulus is not prime"],
+    // The cofactor is multiplied by q, so it is sized before that multiplication like the rest.
+    ["a cofactor wider than any group", x942With(23n, 2n, 11n, 4n, [pki.asn1.build.integer(1n << 20000n)]),
+      "cofactor is larger than any Diffie-Hellman group"],
   ];
   for (var xb = 0; xb < x942Bad.length; xb++) {
     var xErr = null;
@@ -563,6 +573,43 @@ async function testPopoPrivKeyArms() {
   check("V6b. a requested key that is not DER is refused at the door, before any key reader sees it",
     (await codeOf(pki.crmf.build({ certReqId: 26n, certTemplate: tpl(Buffer.from([0xff, 0xff])),
       pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: dhCaCert } }))) === "crmf/bad-input");
+
+  // Every test on these parameters raises one of them to the power of another, so an operand wider
+  // than any real group is a request for arbitrary work on this thread. q = 2^65535 with p = q+1 and
+  // g = 2 passes divisibility and range, and reaching a verdict by computing takes seconds.
+  var hugeQ = 1n << 65535n;
+  var hugeStart = Date.now();
+  var hugeErr = null;
+  try {
+    await pki.crmf.build({ certReqId: 28n, certTemplate: tpl(eeDhSpki),
+      pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8,
+        caCert: await dhCertFor(x942With(hugeQ + 1n, 2n, hugeQ, 3n), { serialNumber: 40 }) } });
+  } catch (e) { hugeErr = e; }
+  check("V6b. an oversized X9.42 operand is refused on its size, not by computing with it",
+    hugeErr !== null && hugeErr.code === "crmf/bad-popo" &&
+    hugeErr.message.indexOf("larger than any Diffie-Hellman group") !== -1);
+  check("V6b. and that refusal is immediate", (Date.now() - hugeStart) < 2000);
+
+  // A container is read for the tag it carries, not for having children. A context-specific
+  // constructed value in place of the DomainParameters SEQUENCE is not that SEQUENCE, and converting
+  // one would rewrite a key the recipient's own reader refuses into a PKCS#3 key that imports, so the
+  // request would go out carrying a public key nothing else can read.
+  // Built over the REQUESTER's own group, so accepting the container yields a key that matches
+  // pop.key and the request goes out; only refusing the container refuses the request.
+  var ctxParams = (function () {
+    var n = pki.asn1.decode(eeX942Spki);
+    var prm = pki.asn1.decode(n.children[0].children[1].bytes);
+    return pki.asn1.build.sequence([
+      pki.asn1.build.sequence([pki.asn1.build.oid("1.2.840.10046.2.1"),
+        pki.asn1.build.implicit(0, pki.asn1.build.sequence([
+          pki.asn1.build.raw(prm.children[0].bytes), pki.asn1.build.raw(prm.children[1].bytes),
+          pki.asn1.build.raw(prm.children[2].bytes)]))]),
+      pki.asn1.build.raw(n.children[1].bytes),
+    ]);
+  }());
+  check("V6b. a requested key whose parameters are not a DomainParameters SEQUENCE is not converted",
+    (await codeOf(pki.crmf.build({ certReqId: 29n, certTemplate: tpl(ctxParams),
+      pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: dhCaCert } }))) === "crmf/bad-popo");
 
   // A certificate stating q = p-1 satisfies every structural test: p-1 divides itself, and g^(p-1)
   // and y^(p-1) are 1 for the whole group by Fermat. Only q being prime makes the subgroup test say
