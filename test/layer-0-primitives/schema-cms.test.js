@@ -448,6 +448,11 @@ function testEnvelopedKtri() {
 function testEnvelopedOtherArms() {
   var mk = parse(envCI({ version: 2, recips: [kari({ version: 3, ukm: UKM })] }));
   check("EnvelopedData kari v3, envelope v2", mk.version === 2 && mk.recipientInfos[0].type === "kari" && mk.recipientInfos[0].version === 3);
+  // A key-agreement recipient that names no encrypted key names no recipient, so nothing could open
+  // the content it is attached to.
+  check("a kari naming no encrypted key is refused",
+    code(function () { return parse(envCI({ version: 2, recips: [kari({ reks: [] })] })); }) ===
+    "cms/bad-recipient-encrypted-keys");
   check("EnvelopedData kari ukm raw exact", mk.recipientInfos[0].ukm.equals(UKM));
   check("EnvelopedData kari recipientEncryptedKeys", mk.recipientInfos[0].recipientEncryptedKeys.length === 1);
   check("EnvelopedData kari ukm absent -> null", parse(envCI({ version: 2, recips: [kari({ version: 3, originator: iasn("Orig", 3) })] })).recipientInfos[0].ukm === null);

@@ -93,6 +93,12 @@ function run(input) {
     // still exists and is the one an early return would leave behind.
     work = pki.cmc.build({ requests: [{ tcr: b64(p.csr) }], identityProof: { secret: String(b64(p.secret)) } },
       { mac: { identifier: "cmc-client-17" } });
+  } else if (p.op === "cmc-pop-challenge") {
+    // Answering a challenge decrypts a proof value and derives a MAC key from it. Both are the
+    // toolkit's own copies and both are cleared once the answer is built.
+    work = pki.cmc.build({ requests: [{ tcr: b64(p.csr) }],
+      popChallenge: { challenge: b64(p.secret), recipient: { key: b64(p.identity), cert: b64(p.cert) } } },
+    { cert: b64(p.cert), key: callerKey });
   } else if (p.op === "cmc-build-mac") {
     work = pki.cmc.build({ requests: [{ tcr: b64(p.csr) }] },
       { mac: { identifier: "cmc-client-17", secret: b64(p.secret) } });

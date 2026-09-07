@@ -145,6 +145,29 @@ function testEveryComposingGuardHolds() {
 // These are the questions a lookalike cannot lie about, which is exactly why they are worth
 // replacing: a caller who answers them has replaced the toolkit's only reliable test of what a
 // value IS.
+// A proof of possession turns on whether two public keys are the same key. A replaced
+// KeyObject.prototype.equals answering true would make one key stand in for another, so the capture
+// is taken at load and the replacement never reaches the comparison.
+function testKeyEqualsIsSnapshotted() {
+  var nodeCrypto = require("crypto");
+  var a = nodeCrypto.createPublicKey(nodeCrypto.generateKeyPairSync("ec",
+    { namedCurve: "prime256v1" }).privateKey);
+  var b = nodeCrypto.createPublicKey(nodeCrypto.generateKeyPairSync("ec",
+    { namedCurve: "prime256v1" }).privateKey);
+  var real = nodeCrypto.KeyObject.prototype.equals;
+  var saidEqual, saidUnequal;
+  try {
+    nodeCrypto.KeyObject.prototype.equals = function () { return true; };
+    saidEqual = intrinsic.keyEquals(a, b);
+    nodeCrypto.KeyObject.prototype.equals = function () { return false; };
+    saidUnequal = intrinsic.keyEquals(a, a);
+  } finally {
+    nodeCrypto.KeyObject.prototype.equals = real;
+  }
+  check("a replaced KeyObject.equals cannot make two different keys answer as one", saidEqual === false);
+  check("a replaced KeyObject.equals cannot make one key answer as two", saidUnequal === true);
+}
+
 function testRuntimeReadsAreSnapshotted() {
   var utilTypes = require("util").types;
   var realIsDate = utilTypes.isDate, realIsNaN = globalThis.isNaN;
@@ -385,6 +408,7 @@ function run() {
   testUncurryContract();
   testEveryComposingGuardHolds();
   testRuntimeReadsAreSnapshotted();
+  testKeyEqualsIsSnapshotted();
   testWholeFamilyUnderFullPoisoning();
 }
 

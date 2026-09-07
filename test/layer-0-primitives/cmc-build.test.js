@@ -1099,6 +1099,476 @@ async function run() {
       }(BAD_MACS[bm][1])))) === "cmc/bad-input");
   }
 
+  // ===== the challenge-response proof of possession (RFC 5272 sec. 6.7) =====
+  // A server that cannot check a signature proof, because the key being certified cannot sign, sends
+  // the proof value encrypted to that key and asks the client to MAC the request with it. The client
+  // half is: decrypt, check the witness, answer. The witness check is not optional, so the answer is
+  // only ever produced by the path that performs it.
+  var ID_CMC_DECRYPTED_POP = "1.3.6.1.5.5.7.7.10";
+  var HMAC_SHA256_OID = "1.2.840.113549.2.9";
+  var SHA256_OID = "2.16.840.1.101.3.4.2.1";
+  var ENVELOPED_DATA_OID = "1.2.840.113549.1.7.3";
+  var NO_SIGNATURE_OID = pki.oid.byName("id-alg-noSignature");
+  // The challenge is encrypted TO the key being certified, so these fixtures use a key that can
+  // receive one. That is the case the control exists for: a key that cannot sign for itself.
+  var signingHelper = require("../helpers/signing");
+  var popKey = signingHelper.makeSigner("ec-p256", { cn: "pop-client.example" });
+  var otherKey = signingHelper.makeSigner("ec-p256", { cn: "pop-other.example" });
+  // A certificate carrying a subject key identifier, so the challenge can be addressed the way sec. 6.7
+  // says it should be. The CLIENT never uses this certificate: it decrypts with the key alone, which is
+  // the situation the control exists for.
+  popKey.skiCert = await pki.x509.sign({ subject: "pop-client.example", subjectPublicKey: popKey.spki,
+    notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2036-01-01T00:00:00Z"),
+    extensions: { subjectKeyIdentifier: true } }, { key: popKey.key });
+  var popCsr = await csrFor(s);
+  var popTagged = b.contextConstructed(0, Buffer.concat([b.integer(11n), popCsr]));
+
+  // The server's half, built here so the client's answer can be checked against an independent
+  // computation rather than against the same code path.
+  async function popChallengeFor(proofValue, opts) {
+    opts = opts || {};
+    var witnessAlg = opts.witnessAlg || "sha256";
+    var witness = nodeCrypto.createHash(witnessAlg).update(proofValue).digest();
+    // Addressed by subject key identifier, which is what sec. 6.7 says a challenge SHOULD use, because
+    // the key being certified has no certificate for an issuer-and-serial to name.
+    var envelope = await pki.cms.encrypt(proofValue,
+      [{ cert: popKey.skiCert, keyIdentifier: "subjectKeyIdentifier" }],
+      { contentEncryptionAlgorithm: "aes-256-cbc" });
+    return b.sequence([
+      opts.tagged || popTagged,
+      envelope,
+      b.sequence([b.oid(opts.popAlg || HMAC_SHA256_OID)]),
+      b.sequence([b.oid(opts.witnessOid || SHA256_OID)]),
+      b.octetString(opts.witness || witness),
+    ]);
+  }
+  function expectedPop(proofValue, data) {
+    var key = proofValue.length > 64 ? proofValue.subarray(0, 64) : proofValue;
+    return nodeCrypto.createHmac("sha256", key).update(data).digest();
+  }
+  function decryptedPopOf(der) {
+    return pki.schema.cmc.parse(der).controls
+      .filter(function (c) { return c.attrType === ID_CMC_DECRYPTED_POP; })[0].decryptedPOP;
+  }
+
+  var proof = Buffer.alloc(48, 0x21);
+  var challenge = await popChallengeFor(proof);
+  var answered = await pki.cmc.build({ requests: [{ tcr: popCsr }],
+    popChallenge: { challenge: challenge, recipient: { key: popKey.key } } },
+  { cert: s.cert, key: s.key });
+  var dp = decryptedPopOf(answered);
+  check("EP1. answering a challenge carries a Decrypted POP control",
+    !!dp && dp.thePOP.length === 32);
+  // The proof is a MAC over the request the challenge carried, keyed by the decrypted proof value,
+  // checked against a value computed with node:crypto rather than by the same code.
+  check("EP2. the proof is the MAC of the carried request under the decrypted proof value",
+    dp.thePOP.equals(expectedPop(proof, popTagged)));
+  check("EP3. the algorithm is copied from the challenge, not chosen by the client",
+    dp.thePOPAlgID.oid === HMAC_SHA256_OID);
+  check("EP4. the body part names the request in the NEW request",
+    typeof dp.bodyPartID === "number" && dp.bodyPartID > 0);
+  // The clause an implementation misses: a proof value longer than 64 bytes is truncated to 64 for
+  // the key, so two values sharing their first 64 bytes answer the same challenge identically.
+  var long65 = Buffer.concat([Buffer.alloc(64, 0x33), Buffer.from([0x99])]);
+  var long64 = long65.subarray(0, 64);
+  var longAnswer = await pki.cmc.build({ requests: [{ tcr: popCsr }],
+    popChallenge: { challenge: await popChallengeFor(long65), recipient: { key: popKey.key } } },
+  { cert: s.cert, key: s.key });
+  check("EP5. a proof value over 64 bytes is truncated to 64 for the MAC key",
+    decryptedPopOf(longAnswer).thePOP.equals(nodeCrypto.createHmac("sha256", long64).update(popTagged).digest()));
+  // The witness check is the client's abort condition, so a challenge whose witness does not match the
+  // decrypted value is refused rather than answered.
+  check("EP6. a challenge whose witness does not match the proof value is refused",
+    (await acode(function () {
+      return popChallengeFor(proof, { witness: Buffer.alloc(32, 0x77) }).then(function (bad) {
+        return pki.cmc.build({ requests: [{ tcr: popCsr }],
+          popChallenge: { challenge: bad, recipient: { key: popKey.key } } },
+        { cert: s.cert, key: s.key });
+      });
+    })) === "cmc/pop-failed");
+  check("EP7. a challenge that does not decrypt under the caller's key is refused the same way",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: popCsr }],
+        popChallenge: { challenge: challenge, recipient: { key: otherKey.key } } },
+      { cert: s.cert, key: s.key });
+    })) === "cmc/pop-failed");
+  // RFC 5274 sec. 4.2 makes SHA-1 and HMAC-SHA1 the MUST-implement pair, so both are answered.
+  var sha1Challenge = await popChallengeFor(proof, { witnessAlg: "sha1", witnessOid: "1.3.14.3.2.26",
+    popAlg: "1.2.840.113549.2.7" });
+  var sha1Answer = await pki.cmc.build({ requests: [{ tcr: popCsr }],
+    popChallenge: { challenge: sha1Challenge, recipient: { key: popKey.key } } },
+  { cert: s.cert, key: s.key });
+  check("EP8. the algorithms RFC 5274 requires of a conforming client are answered",
+    decryptedPopOf(sha1Answer).thePOP.equals(nodeCrypto.createHmac("sha1", proof).update(popTagged).digest()));
+  check("EP9. an algorithm outside the required set is refused rather than silently defaulted",
+    (await acode(function () {
+      return popChallengeFor(proof, { popAlg: "1.2.840.113549.2.5" }).then(function (md5) {
+        return pki.cmc.build({ requests: [{ tcr: popCsr }],
+          popChallenge: { challenge: md5, recipient: { key: popKey.key } } },
+        { cert: s.cert, key: s.key });
+      });
+    })) === "cmc/bad-pop-challenge");
+
+  // The door refuses what it cannot read as a challenge, rather than reaching the decrypt with it.
+  var BAD_CHALLENGES = [
+    ["a non-object popChallenge", "not-an-object"],
+    ["an array", [1, 2]],
+    ["a buffer", Buffer.from("challenge")],
+    ["an unknown field", { challenge: challenge, recipient: { key: popKey.key, cert: popKey.cert }, bogus: 1 }],
+  ];
+  for (var bc = 0; bc < BAD_CHALLENGES.length; bc++) {
+    check("EP12. " + BAD_CHALLENGES[bc][0] + " is refused",
+      (await acode((function (v) {
+        return function () {
+          return pki.cmc.build({ requests: [{ tcr: popCsr }], popChallenge: v }, { cert: s.cert, key: s.key });
+        };
+      }(BAD_CHALLENGES[bc][1])))) === "cmc/bad-input");
+  }
+  // The proof covers the request the challenge carried. Sending it alongside a DIFFERENT request would
+  // name one request while proving possession for another, so the two are compared.
+  // The request the challenge quotes can be a CRMF message rather than a PKCS#10 one, and the answer
+  // binds to it the same way. The crm arm is [1] IMPLICIT, so the context tag replaces the SEQUENCE tag
+  // and the content is the CertReqMsg's own elements.
+  var popCrmMessages = await pki.crmf.build({ certReqId: 11n,
+    certTemplate: { subject: [{ commonName: "pop-crm.example" }], publicKey: popKey.spki },
+    pop: { type: "raVerified", raVerified: true } });
+  var popCrmMsgNode = pki.asn1.decode(popCrmMessages).children[0];
+  var popCrmTagged = b.contextConstructed(1, Buffer.concat(popCrmMsgNode.children.map(function (c) {
+    return c.bytes;
+  })));
+  var crmAnswered = await pki.cmc.build({ requests: [{ crm: popCrmMessages }],
+    popChallenge: { challenge: await popChallengeFor(proof, { tagged: popCrmTagged }),
+      recipient: { key: popKey.key } } },
+  { cert: s.cert, key: s.key });
+  check("EP15. a challenge quoting a CRMF request is answered for the CRMF request carried",
+    decryptedPopOf(crmAnswered).thePOP.equals(expectedPop(proof, popCrmTagged)));
+  check("EP16. a challenge quoting a different request than the CRMF one carried is refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ crm: popCrmMessages }],
+        popChallenge: { challenge: challenge, recipient: { key: popKey.key } } },
+      { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+
+  // The enrollment this control exists for: a key that can only decrypt cannot sign the request that
+  // asks for its certificate, so the request carries id-alg-noSignature and the challenge carries the
+  // proof (RFC 5272 App. C.1).
+  function noSignatureCsr(csrDer, params) {
+    var criBytes = pki.asn1.decode(csrDer).children[0].bytes;
+    var alg = params === undefined
+      ? b.sequence([b.oid(NO_SIGNATURE_OID), b.nullValue()])
+      : b.sequence([b.oid(NO_SIGNATURE_OID)].concat(params));
+    return b.sequence([b.raw(criBytes), alg,
+      b.bitString(b.octetString(nodeCrypto.createHash("sha256").update(criBytes).digest()), 0)]);
+  }
+  // The request asks for the key the challenge is encrypted to, which is what makes opening it a proof
+  // of possession of that key. A request for any other key is not proven by opening this challenge.
+  var popKeyCsr = await csrFor(popKey, { subject: "pop-client.example" });
+  var nsCsr = noSignatureCsr(popKeyCsr);
+  var nsTagged = b.contextConstructed(0, Buffer.concat([b.integer(11n), nsCsr]));
+  var nsAnswered = await pki.cmc.build({ requests: [{ tcr: nsCsr }],
+    popChallenge: { challenge: await popChallengeFor(proof, { tagged: nsTagged }),
+      recipient: { key: popKey.key } } },
+  { cert: s.cert, key: s.key });
+  check("EP19. a request that carries no signature is accepted when the challenge proves the key",
+    decryptedPopOf(nsAnswered).thePOP.equals(expectedPop(proof, nsTagged)));
+  check("EP20. the same request without an answered challenge is refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: nsCsr }] }, { cert: s.cert, key: s.key });
+    })) === "cmc/bad-popo");
+  check("EP21. a challenge proving a different request does not license an unsigned one",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: nsCsr }],
+        popChallenge: { challenge: challenge, recipient: { key: popKey.key } } },
+      { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+  // A challenge a password opens is answerable, since the proof value still comes back and the witness
+  // still decides. It just does not identify any key, so it cannot stand in for a missing signature.
+  var pwChallengeFor = async function (tagged) {
+    return b.sequence([tagged,
+      await pki.cms.encrypt(proof, [{ password: "a-challenge-password" }],
+        { contentEncryptionAlgorithm: "aes-256-cbc" }),
+      b.sequence([b.oid(HMAC_SHA256_OID)]), b.sequence([b.oid(SHA256_OID)]),
+      b.octetString(nodeCrypto.createHash("sha256").update(proof).digest())]);
+  };
+  var pwSigned = await pki.cmc.build({ requests: [{ tcr: popCsr }],
+    popChallenge: { challenge: await pwChallengeFor(popTagged),
+      recipient: { password: "a-challenge-password" } } },
+  { cert: s.cert, key: s.key });
+  check("EP19c. a challenge a password opens is answered for a request that signs for itself",
+    decryptedPopOf(pwSigned).thePOP.equals(expectedPop(proof, popTagged)));
+  var pwNsTagged = b.contextConstructed(0, Buffer.concat([b.integer(11n), nsCsr]));
+  var pwNsChallenge = await pwChallengeFor(pwNsTagged);
+  check("EP19d. a password-opened challenge does not stand in for a missing signature",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: nsCsr }],
+        popChallenge: { challenge: pwNsChallenge, recipient: { password: "a-challenge-password" } } },
+      { cert: s.cert, key: s.key });
+    })) === "cmc/bad-popo");
+
+  // What proved possession is the decryption that happened, not the key material that came along with
+  // it: a password opens this challenge, so a private key passed beside it did not answer anything.
+  check("EP19e. a key passed alongside the password that opened it does not become the proof",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: nsCsr }],
+        popChallenge: { challenge: pwNsChallenge,
+          recipient: { password: "a-challenge-password", key: popKey.key } } },
+      { cert: s.cert, key: s.key });
+    })) === "cmc/bad-popo");
+
+  // The request names a key, not an encoding of one. A curve point written in compressed form is the
+  // same key as the uncompressed form the private key derives, and it enrolls the same way.
+  var compressedSpki = (function () {
+    var jwk = nodeCrypto.createPublicKey({ key: popKey.spki, format: "der", type: "spki" })
+      .export({ format: "jwk" });
+    var x = Buffer.from(jwk.x, "base64url"), y = Buffer.from(jwk.y, "base64url");
+    var point = Buffer.concat([Buffer.from([(y[y.length - 1] & 1) ? 0x03 : 0x02]), x]);
+    var algBytes = pki.asn1.decode(popKey.spki).children[0].bytes;
+    return b.sequence([b.raw(algBytes), b.bitString(point, 0)]);
+  })();
+  var compressedCsr = noSignatureCsr(await csrFor(popKey,
+    { subject: "pop-client.example", subjectPublicKey: compressedSpki }));
+  var compressedTagged = b.contextConstructed(0, Buffer.concat([b.integer(11n), compressedCsr]));
+  var compressedAnswered = await pki.cmc.build({ requests: [{ tcr: compressedCsr }],
+    popChallenge: { challenge: await popChallengeFor(proof, { tagged: compressedTagged }),
+      recipient: { key: popKey.key } } },
+  { cert: s.cert, key: s.key });
+  check("EP19g. a compressed curve point in the request is the same key the challenge opened with",
+    decryptedPopOf(compressedAnswered).thePOP.equals(expectedPop(proof, compressedTagged)));
+
+  // The other-message arm binds the same way, on the type together with the value: a value alone
+  // could belong to a different request type.
+  var ormType = "1.3.6.1.5.5.7.7.9";
+  var ormValue = b.octetString(Buffer.from("an out-of-band request"));
+  var ormTagged = b.contextConstructed(2, Buffer.concat([b.integer(11n), b.oid(ormType), ormValue]));
+  var ormChallenge = await popChallengeFor(proof, { tagged: ormTagged });
+  var ormAnswered = await pki.cmc.build({ requests: [{ orm: { type: ormType,
+    value: ormValue }, bodyPartID: 11 }],
+  popChallenge: { challenge: ormChallenge, recipient: { key: popKey.key } } },
+  { cert: s.cert, key: s.key });
+  check("EP19h. a challenge quoting an other-message request is answered for it",
+    decryptedPopOf(ormAnswered).thePOP.equals(expectedPop(proof, ormTagged)));
+  check("EP19i. an other-message request of a different type is not the request the challenge quoted",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ orm: { type: "1.3.6.1.5.5.7.7.10",
+        value: ormValue }, bodyPartID: 11 }],
+      popChallenge: { challenge: ormChallenge, recipient: { key: popKey.key } } },
+      { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+
+  // The four algorithms take no parameters, so a value in that slot names none of them and would be
+  // copied into an answer the authority could not read.
+  async function popChallengeWithAlgs(popAlgDer, witnessAlgDer) {
+    return b.sequence([popTagged,
+      await pki.cms.encrypt(proof, [{ cert: popKey.skiCert, keyIdentifier: "subjectKeyIdentifier" }],
+        { contentEncryptionAlgorithm: "aes-256-cbc" }),
+      popAlgDer, witnessAlgDer,
+      b.octetString(nodeCrypto.createHash("sha256").update(proof).digest())]);
+  }
+  async function popCodeWithChallenge(challengeDer) {
+    return acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: popCsr }],
+        popChallenge: { challenge: challengeDer, recipient: { key: popKey.key } } },
+      { cert: s.cert, key: s.key });
+    });
+  }
+  var paramOnPop = await popChallengeWithAlgs(
+    b.sequence([b.oid(HMAC_SHA256_OID), b.integer(1n)]), b.sequence([b.oid(SHA256_OID)]));
+  var paramOnWitness = await popChallengeWithAlgs(
+    b.sequence([b.oid(HMAC_SHA256_OID)]), b.sequence([b.oid(SHA256_OID), b.integer(1n)]));
+  check("EP19l. a proof algorithm carrying a parameter value is refused",
+    (await popCodeWithChallenge(paramOnPop)) === "cmc/bad-pop-challenge");
+  check("EP19m. a witness algorithm carrying a parameter value is refused",
+    (await popCodeWithChallenge(paramOnWitness)) === "cmc/bad-pop-challenge");
+  // Absent and NULL are both the ordinary encodings, and both are answered.
+  check("EP19n. NULL parameters are the other ordinary encoding and are answered",
+    !!decryptedPopOf(await pki.cmc.build({ requests: [{ tcr: popCsr }],
+      popChallenge: { challenge: await popChallengeWithAlgs(
+        b.sequence([b.oid(HMAC_SHA256_OID), b.nullValue()]),
+        b.sequence([b.oid(SHA256_OID), b.nullValue()])), recipient: { key: popKey.key } } },
+    { cert: s.cert, key: s.key })).thePOP);
+  check("EP19k. challenge bytes that are not DER are a malformed challenge, not a codec error",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: popCsr }],
+        popChallenge: { challenge: Buffer.from([0x30, 0x03, 0x01]), recipient: { key: popKey.key } } },
+      { cert: s.cert, key: s.key });
+    })) === "cmc/bad-pop-challenge");
+  check("EP19f. a challenge with no recipient key material is an input error, not a POP failure",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: popCsr }], popChallenge: { challenge: challenge } },
+        { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+
+  var unrelatedNsCsr = noSignatureCsr(popCsr);
+  var unrelatedNsTagged = b.contextConstructed(0, Buffer.concat([b.integer(11n), unrelatedNsCsr]));
+  var unrelatedChallenge = await popChallengeFor(proof, { tagged: unrelatedNsTagged });
+  check("EP19b. a challenge opened by a key other than the one being certified is not a proof of it",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: unrelatedNsCsr }],
+        popChallenge: { challenge: unrelatedChallenge, recipient: { key: popKey.key } } },
+      { cert: s.cert, key: s.key });
+    })) === "cmc/bad-popo");
+  // App. C.1 defines the value as "NoSignatureValue ::= OCTET STRING", so a signature field carrying
+  // something else is a request an authority would reject.
+  function noSignatureCsrWithValue(csrDer, valueDer) {
+    var criBytes = pki.asn1.decode(csrDer).children[0].bytes;
+    return b.sequence([b.raw(criBytes),
+      b.sequence([b.oid(NO_SIGNATURE_OID), b.nullValue()]), b.bitString(valueDer, 0)]);
+  }
+  var rawValueCsr = noSignatureCsrWithValue(popKeyCsr,
+    nodeCrypto.createHash("sha256").update(pki.asn1.decode(popKeyCsr).children[0].bytes).digest());
+  var rawValueTagged = b.contextConstructed(0, Buffer.concat([b.integer(11n), rawValueCsr]));
+  var rawValueChallenge = await popChallengeFor(proof, { tagged: rawValueTagged });
+  check("EP19j. a no-signature value that is not an OCTET STRING is refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: rawValueCsr }],
+        popChallenge: { challenge: rawValueChallenge, recipient: { key: popKey.key } } },
+      { cert: s.cert, key: s.key });
+    })) === "cmc/bad-popo");
+
+  var bareNsCsr = noSignatureCsr(popKeyCsr, []);
+  var bareNsTagged = b.contextConstructed(0, Buffer.concat([b.integer(11n), bareNsCsr]));
+  var popChallengePromise = await popChallengeFor(proof, { tagged: bareNsTagged });
+  var corruptedPopCsr = corruptCsrPop(popCsr);
+  check("EP22. id-alg-noSignature without its NULL parameters is refused, challenge or not",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: bareNsCsr }],
+        popChallenge: { challenge: popChallengePromise, recipient: { key: popKey.key } } },
+      { cert: s.cert, key: s.key });
+    })) === "cmc/bad-popo");
+  // Answering a challenge licenses only the request that carries no signature at all. One that does
+  // is still held to it.
+  var badPopTagged = b.contextConstructed(0, Buffer.concat([b.integer(11n), corruptedPopCsr]));
+  var badPopChallenge = await popChallengeFor(proof, { tagged: badPopTagged });
+  check("EP23. a signed request is still held to its own signature when a challenge is answered",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: corruptedPopCsr }],
+        popChallenge: { challenge: badPopChallenge, recipient: { key: popKey.key } } },
+      { cert: s.cert, key: s.key });
+    })) === "cmc/bad-popo");
+
+  // A control the builder computes is not also accepted hand-encoded: the message would carry two
+  // proofs of the same thing, and the authority has no rule for choosing between them.
+  var handDecryptedPop = { type: "id-cmc-decryptedPOP",
+    value: b.sequence([b.integer(11n), b.sequence([b.oid(HMAC_SHA256_OID)]),
+      b.octetString(Buffer.alloc(32, 7))]) };
+  check("EP24. a hand-encoded Decrypted POP alongside popChallenge is refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: popCsr }], controls: [handDecryptedPop],
+        popChallenge: { challenge: challenge, recipient: { key: popKey.key } } },
+      { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+  var handIdentityProof = { type: "id-cmc-identityProofV2",
+    value: b.sequence([b.sequence([b.oid(SHA256_OID)]), b.sequence([b.oid(HMAC_SHA256_OID)]),
+      b.octetString(Buffer.alloc(32, 7))]) };
+  check("EP25. a hand-encoded Identity Proof alongside spec.identityProof is refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: popCsr }], controls: [handIdentityProof],
+        identityProof: { secret: "a-shared-secret", identity: "id-1" } },
+      { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+  // A spec field the builder reads as absent computes nothing, so a hand-encoded control beside it is
+  // the message's only one. The refusal follows what the builder emits, not what the field is set to.
+  check("EP25c. a hand-encoded control is carried when the field that would compute one is off",
+    !!(await pki.cmc.build({ requests: [{ tcr: popCsr }], controls: [handIdentityProof],
+      identityProof: false }, { cert: s.cert, key: s.key })).length);
+  // A shared-secret carrier computes the message authentication and the Identification name, not the
+  // Identity Proof, so a hand-encoded one beside it is the message's only proof and is carried.
+  check("EP25b. a hand-encoded Identity Proof is carried under a shared-secret carrier",
+    !!(await pki.cmc.build({ requests: [{ tcr: popCsr }], controls: [handIdentityProof] },
+      { mac: { secret: "a-shared-secret", identifier: "id-1" } })).length);
+  check("EP26. a hand-encoded POP Link Witness alongside popLink is refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: popCsr }], popLink: { secret: "a-shared-secret" },
+        controls: [{ type: "id-cmc-popLinkWitnessV2",
+          value: b.sequence([b.sequence([b.oid(SHA256_OID)]), b.sequence([b.oid(HMAC_SHA256_OID)]),
+            b.octetString(Buffer.alloc(32, 7))]) }] },
+      { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+  check("EP27b. two hand-encoded Decrypted POP controls naming one request are refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: popCsr }],
+        controls: [handDecryptedPop, handDecryptedPop] }, { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+  // Sec. 6.7 gives each Decrypted POP the body part it answers for, so one per request is not a
+  // duplicate. Only two naming the SAME request leave the authority two proofs of one thing.
+  var handDecryptedPop2 = { type: "id-cmc-decryptedPOP",
+    value: b.sequence([b.integer(12n), b.sequence([b.oid(HMAC_SHA256_OID)]),
+      b.octetString(Buffer.alloc(32, 8))]) };
+  // A value that names no readable request cannot be told apart from another that names none either,
+  // so a second one is refused rather than passed through as a distinct proof.
+  var unreadableDecryptedPop = { type: "id-cmc-decryptedPOP", value: b.octetString(Buffer.alloc(4)) };
+  check("EP27d. two Decrypted POP controls naming no readable request are refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: popCsr }],
+        controls: [unreadableDecryptedPop, unreadableDecryptedPop] }, { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+  check("EP27e. one such control is left to the assembled message to refuse",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: popCsr }], controls: [unreadableDecryptedPop] },
+        { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+  // Several signers carry no shared secret between them, so there is no mac to conflict with.
+  check("EP27f. a hand-encoded control is carried when the signer is a list rather than a mac carrier",
+    pki.schema.cmc.parse(await pki.cmc.build({ requests: [{ tcr: popCsr }],
+      controls: [handDecryptedPop] }, [{ cert: s.cert, key: s.key }, { cert: s.cert, key: s.key }]))
+      .controls.filter(function (c) { return c.attrType === ID_CMC_DECRYPTED_POP; }).length === 1);
+  check("EP27c. two Decrypted POP controls naming different requests are carried",
+    pki.schema.cmc.parse(await pki.cmc.build({ requests: [{ tcr: popCsr }],
+      controls: [handDecryptedPop, handDecryptedPop2] }, { cert: s.cert, key: s.key })).controls
+      .filter(function (c) { return c.attrType === ID_CMC_DECRYPTED_POP; }).length === 2);
+  check("EP27. the same hand-encoded control is still carried when the builder computes none",
+    pki.schema.cmc.parse(await pki.cmc.build({ requests: [{ tcr: popCsr }], controls: [handDecryptedPop] },
+      { cert: s.cert, key: s.key })).controls
+      .filter(function (c) { return c.attrType === ID_CMC_DECRYPTED_POP; }).length === 1);
+
+  // The number of recipients to try is counted off the envelope's own structure, so a content that
+  // names none is refused rather than read as an envelope with nothing to open.
+  async function popCodeWithEnvelope(envelope) {
+    return acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: popCsr }],
+        popChallenge: { challenge: b.sequence([popTagged, envelope,
+          b.sequence([b.oid(HMAC_SHA256_OID)]), b.sequence([b.oid(SHA256_OID)]),
+          b.octetString(nodeCrypto.createHash("sha256").update(proof).digest())]),
+        recipient: { key: popKey.key } } },
+      { cert: s.cert, key: s.key });
+    });
+  }
+  check("EP17. a challenge whose ContentInfo carries no content is refused",
+    (await popCodeWithEnvelope(b.sequence([b.oid(ENVELOPED_DATA_OID)]))) === "cmc/bad-pop-challenge");
+  check("EP18. a challenge whose envelope holds no recipient set is refused",
+    (await popCodeWithEnvelope(b.sequence([b.oid(ENVELOPED_DATA_OID),
+      b.explicit(0, b.sequence([b.integer(0n)]))]))) === "cmc/bad-pop-challenge");
+
+  var otherCsr = await csrFor(s, { subject: "a-different-subject.example" });
+  check("EP14. a challenge for one request cannot answer for a different one",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: otherCsr }],
+        popChallenge: { challenge: challenge, recipient: { key: popKey.key } } },
+      { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+  // One answer covers one request, so a request carrying two is refused rather than answered for the
+  // one this side happens to pick.
+  check("EP13. a request carrying more than one certification request is refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: popCsr }, { tcr: macCsr }],
+        popChallenge: { challenge: challenge, recipient: { key: popKey.key } } },
+      { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+
+  // The decrypted proof value and the MAC key derived from it are the toolkit's own copies, so both
+  // are cleared once the answer is built. Counted, because the argument boundary clears copies of the
+  // same bytes and only the number distinguishes the toolkit's own cleanup from that one.
+  var popWipeObs = observeWipe({ op: "cmc-pop-challenge", key: popKey.key, cert: popKey.cert,
+    csr: popCsr, secret: challenge, identity: popKey.key });
+  check("EP10. the wipe observation ran for an answered challenge (child exit " + popWipeObs.status + ")",
+    popWipeObs.report !== null);
+  var proofB64 = proof.toString("base64");
+  var proofWipes = !popWipeObs.report ? 0 : popWipeObs.report.wiped.filter(function (e) {
+    return e.before === proofB64 && e.allZeroAfter;
+  }).length;
+  check("EP11. the decrypted proof value and the key derived from it are both cleared",
+    proofWipes >= 2);
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

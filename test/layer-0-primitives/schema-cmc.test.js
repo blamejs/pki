@@ -666,6 +666,267 @@ async function run() {
   check("F5b. a genuinely already-parsed CMS structure still routes to the parsed branch",
     cmc.parse(pki.schema.cms.parse(f5der)).kind === "pkiData");
 
+  // ===== G. the challenge-response POP controls (RFC 5272 sec. 6.7) =====
+  // A server that cannot check a signature POP, because the requested key cannot sign, sends the proof
+  // value encrypted and the client answers with a MAC over the request. Both controls decode.
+  var ID_CMC_ENCRYPTED_POP = "1.3.6.1.5.5.7.7.9";
+  var ID_CMC_DECRYPTED_POP = "1.3.6.1.5.5.7.7.10";
+  var SHA1_OID = "1.3.14.3.2.26";
+  var ENVELOPED_DATA_OID = "1.2.840.113549.1.7.3";
+  var HMAC_SHA256_OID = "1.2.840.113549.2.9";
+  var popCsr = csr(dn("pop.example"));
+  // A real EnvelopedData, because the parser checks that the challenge carries one: a field that is not
+  // a ContentInfo wrapping an EnvelopedData cannot be a challenge, however opaque its contents stay.
+  var envelopedStub = await pki.cms.encrypt(Buffer.from("proof value"), [{ password: "pop-probe-secret" }],
+    { contentEncryptionAlgorithm: "aes-256-cbc" });
+  var encryptedPop = b.sequence([
+    tcr(7, popCsr),
+    envelopedStub,
+    b.sequence([b.oid(HMAC_SHA256_OID)]),
+    b.sequence([b.oid(SHA256)]),
+    b.octetString(Buffer.alloc(32, 0xa5)),
+  ]);
+  var g1 = cmc.parse(signedData(ID_CCT_PKI_RESPONSE,
+    pkiResponse([taggedAttr(1, ID_CMC_ENCRYPTED_POP, [encryptedPop])], [], [])));
+  var g1c = g1.controls.filter(function (c) { return c.attrType === ID_CMC_ENCRYPTED_POP; })[0];
+  check("G1. an Encrypted POP control decodes to its five fields",
+    !!g1c.encryptedPOP && g1c.encryptedPOP.request.arm === "tcr" &&
+    g1c.encryptedPOP.request.bodyPartID === 7 &&
+    g1c.encryptedPOP.thePOPAlgID.oid === HMAC_SHA256_OID &&
+    g1c.encryptedPOP.witnessAlgID.oid === SHA256 &&
+    g1c.encryptedPOP.witness.length === 32);
+  check("G1b. the enveloped challenge is surfaced as the bytes it arrived as",
+    Buffer.isBuffer(g1c.encryptedPOP.cms) && g1c.encryptedPOP.cms.equals(envelopedStub));
+  // Unopened is not unchecked: a field that is not an EnvelopedData could never be answered.
+  check("G1c. a challenge whose enveloped field is not a ContentInfo is refused",
+    code(function () {
+      return cmc.parse(signedData(ID_CCT_PKI_RESPONSE, pkiResponse([
+        taggedAttr(1, ID_CMC_ENCRYPTED_POP, [b.sequence([tcr(7, popCsr), b.integer(42n),
+          b.sequence([b.oid(HMAC_SHA256_OID)]), b.sequence([b.oid(SHA256)]),
+          b.octetString(Buffer.alloc(32, 1))])])], [], [])));
+    }) === "cmc/bad-pop-challenge");
+  check("G1d. a challenge carrying a SignedData instead of an EnvelopedData is refused",
+    code(function () {
+      return cmc.parse(signedData(ID_CCT_PKI_RESPONSE, pkiResponse([
+        taggedAttr(1, ID_CMC_ENCRYPTED_POP, [b.sequence([tcr(7, popCsr),
+          signedData(ID_CCT_PKI_DATA, pkiData([], [], [], [])),
+          b.sequence([b.oid(HMAC_SHA256_OID)]), b.sequence([b.oid(SHA256)]),
+          b.octetString(Buffer.alloc(32, 1))])])], [], [])));
+    }) === "cmc/bad-pop-challenge");
+  var decryptedPop = b.sequence([b.integer(7n), b.sequence([b.oid(HMAC_SHA256_OID)]),
+    b.octetString(Buffer.alloc(32, 0x5a))]);
+  var g2 = cmc.parse(signedData(ID_CCT_PKI_DATA,
+    pkiData([taggedAttr(1, ID_CMC_DECRYPTED_POP, [decryptedPop])], [], [], [])));
+  var g2c = g2.controls.filter(function (c) { return c.attrType === ID_CMC_DECRYPTED_POP; })[0];
+  check("G2. a Decrypted POP control decodes to its three fields",
+    !!g2c.decryptedPOP && g2c.decryptedPOP.bodyPartID === 7 &&
+    g2c.decryptedPOP.thePOPAlgID.oid === HMAC_SHA256_OID &&
+    g2c.decryptedPOP.thePOP.length === 32);
+  // RFC 5274 sec. 4.2 makes SHA-1 the MUST-implement witness algorithm, so a challenge naming it
+  // decodes and carries its parameters along: a client answers with what it was sent.
+  var g2b = cmc.parse(signedData(ID_CCT_PKI_RESPONSE, pkiResponse([
+    taggedAttr(1, ID_CMC_ENCRYPTED_POP, [b.sequence([tcr(7, popCsr), envelopedStub,
+      b.sequence([b.oid(HMAC_SHA256_OID)]), b.sequence([b.oid(SHA1_OID), b.nullValue()]),
+      b.octetString(Buffer.alloc(20, 0xa5))])])], [], [])));
+  var g2bc = g2b.controls.filter(function (c) { return c.attrType === ID_CMC_ENCRYPTED_POP; })[0];
+  check("G2b. a SHA-1 witness algorithm decodes, with its parameters kept",
+    g2bc.encryptedPOP.witnessAlgID.oid === SHA1_OID &&
+    Buffer.isBuffer(g2bc.encryptedPOP.witnessAlgID.parameters) &&
+    g2bc.encryptedPOP.witness.length === 20);
+
+  // A malformed control is a refusal, not a control that reads as something else.
+  check("G3. an Encrypted POP of the wrong arity is refused",
+    code(function () {
+      return cmc.parse(signedData(ID_CCT_PKI_RESPONSE, pkiResponse([
+        taggedAttr(1, ID_CMC_ENCRYPTED_POP, [b.sequence([tcr(7, popCsr), envelopedStub])])], [], [])));
+    }) === "cmc/bad-pop-challenge");
+  check("G3b. an algorithm identifier that is not one is refused",
+    code(function () {
+      return cmc.parse(signedData(ID_CCT_PKI_RESPONSE, pkiResponse([
+        taggedAttr(1, ID_CMC_ENCRYPTED_POP, [b.sequence([tcr(7, popCsr), envelopedStub,
+          b.integer(1n), b.sequence([b.oid(SHA256)]), b.octetString(Buffer.alloc(32, 1))])])], [], [])));
+    }) === "cmc/bad-pop-challenge");
+  check("G3c. an algorithm identifier carrying more than an OID and its parameters is refused",
+    code(function () {
+      return cmc.parse(signedData(ID_CCT_PKI_RESPONSE, pkiResponse([
+        taggedAttr(1, ID_CMC_ENCRYPTED_POP, [b.sequence([tcr(7, popCsr), envelopedStub,
+          b.sequence([b.oid(HMAC_SHA256_OID), b.nullValue(), b.nullValue()]),
+          b.sequence([b.oid(SHA256)]), b.octetString(Buffer.alloc(32, 1))])])], [], [])));
+    }) === "cmc/bad-pop-challenge");
+  // Naming the right content type is not carrying one: the wrapper and the EnvelopedData's own required
+  // elements are read, so a field that could never be opened is refused rather than surfaced.
+  function popWithEnvelope(envelope) {
+    return code(function () {
+      return cmc.parse(signedData(ID_CCT_PKI_RESPONSE, pkiResponse([
+        taggedAttr(1, ID_CMC_ENCRYPTED_POP, [b.sequence([tcr(7, popCsr), envelope,
+          b.sequence([b.oid(HMAC_SHA256_OID)]), b.sequence([b.oid(SHA256)]),
+          b.octetString(Buffer.alloc(32, 1))])])], [], [])));
+    });
+  }
+  check("G3e. a ContentInfo naming an EnvelopedData but carrying no content is refused",
+    popWithEnvelope(b.sequence([b.oid(ENVELOPED_DATA_OID)])) === "cmc/bad-pop-challenge");
+  check("G3f. a ContentInfo whose content is not the [0] EXPLICIT wrapper is refused",
+    popWithEnvelope(b.sequence([b.oid(ENVELOPED_DATA_OID), b.integer(0n)])) === "cmc/bad-pop-challenge");
+  check("G3g. a wrapper holding something that is not an EnvelopedData SEQUENCE is refused",
+    popWithEnvelope(b.sequence([b.oid(ENVELOPED_DATA_OID),
+      b.explicit(0, b.octetString(Buffer.alloc(4)))])) === "cmc/bad-pop-challenge");
+  check("G3h. an EnvelopedData not leading with its version INTEGER is refused",
+    popWithEnvelope(b.sequence([b.oid(ENVELOPED_DATA_OID),
+      b.explicit(0, b.sequence([b.set([]), b.integer(0n)]))])) === "cmc/bad-pop-challenge");
+  check("G3i. an EnvelopedData whose recipientInfos SET is empty is refused",
+    popWithEnvelope(b.sequence([b.oid(ENVELOPED_DATA_OID),
+      b.explicit(0, b.sequence([b.integer(0n), b.set([]),
+        b.sequence([b.oid("1.2.840.113549.1.7.1")])]))])) === "cmc/bad-pop-challenge");
+  check("G3j. an EnvelopedData carrying no recipientInfos SET at all is refused",
+    popWithEnvelope(b.sequence([b.oid(ENVELOPED_DATA_OID),
+      b.explicit(0, b.sequence([b.integer(0n),
+        b.sequence([b.oid("1.2.840.113549.1.7.1")])]))])) === "cmc/bad-pop-challenge");
+  // A SET somewhere inside the SEQUENCE is not a recipientInfos: the elements are read in the order
+  // sec. 6.1 gives them.
+  check("G3l. a SET whose elements are not RecipientInfos is not read as recipientInfos",
+    popWithEnvelope(b.sequence([b.oid(ENVELOPED_DATA_OID),
+      b.explicit(0, b.sequence([b.integer(0n), b.set([b.integer(1n)]),
+        b.sequence([b.oid("1.2.840.113549.1.7.1")])]))])) === "cmc/bad-pop-challenge");
+  check("G3m. an EnvelopedData with no encryptedContentInfo after its recipients is refused",
+    popWithEnvelope(b.sequence([b.oid(ENVELOPED_DATA_OID),
+      b.explicit(0, b.sequence([b.integer(0n),
+        b.set([b.contextConstructed(0, b.integer(0n))])]))])) === "cmc/bad-pop-challenge");
+  check("G3n. an originatorInfo before the recipients does not displace them",
+    popWithEnvelope(b.sequence([b.oid(ENVELOPED_DATA_OID),
+      b.explicit(0, b.sequence([b.integer(0n), b.contextConstructed(0, Buffer.alloc(0)),
+        b.set([]), b.sequence([b.oid("1.2.840.113549.1.7.1")])]))])) === "cmc/bad-pop-challenge");
+  // The count is what a client uses to know how many recipients to try, so an entry that is not a
+  // RecipientInfo must not be counted as one.
+  // The envelope is held to the CMS EnvelopedData definition itself, so a recipient with the right
+  // outer tag and the wrong contents is refused rather than counted as one to try.
+  function envelopeWith(recipients, eci) {
+    return b.sequence([b.oid(ENVELOPED_DATA_OID),
+      b.explicit(0, b.sequence([b.integer(0n), b.set(recipients),
+        eci || b.sequence([b.oid("1.2.840.113549.1.7.1"), b.sequence([b.oid(SHA256)])])]))]);
+  }
+  check("G3o. a recipient whose fields are the wrong types is refused, not counted",
+    popWithEnvelope(envelopeWith([b.sequence([b.integer(0n), b.integer(1n), b.integer(2n),
+      b.integer(3n)])])) === "cmc/bad-pop-challenge");
+  check("G3p. a recipient under a tag no alternative uses is refused",
+    popWithEnvelope(envelopeWith([b.contextConstructed(9, b.integer(0n))])) === "cmc/bad-pop-challenge");
+  check("G3q. an envelope carrying no encryptedContentInfo is refused",
+    code(function () {
+      return cmc.parse(signedData(ID_CCT_PKI_RESPONSE, pkiResponse([
+        taggedAttr(1, ID_CMC_ENCRYPTED_POP, [b.sequence([tcr(7, popCsr),
+          b.sequence([b.oid(ENVELOPED_DATA_OID), b.explicit(0, b.sequence([b.integer(0n), b.set([])]))]),
+          b.sequence([b.oid(HMAC_SHA256_OID)]), b.sequence([b.oid(SHA256)]),
+          b.octetString(Buffer.alloc(32, 1))])])], [], [])));
+    }) === "cmc/bad-pop-challenge");
+  // A challenge addressed to two recipients reports both, since that count is how many the client tries.
+  var twoRecipientStub = await pki.cms.encrypt(Buffer.from("proof value"),
+    [{ password: "pop-probe-secret" }, { password: "pop-probe-other" }],
+    { contentEncryptionAlgorithm: "aes-256-cbc" });
+  var g3r = cmc.parse(signedData(ID_CCT_PKI_RESPONSE, pkiResponse([
+    taggedAttr(1, ID_CMC_ENCRYPTED_POP, [b.sequence([tcr(7, popCsr), twoRecipientStub,
+      b.sequence([b.oid(HMAC_SHA256_OID)]), b.sequence([b.oid(SHA256)]),
+      b.octetString(Buffer.alloc(32, 1))])])], [], [])));
+  check("G3r. a challenge addressed to two recipients reports both",
+    g3r.controls.filter(function (c) { return c.attrType === ID_CMC_ENCRYPTED_POP; })[0]
+      .encryptedPOP.cmsRecipientCount === 2);
+  // Sec. 6.7 sends the challenge one way and the answer the other, so a message carrying the control
+  // for the other direction is not the exchange that section describes.
+  // A malformed algorithm identifier is a malformed challenge, so it carries the code this control's
+  // failures carry rather than a raw codec one.
+  check("G3s2. an algorithm identifier that names no OID is refused as a bad challenge",
+    code(function () {
+      return cmc.parse(signedData(ID_CCT_PKI_RESPONSE, pkiResponse([
+        taggedAttr(1, ID_CMC_ENCRYPTED_POP, [b.sequence([tcr(7, popCsr), envelopedStub,
+          b.sequence([b.integer(1n)]), b.sequence([b.oid(SHA256)]),
+          b.octetString(Buffer.alloc(32, 1))])])], [], [])));
+    }) === "cmc/bad-pop-challenge");
+  check("G3s3. the same holds for the witness algorithm",
+    code(function () {
+      return cmc.parse(signedData(ID_CCT_PKI_RESPONSE, pkiResponse([
+        taggedAttr(1, ID_CMC_ENCRYPTED_POP, [b.sequence([tcr(7, popCsr), envelopedStub,
+          b.sequence([b.oid(HMAC_SHA256_OID)]), b.sequence([b.integer(1n)]),
+          b.octetString(Buffer.alloc(32, 1))])])], [], [])));
+    }) === "cmc/bad-pop-challenge");
+  check("G3s4. and for a Decrypted POP the client sends",
+    code(function () {
+      return cmc.parse(signedData(ID_CCT_PKI_DATA, pkiData([
+        taggedAttr(1, ID_CMC_DECRYPTED_POP, [b.sequence([b.integer(7n),
+          b.sequence([b.integer(1n)]), b.octetString(Buffer.alloc(32, 3))])])], [], [], [])));
+    }) === "cmc/bad-pop-challenge");
+  check("G3s5. a witness that is not an OCTET STRING is refused the same way",
+    code(function () {
+      return cmc.parse(signedData(ID_CCT_PKI_RESPONSE, pkiResponse([
+        taggedAttr(1, ID_CMC_ENCRYPTED_POP, [b.sequence([tcr(7, popCsr), envelopedStub,
+          b.sequence([b.oid(HMAC_SHA256_OID)]), b.sequence([b.oid(SHA256)]),
+          b.integer(1n)])])], [], [])));
+    }) === "cmc/bad-pop-challenge");
+  // The request a challenge quotes is one the client answers for, so an arm carrying something that is
+  // not a request of that kind is refused rather than surfaced as a challenge nothing can answer.
+  // Every format parser answers for its own input in its own domain, so bytes that are not a CMS
+  // message report a CMC code rather than the carrier parser's.
+  check("G3s10. bytes that are not a CMS carrier are refused in this parser's own domain",
+    code(function () { return cmc.parse(Buffer.from([0x30, 0x03, 0x01])); }) === "cmc/bad-der");
+  check("G3s9. a Decrypted POP whose body part is not one is refused as a bad challenge",
+    (function () {
+      var slots = [b.octetString(Buffer.alloc(2)), b.integer(0n)];
+      for (var i = 0; i < slots.length; i++) {
+        var slot = slots[i];
+        if (code(function () {
+          return cmc.parse(signedData(ID_CCT_PKI_DATA, pkiData([
+            taggedAttr(1, ID_CMC_DECRYPTED_POP, [b.sequence([slot,
+              b.sequence([b.oid(HMAC_SHA256_OID)]), b.octetString(Buffer.alloc(32, 3))])])], [], [], [])));
+        }) !== "cmc/bad-pop-challenge") return false;
+      }
+      return true;
+    })());
+  check("G3s8. a request slot that is no TaggedRequest is refused as a bad challenge",
+    code(function () {
+      return cmc.parse(signedData(ID_CCT_PKI_RESPONSE, pkiResponse([
+        taggedAttr(1, ID_CMC_ENCRYPTED_POP, [b.sequence([b.integer(1n), envelopedStub,
+          b.sequence([b.oid(HMAC_SHA256_OID)]), b.sequence([b.oid(SHA256)]),
+          b.octetString(Buffer.alloc(32, 1))])])], [], [])));
+    }) === "cmc/bad-pop-challenge");
+  check("G3s6. a challenge quoting an empty CertificationRequest is refused",
+    code(function () {
+      return cmc.parse(signedData(ID_CCT_PKI_RESPONSE, pkiResponse([
+        taggedAttr(1, ID_CMC_ENCRYPTED_POP, [b.sequence([
+          b.contextConstructed(0, Buffer.concat([b.integer(7n), b.sequence([])])), envelopedStub,
+          b.sequence([b.oid(HMAC_SHA256_OID)]), b.sequence([b.oid(SHA256)]),
+          b.octetString(Buffer.alloc(32, 1))])])], [], [])));
+    }) === "cmc/bad-pop-challenge");
+  check("G3s7. the same holds for a CRMF arm that is not a CertReqMsg",
+    code(function () {
+      return cmc.parse(signedData(ID_CCT_PKI_RESPONSE, pkiResponse([
+        taggedAttr(1, ID_CMC_ENCRYPTED_POP, [b.sequence([
+          b.contextConstructed(1, b.sequence([b.integer(7n)])), envelopedStub,
+          b.sequence([b.oid(HMAC_SHA256_OID)]), b.sequence([b.oid(SHA256)]),
+          b.octetString(Buffer.alloc(32, 1))])])], [], [])));
+    }) === "cmc/bad-pop-challenge");
+  check("G3s. an Encrypted POP in a request is refused, since the authority sends it",
+    code(function () {
+      return cmc.parse(signedData(ID_CCT_PKI_DATA, pkiData([
+        taggedAttr(1, ID_CMC_ENCRYPTED_POP, [encryptedPop])], [], [], [])));
+    }) === "cmc/control-misplaced");
+  check("G3t. a Decrypted POP in a response is refused, since the client sends it",
+    code(function () {
+      return cmc.parse(signedData(ID_CCT_PKI_RESPONSE, pkiResponse([
+        taggedAttr(1, ID_CMC_DECRYPTED_POP, [b.sequence([b.integer(7n),
+          b.sequence([b.oid(HMAC_SHA256_OID)]), b.octetString(Buffer.alloc(32, 3))])])], [], [])));
+    }) === "cmc/control-misplaced");
+  check("G3k. the recipient count the parser read is surfaced for the client that answers",
+    g1c.encryptedPOP.cmsRecipientCount === 1);
+
+  check("G3d. a control carrying more than one value is refused",
+    code(function () {
+      return cmc.parse(signedData(ID_CCT_PKI_RESPONSE, pkiResponse([
+        taggedAttr(1, ID_CMC_ENCRYPTED_POP, [encryptedPop, encryptedPop])], [], [])));
+    }) === "cmc/bad-pop-challenge");
+  check("G4. a Decrypted POP whose proof is not an OCTET STRING is refused",
+    code(function () {
+      return cmc.parse(signedData(ID_CCT_PKI_DATA, pkiData([
+        taggedAttr(1, ID_CMC_DECRYPTED_POP, [b.sequence([b.integer(7n),
+          b.sequence([b.oid(HMAC_SHA256_OID)]), b.integer(1n)])])], [], [], [])));
+    }) === "cmc/bad-pop-challenge");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
