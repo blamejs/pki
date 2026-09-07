@@ -532,6 +532,16 @@ async function testPopoPrivKeyArms() {
     // 15 = 3*5, with q = 2 prime and dividing 14, and 4*4 = 16 = 1 mod 15, so every relation above
     // holds and only the modulus itself is left to answer for.
     ["a modulus that is not prime", x942With(15n, 4n, 2n, 11n), "modulus is not prime"],
+    // The codec admits a nonzero unused-bit count when the padding bits are zero, so one public
+    // value has two spellings, and the conversion carries this BIT STRING through unchanged.
+    ["a public key BIT STRING that is not octet-aligned", (function () {
+      return pki.asn1.build.sequence([
+        pki.asn1.build.sequence([pki.asn1.build.oid("1.2.840.10046.2.1"),
+          pki.asn1.build.raw(pki.asn1.build.sequence([pki.asn1.build.integer(23n),
+            pki.asn1.build.integer(2n), pki.asn1.build.integer(11n)]))]),
+        pki.asn1.build.bitString(Buffer.from(pki.asn1.build.integer(4n)), 2),
+      ]);
+    }()), "must be octet-aligned"],
     // The cofactor is multiplied by q, so it is sized before that multiplication like the rest.
     ["a cofactor wider than any group", x942With(23n, 2n, 11n, 4n, [pki.asn1.build.integer(1n << 20000n)]),
       "cofactor is larger than any Diffie-Hellman group"],
