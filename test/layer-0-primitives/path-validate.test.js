@@ -1124,6 +1124,135 @@ async function testSelfIssuedAndConstraints() {
   var resNc = await run([interNc, leafNc], { time: T2027, trustAnchors: anchor });
   check("SAN within permitted subtree validates", resNc.valid === true);
 
+  // A URI subtree base of a single label is one the comparison cannot read as a fully qualified
+  // domain name (RFC 5280 sec. 4.2.1.10), so every URI-bearing certificate under it is refused,
+  // whether or not the URI is one the base was meant to cover. The same base is refused at the
+  // configuration door, so an operator meets this at `pki.trust.anchor` rather than at validation.
+  var uInter = await mkCert({ subject: "UriNcInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt([gnUri(".com")], null)] });
+  var uLeafIn = await mkCert({ subject: "UriNcLeafA", issuer: "UriNcInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("https://host.example.com/x")])] });
+  var uLeafOut = await mkCert({ subject: "UriNcLeafB", issuer: "UriNcInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("https://host.example.org/x")])] });
+  var resUriIn = await run([uInter, uLeafIn], { time: T2027, trustAnchors: anchor });
+  var resUriOut = await run([uInter, uLeafOut], { time: T2027, trustAnchors: anchor });
+  check("a single-label URI subtree base refuses a URI it would cover",
+    resUriIn.valid === false && failCodes(resUriIn).indexOf("path/name-constraint-unsupported") !== -1);
+  check("a single-label URI subtree base refuses a URI outside it too",
+    resUriOut.valid === false && failCodes(resUriOut).indexOf("path/name-constraint-unsupported") !== -1);
+  var fqInter = await mkCert({ subject: "FqNcInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt([gnUri(".example.com")], null)] });
+  var fqLeaf = await mkCert({ subject: "FqNcLeaf", issuer: "FqNcInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("https://host.example.com/x")])] });
+  check("a fully qualified URI subtree base admits a URI beneath it",
+    (await run([fqInter, fqLeaf], { time: T2027, trustAnchors: anchor })).valid === true);
+
+  // A constraint base arrives two ways. A caller states one, and the door holds it to a well-formed
+  // host name. A certificate carries one in its own nameConstraints extension, where there is no
+  // door, and the comparison is what reads it. The comparison asks the narrower question: a base
+  // carrying an empty label asks for a name carrying one, and no name carries one, so it is answered
+  // with no verdict (path/name-constraint-unsupported) rather than with no match. An excluded subtree
+  // whose base matches nothing excludes nothing, so a stray dot in the base of a CA's own exclusion
+  // would otherwise leave the exclusion visible to inspection and inert in validation.
+  var wireBad = [
+    ["uri", gnUri, "https://host.example.com/x", [".example.com..", "..example.com", ".example.com...", ".."]],
+    ["dns", gnDns, "host.example.com", ["..example.com", ".example.com..", "..", "a..b.example.com"]],
+    ["mail", gnEmail, "user@host.example.com", ["..example.com", "..", "user@..example.com"]],
+  ];
+  for (var wk = 0; wk < wireBad.length; wk++) {
+    var wc = wireBad[wk];
+    for (var wb = 0; wb < wc[3].length; wb++) {
+      var gnFn = wc[1], badBase = wc[3][wb], tail = wc[0] + " base " + JSON.stringify(badBase);
+      var exI = await mkCert({ subject: "WX" + wk + wb, issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt(null, [gnFn(badBase)])] });
+      var exL = await mkCert({ subject: "WXL" + wk + wb, issuer: "WX" + wk + wb, signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnFn(wc[2])])] });
+      var exR = await run([exI, exL], { time: T2027, trustAnchors: anchor });
+      check("an excluded " + tail + " the comparison cannot read is unsupported, not inert",
+        exR.valid === false && failCodes(exR).indexOf("path/name-constraint-unsupported") !== -1);
+      var peI = await mkCert({ subject: "WP" + wk + wb, issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt([gnFn(badBase)], null)] });
+      var peL = await mkCert({ subject: "WPL" + wk + wb, issuer: "WP" + wk + wb, signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnFn(wc[2])])] });
+      var peR = await run([peI, peL], { time: T2027, trustAnchors: anchor });
+      check("a permitted " + tail + " the comparison cannot read is unsupported",
+        peR.valid === false && failCodes(peR).indexOf("path/name-constraint-unsupported") !== -1);
+    }
+  }
+
+  // A base that reduces to nothing is read by tag, because the comparisons do not agree on it. For
+  // dNSName it names the root of the namespace and matches every name. For rfc822Name the same
+  // reduction leaves no domain, or no local part, and no mailbox has either, so it matches none.
+  // Only the second is a subtree that would silently exclude nothing.
+  // A base carrying an at-sign names one mailbox and is compared exactly, so each half is read on its
+  // own terms: an empty atom in the local part, or an empty label in the domain, leaves a base no
+  // well-formed mailbox equals. A base without an at-sign constrains the host and is read as a
+  // subtree instead, which is why the two lists below differ.
+  var mailExact = ["user@.example.com", ".user@example.com", "user.@example.com", "user @example.com", "user@example..com"];
+  for (var xi = 0; xi < mailExact.length; xi++) {
+    var xI = await mkCert({ subject: "MX" + xi, issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt(null, [gnEmail(mailExact[xi])])] });
+    var xL = await mkCert({ subject: "MXL" + xi, issuer: "MX" + xi, signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnEmail("user@example.com")])] });
+    var xR = await run([xI, xL], { time: T2027, trustAnchors: anchor });
+    check("an excluded rfc822 mailbox base " + JSON.stringify(mailExact[xi]) + " no mailbox equals is unsupported",
+      xR.valid === false && failCodes(xR).indexOf("path/name-constraint-unsupported") !== -1);
+  }
+  // A mailbox base a real certificate can carry keeps being compared, including an underscore the
+  // door refuses and an address literal the comparison reads whole.
+  var mailOk = [["user@example.com", true], ["user@ex_ample.com", false], ["user@[192.0.2.1]", false]];
+  for (var oi = 0; oi < mailOk.length; oi++) {
+    var oI = await mkCert({ subject: "MO" + oi, issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt(null, [gnEmail(mailOk[oi][0])])] });
+    var oL = await mkCert({ subject: "MOL" + oi, issuer: "MO" + oi, signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnEmail("user@example.com")])] });
+    var oR = await run([oI, oL], { time: T2027, trustAnchors: anchor });
+    check("an excluded rfc822 mailbox base " + JSON.stringify(mailOk[oi][0]) + " is compared, not refused",
+      failCodes(oR).indexOf("path/name-constraint-unsupported") === -1 &&
+      (mailOk[oi][1] ? (oR.valid === false && failCodes(oR).indexOf("path/name-constraint-excluded") !== -1) : oR.valid === true));
+  }
+
+  var mailEmpty = [".", "user@", "@", "@example.com", ".."];
+  for (var mi = 0; mi < mailEmpty.length; mi++) {
+    var mI = await mkCert({ subject: "MB" + mi, issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt(null, [gnEmail(mailEmpty[mi])])] });
+    var mL = await mkCert({ subject: "MBL" + mi, issuer: "MB" + mi, signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnEmail("user@host.example.com")])] });
+    var mR = await run([mI, mL], { time: T2027, trustAnchors: anchor });
+    check("an excluded rfc822 base " + JSON.stringify(mailEmpty[mi]) + " no mailbox can match is unsupported",
+      mR.valid === false && failCodes(mR).indexOf("path/name-constraint-unsupported") !== -1);
+  }
+  // RFC 5280 sec. 4.2.1.10 makes a bare host name the constraint on mailboxes AT that host, so a
+  // base naming a parent of the mailbox host is a genuine non-match and stays one.
+  var mHostI = await mkCert({ subject: "MBH", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt(null, [gnEmail("example.com")])] });
+  var mHostL = await mkCert({ subject: "MBHL", issuer: "MBH", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnEmail("user@host.example.com")])] });
+  check("an excluded rfc822 base naming a parent host does not exclude a mailbox below it",
+    (await run([mHostI, mHostL], { time: T2027, trustAnchors: anchor })).valid === true);
+  var mExI = await mkCert({ subject: "MBE", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt(null, [gnEmail("host.example.com")])] });
+  var mExL = await mkCert({ subject: "MBEL", issuer: "MBE", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnEmail("user@host.example.com")])] });
+  var mExR = await run([mExI, mExL], { time: T2027, trustAnchors: anchor });
+  check("and a base naming the mailbox host itself still excludes it",
+    mExR.valid === false && failCodes(mExR).indexOf("path/name-constraint-excluded") !== -1);
+
+  // A base the comparison CAN read keeps answering as it did, in both directions and for a trailing
+  // dot, which is the one form the door strips rather than refuses. The last three are bases the door
+  // refuses a caller and the comparison still applies: an underscore, a label edged with a hyphen and
+  // a label over the 63 characters a host name allows are all names a suffix comparison places
+  // exactly, so a certificate constrained to a namespace holding one keeps validating.
+  var longLabel = "";
+  for (var lp = 0; lp < 64; lp++) longLabel += "a";
+  var wireOk = [
+    ["uri", gnUri, "https://host.example.com/x", ".example.com", ".example.org"],
+    ["dns", gnDns, "host.example.com", "example.com", "example.org"],
+    ["dns", gnDns, "host.example.com", "example.com.", "example.org."],
+    ["mail", gnEmail, "user@host.example.com", "host.example.com", "other.example.com"],
+    ["dns", gnDns, "host._x.example.com", "_x.example.com", "_y.example.com"],
+    ["dns", gnDns, "host.-bad.example.com", "-bad.example.com", "-other.example.com"],
+    ["dns", gnDns, "host." + longLabel + ".example.com", longLabel + ".example.com", longLabel + ".example.org"],
+    ["mail", gnEmail, "user@host.ex_ample.com", "host.ex_ample.com", "other.ex_ample.com"],
+  ];
+  for (var ok = 0; ok < wireOk.length; ok++) {
+    var oc = wireOk[ok], ofn = oc[1], covers = oc[3], misses = oc[4];
+    var okI = await mkCert({ subject: "WO" + ok, issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt(null, [ofn(covers)])] });
+    var okL = await mkCert({ subject: "WOL" + ok, issuer: "WO" + ok, signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([ofn(oc[2])])] });
+    var okR = await run([okI, okL], { time: T2027, trustAnchors: anchor });
+    check("an excluded " + oc[0] + " base " + JSON.stringify(covers) + " still excludes the name it covers",
+      okR.valid === false && failCodes(okR).indexOf("path/name-constraint-excluded") !== -1);
+    var msI = await mkCert({ subject: "WM" + ok, issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt(null, [ofn(misses)])] });
+    var msL = await mkCert({ subject: "WML" + ok, issuer: "WM" + ok, signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([ofn(oc[2])])] });
+    check("an excluded " + oc[0] + " base " + JSON.stringify(misses) + " still admits the name it does not cover",
+      (await run([msI, msL], { time: T2027, trustAnchors: anchor })).valid === true);
+    var pmI = await mkCert({ subject: "WQ" + ok, issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt([ofn(covers)], null)] });
+    var pmL = await mkCert({ subject: "WQL" + ok, issuer: "WQ" + ok, signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([ofn(oc[2])])] });
+    check("a permitted " + oc[0] + " base " + JSON.stringify(covers) + " still admits the name it covers",
+      (await run([pmI, pmL], { time: T2027, trustAnchors: anchor })).valid === true);
+  }
+
   // explicit policy satisfied end-to-end.
   var P1 = "1.3.6.1.4.1.99999.1";
   var interP = await mkCert({ subject: "PInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), cpExt([P1])] });

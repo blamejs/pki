@@ -456,6 +456,132 @@ function corruptLeafSig(leafDer) {
   return d;
 }
 
+// A centrally generated key pair delivered the way RFC 9483 sec. 4.1.6 describes: an RFC 5958
+// AsymmetricKeyPackage, signed by a Key Generation Authority asserting id-kp-cmKGA, sealed to the
+// enrolling client's own key by the key transport technique (sec. 4.1.6.1). Returns the container to
+// put in the grant's `privateKey`, the anchor that authorizes the authority, and the key inside it.
+// Replace an EC PKCS#8 key's private scalar with another key's, keeping the public point the
+// structure stores. Built as an ENCODING, so the delivered bytes are what a hostile authority could
+// actually send rather than a mutated parse result.
+function _swapEcScalar(pki, pk8) {
+  var ds = require("./der-surgery");
+  var b = pki.asn1.build;
+  var innerDer = pki.schema.pkcs8.parse(pk8).privateKey;
+  var other = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" })
+    .privateKey.export({ format: "der", type: "pkcs8" });
+  var otherScalar = Buffer.from(pki.asn1.decode(pki.schema.pkcs8.parse(other).privateKey).children[1].bytes);
+  var scalar = Buffer.from(pki.asn1.decode(innerDer).children[1].bytes);
+  var swappedInner = ds.patch(innerDer, function (n) {
+    if (n.constructed || n.tagClass !== "universal" || n.tagNumber !== pki.asn1.TAGS.OCTET_STRING) return undefined;
+    return Buffer.from(n.bytes).equals(scalar) ? otherScalar : undefined;
+  });
+  var outer = Buffer.from(pki.asn1.decode(pk8).children[2].bytes);
+  return ds.patch(pk8, function (n) {
+    if (n.constructed || n.tagClass !== "universal" || n.tagNumber !== pki.asn1.TAGS.OCTET_STRING) return undefined;
+    return Buffer.from(n.bytes).equals(outer) ? b.octetString(swappedInner) : undefined;
+  });
+}
+
+// An RSA PKCS#8 whose private exponent and CRT components are replaced with 1, leaving the modulus and
+// public exponent the structure states.
+function _breakRsaPrivate(pki, pk8) {
+  var ds = require("./der-surgery");
+  var b = pki.asn1.build;
+  var innerDer = pki.schema.pkcs8.parse(pk8).privateKey;
+  var broken = b.sequence(pki.asn1.decode(innerDer).children.map(function (c, i) {
+    return i >= 3 ? b.integer(1n) : b.raw(c.bytes);
+  }));
+  var outer = Buffer.from(pki.asn1.decode(pk8).children[2].bytes);
+  return ds.patch(pk8, function (n) {
+    if (n.constructed || n.tagClass !== "universal" || n.tagNumber !== pki.asn1.TAGS.OCTET_STRING) return undefined;
+    return Buffer.from(n.bytes).equals(outer) ? b.octetString(broken) : undefined;
+  });
+}
+
+async function centralKeyGeneration(pki, client, o) {
+  o = o || {};
+  var password = o.password;
+  var kgaKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var kgaKey = kgaKp.privateKey.export({ format: "der", type: "pkcs8" });
+  // By default the authority is a PKI management entity of the same CA, so the session's own anchor
+  // authorizes it. `o.foreign` makes it self-signed instead: an authority under no accepted anchor.
+  // `o.viaIntermediate` issues the authority under a sub-CA of the test root, so reaching the anchor
+  // needs that intermediate from the session's own pool.
+  var interKey = null, interCert = null;
+  if (o.viaIntermediate) {
+    var interKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+    interKey = interKp.privateKey.export({ format: "der", type: "pkcs8" });
+    interCert = await pki.x509.sign({ subject: [{ commonName: "cmp-kga-sub-ca.example" }],
+      subjectPublicKey: interKp.publicKey.export({ format: "der", type: "spki" }), serialNumber: 0x6b68,
+      notBefore: NB, notAfter: NA,
+      extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: true } },
+    { key: _caKeyPk8, cert: _caCertDer });
+  }
+  var issuer = o.foreign ? { key: kgaKey }
+    : (o.viaIntermediate ? { key: interKey, cert: interCert } : { key: _caKeyPk8, cert: _caCertDer });
+  var kgaCert = await pki.x509.sign({ subject: [{ commonName: "cmp-kga.example" }],
+    subjectPublicKey: kgaKp.publicKey.export({ format: "der", type: "spki" }), serialNumber: 0x6b67,
+    notBefore: o.notBefore || NB, notAfter: o.notAfter || NA,
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["digitalSignature", "keyCertSign"],
+      extendedKeyUsage: ["cmKGA"], subjectKeyIdentifier: true } }, issuer);
+  // `o.dh` delivers a finite-field Diffie-Hellman key: a well-formed OneAsymmetricKey whose type
+  // neither signs, nor is one of the two key-agreement types the pair check drives, nor encapsulates,
+  // so the two halves cannot be exercised together at all.
+  var deliveredKp = o.dh ? nodeCrypto.generateKeyPairSync("dh", { group: "modp14" })
+    : nodeCrypto.generateKeyPairSync(o.rsa ? "rsa" : "ec",
+      o.rsa ? { modulusLength: 2048 } : { namedCurve: "P-256" });
+  var deliveredKey = deliveredKp.privateKey.export({ format: "der", type: "pkcs8" });
+  // `o.breakPrivate` delivers a key whose PRIVATE components were replaced while the public ones the
+  // structure states were left alone. It derives to the certified public key and cannot use it.
+  if (o.breakPrivate) deliveredKey = _breakRsaPrivate(pki, deliveredKey);
+  // `o.swapScalar` delivers a key whose private scalar was replaced while its stored public point was
+  // left alone: an EC key structure states its own point (RFC 5915 sec. 3), so a check that read the
+  // stated point rather than computing one from the private material would call this key a pair with
+  // the certificate it cannot use.
+  if (o.swapScalar) deliveredKey = _swapEcScalar(pki, deliveredKey);
+  // The certificate granted alongside a centrally generated key certifies THAT key: the two are one
+  // pair, and a session that accepted an unpaired certificate would confirm an enrollment whose
+  // certificate the entity has no private key for.
+  // `o.pssCert` certifies the same RSA modulus under id-RSASSA-PSS while the delivered key keeps its
+  // rsaEncryption encoding. RFC 4055 sec. 1.2 allows either identifier for one key pair, so the two
+  // are a pair even though the key engine reports different types for them.
+  var deliveredSpki = deliveredKp.publicKey.export({ format: "der", type: "spki" });
+  if (o.pssCert) {
+    var spkiNode = pki.asn1.decode(deliveredSpki);
+    deliveredSpki = pki.asn1.build.sequence([
+      pki.asn1.build.sequence([pki.asn1.build.oid(pki.oid.byName("rsassaPss"))]),
+      pki.asn1.build.raw(spkiNode.children[1].bytes),
+    ]);
+  }
+  var deliveredCert = await pki.x509.sign({ subject: [{ commonName: "leaf" }],
+    subjectPublicKey: deliveredSpki,
+    serialNumber: 0x6b6c, notBefore: NB, notAfter: NA,
+    extensions: { authorityKeyIdentifier: true } }, { key: _caKeyPk8, cert: _caCertDer });
+  // `o.extraKey` packages a SECOND key beside the delivered one. RFC 5958 allows the package to carry
+  // several, and one grant certifies one of them, so the others are keys the issued certificate says
+  // nothing about.
+  var packaged = [pki.asn1.build.raw(deliveredKey)];
+  if (o.extraKey) {
+    packaged.push(pki.asn1.build.raw(nodeCrypto.generateKeyPairSync("ed25519")
+      .privateKey.export({ format: "der", type: "pkcs8" })));
+  }
+  var signed = await pki.cms.sign(pki.asn1.build.sequence(packaged),
+    [{ key: kgaKey, cert: kgaCert }], { eContentType: "aKeyPackage", sid: "ski" });
+  // The client's own enrollment certificate is the recipient, which is what a signature-protected
+  // request selects: its EC key makes this the key agreement technique (sec. 4.1.6.2).
+  // A signature-protected request selects the key transport or key agreement technique off the EE's
+  // own certificate; a MAC-protected one selects the password technique (sec. 4.1.6.3).
+  var contentInfo = await pki.cms.encrypt(signed,
+    [password != null ? { password: password } : { cert: client.cert }],
+    { contentEncryptionAlgorithm: "aes-256-cbc", contentType: "signedData" });
+  // The wire form of an EncryptedKey is the EnvelopedData itself under [0] IMPLICIT (RFC 9810
+  // sec. 5.2.2), not a ContentInfo, so the SEQUENCE is unwrapped and re-tagged.
+  var enveloped = pki.asn1.decode(contentInfo).children[1].children[0];
+  var container = pki.asn1.build.implicit(0, enveloped.bytes);
+  return { container: container, contentInfo: contentInfo, cert: kgaCert, intermediate: interCert,
+    anchor: o.foreign ? kgaCert : _caCertDer, deliveredKey: deliveredKey, deliveredCert: deliveredCert };
+}
+
 // ---- response body-arm builders (RFC 9810 sec. 5.2.3 / 5.3.4 / 5.3.22) ----
 // `extra` may carry { caPubs: [certDer,...] } (issuer certs on the CertRepMessage) and/or { privateKey } (a
 // central-key-generation payload on the certifiedKeyPair).
@@ -504,6 +630,20 @@ function genpTwo(a, b2) { return { genp: [{ infoType: a }, { infoType: b2 }] }; 
 // An enrollment request spec (an ir) whose template publicKey is the ENROLLING key -- it MUST equal the
 // signature-protection key so the CRMF proof-of-possession (which defaults to the protection key) verifies.
 // An optional certReqId sets the CRMF request id the session must echo in pollReq / certConf (RFC 4211).
+// The RFC 9483 sec. 4.1.6 request shape: the certTemplate omits publicKey, so the authority generates
+// the key pair. `zeroLength` uses the other permitted form, an algorithm preference over a
+// zero-length subjectPublicKey BIT STRING.
+function irCentralRequest(pki, zeroLength) {
+  var b = pki.asn1.build;
+  var template = { subject: [{ commonName: "leaf" }] };
+  if (zeroLength) {
+    template.publicKey = b.sequence([
+      b.sequence([b.oid(pki.oid.byName("ecPublicKey")), b.oid(pki.oid.byName("prime256v1"))]),
+      b.bitString(Buffer.alloc(0), 0)]);
+  }
+  return { ir: { certTemplate: template } };
+}
+
 function irRequest(spki, certReqId, key) {
   var ir = { certTemplate: { subject: [{ commonName: "leaf" }], publicKey: spki } };
   if (certReqId != null) ir.certReqId = certReqId;
@@ -515,5 +655,6 @@ module.exports = {
   init: init, fakeCa: fakeCa, caCert: null, leafCert: null, intCaCert: null, signerCert: null, deepSignerCert: null, deepSignerSki: null, sanSignerACert: null, sanSignerAKey: null, sanSignerBCert: null,
   ip: ip, cp: cp, kup: kup, ipRejected: ipRejected, ipEmpty: ipEmpty, pollRep: pollRep, pkiconf: pkiconf, genp: genp, errorBody: errorBody, irRequest: irRequest,
   rp: rp, rpMultiStatus: rpMultiStatus, errorWaiting: errorWaiting, genpOf: genpOf, genpTwo: genpTwo, makeEd25519Cert: makeEd25519Cert, makePssCert: makePssCert, makeUnknownSigAlgCert: makeUnknownSigAlgCert, makeRegisteredNonSigCert: makeRegisteredNonSigCert, makeCompositeSigOidCert: makeCompositeSigOidCert, corruptLeafSig: corruptLeafSig, makeSignerIssuedLeaf: makeSignerIssuedLeaf, makeIntSignedLeaf: makeIntSignedLeaf, makeCaSignedLeaf: makeCaSignedLeaf, makeCurveSwappedLeaf: makeCurveSwappedLeaf, makeMalformedRsaParamCert: makeMalformedRsaParamCert, makePssIndeterminateCert: makePssIndeterminateCert, makePssExplicitUnknownHashCert: makePssExplicitUnknownHashCert, manyDistinctCerts: manyDistinctCerts, stripSpkiParams: stripSpkiParams,
+  centralKeyGeneration: centralKeyGeneration, irCentralRequest: irCentralRequest,
   IMPLICIT_CONFIRM_GI: [{ infoType: "implicitConfirm" }],
 };

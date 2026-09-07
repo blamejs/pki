@@ -46,6 +46,7 @@ jobs:
           - pkcs12-parse
           - cmp-parse
           - cmp-support-value
+          - cmp-key-package
           - cmc-parse
           - ct-parse
           - ct-verify

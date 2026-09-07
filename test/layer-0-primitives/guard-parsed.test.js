@@ -312,6 +312,26 @@ async function run() {
   check("a Proxy over a real result does not inherit its record",
     codeOf(function () { door(Object.assign(proxied, { responseStatus: 1 })); }) === "x/bad");
 
+  // ---- sourceOf: the bytes a recorded parse came from -------------------------
+  // A consumer holding a parsed certificate sometimes has to hand DER to a verb that takes bytes. The
+  // bytes the parse came from are recorded, so they are handed on rather than re-encoded.
+  var srcSigner = signing.makeSigner("ec-p256");
+  var srcParsed = pki.schema.x509.parse(srcSigner.cert);
+  var recovered = guard.sourceOf(srcParsed);
+  check("sourceOf returns the exact bytes a recorded parse came from",
+    Buffer.isBuffer(recovered) && recovered.equals(Buffer.from(srcSigner.cert)));
+  check("and a copy of them, so a caller cannot reach the record",
+    guard.sourceOf(srcParsed) !== recovered);
+  check("sourceOf answers null for an object that was never parsed", guard.sourceOf(CERT) === null);
+  check("and for a value that is not an object at all",
+    guard.sourceOf(null) === null && guard.sourceOf("a string") === null && guard.sourceOf(undefined) === null);
+  // The bytes are the truth, so a result a caller has since edited no longer describes them: handing
+  // the recorded source on would silently discard the edit and forward something else.
+  var edited = pki.schema.x509.parse(srcSigner.cert);
+  edited.addedByTheCaller = 1;
+  check("sourceOf answers null for a result whose fields no longer match the parse",
+    guard.sourceOf(edited) === null);
+
   // ---- the kind is a programming error, not an input fault --------------------
   // A misspelled kind is a bug in the composing module and must not read as a
   // malformed input from the operator.

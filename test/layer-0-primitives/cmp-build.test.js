@@ -225,6 +225,22 @@ async function run() {
   var ccBump = { header: HDR, body: { certConf: [{ certHash: Buffer.alloc(32, 1), certReqId: -1, hashAlg: "sha256" }] } };
   check("5a. a certConf hashAlg auto-bumps pvno to cmp2021(3)", parse(await pki.cmp.build(ccBump, SIG)).header.pvno === 3);
   check("5b. a plain message defaults to pvno===2", mi.header.pvno === 2);
+  // RFC 9483 sec. 4.1.6 asks the authority to generate the key pair by omitting the public key from
+  // an ENROLLMENT request, and RFC 9480 sec. 2.20 needs cmp2021 for the EnvelopedData the response
+  // then carries. A krr names a key to recover and a ccr names one to cross-certify, so the same
+  // omission there speaks for neither, and the version is decided by the arm as well as the template.
+  var keyless = { certTemplate: { subject: [{ commonName: "central" }] }, key: null };
+  check("5b1. an ir with no publicKey asks for central key generation and carries cmp2021(3)",
+    parse(await pki.cmp.build({ header: HDR, body: { ir: keyless } }, SIG)).header.pvno === 3);
+  check("5b2. so do a cr and a kur",
+    parse(await pki.cmp.build({ header: HDR, body: { cr: keyless } }, SIG)).header.pvno === 3 &&
+    parse(await pki.cmp.build({ header: HDR, body: { kur: keyless } }, SIG)).header.pvno === 3);
+  check("5b3. a krr with no publicKey is a key-recovery request and stays cmp2000(2)",
+    parse(await pki.cmp.build({ header: HDR, body: { krr: keyless } }, SIG)).header.pvno === 2);
+  check("5b4. and a ccr with no publicKey stays cmp2000(2)",
+    parse(await pki.cmp.build({ header: HDR, body: { ccr: keyless } }, SIG)).header.pvno === 2);
+  check("5b5. an ir carrying a real public key stays cmp2000(2)",
+    parse(await pki.cmp.build(irMsg, SIG)).header.pvno === 2);
   check("5c. an explicit out-of-range pvno:99 -> cmp/bad-version on re-parse", await codeOf(pki.cmp.build({ header: Object.assign({ pvno: 99 }, HDR), body: irMsg.body }, SIG)) === "cmp/bad-version");
 
   // ---- EXPLICIT tag boundary (one assertion per emitted context tag) ----

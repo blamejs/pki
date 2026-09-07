@@ -20,6 +20,7 @@ var makeCompositeSigner = signing.makeCompositeSigner;
 var asn1 = pki.asn1;
 var b = asn1.build;
 var nodeCrypto = require("node:crypto");
+var derSurgery = require("../helpers/der-surgery");
 var constants = require("../../lib/constants");
 
 async function codeOf(promise) {
@@ -1197,6 +1198,316 @@ async function run() {
   }
   check("23ap. a lying kind test cannot make the verb wipe the caller's own secret",
     callerOwned.toString("utf8") === "hunter2");
+
+  // ===== 26. Central key pair generation, the end-entity half (RFC 9483 sec. 4.1.6) =====
+  // A key generated for this entity arrives as an AsymmetricKeyPackage (RFC 5958), signed by the
+  // authority that generated it and sealed to this entity. Opening it means undoing both layers in
+  // order and authorizing the signer before any key material is surfaced.
+  var kgaWindow = { notBefore: new Date("2020-01-01T00:00:00Z"), notAfter: new Date("2040-01-01T00:00:00Z") };
+  async function kgaCert(kind, cn, extensions) {
+    var kp = nodeCrypto.generateKeyPairSync.apply(nodeCrypto,
+      kind === "rsa" ? ["rsa", { modulusLength: 2048 }] : ["ec", { namedCurve: "prime256v1" }]);
+    var key = kp.privateKey.export({ format: "der", type: "pkcs8" });
+    var spki = kp.publicKey.export({ format: "der", type: "spki" });
+    return { key: key, spki: spki, cert: await pki.x509.sign({ subject: cn, subjectPublicKey: spki,
+      notBefore: kgaWindow.notBefore, notAfter: kgaWindow.notAfter, extensions: extensions }, { key: key }) };
+  }
+  async function issuedBy(issuer, kind, cn, extensions) {
+    var kp = nodeCrypto.generateKeyPairSync.apply(nodeCrypto,
+      kind === "rsa" ? ["rsa", { modulusLength: 2048 }] : ["ec", { namedCurve: "prime256v1" }]);
+    var key = kp.privateKey.export({ format: "der", type: "pkcs8" });
+    var spki = kp.publicKey.export({ format: "der", type: "spki" });
+    return { key: key, spki: spki, cert: await pki.x509.sign({ subject: cn, subjectPublicKey: spki,
+      notBefore: kgaWindow.notBefore, notAfter: kgaWindow.notAfter, extensions: extensions },
+      { cert: issuer.cert, key: issuer.key }) };
+  }
+  var KGA_CA = { basicConstraints: { cA: true }, keyUsage: ["digitalSignature", "keyCertSign"], subjectKeyIdentifier: true };
+  var kgaSigner = await kgaCert("ec", "KGA",
+    Object.assign({ extendedKeyUsage: ["cmKGA"] }, KGA_CA));
+  var noEkuSigner = await kgaCert("ec", "No EKU KGA", KGA_CA);              // no extendedKeyUsage at all
+  var wrongEkuSigner = await kgaCert("ec", "Wrong EKU KGA",
+    Object.assign({ extendedKeyUsage: ["codeSigning"] }, KGA_CA));          // present, but not id-kp-cmKGA
+  var kgaEeKt = await kgaCert("rsa", "EE key transport", { keyUsage: ["keyEncipherment"] });   // sec. 4.1.6.1
+  var kgaEeKa = await kgaCert("ec", "EE key agreement", { keyUsage: ["keyAgreement"] });       // sec. 4.1.6.2
+  var deliveredPkcs8 = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" })
+    .privateKey.export({ format: "der", type: "pkcs8" });
+  var deliveredSecond = nodeCrypto.generateKeyPairSync("ed25519")
+    .privateKey.export({ format: "der", type: "pkcs8" });
+
+  function keyPackage(keys) { return b.sequence(keys.map(function (k) { return b.raw(k); })); }
+  async function sealed(content, recipients, o) {
+    o = o || {};
+    var signer = o.signer || kgaSigner;
+    var signed = o.presigned || await pki.cms.sign(content, [{ key: signer.key, cert: signer.cert }],
+      { eContentType: o.eContentType || "aKeyPackage", sid: "ski" });
+    return pki.cms.encrypt(signed, recipients, { contentEncryptionAlgorithm: "aes-256-cbc",
+      contentType: o.contentType || "signedData" });
+  }
+  function anchored(extra) { return Object.assign({ trustAnchors: [kgaSigner.cert] }, extra); }
+
+  var ktContainer = await sealed(keyPackage([deliveredPkcs8]), [{ cert: kgaEeKt.cert }]);
+  var opened = await pki.cmp.openKeyPackage(ktContainer, anchored({ key: kgaEeKt.key }));
+  check("26a. a key transport container yields the delivered key as a PKCS#8 PrivateKeyInfo",
+    Array.isArray(opened.keys) && opened.keys.length === 1 && Buffer.isBuffer(opened.keys[0]) &&
+    pki.schema.pkcs8.parse(opened.keys[0]).privateKeyAlgorithm.name === "ecPublicKey");
+  check("26b. and it names the authority whose signature was checked, and reports the chain verdict",
+    Buffer.isBuffer(opened.kga) && opened.kga.equals(kgaSigner.cert) && opened.trusted === true);
+  check("26c. a key agreement container opens the same way",
+    (await pki.cmp.openKeyPackage(await sealed(keyPackage([deliveredPkcs8]), [{ cert: kgaEeKa.cert }]),
+      anchored({ key: kgaEeKa.key }))).keys.length === 1);
+  check("26d. so does a password container, under the shared secret the request was protected with",
+    (await pki.cmp.openKeyPackage(await sealed(keyPackage([deliveredPkcs8]), [{ password: "hunter2" }]),
+      anchored({ password: "hunter2" }))).keys.length === 1);
+  // RFC 5958: AsymmetricKeyPackage ::= SEQUENCE SIZE (1..MAX) OF OneAsymmetricKey.
+  var two = await pki.cmp.openKeyPackage(
+    await sealed(keyPackage([deliveredPkcs8, deliveredSecond]), [{ cert: kgaEeKt.cert }]),
+    anchored({ key: kgaEeKt.key }));
+  check("26e. every key in the package is surfaced, in the order it was packaged",
+    two.keys.length === 2 && two.keys[0].equals(deliveredPkcs8) && two.keys[1].equals(deliveredSecond));
+
+  // "recipientInfos MUST contain a sequence of one RecipientInfo": a second recipient is a second
+  // party able to open a key generated for this entity.
+  check("26f. a container naming more than one recipient is refused",
+    (await codeOf(pki.cmp.openKeyPackage(
+      await sealed(keyPackage([deliveredPkcs8]), [{ cert: kgaEeKt.cert }, { cert: kgaEeKa.cert }]),
+      anchored({ key: kgaEeKt.key })))) === "cmp/bad-key-package");
+  // RFC 5652 sec. 6.2.2: one KeyAgreeRecipientInfo wraps the content-encryption key once per entry in
+  // its recipientEncryptedKeys, each for a different recipient, so counting RecipientInfos alone would
+  // let a second party through under a single one.
+  var kaContainer = await sealed(keyPackage([deliveredPkcs8]), [{ cert: kgaEeKa.cert }]);
+  var twoRekContainer = (function () {
+    var enveloped = asn1.decode(kaContainer).children[1].children[0];
+    var recipientInfos = enveloped.children.filter(function (c) {
+      return c.tagClass === "universal" && c.tagNumber === asn1.TAGS.SET;
+    })[0];
+    var kari = recipientInfos.children[0];
+    var reks = kari.children[kari.children.length - 1];
+    var one = Buffer.from(reks.children[0].bytes), target = Buffer.from(reks.bytes);
+    return derSurgery.patch(kaContainer, function (node) {
+      if (!node.constructed || node.tagClass !== "universal" || node.tagNumber !== asn1.TAGS.SEQUENCE) return undefined;
+      return Buffer.from(node.bytes).equals(target) ? b.sequence([b.raw(one), b.raw(one)]) : undefined;
+    });
+  })();
+  check("26f2. a key agreement RecipientInfo wrapping the key for a second party is refused",
+    (await codeOf(pki.cmp.openKeyPackage(twoRekContainer,
+      anchored({ key: kgaEeKa.key })))) === "cmp/bad-key-package");
+  check("26g. a container whose encrypted content is not a SignedData is refused",
+    (await codeOf(pki.cmp.openKeyPackage(
+      await pki.cms.encrypt(Buffer.from("not a SignedData"), [{ cert: kgaEeKt.cert }],
+        { contentEncryptionAlgorithm: "aes-256-cbc", contentType: "signedData" }),
+      anchored({ key: kgaEeKt.key })))) === "cmp/bad-key-package");
+  // The signed content type is what binds the signature to a key package: without it a SignedData the
+  // authority made over anything else could be replayed here.
+  check("26h. a SignedData whose eContentType is not id-ct-KP-aKeyPackage is refused",
+    (await codeOf(pki.cmp.openKeyPackage(
+      await sealed(keyPackage([deliveredPkcs8]), [{ cert: kgaEeKt.cert }], { eContentType: "data" }),
+      anchored({ key: kgaEeKt.key })))) === "cmp/bad-key-package");
+  check("26i. and an encryptedContentInfo contentType that is not id-signedData is refused",
+    (await codeOf(pki.cmp.openKeyPackage(
+      await sealed(keyPackage([deliveredPkcs8]), [{ cert: kgaEeKt.cert }], { contentType: "data" }),
+      anchored({ key: kgaEeKt.key })))) === "cmp/bad-key-package");
+
+  // "This PKI management entity MUST use a certificate containing the additional extended key usage
+  // extension id-kp-cmKGA in order to be accepted by the EE as a legitimate key generation authority."
+  // An absent extension is not an assertion, so it does not authorize.
+  check("26j. a signer whose certificate carries no extended key usage is refused",
+    (await codeOf(pki.cmp.openKeyPackage(
+      await sealed(keyPackage([deliveredPkcs8]), [{ cert: kgaEeKt.cert }], { signer: noEkuSigner }),
+      { key: kgaEeKt.key, trustAnchors: [noEkuSigner.cert] }))) === "cmp/unauthorized-kga");
+  check("26k. and so is one whose extended key usage names a different purpose",
+    (await codeOf(pki.cmp.openKeyPackage(
+      await sealed(keyPackage([deliveredPkcs8]), [{ cert: kgaEeKt.cert }], { signer: wrongEkuSigner }),
+      { key: kgaEeKt.key, trustAnchors: [wrongEkuSigner.cert] }))) === "cmp/unauthorized-kga");
+  check("26l. a signer that does not chain to an accepted anchor is refused",
+    (await codeOf(pki.cmp.openKeyPackage(ktContainer,
+      { key: kgaEeKt.key, trustAnchors: [wrongEkuSigner.cert] }))) === "cmp/unauthorized-kga");
+  // RFC 5280 sec. 4.2.1.12 constrains a CA's issued certificates by the CA's own extendedKeyUsage, so
+  // an authority whose own issuer does not permit key generation is not one, whatever its leaf asserts.
+  var KGA_LEAF = { keyUsage: ["digitalSignature"], extendedKeyUsage: ["cmKGA"], subjectKeyIdentifier: true };
+  var kgaRoot = await kgaCert("ec", "KGA root", KGA_CA);
+  var closedSubCa = await issuedBy(kgaRoot, "ec", "Code signing sub CA",
+    Object.assign({}, KGA_CA, { extendedKeyUsage: ["codeSigning"] }));
+  var openSubCa = await issuedBy(kgaRoot, "ec", "Open sub CA", KGA_CA);
+  check("26la. and neither is one whose own issuer's extended key usage excludes the purpose",
+    (await codeOf(pki.cmp.openKeyPackage(
+      await sealed(keyPackage([deliveredPkcs8]), [{ cert: kgaEeKt.cert }],
+        { signer: await issuedBy(closedSubCa, "ec", "Chained KGA", KGA_LEAF) }),
+      { key: kgaEeKt.key, trustAnchors: [kgaRoot.cert], intermediates: [closedSubCa.cert] }))) === "cmp/unauthorized-kga");
+  var chainedContainer = await sealed(keyPackage([deliveredPkcs8]), [{ cert: kgaEeKt.cert }],
+    { signer: await issuedBy(openSubCa, "ec", "Chained KGA", KGA_LEAF) });
+  check("26lb. while the same chain under an issuer that permits it delivers the key",
+    (await pki.cmp.openKeyPackage(chainedContainer,
+      { key: kgaEeKt.key, trustAnchors: [kgaRoot.cert], intermediates: [openSubCa.cert] })).keys.length === 1);
+  // An option that takes one certificate or a list of them takes each the same way, so an
+  // intermediate needed to reach the anchor is used however the caller holds it.
+  check("26lc. and the intermediate is used whether it is given as a list, one certificate, or PEM",
+    (await pki.cmp.openKeyPackage(chainedContainer,
+      { key: kgaEeKt.key, trustAnchors: [kgaRoot.cert], intermediates: openSubCa.cert })).keys.length === 1 &&
+    (await pki.cmp.openKeyPackage(chainedContainer,
+      { key: kgaEeKt.key, trustAnchors: [kgaRoot.cert],
+        intermediates: pki.schema.x509.pemEncode(openSubCa.cert, "CERTIFICATE") })).keys.length === 1);
+  check("26ld. and without it the chain cannot be assembled, so no key is delivered",
+    (await codeOf(pki.cmp.openKeyPackage(chainedContainer,
+      { key: kgaEeKt.key, trustAnchors: [kgaRoot.cert] }))) === "cmp/unauthorized-kga");
+
+  // sec. 4.1.6: under MAC-based protection the EE "MAY omit the validation", authorizing the KGA by
+  // the shared secret instead. That is the caller's statement about its own request, not a default.
+  var exempt = await pki.cmp.openKeyPackage(
+    await sealed(keyPackage([deliveredPkcs8]), [{ password: "hunter2" }], { signer: noEkuSigner }),
+    { password: "hunter2", authorizedBySharedSecret: true });
+  check("26m. the shared-secret exemption accepts an unauthorized signer and says the chain is unproven",
+    exempt.keys.length === 1 && exempt.trusted === false);
+  check("26n. the exemption does not apply to a container this entity opened with its own key",
+    (await codeOf(pki.cmp.openKeyPackage(
+      await sealed(keyPackage([deliveredPkcs8]), [{ cert: kgaEeKt.cert }], { signer: noEkuSigner }),
+      { key: kgaEeKt.key, authorizedBySharedSecret: true }))) === "cmp/bad-input");
+  check("26o. stating the exemption and supplying anchors names two authorization rules, and is refused",
+    (await codeOf(pki.cmp.openKeyPackage(
+      await sealed(keyPackage([deliveredPkcs8]), [{ password: "hunter2" }]),
+      anchored({ password: "hunter2", authorizedBySharedSecret: true })))) === "cmp/bad-input");
+  check("26p. and neither anchors nor the exemption leaves nothing to authorize against",
+    (await codeOf(pki.cmp.openKeyPackage(ktContainer, { key: kgaEeKt.key }))) === "cmp/bad-input");
+  // A key package the authority did not sign must not be delivered. The substitution is made on the
+  // SignedData BEFORE it is sealed, so the container decrypts and the signature is what refuses it.
+  var honestSigned = await pki.cms.sign(keyPackage([deliveredPkcs8]),
+    [{ key: kgaSigner.key, cert: kgaSigner.cert }], { eContentType: "aKeyPackage", sid: "ski" });
+  var swappedPackage = keyPackage([deliveredSecond]);
+  var swappedSigned = derSurgery.patch(honestSigned, function (node) {
+    if (node.constructed || node.tagClass !== "universal" || node.tagNumber !== asn1.TAGS.OCTET_STRING) return undefined;
+    return asn1.read.octetString(node).equals(keyPackage([deliveredPkcs8]))
+      ? b.octetString(swappedPackage) : undefined;
+  });
+  check("26q. a key package swapped under the authority's signature surfaces no key",
+    (await codeOf(pki.cmp.openKeyPackage(
+      await sealed(null, [{ cert: kgaEeKt.cert }], { presigned: swappedSigned }),
+      anchored({ key: kgaEeKt.key })))) === "cmp/bad-key-package");
+
+  check("26r. content that is not an AsymmetricKeyPackage is refused",
+    (await codeOf(pki.cmp.openKeyPackage(
+      await sealed(b.sequence([b.integer(1n)]), [{ cert: kgaEeKt.cert }]),
+      anchored({ key: kgaEeKt.key })))) === "cmp/bad-key-package");
+  // RFC 5958 sec. 2 makes OneAsymmetricKey and a PKCS#8 PrivateKeyInfo the same structure, so an
+  // element that is merely a non-empty SEQUENCE, carrying neither an algorithm nor key octets, is not
+  // a delivered key and must not be handed back as one.
+  check("26r2. a package element that is a SEQUENCE but not a OneAsymmetricKey is refused",
+    (await codeOf(pki.cmp.openKeyPackage(
+      await sealed(b.sequence([b.sequence([b.integer(123n)])]), [{ cert: kgaEeKt.cert }]),
+      anchored({ key: kgaEeKt.key })))) === "cmp/bad-key-package");
+  check("26r3. and one valid key beside one that is not leaves nothing delivered",
+    (await codeOf(pki.cmp.openKeyPackage(
+      await sealed(b.sequence([b.raw(deliveredPkcs8), b.sequence([b.integer(123n)])]), [{ cert: kgaEeKt.cert }]),
+      anchored({ key: kgaEeKt.key })))) === "cmp/bad-key-package");
+  check("26s. an empty package is refused: the structure carries at least one key",
+    (await codeOf(pki.cmp.openKeyPackage(
+      await sealed(b.sequence([]), [{ cert: kgaEeKt.cert }]),
+      anchored({ key: kgaEeKt.key })))) === "cmp/bad-key-package");
+  check("26t. an AuthEnvelopedData container is refused: sec. 4.1.6 names an EnvelopedData",
+    (await codeOf(pki.cmp.openKeyPackage(
+      await pki.cms.encrypt(await pki.cms.sign(keyPackage([deliveredPkcs8]),
+        [{ key: kgaSigner.key, cert: kgaSigner.cert }], { eContentType: "aKeyPackage", sid: "ski" }),
+      [{ cert: kgaEeKt.cert }], { contentType: "signedData", authAttrs: [b.sequence([
+        b.oid(pki.oid.byName("contentType")), b.set([b.oid(pki.oid.byName("signedData"))])])] }),
+      anchored({ key: kgaEeKt.key })))) === "cmp/bad-key-package");
+  check("26u. neither key material nor a password is an input error",
+    (await codeOf(pki.cmp.openKeyPackage(ktContainer, anchored({})))) === "cmp/bad-input");
+  check("26v. an unknown option is an input error, not a silently ignored one",
+    (await codeOf(pki.cmp.openKeyPackage(ktContainer,
+      anchored({ key: kgaEeKt.key, trustAnchor: [kgaSigner.cert] })))) === "cmp/bad-input");
+  // A CMP EncryptedKey carries the EnvelopedData itself rather than a ContentInfo around it (RFC 9810
+  // sec. 5.2.2), and the two forms are told apart by what the SEQUENCE opens with: a content-type
+  // OBJECT IDENTIFIER, or the CMSVersion INTEGER.
+  check("26x. the bare EnvelopedData form the CMP wire carries opens the same way",
+    (await pki.cmp.openKeyPackage(asn1.decode(ktContainer).children[1].children[0].bytes,
+      anchored({ key: kgaEeKt.key }))).keys[0].equals(deliveredPkcs8));
+  // RFC 5652 sec. 6.1 encrypts the CONTENT, not a ContentInfo around it, so the plaintext under an
+  // id-signedData encryptedContentInfo is the SignedData structure itself. Both forms are seen, and
+  // the inner layer is told apart the same way the outer one is.
+  var bareInnerSigned = await pki.cms.sign(keyPackage([deliveredPkcs8]),
+    [{ key: kgaSigner.key, cert: kgaSigner.cert }], { eContentType: "aKeyPackage", sid: "ski" });
+  check("26x2. an encrypted content that is a bare SignedData opens the same way",
+    (await pki.cmp.openKeyPackage(
+      await pki.cms.encrypt(asn1.decode(bareInnerSigned).children[1].children[0].bytes,
+        [{ cert: kgaEeKt.cert }], { contentEncryptionAlgorithm: "aes-256-cbc", contentType: "signedData" }),
+      anchored({ key: kgaEeKt.key }))).keys[0].equals(deliveredPkcs8));
+  check("26y. and so does a container held as PEM",
+    (await pki.cmp.openKeyPackage(pki.schema.cms.pemEncode(ktContainer),
+      anchored({ key: kgaEeKt.key }))).keys[0].equals(deliveredPkcs8));
+  check("26y2. a PEM that does not decode is an input error",
+    (await codeOf(pki.cmp.openKeyPackage("-----BEGIN CMS-----\nnot base64!\n-----END CMS-----\n",
+      anchored({ key: kgaEeKt.key })))) === "cmp/bad-input");
+  check("26y3. naming both key management techniques is an input error",
+    (await codeOf(pki.cmp.openKeyPackage(ktContainer,
+      anchored({ key: kgaEeKt.key, password: "hunter2" })))) === "cmp/bad-input");
+  check("26y4. an authorizedBySharedSecret that is not a boolean is an input error",
+    (await codeOf(pki.cmp.openKeyPackage(ktContainer,
+      { password: "hunter2", authorizedBySharedSecret: "yes" }))) === "cmp/bad-input");
+  // Every way the container fails to open reports the one code, so a caller learns that it did not
+  // open and nothing more: a key that is not the recipient's, a key of the wrong kind for the arm,
+  // and a wrong shared secret are indistinguishable in the verdict.
+  var strangerKey = await kgaCert("rsa", "Another client", { keyUsage: ["keyEncipherment"] });
+  check("26y5. a private key that is not the recipient's does not open the container",
+    (await codeOf(pki.cmp.openKeyPackage(ktContainer,
+      anchored({ key: strangerKey.key })))) === "cmp/bad-key-package");
+  check("26y6. nor does a key of the wrong kind for the arm the container names",
+    (await codeOf(pki.cmp.openKeyPackage(ktContainer,
+      anchored({ key: kgaEeKa.key })))) === "cmp/bad-key-package");
+  check("26y7. nor does a wrong shared secret",
+    (await codeOf(pki.cmp.openKeyPackage(
+      await sealed(keyPackage([deliveredPkcs8]), [{ password: "hunter2" }]),
+      anchored({ password: "hunter3" })))) === "cmp/bad-key-package");
+  check("26y8. signed content that is not DER at all is refused",
+    (await codeOf(pki.cmp.openKeyPackage(
+      await sealed(Buffer.from("not der at all"), [{ cert: kgaEeKt.cert }]),
+      anchored({ key: kgaEeKt.key })))) === "cmp/bad-key-package");
+  check("26y9. a container that is not DER is refused",
+    (await codeOf(pki.cmp.openKeyPackage(Buffer.from([0x30, 0x82, 0xff]),
+      anchored({ key: kgaEeKt.key })))) === "cmp/bad-key-package");
+  check("26y10. so is one whose top-level TLV is primitive, which is neither form",
+    (await codeOf(pki.cmp.openKeyPackage(b.integer(1n),
+      anchored({ key: kgaEeKt.key })))) === "cmp/bad-key-package");
+  // A SignedData that embeds no certificate names a signer nothing can resolve, so the refusal
+  // carries the code the verify reported rather than a bare "does not verify".
+  check("26y11. a SignedData embedding no signer certificate is refused, naming why",
+    (await codeOf(pki.cmp.openKeyPackage(
+      await sealed(null, [{ cert: kgaEeKt.cert }], { presigned: await pki.cms.sign(
+        keyPackage([deliveredPkcs8]), [{ key: kgaSigner.key, cert: kgaSigner.cert }],
+        { eContentType: "aKeyPackage", sid: "ski", certificates: false }) }),
+      anchored({ key: kgaEeKt.key })))) === "cmp/bad-key-package");
+  // A signature that simply does not verify, with the structure intact: the authority's certificate
+  // is left in place and the key inside it replaced, so the attributes still bind and the signature
+  // is the only thing that fails.
+  var kgaSpki = pki.schema.x509.parse(kgaSigner.cert).subjectPublicKeyInfo.bytes;
+  var strangerSpki = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" })
+    .publicKey.export({ format: "der", type: "spki" });
+  var wrongKeySigned = derSurgery.patch(honestSigned, function (node) {
+    if (!node.constructed || node.tagClass !== "universal" || node.tagNumber !== asn1.TAGS.SEQUENCE) return undefined;
+    return Buffer.from(node.bytes).equals(Buffer.from(kgaSpki)) ? Buffer.from(strangerSpki) : undefined;
+  });
+  check("26y13. a signature the authority's key did not make surfaces no key",
+    (await codeOf(pki.cmp.openKeyPackage(
+      await sealed(null, [{ cert: kgaEeKt.cert }], { presigned: wrongKeySigned }),
+      anchored({ key: kgaEeKt.key })))) === "cmp/bad-key-package");
+  check("26y12. opts.time sets the instant the authority's chain is validated at",
+    (await pki.cmp.openKeyPackage(ktContainer,
+      anchored({ key: kgaEeKt.key, time: new Date("2030-01-01T00:00:00Z") }))).trusted === true &&
+    (await codeOf(pki.cmp.openKeyPackage(ktContainer,
+      anchored({ key: kgaEeKt.key, time: new Date("2019-01-01T00:00:00Z") })))) === "cmp/unauthorized-kga");
+
+  // The shared secret is copied at the door, so the copy exists on every exit -- including this one,
+  // where the options are refused before the container is touched.
+  var kgaWipe = (function () {
+    var enc = { op: "cmp-open-key-package", key: Buffer.from(kgaEeKt.key).toString("base64"),
+      csr: Buffer.from(ktContainer).toString("base64"), cert: Buffer.from(kgaSigner.cert).toString("base64"),
+      secret: Buffer.from("hunter2", "utf8").toString("base64") };
+    var r = require("node:child_process").spawnSync(process.execPath,
+      [require("node:path").join(__dirname, "../helpers/observe-secret-wipe.js")],
+      { encoding: "utf8", input: JSON.stringify(enc) });
+    if (r.error || r.status !== 0) return null;
+    return JSON.parse(String(r.stdout).trim().split("\n").pop());
+  })();
+  check("26w. a refusal after the shared secret was copied still leaves nothing behind",
+    !!kgaWipe && kgaWipe.code === "cmp/bad-input" && kgaWipe.callerKeyIntact === true &&
+    kgaWipe.wiped.length >= 1 && kgaWipe.wiped.every(function (w) { return w.allZeroAfter === true; }));
 
   // ===== 25. The remaining RFC 9483 receiving-side rules: a declared key identifier is bound to the
   //           key that actually verified, and a stated freshness window is honored. =====

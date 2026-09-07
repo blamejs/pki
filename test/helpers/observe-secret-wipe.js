@@ -120,6 +120,12 @@ function run(input) {
       body: { genm: [{ infoType: "caCerts" }] },
     }, { kem: { key: new Uint8Array(b64(p.identity)), ciphertext: b64(p.secret),
       kemAlgorithm: "id-ml-kem-768" } });
+  } else if (p.op === "cmp-open-key-package") {
+    // The shared secret that opens a password-technique key package is copied at the door, so it is
+    // cleared whether the container opens or not. Here the container is refused for naming two
+    // authorization rules, after the copy exists.
+    work = pki.cmp.openKeyPackage(b64(p.csr),
+      { password: b64(p.secret), trustAnchors: [b64(p.cert)], authorizedBySharedSecret: true });
   } else if (p.op === "cmc-build-mac") {
     work = pki.cmc.build({ requests: [{ tcr: b64(p.csr) }] },
       { mac: { identifier: "cmc-client-17", secret: b64(p.secret) } });
