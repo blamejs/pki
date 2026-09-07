@@ -299,7 +299,174 @@ async function testPopoPrivKeyArms() {
   var encMac = await codeOf(pki.crmf.build(spec({ type: "keyEncipherment", method: "agreeMAC" })));
   var agrMac = await codeOf(pki.crmf.build(spec({ type: "keyAgreement", method: "agreeMAC" })));
   check("POP agreeMAC under keyEncipherment is refused as non-conforming", encMac === "crmf/bad-popo");
-  check("POP agreeMAC under keyAgreement is refused as not built", agrMac === "crmf/unsupported-popo");
+  check("POP agreeMAC under keyAgreement names what it needs", agrMac === "crmf/bad-popo");
+
+  // V6b -- the RFC 2875 sec. 3 static Diffie-Hellman proof, which RFC 4211 sec. 4.3 requires every DH
+  // implementation to support. The requester holds a certificate for the authority and a key on the
+  // authority's own group; the secret they agree keys a MAC over the certReq.
+  var caDh = nodeCrypto.generateKeyPairSync("dh", { group: "modp14" });
+  var eeDh = nodeCrypto.generateKeyPairSync("dh", { group: "modp14" });
+  var caDhSpki = caDh.publicKey.export({ format: "der", type: "spki" });
+  var eeDhSpki = eeDh.publicKey.export({ format: "der", type: "spki" });
+  var eeDhPk8 = eeDh.privateKey.export({ format: "der", type: "pkcs8" });
+  // A DH key cannot sign, so the authority's certificate is issued rather than self-signed.
+  var dhCaPair = await pki.key.generate("Ed25519");
+  var dhCaKey = await pki.key.export(dhCaPair.privateKey);
+  var dhRootCert = await pki.x509.sign({
+    subject: "dh-root.example", subjectPublicKey: await pki.key.export(dhCaPair.publicKey),
+    serialNumber: 20, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2036-01-01T00:00:00Z"),
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: true },
+  }, { key: dhCaKey });
+  async function dhCertFor(spki, over) {
+    return pki.x509.sign(Object.assign({
+      subject: "dh-authority.example", subjectPublicKey: spki, serialNumber: 21,
+      notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2036-01-01T00:00:00Z"),
+      extensions: { keyUsage: ["keyAgreement"] },
+    }, over || {}), { key: dhCaKey, cert: dhRootCert });
+  }
+  var dhCaCert = await dhCertFor(caDhSpki);
+  var agreeSpec = {
+    certReqId: 7n, certTemplate: tpl(eeDhSpki),
+    pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: dhCaCert },
+  };
+  var agreeDer = await pki.crmf.build(agreeSpec);
+  var agreeMsg = parse(agreeDer)[0];
+  check("V6b. an agreeMAC proof builds and re-parses as the keyAgreement arm",
+    agreeMsg.popo.type === "keyAgreement" && agreeMsg.popo.method === "agreeMAC");
+
+  // The proof is checked from the RECIPIENT's side: the authority computes the same secret from the
+  // request's own public key and its own private key. Re-running the builder would prove nothing,
+  // since a wrong derivation reproduces itself exactly.
+  // The BIT STRING carries a DhPopStatic SEQUENCE, not the raw MAC: RFC 2875 sec. 3 says the encoding
+  // replaces "the raw output from 3d". Decoding it is what proves the proof is the one a conforming
+  // recipient reads; comparing the BIT STRING to an HMAC would pass for a raw-bytes encoding too.
+  function dhPopStaticOf(popoBytes) {
+    var pkMacSeq = pki.asn1.decode(pki.asn1.decode(popoBytes).children[0].bytes);
+    var inner = pki.asn1.decode(Buffer.from(pki.asn1.read.bitString(pkMacSeq.children[1]).bytes));
+    return {
+      alg: pki.asn1.read.oid(pkMacSeq.children[0].children[0]),
+      issuerAndSerial: inner.children[0],
+      hashValue: Buffer.from(pki.asn1.read.octetString(inner.children[1])),
+    };
+  }
+  var agreeParts = dhPopStaticOf(agreeMsg.popo.bytes);
+  var macAlg = agreeParts.alg;
+  var macValue = agreeParts.hashValue;
+  check("V6b. the BIT STRING carries a DhPopStatic naming the certificate the key came from",
+    agreeParts.issuerAndSerial.children.length === 2 &&
+    Buffer.from(agreeParts.issuerAndSerial.children[0].bytes).equals(pki.schema.x509.parse(dhCaCert).issuer.bytes) &&
+    pki.asn1.read.integer(agreeParts.issuerAndSerial.children[1]) === pki.schema.x509.parse(dhCaCert).serialNumber);
+  check("V6b. and names id-dhPop-static-HMAC-SHA1 (RFC 2875 sec. 4.4)",
+    macAlg === pki.oid.byName("id-dhPop-static-HMAC-SHA1"));
+  var parsedDhCa = pki.schema.x509.parse(dhCaCert);
+  function recipientMac(caPrivate, caCertParsed, requestSpki, certReqBytes) {
+    var zz = nodeCrypto.diffieHellman({
+      privateKey: caPrivate,
+      publicKey: nodeCrypto.createPublicKey({ key: requestSpki, format: "der", type: "spki" }),
+    });
+    var k = nodeCrypto.createHash("sha1")
+      .update(caCertParsed.subject.bytes).update(zz).update(caCertParsed.issuer.bytes).digest();
+    return nodeCrypto.createHmac("sha1", k).update(certReqBytes).digest();
+  }
+  check("V6b. and the authority reaches the same MAC from its own side of the agreement",
+    macValue.equals(recipientMac(caDh.privateKey, parsedDhCa, eeDhSpki, agreeMsg.certReq.certReqBytes)));
+
+  // sec. 4.3 admits this proof only when the subject can use the authority's parameters. A key on
+  // another group agrees nothing with it, and that is refused rather than MACed under some other key.
+  var otherGroup = nodeCrypto.generateKeyPairSync("dh", { group: "modp16" });
+  check("V6b. a requester key on another group is refused",
+    (await codeOf(pki.crmf.build({ certReqId: 8n, certTemplate: tpl(otherGroup.publicKey.export({ format: "der", type: "spki" })),
+      pop: { type: "keyAgreement", method: "agreeMAC",
+        key: otherGroup.privateKey.export({ format: "der", type: "pkcs8" }), caCert: dhCaCert } }))) === "crmf/bad-popo");
+  // The agreed secret and the key derived from it never reach the caller, so both are the module's own
+  // to clear. Counted from outside the toolkit, because a copy that is never wiped leaves nothing in
+  // the record to inspect and only the number of distinct copies tells the two apart.
+  var agreeWipe = require("node:child_process").spawnSync(process.execPath,
+    [require("node:path").join(__dirname, "../helpers/observe-secret-wipe.js")],
+    { encoding: "utf8", input: JSON.stringify({
+      op: "crmf-agree-mac",
+      key: Buffer.from(eeDhPk8).toString("base64"),
+      csr: Buffer.from(eeDhSpki).toString("base64"),
+      cert: Buffer.from(dhCaCert).toString("base64"),
+    }) });
+  var agreeReport = null;
+  if (!agreeWipe.error && agreeWipe.status === 0) {
+    try { agreeReport = JSON.parse(String(agreeWipe.stdout).trim().split("\n").pop()); } catch (_e) { agreeReport = null; }
+  }
+  check("V6b. every secret the proof derives is cleared, and the caller's key is left alone",
+    agreeReport !== null && agreeReport.code === "NO-THROW" && agreeReport.callerKeyIntact === true &&
+    agreeReport.wiped.length === 6 &&
+    agreeReport.wiped.every(function (w) { return w.allZeroAfter === true && w.hadContent === true; }));
+
+  // sec. 4.3: "If either the subject or issuer name in the CA certificate is empty, then the
+  // alternative name should be used in its place." An authority certificate with an empty subject and
+  // a subjectAltName still keys the derivation, from the alternative name.
+  var emptySubjectCa = await dhCertFor(caDhSpki, {
+    subject: [], serialNumber: 22,
+    extensions: { keyUsage: ["keyAgreement"], subjectAltName: [{ dNSName: "dh-authority.example" }] },
+  });
+  var altDer = await pki.crmf.build({
+    certReqId: 13n, certTemplate: tpl(eeDhSpki),
+    pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: emptySubjectCa },
+  });
+  var altMsg = parse(altDer)[0];
+  var altMac = dhPopStaticOf(altMsg.popo.bytes).hashValue;
+  var parsedAltCa = pki.schema.x509.parse(emptySubjectCa);
+  var altSan = parsedAltCa.extensions.filter(function (e) { return e.name === "subjectAltName"; })[0];
+  var altZz = nodeCrypto.diffieHellman({
+    privateKey: caDh.privateKey,
+    publicKey: nodeCrypto.createPublicKey({ key: eeDhSpki, format: "der", type: "spki" }),
+  });
+  var altK = nodeCrypto.createHash("sha1")
+    .update(altSan.value).update(altZz).update(parsedAltCa.issuer.bytes).digest();
+  check("V6b. an empty subject falls back to the alternative name, and the authority agrees",
+    altMac.equals(nodeCrypto.createHmac("sha1", altK).update(altMsg.certReq.certReqBytes).digest()));
+  // A certificate carrying NEITHER a name nor an alternative one is refused too, and that branch has
+  // no vector here on purpose: pki.x509.sign will not mint one, because RFC 5280 sec. 4.1.2.6 makes a
+  // critical subjectAltName mandatory when the subject is empty. Such a certificate can only arrive
+  // from another implementation, so the refusal is reachable and unbuildable from this side.
+
+  // The proof is about the key being certified. The authority derives ITS side from the template's
+  // public key, so a private key from another pair agrees a secret with the authority perfectly well
+  // and yields a MAC the authority cannot reproduce. That is a proof of possession of something this
+  // request never asked to have certified, and it is refused rather than emitted.
+  var strayDh = nodeCrypto.generateKeyPairSync("dh", { group: "modp14" });
+  check("V6b. a pop.key from another pair than the requested key is refused",
+    (await codeOf(pki.crmf.build({ certReqId: 12n, certTemplate: tpl(eeDhSpki),
+      pop: { type: "keyAgreement", method: "agreeMAC",
+        key: strayDh.privateKey.export({ format: "der", type: "pkcs8" }), caCert: dhCaCert } }))) === "crmf/bad-popo");
+
+  // sec. 3 defines this proof over a finite-field group. An elliptic-curve or montgomery pair agrees a
+  // secret through the same call, so a builder that only asked whether the two sides matched would
+  // emit that agreement under an OID naming an operation the recipient is not performing.
+  for (var ffCase of [["ec", { namedCurve: "prime256v1" }], ["x25519", undefined]]) {
+    var ffPair = nodeCrypto.generateKeyPairSync(ffCase[0], ffCase[1]);
+    var ffSpki = ffPair.publicKey.export({ format: "der", type: "spki" });
+    var ffCert = await dhCertFor(ffSpki, { serialNumber: 30, subject: "ff-authority.example" });
+    check("V6b. a " + ffCase[0] + " pair is refused: this proof is finite-field DH (RFC 2875 sec. 3)",
+      (await codeOf(pki.crmf.build({ certReqId: 15n, certTemplate: tpl(ffSpki),
+        pop: { type: "keyAgreement", method: "agreeMAC",
+          key: ffPair.privateKey.export({ format: "der", type: "pkcs8" }), caCert: ffCert } }))) === "crmf/bad-popo");
+  }
+
+  // A key of another ALGORITHM is refused before any agreement is attempted, which is a different
+  // reason from the group mismatch above: that one is caught by the agreement failing, this one by
+  // the two keys not being the same kind of key at all.
+  var ecReq = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  check("V6b. a requester key of another algorithm is refused before agreeing anything",
+    (await codeOf(pki.crmf.build({ certReqId: 11n, certTemplate: tpl(ecReq.publicKey.export({ format: "der", type: "spki" })),
+      pop: { type: "keyAgreement", method: "agreeMAC",
+        key: ecReq.privateKey.export({ format: "der", type: "pkcs8" }), caCert: dhCaCert } }))) === "crmf/bad-popo");
+  // The POPOPrivKey comment requires the certReq to carry both the subject and the publicKey.
+  check("V6b. a certReq naming no publicKey is refused",
+    (await codeOf(pki.crmf.build({ certReqId: 9n, certTemplate: { subject: [{ commonName: "device" }] },
+      pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: dhCaCert } }))) === "crmf/bad-popo");
+  check("V6b. and one naming no subject is refused",
+    (await codeOf(pki.crmf.build({ certReqId: 10n, certTemplate: { publicKey: eeDhSpki },
+      pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: dhCaCert } }))) === "crmf/bad-popo");
+  check("V6b. and the two inputs it needs are each named when missing",
+    (await codeOf(pki.crmf.build(Object.assign({}, agreeSpec, { pop: { type: "keyAgreement", method: "agreeMAC", caCert: dhCaCert } })))) === "crmf/bad-popo" &&
+    (await codeOf(pki.crmf.build(Object.assign({}, agreeSpec, { pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8 } })))) === "crmf/bad-popo");
 
   // V7 -- encryptedKey round-trips, including the parser's INDEPENDENT id-ct-encKeyWithID check.
   var recip = makeSigner("rsa");
