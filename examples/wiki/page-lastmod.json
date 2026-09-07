@@ -24,7 +24,7 @@
   "lib/cmc-build.js": "2026-09-06",
   "lib/cmc-verify.js": "2026-09-06",
   "lib/cmp-build.js": "2026-09-07",
-  "lib/cmp-session.js": "2026-09-07",
+  "lib/cmp-session.js": "2026-09-06",
   "lib/cmp-verify.js": "2026-09-06",
   "lib/cms-compress.js": "2026-09-01",
   "lib/cms-decrypt.js": "2026-09-06",

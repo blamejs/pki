@@ -1378,6 +1378,23 @@ async function run() {
       { kem: { key: pki.schema.pkcs8.pemEncode(kemKey.key), ciphertext: kemEncap.ct,
         kemAlgorithm: kemEncap.algorithm } }),
     { kem: { sharedSecret: kemEncap.ss } })).valid === true);
+  // The key shapes every other key option accepts: a CryptoKey, which is what pki.key.generate hands
+  // back, works without the caller exporting it first.
+  var kemPair = await pki.key.generate("ML-KEM-768");
+  var kemPairSpki = await pki.key.export(kemPair.publicKey);
+  var pairEncap = await (async function () {
+    var pub = await nodeCrypto.subtle.importKey("spki", kemPairSpki, { name: "ML-KEM-768" }, false, ["encapsulateBits"]);
+    var r = await nodeCrypto.subtle.encapsulateBits({ name: "ML-KEM-768" }, pub);
+    return { ct: Buffer.from(r.ciphertext), ss: Buffer.from(r.sharedKey) };
+  })();
+  check("24w2b. a CryptoKey private key is adopted without exporting it first",
+    (await pki.cmp.verify(await pki.cmp.build({ header: kemHdr, body: IRBODY },
+      { kem: { key: kemPair.privateKey, ciphertext: pairEncap.ct, kemAlgorithm: "id-ml-kem-768" } }),
+    { kem: { sharedSecret: pairEncap.ss } })).valid === true);
+  check("24w2c. a public CryptoKey is refused, since decapsulation needs the private half",
+    (await codeOf(pki.cmp.build({ header: kemHdr, body: IRBODY },
+      { kem: { key: kemPair.publicKey, ciphertext: pairEncap.ct, kemAlgorithm: "id-ml-kem-768" } }))) === "cmp/bad-input");
+
   var callerKeyBuf = Buffer.from(kemKey.key);
   await pki.cmp.build({ header: kemHdr, body: IRBODY },
     { kem: { key: callerKeyBuf, ciphertext: kemEncap.ct, kemAlgorithm: kemEncap.algorithm } });
