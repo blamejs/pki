@@ -1305,6 +1305,72 @@ async function run() {
       { cert: s.cert, key: s.key });
     })) === "cmc/bad-popo");
 
+  // App. C.1 for a composite ML-KEM key, which is the enrollment this control exists for taken to a
+  // key that can only establish secrets. The key cannot sign its own request, and the runtime key
+  // engine does not read its algorithm at all, so the request is proven by opening the challenge
+  // addressed to it and by nothing else. The request is built directly: pki.csr.sign resolves a
+  // signer from the subject key, and a KEM key is not one.
+  var CKAT = JSON.parse(require("node:fs").readFileSync(
+    require("node:path").join(__dirname, "..", "fixtures", "composite-kem", "kat.json"), "utf8"));
+  var ckRow = CKAT.tests.filter(function (t) { return t.tcId.indexOf("id-alg-ml-kem") !== 0; })[0];
+  var ckKey = Buffer.from(ckRow.dk_pkcs8, "base64");
+  var ckSpki = await pki.key.publicFromPrivate(ckKey);
+  function nameOf(cn) {
+    return b.sequence([b.set([b.sequence([b.oid(pki.oid.byName("commonName")), b.utf8(cn)])])]);
+  }
+  var ckCri = b.sequence([b.integer(0n), nameOf("composite-pop.example"), b.raw(ckSpki),
+    b.implicit(0, b.raw(b.set([])))]);
+  var ckCsr = b.sequence([b.raw(ckCri),
+    b.sequence([b.oid(NO_SIGNATURE_OID), b.nullValue()]),
+    b.bitString(b.octetString(nodeCrypto.createHash("sha256").update(ckCri).digest()), 0)]);
+  // A composite key cannot sign, so its certificate is issued rather than self-signed.
+  var ckCaPair = await pki.key.generate("Ed25519");
+  var ckCaKey = await pki.key.export(ckCaPair.privateKey);
+  var ckCaCert = await pki.x509.sign({
+    subject: "composite-issuer.example", subjectPublicKey: await pki.key.export(ckCaPair.publicKey),
+    serialNumber: 70, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2036-01-01T00:00:00Z"),
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: true },
+  }, { key: ckCaKey });
+  var ckCert = await pki.x509.sign({
+    subject: "composite-pop.example", subjectPublicKey: ckSpki, serialNumber: 77,
+    notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2036-01-01T00:00:00Z"),
+    extensions: { subjectKeyIdentifier: true },
+  }, { key: ckCaKey, cert: ckCaCert });
+  var ckTagged = b.contextConstructed(0, Buffer.concat([b.integer(11n), ckCsr]));
+  async function ckChallengeFor(taggedReq, forCert) {
+    return b.sequence([taggedReq,
+      await pki.cms.encrypt(proof, [{ cert: forCert, keyIdentifier: "subjectKeyIdentifier" }],
+        { contentEncryptionAlgorithm: "aes-256-cbc" }),
+      b.sequence([b.oid(HMAC_SHA256_OID)]), b.sequence([b.oid(SHA256_OID)]),
+      b.octetString(nodeCrypto.createHash("sha256").update(proof).digest())]);
+  }
+  var ckAnswered = await pki.cmc.build({ requests: [{ tcr: ckCsr }],
+    popChallenge: { challenge: await ckChallengeFor(ckTagged, ckCert), recipient: { key: ckKey } } },
+  { cert: s.cert, key: s.key });
+  check("EP22. an unsigned request for a composite ML-KEM key is proven by opening its challenge",
+    decryptedPopOf(ckAnswered).thePOP.equals(expectedPop(proof, ckTagged)));
+  // The same rule the classical arms are held to: the challenge must be addressed to the key the
+  // request asks for. A challenge opened by a different composite key proves nothing about this one.
+  var otherRow = CKAT.tests.filter(function (t) {
+    return t.tcId.indexOf("id-alg-ml-kem") !== 0 && t.tcId !== ckRow.tcId;
+  })[0];
+  if (otherRow) {
+    var ckOtherKey = Buffer.from(otherRow.dk_pkcs8, "base64");
+    var otherCert = await pki.x509.sign({
+      subject: "other-composite.example", subjectPublicKey: await pki.key.publicFromPrivate(ckOtherKey),
+      serialNumber: 78, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2036-01-01T00:00:00Z"),
+      extensions: { subjectKeyIdentifier: true },
+    }, { key: ckCaKey, cert: ckCaCert });
+    var ckOtherChallenge = await ckChallengeFor(ckTagged, otherCert);
+    var ckOtherCode = await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: ckCsr }],
+        popChallenge: { challenge: ckOtherChallenge, recipient: { key: ckOtherKey } } },
+      { cert: s.cert, key: s.key });
+    });
+    check("EP23. and a challenge opened by a different composite key does not prove this request",
+      ckOtherCode === "cmc/bad-popo");
+  }
+
   // What proved possession is the decryption that happened, not the key material that came along with
   // it: a password opens this challenge, so a private key passed beside it did not answer anything.
   check("EP19e. a key passed alongside the password that opened it does not become the proof",

@@ -1,0 +1,11 @@
+{
+  "version": "0.6.54",
+  "date": "2026-09-07",
+  "headline": "A holder of a composite ML-KEM key can enroll for it, proving possession by opening the challenge addressed to it.",
+  "summary": "RFC 5272 App. C.1 lets a key that can only establish secrets ask for its own certificate: the request carries id-alg-noSignature, and possession is proven by decrypting the challenge the authority encrypted to that key. pki.cmc.build accepted that trade for the classical decrypt-only keys and refused it for a composite ML-KEM key, because deciding whether the opening key is the requested key ran through the runtime key engine, which does not read a composite algorithm.",
+  "sections": {
+    "Fixed": [
+      "pki.cmc.build completes an unsigned enrollment for a composite ML-KEM key (RFC 5272 App. C.1). The rule is unchanged: the challenge must be addressed to the key the request asks for, and a challenge opened by any other key licenses nothing. What changed is how the two are compared. A key the runtime engine cannot read has no key object to compare, so the composite SubjectPublicKeyInfo answers instead, which is sound because that encoding is canonical: fixed component widths under a single OID, with no compressed-point spelling for two forms of one key to differ over. That ambiguity is the reason the classical comparison uses key objects, and it does not arise here. Every other key type is compared exactly as before."
+    ]
+  }
+}
