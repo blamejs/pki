@@ -532,6 +532,10 @@ async function testPopoPrivKeyArms() {
     // 15 = 3*5, with q = 2 prime and dividing 14, and 4*4 = 16 = 1 mod 15, so every relation above
     // holds and only the modulus itself is left to answer for.
     ["a modulus that is not prime", x942With(15n, 4n, 2n, 11n), "modulus is not prime"],
+    // 31 is prime, 3 is prime and divides 30, and 5 and 25 both have order 3 mod 31, so this states
+    // a subgroup that is real and far too small: a prime q makes the order exactly q, which is only
+    // worth having when q is large.
+    ["a subgroup too small to hide an exponent", x942With(31n, 5n, 3n, 25n), "too small to hide a private exponent"],
     // The codec admits a nonzero unused-bit count when the padding bits are zero, so one public
     // value has two spellings, and the conversion carries this BIT STRING through unchanged.
     ["a public key BIT STRING that is not octet-aligned", (function () {
@@ -544,7 +548,7 @@ async function testPopoPrivKeyArms() {
     }()), "must be octet-aligned"],
     // The cofactor is multiplied by q, so it is sized before that multiplication like the rest.
     ["a cofactor wider than any group", x942With(23n, 2n, 11n, 4n, [pki.asn1.build.integer(1n << 20000n)]),
-      "cofactor is larger than any Diffie-Hellman group"],
+      "larger than any Diffie-Hellman group"],
   ];
   for (var xb = 0; xb < x942Bad.length; xb++) {
     var xErr = null;
@@ -620,6 +624,39 @@ async function testPopoPrivKeyArms() {
   check("V6b. a requested key whose parameters are not a DomainParameters SEQUENCE is not converted",
     (await codeOf(pki.crmf.build({ certReqId: 29n, certTemplate: tpl(ctxParams),
       pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: dhCaCert } }))) === "crmf/bad-popo");
+
+  // The group is checked whichever encoding carried it. The PKCS#3 form needs no rewrite, so it
+  // would otherwise arrive unexamined purely because it happened not to need converting. It states
+  // no subgroup order, so the range on the public value is what bounds that value's order there.
+  function pkcs3Spki(pv, gv, yv) {
+    return pki.asn1.build.sequence([
+      pki.asn1.build.sequence([pki.asn1.build.oid("1.2.840.113549.1.3.1"),
+        pki.asn1.build.raw(pki.asn1.build.sequence([
+          pki.asn1.build.integer(pv), pki.asn1.build.integer(gv)]))]),
+      pki.asn1.build.bitString(Buffer.from(pki.asn1.build.integer(yv))),
+    ]);
+  }
+  var pkcs3Bad = [
+    ["a modulus that is not prime", pkcs3Spki(15n, 4n, 11n), "modulus is not prime"],
+    ["a public value of order one", pkcs3Spki(23n, 5n, 1n), "public value is outside the group"],
+    ["a public value of order two", pkcs3Spki(23n, 5n, 22n), "public value is outside the group"],
+    // 13 is prime and 12 = 2*2*3 is not twice a prime, so 3 has order 3 and sits inside the range.
+    // Without a stated subgroup order, only the group being a safe prime bounds that value's order.
+    ["a prime modulus that is not a safe prime", pkcs3Spki(13n, 2n, 3n), "is not a safe prime"],
+    // 23 IS a safe prime, and its own subgroup has order 11. Being safe bounds the order to (p-1)/2,
+    // which is only worth having when p is large, so the floor applies however the order was stated.
+    ["a safe prime whose subgroup is tiny", pkcs3Spki(23n, 5n, 2n), "too small to hide a private exponent"],
+  ];
+  for (var pb = 0; pb < pkcs3Bad.length; pb++) {
+    var pErr = null;
+    try {
+      await pki.crmf.build({ certReqId: 30n, certTemplate: tpl(eeDhSpki),
+        pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8,
+          caCert: await dhCertFor(pkcs3Bad[pb][1], { serialNumber: 41 + pb }) } });
+    } catch (e) { pErr = e; }
+    check("V6b. a PKCS#3 authority certificate stating " + pkcs3Bad[pb][0] + " is refused for that reason",
+      pErr !== null && pErr.code === "crmf/bad-popo" && pErr.message.indexOf(pkcs3Bad[pb][2]) !== -1);
+  }
 
   // A certificate stating q = p-1 satisfies every structural test: p-1 divides itself, and g^(p-1)
   // and y^(p-1) are 1 for the whole group by Fermat. Only q being prime makes the subgroup test say
