@@ -725,6 +725,22 @@ async function testRealCertdataSlice() {
   var ncEx = await pki.path.validate([fx.leafBefore], { time: T, trustAnchors: ncExAnchor, checkPurpose: "serverAuth" });
   check("T28: a leaf inside an excluded overlay subtree is refused",
     ncEx.valid === false && failCodes(ncEx).indexOf("path/name-constraint-excluded") !== -1);
+  // A URI subtree base is held to more than a dNSName one, and the difference is RFC 5280 sec.
+  // 4.2.1.10's: the URI paragraph says "The constraint MUST be specified as a fully qualified domain
+  // name", and the dNSName paragraph above it says no such thing. So a single label is a valid
+  // dNSName base and is not a valid URI base, and the refusal names the clause rather than the shape.
+  check("T28b: a dNSName overlay subtree naming a single label is accepted",
+    !!pki.trust.anchor(entryA, { purpose: "serverAuth",
+      nameConstraints: { permitted: [{ tag: 2, base: ".com" }] } }).nameConstraints);
+  var uriSingle = codeOf(function () {
+    return pki.trust.anchor(entryA, { purpose: "serverAuth",
+      nameConstraints: { permitted: [{ tag: 6, base: ".com" }] } });
+  });
+  check("T28b: a URI overlay subtree naming a single label is refused", uriSingle === "trust/bad-input");
+  check("T28b: and a URI subtree naming a fully qualified domain name is accepted",
+    !!pki.trust.anchor(entryA, { purpose: "serverAuth",
+      nameConstraints: { permitted: [{ tag: 6, base: ".example.com" }] } }).nameConstraints);
+
   // An anchor with no overlay is what it was before the option existed, and says so.
   check("T28: an anchor with no overlay carries no nameConstraints field",
     Object.prototype.hasOwnProperty.call(anchorA, "nameConstraints") === false);

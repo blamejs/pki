@@ -1124,6 +1124,77 @@ async function testSelfIssuedAndConstraints() {
   var resNc = await run([interNc, leafNc], { time: T2027, trustAnchors: anchor });
   check("SAN within permitted subtree validates", resNc.valid === true);
 
+  // A URI subtree base of a single label is one the comparison cannot read as a fully qualified
+  // domain name (RFC 5280 sec. 4.2.1.10), so every URI-bearing certificate under it is refused,
+  // whether or not the URI is one the base was meant to cover. The same base is refused at the
+  // configuration door, so an operator meets this at `pki.trust.anchor` rather than at validation.
+  var uInter = await mkCert({ subject: "UriNcInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt([gnUri(".com")], null)] });
+  var uLeafIn = await mkCert({ subject: "UriNcLeafA", issuer: "UriNcInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("https://host.example.com/x")])] });
+  var uLeafOut = await mkCert({ subject: "UriNcLeafB", issuer: "UriNcInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("https://host.example.org/x")])] });
+  var resUriIn = await run([uInter, uLeafIn], { time: T2027, trustAnchors: anchor });
+  var resUriOut = await run([uInter, uLeafOut], { time: T2027, trustAnchors: anchor });
+  check("a single-label URI subtree base refuses a URI it would cover",
+    resUriIn.valid === false && failCodes(resUriIn).indexOf("path/name-constraint-unsupported") !== -1);
+  check("a single-label URI subtree base refuses a URI outside it too",
+    resUriOut.valid === false && failCodes(resUriOut).indexOf("path/name-constraint-unsupported") !== -1);
+  var fqInter = await mkCert({ subject: "FqNcInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt([gnUri(".example.com")], null)] });
+  var fqLeaf = await mkCert({ subject: "FqNcLeaf", issuer: "FqNcInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("https://host.example.com/x")])] });
+  check("a fully qualified URI subtree base admits a URI beneath it",
+    (await run([fqInter, fqLeaf], { time: T2027, trustAnchors: anchor })).valid === true);
+
+  // A constraint base arrives two ways. A caller states one, and the door refuses a base outside the
+  // form its tag names. A certificate carries one in its own nameConstraints extension, where there
+  // is no door, and the comparison is what reads it. A base the comparison cannot read is answered
+  // with no verdict (path/name-constraint-unsupported) rather than with no match: an excluded subtree
+  // whose base matches nothing excludes nothing, so a stray dot or a leading hyphen in the base of a
+  // CA's own exclusion would leave the exclusion visible to inspection and inert in validation.
+  var wireBad = [
+    ["uri", gnUri, "https://host.example.com/x", [".example.com..", "..example.com", ".example.com...", "-bad.example.com"]],
+    ["dns", gnDns, "host.example.com", ["..example.com", "-bad.example.com", "exa mple.com"]],
+    ["mail", gnEmail, "user@host.example.com", ["..example.com", "-bad.example.com"]],
+  ];
+  for (var wk = 0; wk < wireBad.length; wk++) {
+    var wc = wireBad[wk];
+    for (var wb = 0; wb < wc[3].length; wb++) {
+      var gnFn = wc[1], badBase = wc[3][wb], tail = wc[0] + " base " + JSON.stringify(badBase);
+      var exI = await mkCert({ subject: "WX" + wk + wb, issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt(null, [gnFn(badBase)])] });
+      var exL = await mkCert({ subject: "WXL" + wk + wb, issuer: "WX" + wk + wb, signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnFn(wc[2])])] });
+      var exR = await run([exI, exL], { time: T2027, trustAnchors: anchor });
+      check("an excluded " + tail + " the comparison cannot read is unsupported, not inert",
+        exR.valid === false && failCodes(exR).indexOf("path/name-constraint-unsupported") !== -1);
+      var peI = await mkCert({ subject: "WP" + wk + wb, issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt([gnFn(badBase)], null)] });
+      var peL = await mkCert({ subject: "WPL" + wk + wb, issuer: "WP" + wk + wb, signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnFn(wc[2])])] });
+      var peR = await run([peI, peL], { time: T2027, trustAnchors: anchor });
+      check("a permitted " + tail + " the comparison cannot read is unsupported",
+        peR.valid === false && failCodes(peR).indexOf("path/name-constraint-unsupported") !== -1);
+    }
+  }
+
+  // A base the comparison CAN read keeps answering as it did, in both directions and for a trailing
+  // dot, which is the one form the door strips rather than refuses.
+  var wireOk = [
+    ["uri", gnUri, "https://host.example.com/x", ".example.com", ".example.org"],
+    ["dns", gnDns, "host.example.com", "example.com", "example.org"],
+    ["dns", gnDns, "host.example.com", "example.com.", "example.org."],
+    ["mail", gnEmail, "user@host.example.com", "host.example.com", "other.example.com"],
+  ];
+  for (var ok = 0; ok < wireOk.length; ok++) {
+    var oc = wireOk[ok], ofn = oc[1], covers = oc[3], misses = oc[4];
+    var okI = await mkCert({ subject: "WO" + ok, issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt(null, [ofn(covers)])] });
+    var okL = await mkCert({ subject: "WOL" + ok, issuer: "WO" + ok, signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([ofn(oc[2])])] });
+    var okR = await run([okI, okL], { time: T2027, trustAnchors: anchor });
+    check("an excluded " + oc[0] + " base " + JSON.stringify(covers) + " still excludes the name it covers",
+      okR.valid === false && failCodes(okR).indexOf("path/name-constraint-excluded") !== -1);
+    var msI = await mkCert({ subject: "WM" + ok, issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt(null, [ofn(misses)])] });
+    var msL = await mkCert({ subject: "WML" + ok, issuer: "WM" + ok, signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([ofn(oc[2])])] });
+    check("an excluded " + oc[0] + " base " + JSON.stringify(misses) + " still admits the name it does not cover",
+      (await run([msI, msL], { time: T2027, trustAnchors: anchor })).valid === true);
+    var pmI = await mkCert({ subject: "WQ" + ok, issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt([ofn(covers)], null)] });
+    var pmL = await mkCert({ subject: "WQL" + ok, issuer: "WQ" + ok, signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([ofn(oc[2])])] });
+    check("a permitted " + oc[0] + " base " + JSON.stringify(covers) + " still admits the name it covers",
+      (await run([pmI, pmL], { time: T2027, trustAnchors: anchor })).valid === true);
+  }
+
   // explicit policy satisfied end-to-end.
   var P1 = "1.3.6.1.4.1.99999.1";
   var interP = await mkCert({ subject: "PInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), cpExt([P1])] });

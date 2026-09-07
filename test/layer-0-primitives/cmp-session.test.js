@@ -1072,6 +1072,40 @@ async function run() {
     check("51g2. a MAC session with trustAnchors " + noStatement[0] + " and no stated exemption refuses the delivery",
       await codeOf(sNo.enroll(H.irCentralRequest(pki))) === "cmp/bad-input");
   }
+  // On a session opts.trustAnchors does two jobs: it authorizes the key generation authority, and it
+  // path-validates the issued certificate. The exemption replaces only the first. A caller that
+  // authorizes the authority by the secret and still wants the issued certificate chained states both
+  // options, and the anchors keep their second job. Forwarding them to the verb as well would reach
+  // its door, which sees only the first job and refuses the pair, after the authority had generated
+  // and delivered the key and with the session's one transaction slot spent.
+  var s51g5 = pki.cmp.session({ url: URL, mac: { secret: KGA_MAC_SECRET },
+    transport: H.fakeCa(pki, [H.ip(0, 0, kgaMac.deliveredCert, { privateKey: kgaMac.container }), H.pkiconf()],
+      { macSecret: KGA_MAC_SECRET }).transport,
+    sleep: function () { return Promise.resolve(); }, acceptCentralKeyGeneration: true,
+    authorizedBySharedSecret: true, trustAnchors: [kgaMac.anchor] });
+  var r51g5 = await s51g5.enroll(H.irCentralRequest(pki));
+  check("51g5. the exemption and trustAnchors together authorize by the secret and still chain the leaf",
+    r51g5.outcome === "issued" && !!r51g5.deliveredKey && r51g5.deliveredKey.trusted === false &&
+    r51g5.deliveredKey.keys[0].equals(kgaMac.deliveredKey));
+  // The exemption is the caller's statement about the authority, so it holds even when the anchors
+  // would not have authorized that authority anyway.
+  var s51g6 = pki.cmp.session({ url: URL, mac: { secret: KGA_MAC_SECRET },
+    transport: H.fakeCa(pki, [H.ip(0, 0, kgaForeignMac.deliveredCert, { privateKey: kgaForeignMac.container }), H.pkiconf()],
+      { macSecret: KGA_MAC_SECRET }).transport,
+    sleep: function () { return Promise.resolve(); }, acceptCentralKeyGeneration: true,
+    authorizedBySharedSecret: true, trustAnchors: [kgaMac.anchor] });
+  var r51g6 = await s51g6.enroll(H.irCentralRequest(pki));
+  check("51g6. and an authority the anchors do not reach is still authorized by the secret",
+    r51g6.outcome === "issued" && !!r51g6.deliveredKey && r51g6.deliveredKey.trusted === false);
+  // Withholding the anchors from the authority check does not withdraw them from the issued
+  // certificate: anchors that do not issue the leaf still fail the enrollment.
+  var s51g7 = pki.cmp.session({ url: URL, mac: { secret: KGA_MAC_SECRET },
+    transport: H.fakeCa(pki, [H.ip(0, 0, kgaMac.deliveredCert, { privateKey: kgaMac.container }), H.pkiconf()],
+      { macSecret: KGA_MAC_SECRET }).transport,
+    sleep: function () { return Promise.resolve(); }, acceptCentralKeyGeneration: true,
+    authorizedBySharedSecret: true, trustAnchors: [kgaForeignMac.anchor] });
+  check("51g7. the exemption leaves the issued certificate still held to the anchors",
+    await codeOf(s51g7.enroll(H.irCentralRequest(pki))) === "cmp/bad-cert-response");
   check("51g3. and the exemption is refused on a signature session, which authorizes by a chain",
     codeOfSync(function () {
       return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert],
