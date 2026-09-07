@@ -1162,6 +1162,52 @@ security-only patches after the next major releases.
   sits under — including the ISO/IEC 9796-2 RSA signatures giving message recovery,
   on the TeleTrusT signatureScheme arc — and such a requirement is refused with
   `cmp/bad-info-value` rather than surfaced to the caller as a non-RSA algorithm.
+- **Unauthorized key generation authority (CWE-863).** A CA that generates an end
+  entity's key pair centrally delivers it signed by a Key Generation Authority,
+  and RFC 9483 §4.1.6 requires that authority's certificate to carry the
+  `id-kp-cmKGA` extended key usage "in order to be accepted by the EE as a
+  legitimate key generation authority". `pki.cmp.openKeyPackage` reads that as the
+  assertion it is. Under RFC 5280 §4.2.1.12 a certificate is constrained by its
+  `extendedKeyUsage` only when the extension is present, so a certificate carrying
+  none permits every purpose and satisfies a `requiredEku` path constraint while
+  saying nothing about key generation; treating the purpose as a path constraint
+  alone would let such a certificate deliver a private key. The assertion is
+  therefore checked on the signer certificate itself, and the chain is still held
+  to `requiredEku` so an issuer whose own extended key usage excludes the purpose
+  cannot authorize a leaf that claims it. Both run before any key material is
+  returned, as does the signature check and the §4.1.6 shape profile: exactly one
+  `RecipientInfo`, so a second party cannot open a key generated for this entity,
+  and an `id-ct-KP-aKeyPackage` signed content type, so a `SignedData` the
+  authority made over anything else cannot be replayed as a key package. The
+  recipient count is read past the `RecipientInfo`: a `KeyAgreeRecipientInfo`
+  wraps the content-encryption key once per entry in its `recipientEncryptedKeys`,
+  each for a different recipient (RFC 5652 §6.2.2), so one of those carrying two
+  entries is two parties and is refused as well. The one
+  exemption is the section's own, for an entity that protected its request with a
+  shared secret and authorizes by that secret; it is stated explicitly with
+  `opts.authorizedBySharedSecret`, applies only to a container opened with that
+  secret, and reports `trusted: false`. `pki.cmp.session` refuses a
+  server-generated key outright unless `opts.acceptCentralKeyGeneration` is set.
+- **Unpaired centrally generated key (CWE-345).** An authority's signature over a
+  delivered key package says the package is authentic, and says nothing about
+  which certificate the key inside belongs with. A session that accepted the two
+  independently would confirm an enrollment whose certificate certifies a key the
+  entity does not hold, and would send the `certConf` that accepts it. So
+  `pki.cmp.session` derives the delivered private key's public half and compares
+  it with the granted certificate BEFORE the confirmation leg; a mismatch is
+  `cmp/bad-key-package` and the transaction stops. The pair is proven by USING it,
+  not by deriving the public half and comparing. A key structure states its own
+  public half and the key engine reads what it is told: RFC 5958 §2 gives a
+  `OneAsymmetricKey` an optional `publicKey`, an EC key's RFC 5915 `ECPrivateKey`
+  carries its own public point, and an RSA private key carries the modulus and
+  public exponent outright, so a structure whose private components were replaced
+  while its stored public ones were left alone derives to exactly the public key
+  planted in it. Instead the two halves perform whichever operation the key type
+  can: a signature the public half verifies, a Diffie-Hellman agreement reached
+  from both sides, or a key encapsulation the private half decapsulates. The delivered key is what binds
+  the grant for such a transaction, in place of the requested public key an
+  ordinary enrollment is held to, and the resume token records which of the two
+  applies, so a restart cannot drop to neither.
 - **JWS algorithm confusion and JSON smuggling (ACME).** The `pki.jose` layer
   binds every `alg` to its key type in a registry, so the classic JWS attacks
   have no code path: there is no `none` row (CVE-2015-9235), the HMAC algorithms

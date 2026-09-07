@@ -126,9 +126,11 @@ module.exports = {
   crmf:      crmf,
   // `cmp` is the RFC 9810 Certificate Management Protocol producing side -- pki.cmp.build assembles a
   // protected PKIMessage (a certificate request / confirmation / revocation / general message),
-  // and pki.cmp.verify checks the protection on an incoming one. Parsing lives at pki.schema.cmp.parse.
+  // and pki.cmp.verify checks the protection on an incoming one. pki.cmp.openKeyPackage opens a
+  // centrally generated private key a CA delivered. Parsing lives at pki.schema.cmp.parse.
   // setEngine is the @internal path-validate seam -- kept off the public surface.
-  cmp:       { build: cmp.build, transfer: cmp.transfer, wellKnownUrl: cmp.wellKnownUrl, verify: cmp.verify, session: cmp.session },
+  cmp:       { build: cmp.build, transfer: cmp.transfer, wellKnownUrl: cmp.wellKnownUrl, verify: cmp.verify,
+    openKeyPackage: cmp.openKeyPackage, session: cmp.session },
   // `crl` is the RFC 5280 sec. 5 CRL producing side -- pki.crl.sign builds and signs a CertificateList
   // over any registry algorithm, pki.crl.verify checks a CRL signature through the one path-validation
   // signature engine, and pki.crl.isRevoked looks a serial up. Parsing lives at pki.schema.crl.parse.
@@ -136,7 +138,10 @@ module.exports = {
   // `key` is the key-material lifecycle domain -- pki.key.encrypt / decrypt a private key under RFC 8018
   // PBES2 (EncryptedPrivateKeyInfo), pki.key.export / import a PKCS#8 private or SPKI public key, and
   // pki.key.generate / publicFromPrivate over every WebCrypto algorithm. Parsing lives at pki.schema.pkcs8.
-  key:       key,
+  // Curated: publicFromPrivateMaterial is the @internal derivation pki.cmp.session pairs a delivered key
+  // with its certificate through, and stays off the public surface.
+  key:       { encrypt: key.encrypt, decrypt: key.decrypt, export: key.export, import: key.import,
+    generate: key.generate, publicFromPrivate: key.publicFromPrivate },
   // `pkcs12` is the RFC 7292 / RFC 9579 PKCS#12 (.p12/.pfx) producing side -- pki.pkcs12.build assembles a
   // password-integrity store (key/cert/crl/secret bags in an AuthenticatedSafe, shrouded keys + cert safes
   // under PBES2, a classic HMAC or PBMAC1 MAC), and pki.pkcs12.verifyMac checks a store's MAC. Parsing lives

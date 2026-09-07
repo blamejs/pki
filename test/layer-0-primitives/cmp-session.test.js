@@ -38,6 +38,7 @@ var CLIENT = signing.makeSigner("ec-p256", { cn: "client" });
 var URL = "https://ca.example/cmp";
 
 async function codeOf(p) { try { await p; return "NO-THROW"; } catch (e) { return (e && e.code) || ("RAW:" + (e && e.message)); } }
+function codeOfSync(fn) { try { fn(); return "NO-THROW"; } catch (e) { return (e && e.code) || ("RAW:" + (e && e.message)); } }
 
 // Every resumeToken field that names a certificate, so the door rule is asserted on all of them.
 var CERT_FIELDS = ["signer", "signerCache", "chain", "caPubs"];
@@ -819,6 +820,14 @@ async function run() {
   var r31 = await s31.session.enroll({ p10cr: p10 });
   var cc31 = pki.schema.cmp.parse(s31.transport.calls[1].body).body.decoded[0];
   check("31. a p10cr enrollment matches the -1 sentinel cp and echoes -1 in the certConf", r31.outcome === "issued" && Buffer.isBuffer(r31.certificate) && Number(cc31.certReqId) === -1);
+  // The arm is a CertificationRequest in whichever byte shape the caller holds, and the session copies
+  // records field by field, so every accepted shape has to survive that as bytes rather than as an
+  // object of indices.
+  for (var p10Shape of [["Uint8Array", new Uint8Array(p10)], ["DataView", new DataView(new Uint8Array(p10).buffer)],
+    ["ArrayBuffer", new Uint8Array(p10).buffer]]) {
+    check("31a. a p10cr arm given as a " + p10Shape[0] + " enrolls the same way",
+      (await mk([H.cp(-1, 0, certDer), H.pkiconf()]).session.enroll({ p10cr: p10Shape[1] })).outcome === "issued");
+  }
 
   // ===== 32. an EMPTY trustAnchors array for the signature flavor is refused (a disabled anchor is no anchor) =====
   check("32. signature protection with an empty trustAnchors array -> cmp/bad-input",
@@ -933,10 +942,238 @@ async function run() {
   check("50. caPubs delivered in the grant are retained in chain (leaf + issuer certs), as chain material not anchors",
     r50.outcome === "issued" && r50.chain.length === 2 && r50.chain[0].equals(certDer) && r50.chain[1].equals(H.caCert));
 
-  // ===== 51. a central-key-generation privateKey in the grant is refused (a session enrolls a client-generated key) =====
+  // ===== 51. a central-key-generation privateKey in the grant is delivered only when the caller
+  //           says it accepts one (RFC 9483 sec. 4.1.6) =====
   var privBlob = pki.asn1.build.sequence([pki.asn1.build.integer(0n)]);   // any DER stands in for the encrypted key payload
-  check("51. a granted CertResponse carrying a server-generated privateKey -> cmp/unexpected-arm (central keygen out of scope)",
+  check("51. a granted CertResponse carrying a server-generated privateKey -> cmp/unexpected-arm by default",
     await codeOf(mk([H.ip(0, 0, certDer, { privateKey: privBlob })]).session.enroll(H.irRequest(CLIENT.spki))) === "cmp/unexpected-arm");
+  // With the opt-in the grant is accepted and the container is opened with the session's own
+  // credential. This one is not a key package, so the delivery fails rather than the arm.
+  check("51a. with opts.acceptCentralKeyGeneration the arm is accepted and the container is opened",
+    await codeOf(mk([H.ip(0, 0, certDer, { privateKey: privBlob })], { acceptCentralKeyGeneration: true })
+      .session.enroll(H.irRequest(CLIENT.spki))) === "cmp/bad-key-package");
+  check("51b. and the opt-in is a boolean, not any truthy value",
+    codeOfSync(function () {
+      return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert],
+        transport: function () { return Promise.resolve({ responseBytes: Buffer.alloc(0), status: 200 }); },
+        acceptCentralKeyGeneration: "yes" });
+    }) === "cmp/bad-input");
+
+  // The request half (sec. 4.1.6): an entity that cannot generate a key omits certTemplate.publicKey
+  // and sends no proof of possession, since it holds no key to prove possession of. RFC 9480 sec. 2.20
+  // then requires cmp2021 in the header of that first request, because the response carries an
+  // EnvelopedData.
+  var kgaDelivery = await H.centralKeyGeneration(pki, CLIENT);
+  var s51c = mk([H.ip(0, 0, kgaDelivery.deliveredCert, { privateKey: kgaDelivery.container }), H.pkiconf()],
+    { acceptCentralKeyGeneration: true });
+  var r51c = await s51c.session.enroll(H.irCentralRequest(pki));
+  check("51c. a central key generation request delivers the key, paired with the issued certificate",
+    r51c.outcome === "issued" && !!r51c.deliveredKey && r51c.deliveredKey.keys.length === 1 &&
+    r51c.deliveredKey.keys[0].equals(kgaDelivery.deliveredKey) && r51c.deliveredKey.trusted === true &&
+    r51c.certificate.equals(kgaDelivery.deliveredCert));
+  var sent51c = pki.schema.cmp.parse(s51c.transport.calls[0].body);
+  check("51c2. and that request carries cmp2021 and no proof of possession",
+    sent51c.header.pvno === 3 &&
+    pki.schema.crmf.parse(sent51c.body.bytes).messages[0].popo === null);
+  check("51c3. the other permitted request shape, a zero-length subjectPublicKey, works the same way",
+    (await mk([H.ip(0, 0, kgaDelivery.deliveredCert, { privateKey: kgaDelivery.container }), H.pkiconf()],
+      { acceptCentralKeyGeneration: true }).session.enroll(H.irCentralRequest(pki, true))).outcome === "issued");
+  check("51c4. a central key generation request without the opt-in is refused before it is sent",
+    await codeOf(mk([H.ip(0, 0, certDer)]).session.enroll(H.irCentralRequest(pki))) === "cmp/bad-input");
+  check("51c5. and one carrying a proof of possession is refused: there is no key to prove",
+    await codeOf(mk([H.ip(0, 0, certDer)], { acceptCentralKeyGeneration: true })
+      .session.enroll({ ir: { certTemplate: { subject: [{ commonName: "leaf" }] }, pop: { type: "raVerified", raVerified: true } } })) === "cmp/bad-input");
+  // The authority's signature says the key package is authentic and says nothing about which
+  // certificate it belongs with, so the pair is checked before the grant is confirmed.
+  check("51c6. a certificate that does not certify the delivered key is refused, not confirmed",
+    await codeOf(mk([H.ip(0, 0, certDer, { privateKey: kgaDelivery.container }), H.pkiconf()],
+      { acceptCentralKeyGeneration: true }).session.enroll(H.irCentralRequest(pki))) === "cmp/bad-key-package");
+  // The pair is decided from the private material, not from the public point the key structure states
+  // about itself: a key whose scalar was replaced while its stored point was left alone matches the
+  // certificate on paper and cannot use it.
+  var kgaSwapped = await H.centralKeyGeneration(pki, CLIENT, { swapScalar: true });
+  check("51c7. a delivered key whose stored public point is not the one its scalar generates is refused",
+    await codeOf(mk([H.ip(0, 0, kgaSwapped.deliveredCert, { privateKey: kgaSwapped.container }), H.pkiconf()],
+      { acceptCentralKeyGeneration: true }).session.enroll(H.irCentralRequest(pki))) === "cmp/bad-key-package");
+  // The same for RSA, where the modulus and public exponent are part of the private structure and no
+  // amount of stripping makes a derivation come from the private components.
+  var kgaRsa = await H.centralKeyGeneration(pki, CLIENT, { rsa: true });
+  check("51c8. an RSA delivery is accepted when its two halves are a pair",
+    (await mk([H.ip(0, 0, kgaRsa.deliveredCert, { privateKey: kgaRsa.container }), H.pkiconf()],
+      { acceptCentralKeyGeneration: true }).session.enroll(H.irCentralRequest(pki))).outcome === "issued");
+  var kgaBroken = await H.centralKeyGeneration(pki, CLIENT, { rsa: true, breakPrivate: true });
+  check("51c9. and refused when its private components cannot use the modulus it states",
+    await codeOf(mk([H.ip(0, 0, kgaBroken.deliveredCert, { privateKey: kgaBroken.container }), H.pkiconf()],
+      { acceptCentralKeyGeneration: true }).session.enroll(H.irCentralRequest(pki))) === "cmp/bad-key-package");
+
+  check("51d. an enrollment that delivered no key reports none",
+    (await mk([H.ip(0, 0, certDer), H.pkiconf()], { acceptCentralKeyGeneration: true })
+      .session.enroll(H.irRequest(CLIENT.spki))).deliveredKey === null);
+  // The authority is authorized against the session's anchors, so one this session does not trust is
+  // refused even though the container itself is well formed.
+  var kgaForeign = await H.centralKeyGeneration(pki, CLIENT, { foreign: true });
+  check("51e. an authority outside the session's anchors does not deliver a key",
+    await codeOf(mk([H.ip(0, 0, kgaForeign.deliveredCert, { privateKey: kgaForeign.container }), H.pkiconf()],
+      { acceptCentralKeyGeneration: true }).session.enroll(H.irCentralRequest(pki))) === "cmp/unauthorized-kga");
+  // A shared-secret session reaches the password technique (sec. 4.1.6.3), and holds the authority to
+  // the anchors it was given rather than to the secret alone when it has them.
+  var KGA_MAC_SECRET = "shared-secret-central-keygen";
+  var kgaMac = await H.centralKeyGeneration(pki, CLIENT, { password: KGA_MAC_SECRET });
+  var s51f = pki.cmp.session({ url: URL, mac: { secret: KGA_MAC_SECRET },
+    transport: H.fakeCa(pki, [H.ip(0, 0, kgaMac.deliveredCert, { privateKey: kgaMac.container }), H.pkiconf()],
+      { macSecret: KGA_MAC_SECRET }).transport,
+    sleep: function () { return Promise.resolve(); },
+    acceptCentralKeyGeneration: true, trustAnchors: [kgaMac.anchor] });
+  var r51f = await s51f.enroll(H.irCentralRequest(pki));
+  check("51f. a shared-secret session opens the password-technique container it was sent",
+    r51f.outcome === "issued" && !!r51f.deliveredKey &&
+    r51f.deliveredKey.keys[0].equals(kgaMac.deliveredKey) && r51f.deliveredKey.trusted === true);
+  // With no anchors a shared-secret session has nothing to chain to, so it authorizes the authority
+  // by the secret, which sec. 4.1.6 permits a MAC-protected exchange, and says the chain is unproven.
+  var s51g = pki.cmp.session({ url: URL, mac: { secret: KGA_MAC_SECRET },
+    transport: H.fakeCa(pki, [H.ip(0, 0, kgaMac.deliveredCert, { privateKey: kgaMac.container }), H.pkiconf()],
+      { macSecret: KGA_MAC_SECRET }).transport,
+    sleep: function () { return Promise.resolve(); }, acceptCentralKeyGeneration: true });
+  var r51g = await s51g.enroll(H.irCentralRequest(pki));
+  check("51g. and with no anchors it authorizes by the secret, reporting the chain unproven",
+    r51g.outcome === "issued" && !!r51g.deliveredKey && r51g.deliveredKey.trusted === false);
+  // The technique follows the request's protection: a signature session holds a private key and does
+  // not open a password container, whatever the authority sent.
+  check("51h. a signature session does not open a password-technique container",
+    await codeOf(mk([H.ip(0, 0, kgaMac.deliveredCert, { privateKey: kgaMac.container }), H.pkiconf()],
+      { acceptCentralKeyGeneration: true })
+      .session.enroll(H.irCentralRequest(pki))) === "cmp/bad-key-package");
+
+  // A central key generation transaction submits no key for the grant to be held to, so a grant that
+  // carries only a certificate is bound to nothing and must not be confirmed.
+  check("51h0. a central key generation grant that carries no delivered key is refused",
+    await codeOf(mk([H.ip(0, 0, certDer), H.pkiconf()], { acceptCentralKeyGeneration: true })
+      .session.enroll(H.irCentralRequest(pki))) === "cmp/bad-cert-response");
+  // A request refused while it was being built leaves the session retryable, and the retry's own
+  // binding governs: an ordinary request after a central one is an ordinary transaction.
+  var s51n = mk([H.ip(0, 3), H.pollRep(0, 1), H.pollRep(0, 1)], { acceptCentralKeyGeneration: true, maxPolls: 2 });
+  await codeOf(s51n.session.enroll({ ir: { certTemplate: { subject: [{ commonName: "leaf" }] }, bogusField: 1 } }));
+  var tok51n = (await s51n.session.enroll(H.irRequest(CLIENT.spki))).resumeToken;
+  check("51n. a retry after a refused central request carries the retry's own binding, not the first's",
+    tok51n != null && tok51n.centralKeyGeneration === false && tok51n.requestedSpki !== null);
+
+  // Reading the caller's request object runs whatever accessors it carries, and one of those can call
+  // back into the session. The transaction slot is claimed before any of that is read, so the
+  // re-entrant call is refused rather than opening a second transaction whose state the first would
+  // then write over.
+  var s51o = mk([H.ip(0, 0, certDer), H.pkiconf()], { acceptCentralKeyGeneration: true });
+  var innerCode = null;
+  var reentrant = { ir: { certTemplate: { subject: [{ commonName: "leaf" }] } } };
+  Object.defineProperty(reentrant.ir, "key", {
+    enumerable: true,
+    get: function () {
+      if (innerCode === null) {
+        innerCode = "pending";
+        s51o.session.enroll(H.irRequest(CLIENT.spki)).then(
+          function () { innerCode = "NO-THROW"; },
+          function (e) { innerCode = (e && e.code) || "RAW"; });
+      }
+      return null;
+    },
+  });
+  await codeOf(s51o.session.enroll(reentrant));
+  await new Promise(function (r) { setImmediate(r); });
+  check("51o. a request whose accessor re-enters the session is refused a second transaction",
+    innerCode === "cmp/bad-input");
+
+  // The request that goes on the wire is the one the checks were applied to. An accessor that answers
+  // once for the classification and then swaps the arm for a central one cannot make the session send
+  // a request it never admitted: it sends the copy it read, so the grant stays bound to the key the
+  // caller submitted.
+  var s51p = mk([H.ip(0, 0, certDer), H.pkiconf()], { acceptCentralKeyGeneration: true });
+  var swapArm = { ir: { certTemplate: { subject: [{ commonName: "leaf" }], publicKey: CLIENT.spki } } };
+  Object.defineProperty(swapArm.ir, "certReqId", {
+    enumerable: true,
+    get: function () { swapArm.ir = { certTemplate: {}, key: null }; return 0; },
+  });
+  var r51p = await s51p.session.enroll(swapArm);
+  var sent51p = pki.schema.cmp.parse(s51p.transport.calls[0].body);
+  var sentTemplate = pki.schema.crmf.parse(sent51p.body.bytes).messages[0].certReq.certTemplate;
+  check("51p. an arm swapped after it was classified is not the arm that is sent",
+    r51p.outcome === "issued" && sent51p.header.pvno === 2 &&
+    sentTemplate.publicKey != null && sentTemplate.publicKey.publicKey.bytes.length > 0);
+
+  // A session certificate option takes DER, PEM, or an already-parsed certificate. The KGA chain is
+  // built from the same pool, so an intermediate given in any of the three reaches it.
+  var kgaDeep = await H.centralKeyGeneration(pki, CLIENT, { viaIntermediate: true });
+  for (var interForm of [["DER", kgaDeep.intermediate], ["PEM", pki.schema.x509.pemEncode(kgaDeep.intermediate, "CERTIFICATE")],
+    ["a parsed certificate", pki.schema.x509.parse(kgaDeep.intermediate)]]) {
+    check("51h4. an authority under an intermediate given as " + interForm[0] + " delivers the key",
+      (await mk([H.ip(0, 0, kgaDeep.deliveredCert, { privateKey: kgaDeep.container }), H.pkiconf()],
+        { acceptCentralKeyGeneration: true, intermediates: [interForm[1]] })
+        .session.enroll(H.irCentralRequest(pki))).outcome === "issued");
+  }
+  check("51h5. and without the intermediate the authority's chain cannot be built",
+    await codeOf(mk([H.ip(0, 0, kgaDeep.deliveredCert, { privateKey: kgaDeep.container }), H.pkiconf()],
+      { acceptCentralKeyGeneration: true }).session.enroll(H.irCentralRequest(pki))) === "cmp/unauthorized-kga");
+  // The anchor pool takes the same three forms, plus the { name, publicKey, algorithm } tuple that is
+  // what an anchor without a certificate looks like. Each reaches the authority's chain.
+  for (var anchorForm of [["DER", H.caCert], ["PEM", pki.schema.x509.pemEncode(H.caCert, "CERTIFICATE")],
+    ["a parsed certificate", pki.schema.x509.parse(H.caCert)]]) {
+    check("51h6. an anchor given as " + anchorForm[0] + " authorizes the authority",
+      (await mk([H.ip(0, 0, kgaDelivery.deliveredCert, { privateKey: kgaDelivery.container }), H.pkiconf()],
+        { acceptCentralKeyGeneration: true, trustAnchors: [anchorForm[1]] })
+        .session.enroll(H.irCentralRequest(pki))).outcome === "issued");
+  }
+  var caParsed = pki.schema.x509.parse(H.caCert);
+  check("51h7. and an anchor tuple, which names a key rather than a certificate, reaches it too",
+    (await mk([H.ip(0, 0, kgaDelivery.deliveredCert, { privateKey: kgaDelivery.container }), H.pkiconf()],
+      { acceptCentralKeyGeneration: true, trustAnchors: [{ name: caParsed.subject,
+        publicKey: caParsed.subjectPublicKeyInfo.bytes,
+        algorithm: caParsed.subjectPublicKeyInfo.algorithm.oid }] })
+      .session.enroll(H.irCentralRequest(pki))).outcome === "issued");
+
+  // A session that names the instant it validates at judges the authority's chain at that instant too,
+  // rather than one certificate at a stated time and another at now.
+  var kgaExpired = await H.centralKeyGeneration(pki, CLIENT, { notAfter: new Date("2021-01-01T00:00:00Z") });
+  check("51h2. an authority whose certificate expired before opts.time does not deliver a key",
+    await codeOf(mk([H.ip(0, 0, kgaExpired.deliveredCert, { privateKey: kgaExpired.container }), H.pkiconf()],
+      { acceptCentralKeyGeneration: true, time: new Date("2022-01-01T00:00:00Z") })
+      .session.enroll(H.irCentralRequest(pki))) === "cmp/unauthorized-kga");
+  check("51h3. and the same authority delivers it at an instant its certificate covers",
+    (await mk([H.ip(0, 0, kgaExpired.deliveredCert, { privateKey: kgaExpired.container }), H.pkiconf()],
+      { acceptCentralKeyGeneration: true, time: new Date("2020-06-01T00:00:00Z") })
+      .session.enroll(H.irCentralRequest(pki))).outcome === "issued");
+
+  // A central key generation transaction that outlives its process resumes like any other, held to
+  // the delivered key rather than to a requested one, which is the binding it never had.
+  var s51i = mk([H.ip(0, 3), H.pollRep(0, 1), H.pollRep(0, 1)], { acceptCentralKeyGeneration: true, maxPolls: 2 });
+  var tok51 = (await s51i.session.enroll(H.irCentralRequest(pki))).resumeToken;
+  check("51i. its resume token names central key generation and no requested key",
+    tok51 != null && tok51.centralKeyGeneration === true && tok51.requestedSpki === null);
+  // Every leg of the transaction expects the EnvelopedData grant, so every leg carries the version.
+  check("51i2. and every poll it sent carries cmp2021, not just the initial request",
+    s51i.transport.calls.length > 1 && s51i.transport.calls.every(function (c) {
+      return pki.schema.cmp.parse(c.body).header.pvno === 3;
+    }));
+  var kgaResume = await H.centralKeyGeneration(pki, CLIENT);
+  var s51jf = H.fakeCa(pki, [H.pollRep(0, 1),
+    H.ip(0, 0, kgaResume.deliveredCert, { privateKey: kgaResume.container }), H.pkiconf()]);
+  var s51j = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert],
+    transport: s51jf.transport, sleep: function () { return Promise.resolve(); },
+    acceptCentralKeyGeneration: true });
+  var r51j = await s51j.resumePoll(tok51);
+  check("51j. and the resumed poll delivers the key and pairs it with the issued certificate",
+    r51j.outcome === "issued" && !!r51j.deliveredKey &&
+    r51j.deliveredKey.keys[0].equals(kgaResume.deliveredKey));
+  check("51j2. the resumed process carries the version on every leg it sends too",
+    s51jf.transport.calls.length > 1 && s51jf.transport.calls.every(function (c) {
+      return pki.schema.cmp.parse(c.body).header.pvno === 3;
+    }));
+  // resumePoll reads the token before it sends anything, so a refused token never reaches the wire.
+  check("51k. a session without the opt-in refuses to resume such a transaction",
+    await codeOf(mk([H.pollRep(0, 1)]).session.resumePoll(tok51)) === "cmp/bad-input");
+  check("51l. a token naming both a requested key and central key generation is refused",
+    await codeOf(mk([H.pollRep(0, 1)], { acceptCentralKeyGeneration: true }).session.resumePoll(
+      Object.assign({}, tok51, { requestedSpki: Buffer.from(CLIENT.spki).toString("base64") }))) === "cmp/bad-input");
+  check("51m. and one naming neither is still refused, since the grant would bind to nothing",
+    await codeOf(mk([H.pollRep(0, 1)], { acceptCentralKeyGeneration: true }).session.resumePoll(
+      Object.assign({}, tok51, { centralKeyGeneration: false }))) === "cmp/bad-input");
 
   // ===== 52. the cached signer tracks the MOST RECENT rotation: A(waiting) -> B(grant) -> B(pkiConf, no extraCerts) =====
   var s52f = H.fakeCa(pki, [H.ip(0, 3), { body: H.ip(0, 0, certDer), rotateSigner: true }, { body: H.pkiconf(), rotateSigner: true, noExtraCerts: true }]);
@@ -2303,10 +2540,10 @@ async function run() {
   // A misspelling set to null must not read as an omitted field: counting only non-null keys would
   // let { caCerts: true, caCert: null } through as a correctly written single-operation request.
   check("175d. an unknown info key set to NULL is still refused", await codeOf(mk([H.genpOf("caCerts")]).session.info({ caCerts: true, caCert: null })) === "cmp/bad-input");
-  // The enrollment request IS the message body, so pki.cmp.build's arm count already refuses this
-  // (probed: "message.body must have exactly one arm, got 2"), which is why enroll carries no door
-  // of its own. The info request is read for a name and never reaches the builder, so it does.
-  check("175e. an unknown enroll key set to NULL is refused by the body arm count", await codeOf(mk([H.pkiconf()]).session.enroll({ ir: H.irRequest(CLIENT.spki).ir, irr: null })) === "cmp/bad-input");
+  // The session sends the ONE arm it read out of the request, so a key it does not recognize would be
+  // dropped rather than reaching pki.cmp.build's arm count. enroll names it at its own door.
+  check("175e. an unknown enroll key set to NULL is refused", await codeOf(mk([H.pkiconf()]).session.enroll({ ir: H.irRequest(CLIENT.spki).ir, irr: null })) === "cmp/bad-input");
+  check("175e2. and an unknown enroll key with a value is refused the same way", await codeOf(mk([H.pkiconf()]).session.enroll({ ir: H.irRequest(CLIENT.spki).ir, bogus: 1 })) === "cmp/bad-input");
   // caCerts and certReqTemplate send NO infoValue, so a value supplied to either would be dropped.
   check("175f. info({caCerts: <a certificate>}) -> cmp/bad-input (this genm carries no infoValue)", await codeOf(mk([H.genpOf("caCerts")]).session.info({ caCerts: H.caCert })) === "cmp/bad-input");
   // The rootCaCert request value IS a CMPCertificate. Refusing it here keeps a caller's mistake

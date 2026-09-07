@@ -24,11 +24,30 @@ var asn1 = pki.asn1;
 var b = asn1.build;
 var TAGS = asn1.TAGS;
 var subtle = pki.webcrypto.subtle;
+var nodeCrypto = require("node:crypto");
+var derSurgery = require("../helpers/der-surgery");
 function byName(n) { return pki.oid.byName(n); }
 
 async function codeOf(promise) {
   try { await promise; return null; }
   catch (e) { return e && e.code; }
+}
+
+// An EC PKCS#8 whose private scalar is another key's, with the public point the structure stores left
+// alone. Built as an ENCODING, so what is tested is bytes a peer could actually send.
+function swapEcScalar(pk8, otherPk8) {
+  var innerDer = pki.schema.pkcs8.parse(pk8).privateKey;
+  var scalar = Buffer.from(asn1.decode(innerDer).children[1].bytes);
+  var otherScalar = Buffer.from(asn1.decode(pki.schema.pkcs8.parse(otherPk8).privateKey).children[1].bytes);
+  var swappedInner = derSurgery.patch(innerDer, function (n) {
+    if (n.constructed || n.tagClass !== "universal" || n.tagNumber !== TAGS.OCTET_STRING) return undefined;
+    return Buffer.from(n.bytes).equals(scalar) ? otherScalar : undefined;
+  });
+  var outer = Buffer.from(asn1.decode(pk8).children[2].bytes);
+  return derSurgery.patch(pk8, function (n) {
+    if (n.constructed || n.tagClass !== "universal" || n.tagNumber !== TAGS.OCTET_STRING) return undefined;
+    return Buffer.from(n.bytes).equals(outer) ? b.octetString(swappedInner) : undefined;
+  });
 }
 
 // A PBES2 EncryptedPrivateKeyInfo built from parts, for the malformed / reject vectors.
@@ -186,6 +205,81 @@ async function testOptionValueRendering() {
   void pk;
 }
 
+// An RSA PKCS#8 whose private exponent and CRT components are replaced with 1, leaving the modulus and
+// public exponent the structure states. The public half derives unchanged; the key cannot be used.
+function breakRsaPrivateComponents(pk8) {
+  var innerDer = pki.schema.pkcs8.parse(pk8).privateKey;
+  var broken = b.sequence(asn1.decode(innerDer).children.map(function (c, i) {
+    return i >= 3 ? b.integer(1n) : b.raw(c.bytes);
+  }));
+  var outer = Buffer.from(asn1.decode(pk8).children[2].bytes);
+  return derSurgery.patch(pk8, function (n) {
+    if (n.constructed || n.tagClass !== "universal" || n.tagNumber !== TAGS.OCTET_STRING) return undefined;
+    return Buffer.from(n.bytes).equals(outer) ? b.octetString(broken) : undefined;
+  });
+}
+
+// One arm per way a key type can be exercised: a signature the public half verifies (RSA / EC / EdDSA /
+// ML-DSA / SLH-DSA), a Diffie-Hellman agreement reached from both sides (X25519 / X448), and a key
+// encapsulation the private half decapsulates (ML-KEM).
+var CORRESPONDS_ALGS = [
+  ["rsa", ["rsa", { modulusLength: 2048 }]],
+  ["rsa-pss", ["rsa-pss", { modulusLength: 2048 }]],
+  ["rsa-pss restricted to sha384", ["rsa-pss", { modulusLength: 2048, hashAlgorithm: "sha384", mgf1HashAlgorithm: "sha384", saltLength: 48 }]],
+  ["ec-p256", ["ec", { namedCurve: "prime256v1" }]],
+  ["ec-p384", ["ec", { namedCurve: "secp384r1" }]],
+  ["ed25519", ["ed25519"]], ["ed448", ["ed448"]],
+  ["x25519", ["x25519"]], ["x448", ["x448"]],
+  ["ml-dsa-65", ["ml-dsa-65"]], ["ml-kem-768", ["ml-kem-768"]],
+  ["slh-dsa-sha2-128s", ["slh-dsa-sha2-128s"]],
+];
+
+async function testCorrespondsTo(keyInternal) {
+  for (var spec of CORRESPONDS_ALGS) {
+    var kp = nodeCrypto.generateKeyPairSync.apply(nodeCrypto, spec[1]);
+    var other = nodeCrypto.generateKeyPairSync.apply(nodeCrypto, spec[1]);
+    var pk8 = kp.privateKey.export({ format: "der", type: "pkcs8" });
+    check("correspondsTo answers true for a " + spec[0] + " pair and false for another key's public half",
+      (await keyInternal.correspondsTo(pk8, kp.publicKey.export({ format: "der", type: "spki" }))) === true &&
+      (await keyInternal.correspondsTo(pk8, other.publicKey.export({ format: "der", type: "spki" }))) === false);
+  }
+  // A private half replaced while the public half the structure states was left alone. A derive-and-
+  // compare check reports the planted public key and calls these pairs; using them does not.
+  var ecPair = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var ecPk8 = ecPair.privateKey.export({ format: "der", type: "pkcs8" });
+  var ecSpki = ecPair.publicKey.export({ format: "der", type: "spki" });
+  var swapped = swapEcScalar(ecPk8, nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" })
+    .privateKey.export({ format: "der", type: "pkcs8" }));
+  check("an EC key still derives to the point it stores after its scalar was replaced",
+    Buffer.compare(await pki.key.publicFromPrivate(swapped), ecSpki) === 0);
+  check("and correspondsTo refuses it, because the scalar cannot use that point",
+    (await keyInternal.correspondsTo(swapped, ecSpki)) === false);
+  var rsaPair = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  var rsaSpki = rsaPair.publicKey.export({ format: "der", type: "spki" });
+  var brokenRsa = breakRsaPrivateComponents(rsaPair.privateKey.export({ format: "der", type: "pkcs8" }));
+  check("an RSA key still derives to its stated modulus after its private components were replaced",
+    Buffer.compare(await pki.key.publicFromPrivate(brokenRsa), rsaSpki) === 0);
+  check("and correspondsTo refuses it, because those components cannot sign under that modulus",
+    (await keyInternal.correspondsTo(brokenRsa, rsaSpki)) === false);
+  // Two halves of different algorithms are not a pair, and are told apart before either is exercised.
+  check("correspondsTo refuses a private key whose type is not the public key's",
+    (await keyInternal.correspondsTo(
+      nodeCrypto.generateKeyPairSync("ed25519").privateKey.export({ format: "der", type: "pkcs8" }),
+      rsaSpki)) === false);
+  check("correspondsTo refuses input that is not a private key",
+    (await codeOf(keyInternal.correspondsTo(b.integer(1n), rsaSpki))) === "key/bad-input");
+  check("and input that is not a SubjectPublicKeyInfo",
+    (await codeOf(keyInternal.correspondsTo(
+      rsaPair.privateKey.export({ format: "der", type: "pkcs8" }), b.integer(1n)))) === "key/bad-input");
+  // A key type none of the three arms can drive says so, rather than answering either way about a
+  // pair it never exercised. Finite-field Diffie-Hellman signs nothing and is not one of the two
+  // key-agreement types this reaches.
+  var dh = nodeCrypto.generateKeyPairSync("dh", { group: "modp14" });
+  check("correspondsTo reports an algorithm it cannot exercise, rather than guessing",
+    (await codeOf(keyInternal.correspondsTo(dh.privateKey.export({ format: "der", type: "pkcs8" }),
+      dh.publicKey.export({ format: "der", type: "spki" })))) === "key/unsupported-algorithm");
+}
+
 // ---- import / generate / publicFromPrivate verbs ---------------------------
 async function testVerbs() {
   var ed = await pki.key.generate("Ed25519");
@@ -194,6 +288,13 @@ async function testVerbs() {
   // publicFromPrivate derives the SAME SPKI the engine exports.
   check("publicFromPrivate derives the SPKI public key", Buffer.compare(await pki.key.publicFromPrivate(p8), Buffer.from(spki)) === 0);
   check("publicFromPrivate accepts a CryptoKey", Buffer.compare(await pki.key.publicFromPrivate(ed.privateKey), Buffer.from(spki)) === 0);
+
+  // correspondsTo asks whether a private key and a SubjectPublicKeyInfo are two halves of one pair,
+  // and it answers by USING the pair rather than by deriving and comparing. A key structure states its
+  // own public half and the engine reads what it is told, so a derivation reports the public key that
+  // was planted in the structure.
+  var keyInternal = require("../../lib/key.js");
+  await testCorrespondsTo(keyInternal);
 
   // import fails closed for an ambiguous algorithm (RSA / EC): guards never guess.
   var rsa = await pki.key.generate({ name: "RSA-PSS", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" });
