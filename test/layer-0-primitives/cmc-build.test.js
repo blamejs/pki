@@ -1370,6 +1370,24 @@ async function run() {
         popChallenge: { challenge: unrelatedChallenge, recipient: { key: popKey.key } } },
       { cert: s.cert, key: s.key });
     })) === "cmc/bad-popo");
+  // App. C.1 defines the value as "NoSignatureValue ::= OCTET STRING", so a signature field carrying
+  // something else is a request an authority would reject.
+  function noSignatureCsrWithValue(csrDer, valueDer) {
+    var criBytes = pki.asn1.decode(csrDer).children[0].bytes;
+    return b.sequence([b.raw(criBytes),
+      b.sequence([b.oid(NO_SIGNATURE_OID), b.nullValue()]), b.bitString(valueDer, 0)]);
+  }
+  var rawValueCsr = noSignatureCsrWithValue(popKeyCsr,
+    nodeCrypto.createHash("sha256").update(pki.asn1.decode(popKeyCsr).children[0].bytes).digest());
+  var rawValueTagged = b.contextConstructed(0, Buffer.concat([b.integer(11n), rawValueCsr]));
+  var rawValueChallenge = await popChallengeFor(proof, { tagged: rawValueTagged });
+  check("EP19j. a no-signature value that is not an OCTET STRING is refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: rawValueCsr }],
+        popChallenge: { challenge: rawValueChallenge, recipient: { key: popKey.key } } },
+      { cert: s.cert, key: s.key });
+    })) === "cmc/bad-popo");
+
   var bareNsCsr = noSignatureCsr(popKeyCsr, []);
   var bareNsTagged = b.contextConstructed(0, Buffer.concat([b.integer(11n), bareNsCsr]));
   var popChallengePromise = await popChallengeFor(proof, { tagged: bareNsTagged });
