@@ -430,6 +430,36 @@ async function testPopoPrivKeyArms() {
   // public key, so a private key from another pair agrees a secret with the authority perfectly well
   // and yields a MAC the authority cannot reproduce. That is a proof of possession of something this
   // request never asked to have certified, and it is refused rather than emitted.
+  // A finite-field key reaches a certificate in two encodings. This runtime classifies the PKCS#3
+  // dhKeyAgreement form and imports the X9.42 dhpublicnumber form without classifying it, and refuses
+  // to agree with what it did not classify. The refusal names the side it could not read rather than
+  // reporting its absent type as though it were one.
+  var x942Spki = (function () {
+    var n = pki.asn1.decode(caDhSpki);
+    var prm = pki.asn1.decode(n.children[0].children[1].bytes);
+    var p = pki.asn1.read.integer(prm.children[0]);
+    var domain = pki.asn1.build.sequence([
+      pki.asn1.build.integer(p), pki.asn1.build.integer(pki.asn1.read.integer(prm.children[1])),
+      pki.asn1.build.integer((p - 1n) / 2n),
+    ]);
+    return pki.asn1.build.sequence([
+      pki.asn1.build.sequence([pki.asn1.build.oid("1.2.840.10046.2.1"), pki.asn1.build.raw(domain)]),
+      pki.asn1.build.raw(n.children[1].bytes),
+    ]);
+  }());
+  check("V6b. the X9.42 form really is imported without a key type",
+    nodeCrypto.createPublicKey({ key: Buffer.from(x942Spki), format: "der", type: "spki" })
+      .asymmetricKeyType === undefined);
+  var x942Ca = await dhCertFor(x942Spki, { serialNumber: 23 });
+  var x942Err = null;
+  try {
+    await pki.crmf.build({ certReqId: 18n, certTemplate: tpl(eeDhSpki),
+      pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: x942Ca } });
+  } catch (e) { x942Err = e; }
+  check("V6b. an authority key this runtime cannot classify is refused, naming that side",
+    x942Err !== null && x942Err.code === "crmf/bad-popo" &&
+    x942Err.message.indexOf("the authority certificate's key carries an algorithm this runtime does not recognize") !== -1);
+
   // pop.caCert reaches a decoder before anything reads it as a certificate. Every shape that decoder
   // refuses is a verdict on the caller's input, so each one names its reason instead of escaping as
   // whatever the runtime happened to throw.
