@@ -1001,6 +1001,12 @@ async function run() {
   check("51c6b. and the same container opens through the standalone verb, which surfaces both keys",
     (await pki.cmp.openKeyPackage(kgaTwoKeys.contentInfo,
       { key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [kgaTwoKeys.anchor] })).keys.length === 2);
+  // A key whose type the pair check cannot exercise leaves the grant unproven, so the enrollment is
+  // refused rather than confirmed on a binding that was never tested.
+  var kgaDh = await H.centralKeyGeneration(pki, CLIENT, { dh: true });
+  check("51c6c. a delivered key the two halves cannot be exercised on is refused, not assumed a pair",
+    await codeOf(mk([H.ip(0, 0, kgaDh.deliveredCert, { privateKey: kgaDh.container }), H.pkiconf()],
+      { acceptCentralKeyGeneration: true }).session.enroll(H.irCentralRequest(pki))) === "cmp/bad-key-package");
   var kgaSwapped = await H.centralKeyGeneration(pki, CLIENT, { swapScalar: true });
   check("51c7. a delivered key whose stored public point is not the one its scalar generates is refused",
     await codeOf(mk([H.ip(0, 0, kgaSwapped.deliveredCert, { privateKey: kgaSwapped.container }), H.pkiconf()],

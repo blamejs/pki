@@ -524,8 +524,12 @@ async function centralKeyGeneration(pki, client, o) {
     notBefore: o.notBefore || NB, notAfter: o.notAfter || NA,
     extensions: { basicConstraints: { cA: true }, keyUsage: ["digitalSignature", "keyCertSign"],
       extendedKeyUsage: ["cmKGA"], subjectKeyIdentifier: true } }, issuer);
-  var deliveredKp = nodeCrypto.generateKeyPairSync(o.rsa ? "rsa" : "ec",
-    o.rsa ? { modulusLength: 2048 } : { namedCurve: "P-256" });
+  // `o.dh` delivers a finite-field Diffie-Hellman key: a well-formed OneAsymmetricKey whose type
+  // neither signs, nor is one of the two key-agreement types the pair check drives, nor encapsulates,
+  // so the two halves cannot be exercised together at all.
+  var deliveredKp = o.dh ? nodeCrypto.generateKeyPairSync("dh", { group: "modp14" })
+    : nodeCrypto.generateKeyPairSync(o.rsa ? "rsa" : "ec",
+      o.rsa ? { modulusLength: 2048 } : { namedCurve: "P-256" });
   var deliveredKey = deliveredKp.privateKey.export({ format: "der", type: "pkcs8" });
   // `o.breakPrivate` delivers a key whose PRIVATE components were replaced while the public ones the
   // structure states were left alone. It derives to the certified public key and cannot use it.
