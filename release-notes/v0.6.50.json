@@ -15,10 +15,12 @@
 
       "pki.schema.cmp reads the two structures the exchange uses: KemBMParameter, the parameters of the protectionAlg, and KemCiphertextInfo, the algorithm and ciphertext a peer sends.",
 
-      "A message carries one protection. Naming kem alongside a signature or a shared secret is refused rather than resolved by precedence, and opts.kem passed for a message protected another way is refused too. The KEM the client decapsulates under is ML-KEM-512, 768 or 1024, under HKDF-SHA256 and HMAC-SHA256; anything else is refused rather than defaulted."
+      "A message carries one protection. Naming kem alongside a signature or a shared secret is refused rather than resolved by precedence, and opts.kem passed for a message protected another way is refused too. The KEM the client decapsulates under is ML-KEM-512, 768 or 1024, under HKDF-SHA256 and HMAC-SHA256; anything else is refused rather than defaulted. The sender chooses the derived key size, so a message naming one short enough to search is refused at both ends rather than protected or verified under it, and the shared secret is accepted in any of the byte shapes an encapsulation returns."
     ],
     "Changed": [
-      "pki.cmp.verify no longer reports id-KemBasedMac as an unsupported protection algorithm, since it now verifies it. id-PasswordBasedMac and id-DHBasedMac are still refused as before."
+      "pki.cmp.verify no longer reports id-KemBasedMac as an unsupported protection algorithm, since it now verifies it. id-PasswordBasedMac and id-DHBasedMac are still refused as before.",
+
+      "pki.cmp.verify takes a shared secret in any byte shape, not only a Buffer or a Uint8Array. An ArrayBuffer, which is what a KEM encapsulation returns, and a view over a larger allocation are both accepted and copied at the door as before. This applies to opts.sharedSecret as well as to the new opts.kem.sharedSecret."
     ]
   }
 }

@@ -53,6 +53,9 @@
             "CMP_KEM_MAX_KEY_BYTES": {
               "kind": "number"
             },
+            "CMP_KEM_MIN_KEY_BYTES": {
+              "kind": "number"
+            },
             "CMP_MIN_NONCE_BYTES": {
               "kind": "number"
             },
@@ -1380,6 +1383,9 @@
               "kind": "number"
             },
             "CMP_KEM_MAX_KEY_BYTES": {
+              "kind": "number"
+            },
+            "CMP_KEM_MIN_KEY_BYTES": {
               "kind": "number"
             },
             "CMP_MIN_NONCE_BYTES": {

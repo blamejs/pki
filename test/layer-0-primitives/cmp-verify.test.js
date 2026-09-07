@@ -1297,6 +1297,29 @@ async function run() {
         kemAlgorithm: kemEncap.algorithm } }))) === "cmp/bad-input");
   check("24k. verifying a KEM-protected message with no shared secret is refused",
     (await codeOf(pki.cmp.verify(kemMsg, {}))) === "cmp/bad-input");
+  // An encapsulation hands back an ArrayBuffer, so that shape verifies without the caller converting it.
+  check("24k2. the ArrayBuffer an encapsulation returns is accepted as the shared secret",
+    (await pki.cmp.verify(kemMsg, { kem: { sharedSecret: kemEncap.ss.buffer.slice(
+      kemEncap.ss.byteOffset, kemEncap.ss.byteOffset + kemEncap.ss.length) } })).valid === true);
+  // The same door serves the PBMAC1 secret, so that option takes every byte shape too.
+  check("24k2b. a PBMAC1 secret given as an ArrayBuffer verifies as well",
+    (await pki.cmp.verify(await buildMac("hunter2"), { sharedSecret: (function () {
+      var u = Buffer.from("hunter2", "utf8");
+      return u.buffer.slice(u.byteOffset, u.byteOffset + u.length);
+    })() })).valid === true);
+  // The sender picks the derived key size, so a length short enough to search is refused at both ends.
+  check("24k3. a protection key shorter than the floor is refused when building",
+    (await codeOf(pki.cmp.build({ header: kemHdr, body: IRBODY },
+      { kem: { key: kemKey.key, ciphertext: kemEncap.ct, kemAlgorithm: kemEncap.algorithm, len: 1 } }))) === "cmp/bad-input");
+  var kemShortLen = await pki.cmp.verify(substituteAlg(kemMsg, b.sequence([b.oid(pki.oid.byName("kemBasedMac")),
+    b.sequence([b.sequence([b.oid(pki.oid.byName("hkdfWithSha256"))]), b.integer(1n),
+      b.sequence([b.oid(pki.oid.byName("hmacWithSHA256"))])])])), { kem: { sharedSecret: kemEncap.ss } });
+  // The refusal must be the LENGTH one: without the floor the MAC would simply mismatch, which is a
+  // different verdict for a different reason, so the reason is what discriminates here.
+  check("24k4. and a message naming one is refused for its key length, before any MAC comparison",
+    kemShortLen.valid === false && kemShortLen.code === "cmp/protection-failed" &&
+    kemShortLen.reason.indexOf("1-byte protection key") !== -1);
+
   check("24l. an empty shared secret is refused rather than derived from",
     (await codeOf(pki.cmp.verify(kemMsg, { kem: { sharedSecret: Buffer.alloc(0) } }))) === "cmp/bad-input");
   check("24m. opts.kem that is not an object is refused",
