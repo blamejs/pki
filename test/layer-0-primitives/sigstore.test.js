@@ -605,7 +605,31 @@ async function run() {
     b.messageSignature = { messageDigest: { algorithm: "SHA2_256", digest: Buffer.alloc(32).toString("base64") }, signature: Buffer.alloc(64).toString("base64") };
     return b;
   }());
-  check("a well-formed message_signature arm parses", pki.sigstore.parseBundle(msArmOk) === msArmOk);
+  // An object is returned as the validated copy the checks ran on, not as the object handed over, so
+  // what a caller reads back is what was actually checked.
+  var msArmParsed = pki.sigstore.parseBundle(msArmOk);
+  check("a well-formed message_signature arm parses",
+    msArmParsed !== null && msArmParsed.messageSignature.signature === msArmOk.messageSignature.signature);
+  check("and what comes back is the checked copy rather than the object handed over",
+    msArmParsed !== msArmOk);
+  // The same rule the verifying verb applies reaches this one: a bundle owning two content arms is
+  // refused even when reading one of them removes the other, and an accessor is refused rather than
+  // called. Both verbs decide on the same copy, so they cannot answer differently.
+  var pbMutating = {};
+  pbMutating.mediaType = BUNDLE.mediaType;
+  pbMutating.verificationMaterial = BUNDLE.verificationMaterial;
+  Object.defineProperty(pbMutating, "messageSignature", {
+    enumerable: true, configurable: true,
+    get: function () { delete pbMutating.dsseEnvelope; return { signature: "AA==" }; },
+  });
+  pbMutating.dsseEnvelope = BUNDLE.dsseEnvelope;
+  check("the parse-side mutating object really owns both arms first",
+    Object.prototype.hasOwnProperty.call(pbMutating, "messageSignature") &&
+    Object.prototype.hasOwnProperty.call(pbMutating, "dsseEnvelope"));
+  check("parseBundle refuses an accessor-backed arm rather than calling it", (function () {
+    try { pki.sigstore.parseBundle(pbMutating); return false; }
+    catch (e) { return e.code === "sigstore/bad-bundle"; }
+  }()));
 
   // --- Malformed-but-structurally-shaped fields must fail closed with a typed
   // sigstore/* error, never a raw TypeError escaping the contract (a null array
