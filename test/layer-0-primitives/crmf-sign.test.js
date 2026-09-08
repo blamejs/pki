@@ -730,6 +730,24 @@ async function testPopoPrivKeyArms() {
   check("V6b. an ediPartyName whose partyName wraps no string is refused",
     (await codeOf(pki.crmf.build({ certReqId: 39n, certTemplate: tpl(eeDhSpki),
       pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: nestedNullEdi } }))) === "crmf/bad-popo");
+
+  // DirectoryString is SIZE (1..MAX), so a string carrying an accepted tag and no characters names
+  // nobody, and neither does one whose bytes are not the encoding its tag claims.
+  function ediHolding(stringTlv) {
+    return pki.asn1.build.sequence([
+      pki.asn1.build.implicit(5, pki.asn1.build.sequence([
+        pki.asn1.build.explicit(1, Buffer.from(stringTlv))]))]);
+  }
+  var ediBad = [
+    ["an empty string", ediHolding([0x0c, 0x00])],
+    ["a PrintableString holding a character it cannot carry", ediHolding([0x13, 0x02, 0x40, 0x40])],
+  ];
+  for (var eb = 0; eb < ediBad.length; eb++) {
+    check("V6b. an ediPartyName naming a party with " + ediBad[eb][0] + " is refused",
+      (await codeOf(pki.crmf.build({ certReqId: 43n, certTemplate: tpl(eeDhSpki),
+        pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8,
+          caCert: sanCaHolding(ediBad[eb][1]) } }))) === "crmf/bad-popo");
+  }
   var x400 = sanCaHolding(pki.asn1.build.sequence([
     pki.asn1.build.implicit(3, pki.asn1.build.sequence([pki.asn1.build.integer(1n)]))]));
   check("V6b. an x400Address the shared reader accepts names somebody",
@@ -982,6 +1000,23 @@ async function testPopoPrivKeyArms() {
       pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: legacyPk8,
         identifier: "device-42", recipients: [{ cert: recip.cert }], archive: true } });
   } catch (e) { emErr = e; }
+  // Archival does not agree a secret, so it is not held to the floors; it is still held to the
+  // parameters describing the key, and a composite modulus describes no group in either encoding.
+  var compositePkcs3 = pki.asn1.build.sequence([
+    pki.asn1.build.sequence([pki.asn1.build.oid("1.2.840.113549.1.3.1"),
+      pki.asn1.build.raw(pki.asn1.build.sequence([
+        pki.asn1.build.integer(15n), pki.asn1.build.integer(4n)]))]),
+    pki.asn1.build.bitString(Buffer.from(pki.asn1.build.integer(11n))),
+  ]);
+  var cpErr = null;
+  try {
+    await pki.crmf.build({ certReqId: 44n, certTemplate: tpl(compositePkcs3),
+      pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: legacyPk8,
+        identifier: "device-42", recipients: [{ cert: recip.cert }], archive: true } });
+  } catch (e) { cpErr = e; }
+  check("V7. a PKCS#3 key whose modulus is composite is refused on the archival arm too",
+    cpErr !== null && cpErr.code === "crmf/bad-popo" && cpErr.message.indexOf("modulus is not prime") !== -1);
+
   check("V7. a PKCS#3 template whose BIT STRING is not octet-aligned is refused on this arm too",
     emErr !== null && emErr.code === "crmf/bad-popo" && emErr.message.indexOf("must be octet-aligned") !== -1);
 
