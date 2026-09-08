@@ -715,13 +715,21 @@ async function testPopoPrivKeyArms() {
     check("V6b. the fixture replaced exactly one name list", swapped.count === 1);
     return swapped.der;
   }
-  // [5] { partyName [1] "ca" } -- a1 04 13 02 63 61 is [1] holding a PrintableString.
+  // DirectoryString is a CHOICE, so partyName [1] is an EXPLICIT wrapper holding the string itself.
+  // Built with explicit, not implicit: the implicit form retags the string and carries no wrapper,
+  // which is the encoding a check reading only the tag would wave through.
   var goodEdi = sanCaHolding(pki.asn1.build.sequence([
     pki.asn1.build.implicit(5, pki.asn1.build.sequence([
-      pki.asn1.build.implicit(1, Buffer.from([0x13, 0x02, 0x63, 0x61]))]))]));
+      pki.asn1.build.explicit(1, Buffer.from([0x13, 0x02, 0x63, 0x61]))]))]));
   check("V6b. a well-formed ediPartyName names somebody",
     (await codeOf(pki.crmf.build({ certReqId: 37n, certTemplate: tpl(eeDhSpki),
       pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: goodEdi } }))) === null);
+  // The same value nested under the required tag: [1] wrapping a NULL is tagged like a name and
+  // holds none, so reading the tag alone is not reading the name.
+  var nestedNullEdi = sanCaHolding(Buffer.from([0x30, 0x06, 0xa5, 0x04, 0xa1, 0x02, 0x05, 0x00]));
+  check("V6b. an ediPartyName whose partyName wraps no string is refused",
+    (await codeOf(pki.crmf.build({ certReqId: 39n, certTemplate: tpl(eeDhSpki),
+      pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: nestedNullEdi } }))) === "crmf/bad-popo");
   var x400 = sanCaHolding(pki.asn1.build.sequence([
     pki.asn1.build.implicit(3, pki.asn1.build.sequence([pki.asn1.build.integer(1n)]))]));
   check("V6b. an x400Address the shared reader accepts names somebody",
