@@ -399,6 +399,34 @@ async function testPopoPrivKeyArms() {
     agreeReport.wiped.length === 6 &&
     agreeReport.wiped.every(function (w) { return w.allZeroAfter === true && w.hadContent === true; }));
 
+  // Rewriting an X9.42 key into the form the runtime reads makes a second copy of the private value,
+  // and the import that follows can throw: a tiny group translates cleanly and is then refused by the
+  // runtime. The copy has to be gone on that way out too, which is the way that leaves no record
+  // unless the copies are counted.
+  var tinyX942Pk8 = pki.asn1.build.sequence([
+    pki.asn1.build.integer(0n),
+    pki.asn1.build.sequence([pki.asn1.build.oid("1.2.840.10046.2.1"),
+      pki.asn1.build.raw(pki.asn1.build.sequence([
+        pki.asn1.build.integer(23n), pki.asn1.build.integer(5n), pki.asn1.build.integer(11n)]))]),
+    pki.asn1.build.octetString(Buffer.from(pki.asn1.build.integer(7n))),
+  ]);
+  var failWipe = require("node:child_process").spawnSync(process.execPath,
+    [require("node:path").join(__dirname, "../helpers/observe-secret-wipe.js")],
+    { encoding: "utf8", input: JSON.stringify({
+      op: "crmf-agree-mac",
+      key: Buffer.from(tinyX942Pk8).toString("base64"),
+      csr: Buffer.from(eeDhSpki).toString("base64"),
+      cert: Buffer.from(dhCaCert).toString("base64"),
+    }) });
+  var failReport = null;
+  if (!failWipe.error && failWipe.status === 0) {
+    try { failReport = JSON.parse(String(failWipe.stdout).trim().split("\n").pop()); } catch (_e2) { failReport = null; }
+  }
+  check("V6b. the rewritten key is cleared when the import that follows it refuses the group",
+    failReport !== null && failReport.code === "crmf/bad-popo" && failReport.callerKeyIntact === true &&
+    failReport.wiped.length === 5 &&
+    failReport.wiped.every(function (w) { return w.allZeroAfter === true; }));
+
   // sec. 4.3: "If either the subject or issuer name in the CA certificate is empty, then the
   // alternative name should be used in its place." An authority certificate with an empty subject and
   // a subjectAltName still keys the derivation, from the alternative name.
@@ -920,6 +948,44 @@ async function testPopoPrivKeyArms() {
       pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8,
         caCert: await dhCertFor(pkcs3WithPvl, { serialNumber: 52 }) } }))) === null);
 
+  // The requester's own key reaches this in both encodings too. Supporting X9.42 for everyone else's
+  // key and not for the caller's would be the encoding half-supported.
+  var eeX942Pk8 = (function () {
+    var n = pki.asn1.decode(eeDhPk8);
+    var prm = pki.asn1.decode(n.children[1].children[1].bytes);
+    var p = pki.asn1.read.integer(prm.children[0]);
+    var domain = pki.asn1.build.sequence([
+      pki.asn1.build.integer(p), pki.asn1.build.integer(pki.asn1.read.integer(prm.children[1])),
+      pki.asn1.build.integer((p - 1n) / 2n),
+    ]);
+    return pki.asn1.build.sequence([
+      pki.asn1.build.raw(n.children[0].bytes),
+      pki.asn1.build.sequence([pki.asn1.build.oid("1.2.840.10046.2.1"), pki.asn1.build.raw(domain)]),
+      pki.asn1.build.raw(n.children[2].bytes),
+    ]);
+  }());
+  check("V6b. the X9.42 private encoding really is the one this runtime does not classify",
+    nodeCrypto.createPrivateKey({ key: Buffer.from(eeX942Pk8), format: "der", type: "pkcs8" })
+      .asymmetricKeyType === undefined);
+  // The MAC covers the DER certReq, so the two requests are identical but for the key's encoding.
+  var x942PrivDer = await pki.crmf.build({ certReqId: 53n, certTemplate: tpl(eeDhSpki),
+    pop: { type: "keyAgreement", method: "agreeMAC", key: eeX942Pk8, caCert: dhCaCert } });
+  var pkcs3PrivDer = await pki.crmf.build({ certReqId: 53n, certTemplate: tpl(eeDhSpki),
+    pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: dhCaCert } });
+  // The same key under a PEM armor is the same key. Admitting one form and not the other would
+  // support the encoding for a caller holding DER and refuse the caller holding identical bytes.
+  var eeX942Pem = "-----BEGIN PRIVATE KEY-----\n" +
+    Buffer.from(eeX942Pk8).toString("base64").replace(/(.{64})/g, "$1\n") + "\n-----END PRIVATE KEY-----\n";
+  check("V6b. a requester holding its X9.42 key as PEM reaches the same proof as its DER",
+    dhPopStaticOf(parse(await pki.crmf.build({ certReqId: 53n, certTemplate: tpl(eeDhSpki),
+      pop: { type: "keyAgreement", method: "agreeMAC", key: eeX942Pem, caCert: dhCaCert } }))[0].popo.bytes)
+      .hashValue.equals(dhPopStaticOf(parse(await pki.crmf.build({ certReqId: 53n, certTemplate: tpl(eeDhSpki),
+        pop: { type: "keyAgreement", method: "agreeMAC", key: eeX942Pk8, caCert: dhCaCert } }))[0].popo.bytes).hashValue));
+
+  check("V6b. a requester holding its key in the X9.42 form reaches the same proof",
+    dhPopStaticOf(parse(x942PrivDer)[0].popo.bytes).hashValue.equals(
+      dhPopStaticOf(parse(pkcs3PrivDer)[0].popo.bytes).hashValue));
+
   // A certificate stating q = p-1 satisfies every structural test: p-1 divides itself, and g^(p-1)
   // and y^(p-1) are 1 for the whole group by Fermat. Only q being prime makes the subgroup test say
   // anything, since y^q = 1 otherwise bounds the order of y to a divisor of q rather than to q.
@@ -1097,22 +1163,16 @@ async function testPopoPrivKeyArms() {
       pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: legacyPk8,
         identifier: "device-42", recipients: [{ cert: recip.cert }], archive: true } });
   } catch (e) { emErr = e; }
-  // Archival does not agree a secret, so it is not held to the floors; it is still held to the
-  // parameters describing the key, and a composite modulus describes no group in either encoding.
-  var compositePkcs3 = pki.asn1.build.sequence([
-    pki.asn1.build.sequence([pki.asn1.build.oid("1.2.840.113549.1.3.1"),
-      pki.asn1.build.raw(pki.asn1.build.sequence([
-        pki.asn1.build.integer(15n), pki.asn1.build.integer(4n)]))]),
-    pki.asn1.build.bitString(Buffer.from(pki.asn1.build.integer(11n))),
-  ]);
-  var cpErr = null;
-  try {
-    await pki.crmf.build({ certReqId: 44n, certTemplate: tpl(compositePkcs3),
-      pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: legacyPk8,
-        identifier: "device-42", recipients: [{ cert: recip.cert }], archive: true } });
-  } catch (e) { cpErr = e; }
-  check("V7. a PKCS#3 key whose modulus is composite is refused on the archival arm too",
-    cpErr !== null && cpErr.code === "crmf/bad-popo" && cpErr.message.indexOf("modulus is not prime") !== -1);
+  // This arm asks one question (RFC 4211 sec. 4.2): is the enclosed key the private half of the
+  // requested one. It agrees no secret, so the group is not measured here and a key too large to
+  // prove prime is not a key too large to archive. A 6144-bit group carries no agreement bound.
+  var bigDh = nodeCrypto.generateKeyPairSync("dh", { group: "modp17" });
+  check("V7. a group larger than any agreement would accept still archives",
+    (await codeOf(pki.crmf.build({ certReqId: 44n,
+      certTemplate: tpl(bigDh.publicKey.export({ format: "der", type: "spki" })),
+      pop: { type: "keyEncipherment", method: "encryptedKey",
+        privateKey: bigDh.privateKey.export({ format: "der", type: "pkcs8" }),
+        identifier: "device-42", recipients: [{ cert: recip.cert }], archive: true } }))) === null);
 
   check("V7. a PKCS#3 template whose BIT STRING is not octet-aligned is refused on this arm too",
     emErr !== null && emErr.code === "crmf/bad-popo" && emErr.message.indexOf("must be octet-aligned") !== -1);

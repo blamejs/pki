@@ -679,6 +679,26 @@ async function run() {
   vmPlusKey.verificationMaterial.publicKey = { hint: "AAAA" };
   check("verificationMaterial carrying a publicKey beside a certificate arm is refused",
     await codeOf(pki.sigstore.verifyBundle(vmPlusKey, TM)) === "sigstore/bad-bundle");
+
+  // A bundle that SETS an arm to false or to an empty string has set it. Reading presence as
+  // truthiness lets a second arm sit beside the one being read, which is the state the rule refuses.
+  var falseyArms = [
+    ["a publicKey set to false", function (b) { b.verificationMaterial.publicKey = false; }],
+    ["an x509CertificateChain set to an empty string", function (b) { b.verificationMaterial.x509CertificateChain = ""; }],
+    ["a messageSignature set to false", function (b) { b.messageSignature = false; }],
+    ["a messageSignature set to an empty string", function (b) { b.messageSignature = ""; }],
+  ];
+  for (var fa = 0; fa < falseyArms.length; fa++) {
+    var fb = JSON.parse(JSON.stringify(BUNDLE));
+    falseyArms[fa][1](fb);
+    check("a bundle carrying " + falseyArms[fa][0] + " beside a real arm is refused",
+      await codeOf(pki.sigstore.verifyBundle(fb, TM)) === "sigstore/bad-bundle");
+  }
+  // An arm that is absent, or explicitly null, is not set.
+  var nulledArm = JSON.parse(JSON.stringify(BUNDLE));
+  nulledArm.verificationMaterial.publicKey = null;
+  check("a verificationMaterial arm explicitly null is not a second arm",
+    (await pki.sigstore.verifyBundle(nulledArm, TM)).verified === true);
   var phMiss = cl();
   (function () { var te = phMiss.verificationMaterial.tlogEntries[0]; var bo = JSON.parse(Buffer.from(te.canonicalizedBody, "base64").toString("utf8")); delete bo.spec.payloadHash; te.canonicalizedBody = Buffer.from(JSON.stringify(bo)).toString("base64"); })();
   check("Rekor dsse entry missing payloadHash -> sigstore/bad-tlog-entry", await codeOf(pki.sigstore.verifyBundle(phMiss, TM)) === "sigstore/bad-tlog-entry");
