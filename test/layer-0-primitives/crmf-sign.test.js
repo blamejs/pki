@@ -980,6 +980,15 @@ async function testPopoPrivKeyArms() {
         key: nodeCrypto.createPrivateKey({ key: Buffer.from(eeDhPk8), format: "der", type: "pkcs8" })
           .export({ format: "pem", type: "pkcs8" }) } }))) === null);
 
+  // The same key as an already-imported key object, which the runtime holds without classifying.
+  // Bytes, PEM and key object are three ways of handing over one key; admitting two is not support.
+  check("V6b. a requester handing over its X9.42 key as a key object reaches the same proof",
+    dhPopStaticOf(parse(await pki.crmf.build({ certReqId: 53n, certTemplate: tpl(eeDhSpki),
+      pop: { type: "keyAgreement", method: "agreeMAC", caCert: dhCaCert,
+        key: nodeCrypto.createPrivateKey({ key: Buffer.from(eeX942Pk8), format: "der", type: "pkcs8" }) } }))[0].popo.bytes)
+      .hashValue.equals(dhPopStaticOf(parse(await pki.crmf.build({ certReqId: 53n, certTemplate: tpl(eeDhSpki),
+        pop: { type: "keyAgreement", method: "agreeMAC", key: eeX942Pk8, caCert: dhCaCert } }))[0].popo.bytes).hashValue));
+
   // The same key under a PEM armor is the same key. Admitting one form and not the other would
   // support the encoding for a caller holding DER and refuse the caller holding identical bytes.
   var eeX942Pem = "-----BEGIN PRIVATE KEY-----\n" +
@@ -1175,6 +1184,27 @@ async function testPopoPrivKeyArms() {
   // requested one. It agrees no secret, so the group is not measured here and a key too large to
   // prove prime is not a key too large to archive. A 6144-bit group carries no agreement bound.
   var bigDh = nodeCrypto.generateKeyPairSync("dh", { group: "modp17" });
+  // Both sides in the X9.42 form: an enclosed key in that encoding derives its public half in it too,
+  // so converting only the template would compare one encoding against the other and refuse a pair
+  // that matches. The earlier legacy vector cannot see this, since its private key is PKCS#3.
+  var legacyX942Pk8 = (function () {
+    var n = pki.asn1.decode(legacyPk8);
+    var prm = pki.asn1.decode(n.children[1].children[1].bytes);
+    var p = pki.asn1.read.integer(prm.children[0]);
+    return pki.asn1.build.sequence([
+      pki.asn1.build.raw(n.children[0].bytes),
+      pki.asn1.build.sequence([pki.asn1.build.oid("1.2.840.10046.2.1"),
+        pki.asn1.build.raw(pki.asn1.build.sequence([
+          pki.asn1.build.integer(p), pki.asn1.build.raw(prm.children[1].bytes),
+          pki.asn1.build.integer((p - 1n) / 2n)]))]),
+      pki.asn1.build.raw(n.children[2].bytes),
+    ]);
+  }());
+  check("V7. an enclosed key and a template both in the X9.42 form are recognized as one key",
+    (await codeOf(pki.crmf.build({ certReqId: 45n, certTemplate: tpl(legacyX942),
+      pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: legacyX942Pk8,
+        identifier: "device-42", recipients: [{ cert: recip.cert }], archive: true } }))) === null);
+
   check("V7. a group larger than any agreement would accept still archives",
     (await codeOf(pki.crmf.build({ certReqId: 44n,
       certTemplate: tpl(bigDh.publicKey.export({ format: "der", type: "spki" })),
