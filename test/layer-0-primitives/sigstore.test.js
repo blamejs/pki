@@ -1559,9 +1559,15 @@ async function runMessageSignature(TM) {
   var manyUndef = clone(msBundle("v0.3"));
   for (var mu = 0; mu < 40000; mu++) manyUndef["k".repeat(64) + mu] = undefined;
   var muStart = Date.now();
-  check("a bundle of many properties the copy skips is still refused on its size",
-    await codeOf(pki.sigstore.verifyBundle(manyUndef, withArtifact)) === "sigstore/bad-bundle");
-  check("and that refusal is bounded", (Date.now() - muStart) < 10000);
+  // JSON omits a property whose value is not written, so the document these describe is the bundle
+  // itself and it is judged as that. Charging the names would refuse a bundle the text form admits.
+  // The walk they cost is bounded by its own count rather than by the size.
+  var muOut = await pki.sigstore.verifyBundle(manyUndef, withArtifact);
+  check("a bundle of many properties the copy skips is judged as the document they describe",
+    muOut.verified === true && muOut.artifactDigest === ARTIFACT_SHA256);
+  check("and walking them is bounded", (Date.now() - muStart) < 10000);
+  check("the same document as text is judged the same way",
+    (await pki.sigstore.verifyBundle(JSON.stringify(manyUndef), withArtifact)).verified === true);
 
   // Reading a caller's object runs the caller's own accessors, and one that throws must surface as
   // this module's refusal rather than as whatever it threw: the contract is that a bundle this
@@ -1607,10 +1613,17 @@ async function runMessageSignature(TM) {
   // nothing else: verifying reaches modules whose own operations are a separate question. Each is
   // swapped separately, since capturing some and reading others is the same hole with fewer
   // entrances, and each replacement is one that would change the answer if it were read.
+  var realCreateForSwap = Object.create;
   var swaps = [
     ["Object.getOwnPropertyNames", Object, "getOwnPropertyNames", function () { return []; }],
     ["Object.getOwnPropertyDescriptor", Object, "getOwnPropertyDescriptor", function () { return undefined; }],
     ["Array.isArray", Array, "isArray", function () { return false; }],
+    // The object the copy is built into is decided by this one, so a replacement returning something
+    // that discards what is written to it drops a field the copy holds.
+    ["Object.create", Object, "create", function (p) {
+      var o = realCreateForSwap(p);
+      return new Proxy(o, { set: function (t, k, v) { if (k === "messageSignature") return true; t[k] = v; return true; } });
+    }],
   ];
   for (var sw = 0; sw < swaps.length; sw++) {
     var holder = swaps[sw][1], swapName = swaps[sw][2], original = holder[swapName];
@@ -1653,6 +1666,66 @@ async function runMessageSignature(TM) {
     Object.getPrototypeOf(protoOut) === null);
   check("and the bundle beside it still verifies as itself",
     (await pki.sigstore.verifyBundle(protoBeside, withArtifact)).artifactDigest === ARTIFACT_SHA256);
+
+  // The size an object is charged is the size the same document costs as text, so one bundle is not
+  // admitted one way and refused the other. A string's cost is what JSON writes it as: an escape
+  // costs the characters it takes, a character outside ASCII costs its own bytes, and an unpaired
+  // surrogate costs the six a \u escape takes. Counting the string's own length counts UTF-16 units,
+  // which is fewer.
+  var escapeHeavy = clone(msBundle("v0.3"));
+  escapeHeavy.pad = "\ud800".repeat(200000);
+  var asTextLength = JSON.stringify(escapeHeavy).length;
+  check("the escape-heavy fixture really is over the limit as text, and under it by length",
+    asTextLength > 1048576 && escapeHeavy.pad.length < 1048576);
+  check("a bundle over the size limit once escaped is refused as an object too",
+    await codeOf(pki.sigstore.verifyBundle(escapeHeavy, withArtifact)) === "sigstore/bad-bundle");
+  check("and the same document as text is refused alike",
+    await codeOf(pki.sigstore.verifyBundle(JSON.stringify(escapeHeavy), withArtifact)) !== "NO-THROW");
+
+  // The size charged is what the document costs as text, for every kind of value rather than for
+  // strings alone. These two shapes decide it in opposite directions: numbers written in exponent
+  // form are long and were counted as one byte each, and array elements were counted twice, so one
+  // document was admitted over the limit and another refused under it.
+  var sizeCases = [
+    ["numbers written in exponent form", function (b) { b.pad = new Array(200000).fill(1e100); }],
+    ["empty strings in an array", function (b) { b.pad = new Array(270000).fill(""); }],
+    ["nulls in an array", function (b) { b.pad = new Array(260000).fill(null); }],
+    ["booleans in an array", function (b) { b.pad = new Array(200000).fill(true); }],
+  ];
+  for (var sc = 0; sc < sizeCases.length; sc++) {
+    var sb = clone(msBundle("v0.3"));
+    sizeCases[sc][1](sb);
+    var asObject = await codeOf(pki.sigstore.verifyBundle(sb, withArtifact));
+    var asTextCode = await codeOf(pki.sigstore.verifyBundle(JSON.stringify(sb), withArtifact));
+    var overCap = Buffer.byteLength(JSON.stringify(sb), "utf8") > 1048576;
+    check("a bundle padded with " + sizeCases[sc][0] + " is judged the same way as an object and as text",
+      (asObject === "sigstore/bad-bundle") === overCap &&
+      (asObject === "sigstore/bad-bundle") === (asTextCode === "sigstore/bad-bundle"));
+  }
+  // Read the other way, and across every kind of character the count prices separately: a bundle
+  // carrying them verifies while what they cost stays under the limit, so the rule is the size rather
+  // than the alphabet. Each string exercises one arm of the count.
+  var priced = [
+    ["plain ASCII", "an ordinary note"],
+    ["a quote and a backslash", "a \" and a \\ inside"],
+    ["the short escapes", "tab\there\nnewline\rreturn\bback\fform"],
+    ["a control character with no short escape", "before" + String.fromCharCode(1) + "after"],
+    ["two-byte characters", "e".repeat(8) + String.fromCharCode(0xe9).repeat(64)],
+    ["three-byte characters", String.fromCharCode(0x4e2d).repeat(64)],
+    ["a surrogate pair", String.fromCharCode(0xd83d, 0xde00).repeat(64)],
+    ["a lone leading surrogate", "x" + String.fromCharCode(0xd800) + "y"],
+    ["a lone trailing surrogate", "x" + String.fromCharCode(0xdc00) + "y"],
+    ["a leading surrogate at the very end", "x" + String.fromCharCode(0xd800)],
+    ["a property name that is not ASCII", null],
+  ];
+  for (var pz = 0; pz < priced.length; pz++) {
+    var pb = clone(msBundle("v0.3"));
+    if (priced[pz][1] === null) pb[String.fromCharCode(0x4e2d) + "key"] = "value";
+    else pb.note = priced[pz][1];
+    var pOut = await pki.sigstore.verifyBundle(pb, withArtifact);
+    check("a bundle carrying " + priced[pz][0] + " verifies, its cost counted",
+      pOut.verified === true && pOut.artifactDigest === ARTIFACT_SHA256);
+  }
 
   // A structure nesting past the reader's depth cap is refused rather than walked.
   var deep = clone(msBundle("v0.3"));
