@@ -1577,6 +1577,83 @@ async function runMessageSignature(TM) {
     thrownErr !== null && thrownErr instanceof pki.errors.PkiError &&
     thrownErr.code === "sigstore/bad-bundle");
 
+  // Nothing between the copy and the checks belongs to anybody else. A serializer replaced after this
+  // module loaded is read when it is called, so converting the copy to text and reading it back would
+  // let a replacement hand the checks a bundle carrying one content arm where the copy holds two. The
+  // copy is the snapshot, so there is no such step to replace.
+  var bothArms = clone(msBundle("v0.3"));
+  bothArms.dsseEnvelope = { payload: "e30=", payloadType: "application/vnd.in-toto+json", signatures: [{ sig: "AA==" }] };
+  var realStringify = JSON.stringify;
+  var tamperCalls = 0;
+  JSON.stringify = function (v) {
+    tamperCalls++;
+    if (v && typeof v === "object" && v.messageSignature && v.dsseEnvelope) {
+      var c = Object.assign({}, v);
+      delete c.messageSignature;
+      return realStringify(c);
+    }
+    return realStringify.apply(JSON, arguments);
+  };
+  var tamperedCode;
+  try {
+    tamperedCode = await codeOf(pki.sigstore.verifyBundle(bothArms, withArtifact));
+  } finally { JSON.stringify = realStringify; }
+  check("a serializer replaced after load cannot drop a content arm from the copy",
+    tamperedCode === "sigstore/bad-bundle");
+  check("and the copy was never handed to a serializer at all", tamperCalls === 0);
+
+  // The operations the copy decides with are taken at load, so replacing one afterwards does not
+  // change what it copies. Driven through parseBundle, which is the copy and the structural rules and
+  // nothing else: verifying reaches modules whose own operations are a separate question. Each is
+  // swapped separately, since capturing some and reading others is the same hole with fewer
+  // entrances, and each replacement is one that would change the answer if it were read.
+  var swaps = [
+    ["Object.getOwnPropertyNames", Object, "getOwnPropertyNames", function () { return []; }],
+    ["Object.getOwnPropertyDescriptor", Object, "getOwnPropertyDescriptor", function () { return undefined; }],
+    ["Array.isArray", Array, "isArray", function () { return false; }],
+  ];
+  for (var sw = 0; sw < swaps.length; sw++) {
+    var holder = swaps[sw][1], swapName = swaps[sw][2], original = holder[swapName];
+    var swappedOut = null, swappedErr = null;
+    try {
+      holder[swapName] = swaps[sw][3];
+      swappedOut = pki.sigstore.parseBundle(clone(msBundle("v0.3")));
+    } catch (e) { swappedErr = e; } finally { holder[swapName] = original; }
+    check("replacing " + swaps[sw][0] + " after load does not change what the copy holds",
+      swappedErr === null && swappedOut !== null &&
+      swappedOut.mediaType === msBundle("v0.3").mediaType &&
+      typeof swappedOut.messageSignature.signature === "string" &&
+      _isArrayLike(swappedOut.verificationMaterial.tlogEntries));
+  }
+  function _isArrayLike(v) { return !!v && typeof v === "object" && typeof v.length === "number" && v.length > 0; }
+
+  // A property named __proto__ is copied as a field of that name, never as a prototype. Assigning it
+  // onto an ordinary object would run the inherited setter instead, which promotes whatever it holds
+  // into the bundle's own fields: an object owning nothing but __proto__ would read as the bundle
+  // nested inside it, while the same document as JSON text is refused for having no media type. The
+  // reader this module parses text with states the same rule.
+  var protoOnly = {};
+  Object.defineProperty(protoOnly, "__proto__", {
+    enumerable: true, configurable: true, writable: true, value: clone(msBundle("v0.3")),
+  });
+  check("the proto-only object really owns just that one property",
+    Object.getOwnPropertyNames(protoOnly).length === 1 &&
+    Object.getOwnPropertyNames(protoOnly)[0] === "__proto__");
+  check("an object owning only __proto__ is refused, not read as what it holds",
+    await codeOf(pki.sigstore.verifyBundle(protoOnly, withArtifact)) === "sigstore/bad-bundle-version");
+  // And a bundle carrying __proto__ beside its real fields keeps it as a field, so the copy holds it
+  // rather than adopting it.
+  var protoBeside = clone(msBundle("v0.3"));
+  Object.defineProperty(protoBeside, "__proto__", {
+    enumerable: true, configurable: true, writable: true, value: { messageSignature: { signature: "AA==" } },
+  });
+  var protoOut = pki.sigstore.parseBundle(protoBeside);
+  check("a __proto__ field is copied as a field of that name",
+    Object.prototype.hasOwnProperty.call(protoOut, "__proto__") &&
+    Object.getPrototypeOf(protoOut) === null);
+  check("and the bundle beside it still verifies as itself",
+    (await pki.sigstore.verifyBundle(protoBeside, withArtifact)).artifactDigest === ARTIFACT_SHA256);
+
   // A structure nesting past the reader's depth cap is refused rather than walked.
   var deep = clone(msBundle("v0.3"));
   var cur = deep;
