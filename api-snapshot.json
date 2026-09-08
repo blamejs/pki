@@ -86,6 +86,9 @@
             "DH_MAX_MODULUS_BYTES": {
               "kind": "number"
             },
+            "DH_MIN_MODULUS_BYTES": {
+              "kind": "number"
+            },
             "DH_MIN_SUBGROUP_BYTES": {
               "kind": "number"
             },
@@ -1426,6 +1429,9 @@
               "kind": "number"
             },
             "DH_MAX_MODULUS_BYTES": {
+              "kind": "number"
+            },
+            "DH_MIN_MODULUS_BYTES": {
               "kind": "number"
             },
             "DH_MIN_SUBGROUP_BYTES": {

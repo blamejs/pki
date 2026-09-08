@@ -16,6 +16,7 @@ var check = helpers.check;
 var makeSigner = signing.makeSigner;
 var makeCompositeSigner = signing.makeCompositeSigner;
 var asn1 = pki.asn1;
+var surgery = require("../helpers/der-surgery");
 var nodeCrypto = require("node:crypto");
 
 var NB = new Date("2026-01-01T00:00:00Z");
@@ -625,6 +626,69 @@ async function testPopoPrivKeyArms() {
     (await codeOf(pki.crmf.build({ certReqId: 29n, certTemplate: tpl(ctxParams),
       pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: dhCaCert } }))) === "crmf/bad-popo");
 
+  // The certificate parser surfaces an extension's bytes without running the decoder registered for
+  // it, so a subjectAltName holding an EMPTY GeneralNames carries a length while naming nobody. The
+  // builder refuses to make one, so the certificate is patched after signing, which is what an
+  // authority certificate arriving from a peer can look like.
+  var emptySanCa = (function () {
+    var real = pki.schema.x509.parse(emptySubjectCa);
+    var san = real.extensions.filter(function (e) { return e.name === "subjectAltName"; })[0];
+    var swapped = surgery.replaceTlv(emptySubjectCa,
+      pki.asn1.build.octetString(Buffer.from(san.value)),
+      pki.asn1.build.octetString(Buffer.from(pki.asn1.build.sequence([]))));
+    check("V6b. the empty-subjectAltName fixture really replaced one name list", swapped.count === 1);
+    return swapped.der;
+  }());
+  check("V6b. an authority subjectAltName naming nobody is refused, not keyed from",
+    (await codeOf(pki.crmf.build({ certReqId: 31n, certTemplate: tpl(eeDhSpki),
+      pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: emptySanCa } }))) === "crmf/bad-popo");
+
+  // A list holding something no arm of the GeneralName CHOICE covers names nobody either, and a
+  // universal NULL is not a context-specific arm of it.
+  var nullSanCa = (function () {
+    var real = pki.schema.x509.parse(emptySubjectCa);
+    var san = real.extensions.filter(function (e) { return e.name === "subjectAltName"; })[0];
+    var swapped = surgery.replaceTlv(emptySubjectCa,
+      pki.asn1.build.octetString(Buffer.from(san.value)),
+      pki.asn1.build.octetString(Buffer.from(pki.asn1.build.sequence([pki.asn1.build.nullValue()]))));
+    check("V6b. the NULL-subjectAltName fixture really replaced one name list", swapped.count === 1);
+    return swapped.der;
+  }());
+  check("V6b. an authority subjectAltName holding a value that is not a GeneralName is refused",
+    (await codeOf(pki.crmf.build({ certReqId: 32n, certTemplate: tpl(eeDhSpki),
+      pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: nullSanCa } }))) === "crmf/bad-popo");
+
+  // A one-byte iPAddress carries the right tag and is not an address. The shared GeneralNames
+  // reader knows the arm's own rules, which a tag check does not.
+  var badIpSanCa = (function () {
+    var real = pki.schema.x509.parse(emptySubjectCa);
+    var san = real.extensions.filter(function (e) { return e.name === "subjectAltName"; })[0];
+    var swapped = surgery.replaceTlv(emptySubjectCa,
+      pki.asn1.build.octetString(Buffer.from(san.value)),
+      pki.asn1.build.octetString(Buffer.from([0x30, 0x03, 0x87, 0x01, 0x00])));
+    check("V6b. the malformed-iPAddress fixture really replaced one name list", swapped.count === 1);
+    return swapped.der;
+  }());
+  check("V6b. an authority subjectAltName whose iPAddress is not an address is refused",
+    (await codeOf(pki.crmf.build({ certReqId: 33n, certTemplate: tpl(eeDhSpki),
+      pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: badIpSanCa } }))) === "crmf/bad-popo");
+
+  // The request carries the caller's own template encoding under a MAC covering it, so a PKCS#3
+  // template is read in place rather than passed through unexamined because it needs no conversion.
+  // The public value is chosen rather than taken from the generated key, whose last byte is random:
+  // INTEGER 4 ends in zero bits, so a nonzero unused-bit count is padding the codec accepts.
+  var misalignedTemplate = pki.asn1.build.sequence([
+    pki.asn1.build.raw(pki.asn1.decode(eeDhSpki).children[0].bytes),
+    pki.asn1.build.bitString(Buffer.from(pki.asn1.build.integer(4n)), 1),
+  ]);
+  var mtErr = null;
+  try {
+    await pki.crmf.build({ certReqId: 34n, certTemplate: tpl(misalignedTemplate),
+      pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: dhCaCert } });
+  } catch (e) { mtErr = e; }
+  check("V6b. a PKCS#3 requested key whose BIT STRING is not octet-aligned is refused for that reason",
+    mtErr !== null && mtErr.code === "crmf/bad-popo" && mtErr.message.indexOf("must be octet-aligned") !== -1);
+
   // The group is checked whichever encoding carried it. The PKCS#3 form needs no rewrite, so it
   // would otherwise arrive unexamined purely because it happened not to need converting. It states
   // no subgroup order, so the range on the public value is what bounds that value's order there.
@@ -646,6 +710,13 @@ async function testPopoPrivKeyArms() {
     // 23 IS a safe prime, and its own subgroup has order 11. Being safe bounds the order to (p-1)/2,
     // which is only worth having when p is large, so the floor applies however the order was stated.
     ["a safe prime whose subgroup is tiny", pkcs3Spki(23n, 5n, 2n), "too small to hide a private exponent"],
+    // A real 512-bit safe prime: its subgroup has 255 bits and clears the order floor, while the
+    // group itself is reachable through the modulus rather than through the subgroup.
+    ["a safe prime far too small to agree in", pkcs3Spki(
+      BigInt("0x842edc61ba26a113f9ae44b26a9f3c3770f7ff0bcbb44190e5340b4232bc230fe517b78d38bb56d87b66c6858cf6e2128dcfdd035ad8fd5be15d068977346b5f"),
+      2n,
+      BigInt("0x386df24e0e8fa5ad6c72fc6bec40dfd7ecad7b954ad60039edf2f7521dc644f953dcf443241934e8b2d5ffd178ed3ec37dd1433e7b55900928fb380132152528")),
+      "modulus is under"],
   ];
   for (var pb = 0; pb < pkcs3Bad.length; pb++) {
     var pErr = null;
