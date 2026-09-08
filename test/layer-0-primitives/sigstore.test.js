@@ -1068,6 +1068,35 @@ async function runMessageSignature(TM) {
   var notInEnum = clone(msBundle("v0.3")); notInEnum.messageSignature.messageDigest.algorithm = "SHA2_224";
   check("a messageDigest naming a member outside the enum is refused",
     await codeOf(pki.sigstore.verifyBundle(notInEnum, trust)) === "sigstore/bad-message-signature");
+
+  // The JSON mapping states that a parser accepts both enum names and integer values, so a bundle
+  // writing the member's number is one a conforming producer may write and it names the same
+  // algorithm. Every member is driven, not the one a vector happened to pick.
+  var enumNumbers = [[1, "sha256"], [2, "sha384"], [3, "sha512"], [4, "sha3-256"], [5, "sha3-384"]];
+  for (var en = 0; en < enumNumbers.length; en++) {
+    var numB = clone(msBundle("v0.3"));
+    numB.messageSignature.messageDigest = { algorithm: enumNumbers[en][0],
+      digest: crypto.createHash(enumNumbers[en][1]).update(ARTIFACT).digest().toString("base64") };
+    var numOut = await pki.sigstore.verifyBundle(numB,
+      { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: ARTIFACT });
+    check("a messageDigest algorithm written as the number " + enumNumbers[en][0] + " is read as " + enumNumbers[en][1],
+      numOut.verified === true && numOut.messageDigestChecked === true);
+  }
+  // The numbers outside the members are refused the same way their names are, and zero is the
+  // unspecified member, which names no algorithm.
+  var numBad = [0, 6, -1, 1.5];
+  for (var nb = 0; nb < numBad.length; nb++) {
+    var nbB = clone(msBundle("v0.3"));
+    nbB.messageSignature.messageDigest.algorithm = numBad[nb];
+    check("a messageDigest algorithm written as " + numBad[nb] + " is refused",
+      await codeOf(pki.sigstore.verifyBundle(nbB, trust)) === "sigstore/bad-message-signature");
+  }
+  // The digest is still held to the length the number's algorithm produces, so the numeric form is
+  // read as that member rather than admitted without its own rule.
+  var numWrongLen = clone(msBundle("v0.3"));
+  numWrongLen.messageSignature.messageDigest = { algorithm: 3, digest: Buffer.alloc(32).toString("base64") };
+  check("a numeric algorithm whose digest is the wrong length for it is refused",
+    await codeOf(pki.sigstore.verifyBundle(numWrongLen, trust)) === "sigstore/bad-message-signature");
   var wrongLen = clone(msBundle("v0.3"));
   wrongLen.messageSignature.messageDigest.digest = Buffer.alloc(48).toString("base64");
   check("a messageDigest whose length disagrees with its own algorithm is refused",
@@ -1297,31 +1326,105 @@ async function runMessageSignature(TM) {
       return reads === 1 ? realArm : { signature: Buffer.alloc(70, 9).toString("base64") };
     },
   });
-  // Each own property is read EXACTLY ONCE, which is what makes a differing second answer
-  // unreachable rather than merely checked for: there is no second observation to disagree with the
-  // first, so the verdict describes what the one read saw.
-  await pki.sigstore.verifyBundle(lying, withArtifact).then(function () { return null; }, function () { return null; });
-  check("a content arm reached through an accessor is read exactly once", reads === 1);
-  // The same for a log entry's body, which three separate checks depend on.
+  // A bundle is data. Its values are taken from each property's descriptor, which does not call an
+  // accessor, and a field that computes its value is refused rather than called. Nothing the caller
+  // wrote runs during the copy, so a field cannot answer differently on a later read and a getter
+  // cannot change the object while it is being walked.
+  check("a content arm reached through an accessor is refused rather than called",
+    await codeOf(pki.sigstore.verifyBundle(lying, withArtifact)) === "sigstore/bad-bundle");
+  check("and the accessor was never called", reads === 0);
   var countedBody = clone(msBundle("v0.3"));
   var cbTe = countedBody.verificationMaterial.tlogEntries[0];
   var cbReal = cbTe.canonicalizedBody, cbReads = 0;
   Object.defineProperty(cbTe, "canonicalizedBody", {
     enumerable: true, configurable: true, get: function () { cbReads++; return cbReal; },
   });
-  await pki.sigstore.verifyBundle(countedBody, withArtifact);
-  check("and a log entry's canonicalizedBody is read exactly once", cbReads === 1);
-  // Read the other way: an arm reached through an accessor that answers consistently verifies, so
-  // the refusal above is about the disagreement rather than about the field being an accessor.
+  check("a log entry field reached through an accessor is refused too, however consistent it is",
+    await codeOf(pki.sigstore.verifyBundle(countedBody, withArtifact)) === "sigstore/bad-bundle");
+  check("and that accessor was never called either", cbReads === 0);
+
+  // The shape that made this necessary: a getter on one property deleting another. Both content arms
+  // are listed when the object is enumerated, and reading the first would remove the second, leaving
+  // a bundle that carried two arms copied as one.
+  var mutating = {};
+  var msrc = clone(msBundle("v0.3"));
+  Object.defineProperty(mutating, "trigger", {
+    enumerable: true, configurable: true,
+    get: function () { delete mutating.messageSignature; return 1; },
+  });
+  mutating.mediaType = msrc.mediaType;
+  mutating.verificationMaterial = msrc.verificationMaterial;
+  mutating.dsseEnvelope = { payload: "e30=", payloadType: "application/vnd.in-toto+json", signatures: [{ sig: "AA==" }] };
+  mutating.messageSignature = msrc.messageSignature;
+  check("the object really does list both content arms before anything reads it",
+    Object.keys(mutating).indexOf("messageSignature") >= 0 &&
+    Object.keys(mutating).indexOf("dsseEnvelope") >= 0);
+  check("a getter that deletes a content arm while the object is walked is refused",
+    await codeOf(pki.sigstore.verifyBundle(mutating, withArtifact)) === "sigstore/bad-bundle");
+
+  // An array element is a property too, so the same rule reaches it: an indexed accessor is refused
+  // rather than called, and it can do exactly what a named one can.
+  var arrMutating = {};
+  var asrc = clone(msBundle("v0.3"));
+  var trap = [];
+  Object.defineProperty(trap, "0", {
+    enumerable: true, configurable: true,
+    get: function () { delete arrMutating.messageSignature; return 1; },
+  });
+  arrMutating.first = trap;
+  arrMutating.mediaType = asrc.mediaType;
+  arrMutating.verificationMaterial = asrc.verificationMaterial;
+  arrMutating.dsseEnvelope = { payload: "e30=", payloadType: "application/vnd.in-toto+json", signatures: [{ sig: "AA==" }] };
+  arrMutating.messageSignature = asrc.messageSignature;
+  check("the array-trap object really does list both content arms first",
+    Object.keys(arrMutating).indexOf("messageSignature") >= 0 &&
+    Object.keys(arrMutating).indexOf("dsseEnvelope") >= 0);
+  check("an array element reached through an accessor is refused rather than called",
+    await codeOf(pki.sigstore.verifyBundle(arrMutating, withArtifact)) === "sigstore/bad-bundle");
+  // The copy enumerates every own string-keyed property, not only the enumerable ones, because that
+  // is what the presence test reads. A non-enumerable second content arm would otherwise be counted
+  // as present where the bundle is parsed and dropped where it is copied.
+  var hidden = clone(msBundle("v0.3"));
+  Object.defineProperty(hidden, "dsseEnvelope", {
+    enumerable: false, configurable: true,
+    value: { payload: "e30=", payloadType: "application/vnd.in-toto+json", signatures: [{ sig: "AA==" }] },
+  });
+  check("the hidden-arm object really does own both arms",
+    Object.prototype.hasOwnProperty.call(hidden, "dsseEnvelope") &&
+    Object.prototype.hasOwnProperty.call(hidden, "messageSignature") &&
+    Object.keys(hidden).indexOf("dsseEnvelope") === -1);
+  check("a second content arm held as a non-enumerable property is refused, not dropped",
+    await codeOf(pki.sigstore.verifyBundle(hidden, withArtifact)) === "sigstore/bad-bundle");
+  var hiddenVm = clone(msBundle("v0.3"));
+  Object.defineProperty(hiddenVm.verificationMaterial, "publicKey", {
+    enumerable: false, configurable: true, value: { rawBytes: "AA==" },
+  });
+  check("a second verificationMaterial arm held the same way is refused too",
+    await codeOf(pki.sigstore.verifyBundle(hiddenVm, withArtifact)) === "sigstore/bad-bundle");
+
+  // Read the other way: an ordinary array of values still copies, so the rule is the accessor.
+  var plainArray = clone(msBundle("v0.3"));
+  plainArray.extras = [1, "two", null, { three: 3 }];
+  var plainArrOut = await pki.sigstore.verifyBundle(plainArray, withArtifact);
+  check("an ordinary array of values is copied and the bundle verifies",
+    plainArrOut.verified === true && plainArrOut.artifactDigest === ARTIFACT_SHA256);
+  // The rule is the accessor, not what it answers: one that would answer consistently is refused
+  // alike, since whether it answers consistently is only knowable by calling it.
   var steady = clone(msBundle("v0.3"));
   var steadyArm = steady.messageSignature;
+  var steadyCalls = 0;
   Object.defineProperty(steady, "messageSignature", {
-    enumerable: true, configurable: true, get: function () { return steadyArm; },
+    enumerable: true, configurable: true, get: function () { steadyCalls++; return steadyArm; },
   });
-  var steadyOut = await pki.sigstore.verifyBundle(steady, withArtifact);
-  check("an arm reached through an accessor that answers consistently still verifies",
-    steadyOut.verified === true && steadyOut.artifactDigest === ARTIFACT_SHA256);
-  check("the accessor really was exercised", reads > 0);
+  check("an arm reached through an accessor that would answer consistently is refused alike",
+    await codeOf(pki.sigstore.verifyBundle(steady, withArtifact)) === "sigstore/bad-bundle");
+  check("and it too was never called", steadyCalls === 0);
+  // Read the other way: the same bundle holding the same arm as a plain value verifies, so the rule
+  // is how the field is held rather than anything about the arm.
+  var plainArm = clone(msBundle("v0.3"));
+  var plainOut = await pki.sigstore.verifyBundle(plainArm, withArtifact);
+  check("the same arm held as a plain value verifies",
+    plainOut.verified === true && plainOut.artifactDigest === ARTIFACT_SHA256);
 
   // A bundle is JSON data. A value JSON does not carry is refused rather than skipped, because
   // skipping one turns a bundle setting two content arms into one setting a single arm: a refusal
@@ -1457,10 +1560,19 @@ async function runMessageSignature(TM) {
     enumerable: true, configurable: true,
     get: function () { bodyReads++; return bodyReads === 1 ? unloggedBody : authenticBody; },
   });
-  check("a log entry whose body changes between the binding and the proof is refused",
+  check("a log entry whose body could change between the binding and the proof is refused",
     await codeOf(pki.sigstore.verifyBundle(swapped,
-      { fulcioRoots: swapBuilt.trust.fulcioRoots, rekorKeys: swapBuilt.trust.rekorKeys, artifact: UNLOGGED })) !== "NO-THROW");
-  check("and that entry's body was read only once", bodyReads === 1);
+      { fulcioRoots: swapBuilt.trust.fulcioRoots, rekorKeys: swapBuilt.trust.rekorKeys, artifact: UNLOGGED })) === "sigstore/bad-bundle");
+  check("and the body it would have answered with was never asked for", bodyReads === 0);
+  // The same attack with the unlogged body held as a plain value, so the entry it binds is the one
+  // it proves. It is refused where the proof is folded rather than where the copy is taken, which is
+  // what says the log entry is bound to the body it was proven from.
+  var swappedPlain = JSON.parse(JSON.stringify(swapBuilt.bundle));
+  swappedPlain.messageSignature = { signature: unloggedSig.toString("base64") };
+  swappedPlain.verificationMaterial.tlogEntries[0].canonicalizedBody = unloggedBody;
+  check("an unlogged body carrying the signature and the leaf is refused at the inclusion proof",
+    await codeOf(pki.sigstore.verifyBundle(swappedPlain,
+      { fulcioRoots: swapBuilt.trust.fulcioRoots, rekorKeys: swapBuilt.trust.rekorKeys, artifact: UNLOGGED })) === "sigstore/inclusion-proof-mismatch");
 
   // The DSSE arm reads the same entry through the same function, so the rule holds there too.
   var dsseSwap = buildSynBundle({});
@@ -1475,9 +1587,9 @@ async function runMessageSignature(TM) {
     enumerable: true, configurable: true,
     get: function () { dsseReads++; return dsseReads === 1 ? dsseOther : dsseAuthentic; },
   });
-  check("a dsse entry whose body changes between the binding and the proof is refused",
-    await codeOf(pki.sigstore.verifyBundle(dsseSwap.bundle, dsseSwap.trust)) !== "NO-THROW");
-  check("and that dsse entry's body was read only once", dsseReads === 1);
+  check("a dsse entry whose body could change between the binding and the proof is refused",
+    await codeOf(pki.sigstore.verifyBundle(dsseSwap.bundle, dsseSwap.trust)) === "sigstore/bad-bundle");
+  check("and that dsse entry's body was never asked for either", dsseReads === 0);
 
   // The DSSE entry row is held to its own shape the same way, and that check runs before the
   // inclusion proof so it names the entry rather than the proof.
