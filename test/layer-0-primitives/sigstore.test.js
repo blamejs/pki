@@ -1630,6 +1630,13 @@ async function runMessageSignature(TM) {
     // Every field the copy holds is defined with this one, so a replacement that drops the write
     // leaves the copy empty.
     ["Object.defineProperty", Object, "defineProperty", function (o) { return o; }],
+    // The oneof rules are written on this question, so a replacement answering no for one arm hides
+    // it and a bundle setting two arms reads as setting one.
+    ["Object.prototype.hasOwnProperty", Object.prototype, "hasOwnProperty", function () { return false; }],
+    // These decide which route a bundle takes and whether a value is the kind the rule is about.
+    ["Buffer.isBuffer", Buffer, "isBuffer", function () { return false; }],
+    ["Number.isFinite", Number, "isFinite", function () { return false; }],
+    ["Number.isSafeInteger", Number, "isSafeInteger", function () { return false; }],
   ];
   for (var sw = 0; sw < swaps.length; sw++) {
     var holder = swaps[sw][1], swapName = swaps[sw][2], original = holder[swapName];
