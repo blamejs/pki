@@ -699,9 +699,34 @@ async function testPopoPrivKeyArms() {
     check("V6b. the ediPartyName fixture really replaced one name list", swapped.count === 1);
     return swapped.der;
   }());
-  check("V6b. an authority subjectAltName offering only an unread arm is refused",
+  check("V6b. an authority subjectAltName whose ediPartyName encodes no name is refused",
     (await codeOf(pki.crmf.build({ certReqId: 36n, certTemplate: tpl(eeDhSpki),
       pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: ediSanCa } }))) === "crmf/bad-popo");
+
+  // Both arms are legitimate GeneralNames, so a well-formed one names somebody. The derivation
+  // hashes these bytes rather than interpreting them, so an arm this does not read is still an arm
+  // both sides hash alike.
+  function sanCaHolding(sanContent) {
+    var real = pki.schema.x509.parse(emptySubjectCa);
+    var san = real.extensions.filter(function (e) { return e.name === "subjectAltName"; })[0];
+    var swapped = surgery.replaceTlv(emptySubjectCa,
+      pki.asn1.build.octetString(Buffer.from(san.value)),
+      pki.asn1.build.octetString(Buffer.from(sanContent)));
+    check("V6b. the fixture replaced exactly one name list", swapped.count === 1);
+    return swapped.der;
+  }
+  // [5] { partyName [1] "ca" } -- a1 04 13 02 63 61 is [1] holding a PrintableString.
+  var goodEdi = sanCaHolding(pki.asn1.build.sequence([
+    pki.asn1.build.implicit(5, pki.asn1.build.sequence([
+      pki.asn1.build.implicit(1, Buffer.from([0x13, 0x02, 0x63, 0x61]))]))]));
+  check("V6b. a well-formed ediPartyName names somebody",
+    (await codeOf(pki.crmf.build({ certReqId: 37n, certTemplate: tpl(eeDhSpki),
+      pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: goodEdi } }))) === null);
+  var x400 = sanCaHolding(pki.asn1.build.sequence([
+    pki.asn1.build.implicit(3, pki.asn1.build.sequence([pki.asn1.build.integer(1n)]))]));
+  check("V6b. an x400Address the shared reader accepts names somebody",
+    (await codeOf(pki.crmf.build({ certReqId: 38n, certTemplate: tpl(eeDhSpki),
+      pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: x400 } }))) === null);
 
   check("V6b. an authority subjectAltName whose iPAddress is not an address is refused",
     (await codeOf(pki.crmf.build({ certReqId: 33n, certTemplate: tpl(eeDhSpki),
