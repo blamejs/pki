@@ -403,11 +403,14 @@ async function testPopoPrivKeyArms() {
   // and the import that follows can throw: a tiny group translates cleanly and is then refused by the
   // runtime. The copy has to be gone on that way out too, which is the way that leaves no record
   // unless the copies are counted.
+  // 23 is prime, 11 is prime and divides 22, and 2 has order 11 mod 23, so this group is coherent
+  // and reaches the rewrite. It is the modulus alone that the import that follows refuses, which is
+  // what puts a built rewrite on a throwing path.
   var tinyX942Pk8 = pki.asn1.build.sequence([
     pki.asn1.build.integer(0n),
     pki.asn1.build.sequence([pki.asn1.build.oid("1.2.840.10046.2.1"),
       pki.asn1.build.raw(pki.asn1.build.sequence([
-        pki.asn1.build.integer(23n), pki.asn1.build.integer(5n), pki.asn1.build.integer(11n)]))]),
+        pki.asn1.build.integer(23n), pki.asn1.build.integer(2n), pki.asn1.build.integer(11n)]))]),
     pki.asn1.build.octetString(Buffer.from(pki.asn1.build.integer(7n))),
   ]);
   var failWipe = require("node:child_process").spawnSync(process.execPath,
@@ -1003,6 +1006,88 @@ async function testPopoPrivKeyArms() {
     dhPopStaticOf(parse(x942PrivDer)[0].popo.bytes).hashValue.equals(
       dhPopStaticOf(parse(pkcs3PrivDer)[0].popo.bytes).hashValue));
 
+  // The requester's own parameters are read before the translation drops them, the same way the
+  // public half's are. A field the translation does not read is a field it rewrites away unlooked-at,
+  // so a key this runtime refuses in the encoding it was handed becomes one it accepts.
+  var eePrivParts = (function () {
+    var n = pki.asn1.decode(eeDhPk8);
+    var prm = pki.asn1.decode(n.children[1].children[1].bytes);
+    var p = pki.asn1.read.integer(prm.children[0]);
+    return { p: p, g: pki.asn1.read.integer(prm.children[1]), q: (p - 1n) / 2n };
+  }());
+  function x942PrivWith(fields) {
+    var n = pki.asn1.decode(eeDhPk8);
+    return pki.asn1.build.sequence([
+      pki.asn1.build.raw(n.children[0].bytes),
+      pki.asn1.build.sequence([pki.asn1.build.oid("1.2.840.10046.2.1"),
+        pki.asn1.build.raw(pki.asn1.build.sequence(fields))]),
+      pki.asn1.build.raw(n.children[2].bytes),
+    ]);
+  }
+  function privPgq(extra) {
+    var fields = [pki.asn1.build.integer(eePrivParts.p), pki.asn1.build.integer(eePrivParts.g),
+      pki.asn1.build.integer(eePrivParts.q)];
+    for (var i = 0; extra && i < extra.length; i++) fields.push(extra[i]);
+    return x942PrivWith(fields);
+  }
+  // The same p and g with the stated order itself replaced, for the cases about q rather than about
+  // what follows it.
+  function privPgq0(qAndAfter) {
+    var fields = [pki.asn1.build.integer(eePrivParts.p), pki.asn1.build.integer(eePrivParts.g)];
+    for (var i = 0; i < qAndAfter.length; i++) fields.push(qAndAfter[i]);
+    return x942PrivWith(fields);
+  }
+  var goodVp = pki.asn1.build.sequence([
+    pki.asn1.build.bitString(Buffer.from([0x00])), pki.asn1.build.integer(1n)]);
+  var privBad = [
+    ["an order that is not an INTEGER", x942PrivWith([pki.asn1.build.integer(eePrivParts.p),
+      pki.asn1.build.integer(eePrivParts.g), pki.asn1.build.nullValue()]),
+      "could not be read"],
+    ["a field beyond the two optional ones",
+      privPgq([pki.asn1.build.integer(1n), goodVp, pki.asn1.build.integer(7n)]),
+      "not a DomainParameters SEQUENCE"],
+    ["a fourth field that is neither a cofactor nor validationParms",
+      privPgq([pki.asn1.build.oid("1.2.3")]), "neither a cofactor nor validationParms"],
+    ["a field after validationParms", privPgq([goodVp, pki.asn1.build.integer(7n)]),
+      "a field after validationParms"],
+    ["validationParms that are not a seed with a counter", privPgq([pki.asn1.build.sequence([])]),
+      "not a seed BIT STRING with a pgenCounter INTEGER"],
+    ["parameters that are not a DomainParameters SEQUENCE at all",
+      x942PrivWith([pki.asn1.build.integer(eePrivParts.p)]), "not a DomainParameters SEQUENCE"],
+    // The order and cofactor are held to the p and g stated beside them, the same way the requested
+    // key's are. The PKCS#3 form the conversion produces carries neither, so this is the last place
+    // either is read, and a request whose own key states a group it does not have would go out.
+    ["a negative order", privPgq0([pki.asn1.build.integer(-1n)]),
+      "state a subgroup order its own p and g do not have"],
+    ["an order its own p and g do not have",
+      privPgq0([pki.asn1.build.integer(eePrivParts.q - 2n)]),
+      "state a subgroup order its own p and g do not have"],
+    ["a cofactor its own p and q contradict", privPgq([pki.asn1.build.integer(3n)]),
+      "cofactor does not match"],
+    ["an order wider than any group", privPgq0([pki.asn1.build.integer(1n << 20000n)]),
+      "larger than any Diffie-Hellman group"],
+  ];
+  for (var pv = 0; pv < privBad.length; pv++) {
+    var pvErr = null;
+    try {
+      await pki.crmf.build({ certReqId: 55n, certTemplate: tpl(eeDhSpki),
+        pop: { type: "keyAgreement", method: "agreeMAC", key: privBad[pv][1], caCert: dhCaCert } });
+    } catch (e) { pvErr = e; }
+    check("V6b. pop.key stating " + privBad[pv][0] + " is refused for that reason",
+      pvErr !== null && pvErr.code === "crmf/bad-popo" &&
+      pvErr.message.indexOf(privBad[pv][2]) !== -1);
+  }
+  // The same rule read the other way: the optional fields a conforming key carries still agree, so
+  // the refusals above are not a reader that stopped at three fields.
+  check("V6b. pop.key carrying a correct cofactor beside its order still agrees",
+    (await codeOf(pki.crmf.build({ certReqId: 56n, certTemplate: tpl(eeDhSpki),
+      pop: { type: "keyAgreement", method: "agreeMAC", caCert: dhCaCert,
+        key: privPgq([pki.asn1.build.integer((eePrivParts.p - 1n) / eePrivParts.q)]) } }))) === null);
+  check("V6b. pop.key carrying validationParms with no cofactor before them still agrees",
+    (await codeOf(pki.crmf.build({ certReqId: 57n, certTemplate: tpl(eeDhSpki),
+      pop: { type: "keyAgreement", method: "agreeMAC", caCert: dhCaCert,
+        key: privPgq([goodVp]) } }))) === null);
+
   // A certificate stating q = p-1 satisfies every structural test: p-1 divides itself, and g^(p-1)
   // and y^(p-1) are 1 for the whole group by Fermat. Only q being prime makes the subgroup test say
   // anything, since y^q = 1 otherwise bounds the order of y to a divisor of q rather than to q.
@@ -1203,6 +1288,75 @@ async function testPopoPrivKeyArms() {
   check("V7. an enclosed key and a template both in the X9.42 form are recognized as one key",
     (await codeOf(pki.crmf.build({ certReqId: 45n, certTemplate: tpl(legacyX942),
       pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: legacyX942Pk8,
+        identifier: "device-42", recipients: [{ cert: recip.cert }], archive: true } }))) === null);
+
+  // The group is not measured on this arm, and what a stated order and cofactor say about the p and g
+  // beside them is a separate question from how good that group is. The conversion drops both while
+  // the request goes out carrying the caller's own encoding of them, so they are answered for here.
+  // These tests cost a multiplication and a modulo, which is why they apply where a size bound cannot.
+  function legacyX942With(qv, jv) {
+    var n = pki.asn1.decode(legacySpki);
+    var prm = pki.asn1.decode(n.children[0].children[1].bytes);
+    var fields = [pki.asn1.build.raw(prm.children[0].bytes), pki.asn1.build.raw(prm.children[1].bytes),
+      pki.asn1.build.integer(qv)];
+    if (jv !== null) fields.push(pki.asn1.build.integer(jv));
+    return pki.asn1.build.sequence([
+      pki.asn1.build.sequence([pki.asn1.build.oid("1.2.840.10046.2.1"),
+        pki.asn1.build.raw(pki.asn1.build.sequence(fields))]),
+      pki.asn1.build.raw(n.children[1].bytes),
+    ]);
+  }
+  var legacyP = pki.asn1.read.integer(pki.asn1.decode(
+    pki.asn1.decode(pki.asn1.decode(legacySpki).children[0].children[1].bytes).children[0].bytes));
+  var archBad = [
+    ["a cofactor its own p and q contradict", legacyX942With((legacyP - 1n) / 2n, 999n),
+      "cofactor does not match"],
+    ["an order that does not divide p-1", legacyX942With((legacyP - 1n) / 2n - 1n, null),
+      "state a subgroup order its own p and g do not have"],
+    ["an order of one", legacyX942With(1n, null),
+      "state a subgroup order its own p and g do not have"],
+  ];
+  for (var ab = 0; ab < archBad.length; ab++) {
+    var abErr = null;
+    try {
+      await pki.crmf.build({ certReqId: 46n, certTemplate: tpl(archBad[ab][1]),
+        pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: legacyPk8,
+          identifier: "device-42", recipients: [{ cert: recip.cert }], archive: true } });
+    } catch (e) { abErr = e; }
+    check("V7. an archived template stating " + archBad[ab][0] + " is refused for that reason",
+      abErr !== null && abErr.code === "crmf/bad-popo" &&
+      abErr.message.indexOf(archBad[ab][2]) !== -1);
+  }
+  // The enclosed key states the same parameters, and its public half carries them into the archive
+  // with it, so a template written correctly does not excuse an enclosed key that was not.
+  var legacyX942Pk8Bad = (function () {
+    var n = pki.asn1.decode(legacyPk8);
+    var prm = pki.asn1.decode(n.children[1].children[1].bytes);
+    return pki.asn1.build.sequence([
+      pki.asn1.build.raw(n.children[0].bytes),
+      pki.asn1.build.sequence([pki.asn1.build.oid("1.2.840.10046.2.1"),
+        pki.asn1.build.raw(pki.asn1.build.sequence([
+          pki.asn1.build.raw(prm.children[0].bytes), pki.asn1.build.raw(prm.children[1].bytes),
+          pki.asn1.build.integer((legacyP - 1n) / 2n), pki.asn1.build.integer(999n)]))]),
+      pki.asn1.build.raw(n.children[2].bytes),
+    ]);
+  }());
+  var ekErr = null;
+  try {
+    await pki.crmf.build({ certReqId: 48n, certTemplate: tpl(legacyX942),
+      pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: legacyX942Pk8Bad,
+        identifier: "device-42", recipients: [{ cert: recip.cert }], archive: true } });
+  } catch (e) { ekErr = e; }
+  check("V7. an enclosed private key stating a cofactor its own p and q contradict is refused",
+    ekErr !== null && ekErr.code === "crmf/bad-popo" &&
+    ekErr.message.indexOf("cofactor does not match") !== -1);
+
+  // Read the other way: the order this group really has, with its correct cofactor, still archives,
+  // so the refusals above are not this arm having started to measure the group.
+  check("V7. an archived template stating its real order and cofactor still archives",
+    (await codeOf(pki.crmf.build({ certReqId: 47n,
+      certTemplate: tpl(legacyX942With((legacyP - 1n) / 2n, 2n)),
+      pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: legacyPk8,
         identifier: "device-42", recipients: [{ cert: recip.cert }], archive: true } }))) === null);
 
   check("V7. a group larger than any agreement would accept still archives",
