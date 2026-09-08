@@ -652,6 +652,53 @@ async function run() {
   var kindBad = cl();
   (function () { var te = kindBad.verificationMaterial.tlogEntries[0]; var bo = JSON.parse(Buffer.from(te.canonicalizedBody, "base64").toString("utf8")); bo.kind = "hashedrekord"; te.canonicalizedBody = Buffer.from(JSON.stringify(bo)).toString("base64"); })();
   check("non-dsse Rekor entry kind -> sigstore/unsupported-content", await codeOf(pki.sigstore.verifyBundle(kindBad, TM)) === "sigstore/unsupported-content");
+
+  // The bundle content is a oneof. A bundle setting both arms is malformed, and verifying the
+  // envelope while passing over the other arm returns a verdict that says nothing about content the
+  // bundle carries, so it is refused rather than read as the arm this build supports.
+  var bothArms = JSON.parse(JSON.stringify(BUNDLE));
+  bothArms.messageSignature = { messageDigest: { algorithm: "SHA2_256", digest: "AAAA" }, signature: "AAAA" };
+  check("a bundle carrying both content arms is refused, not verified on the envelope alone",
+    await codeOf(pki.sigstore.verifyBundle(bothArms, TM)) === "sigstore/bad-bundle");
+
+  // The verification material's certificate is a oneof of the same kind. Both arms set would draw the
+  // leaf from one and the chain through which it is validated from the other.
+  var bothVm = JSON.parse(JSON.stringify(BUNDLE));
+  var vmArm = bothVm.verificationMaterial;
+  if (vmArm.x509CertificateChain) {
+    vmArm.certificate = vmArm.x509CertificateChain.certificates[0];
+  } else {
+    vmArm.x509CertificateChain = { certificates: [vmArm.certificate] };
+  }
+  check("verificationMaterial carrying both certificate arms is refused",
+    await codeOf(pki.sigstore.verifyBundle(bothVm, TM)) === "sigstore/bad-bundle");
+
+  // The oneof has a third arm. A publicKey beside a certificate names a second signer identity, and
+  // reading the certificate while passing over it reports a verdict about only one of the two.
+  var vmPlusKey = JSON.parse(JSON.stringify(BUNDLE));
+  vmPlusKey.verificationMaterial.publicKey = { hint: "AAAA" };
+  check("verificationMaterial carrying a publicKey beside a certificate arm is refused",
+    await codeOf(pki.sigstore.verifyBundle(vmPlusKey, TM)) === "sigstore/bad-bundle");
+
+  // A bundle that SETS an arm to false or to an empty string has set it. Reading presence as
+  // truthiness lets a second arm sit beside the one being read, which is the state the rule refuses.
+  var falseyArms = [
+    ["a publicKey set to false", function (b) { b.verificationMaterial.publicKey = false; }],
+    ["an x509CertificateChain set to an empty string", function (b) { b.verificationMaterial.x509CertificateChain = ""; }],
+    ["a messageSignature set to false", function (b) { b.messageSignature = false; }],
+    ["a messageSignature set to an empty string", function (b) { b.messageSignature = ""; }],
+  ];
+  for (var fa = 0; fa < falseyArms.length; fa++) {
+    var fb = JSON.parse(JSON.stringify(BUNDLE));
+    falseyArms[fa][1](fb);
+    check("a bundle carrying " + falseyArms[fa][0] + " beside a real arm is refused",
+      await codeOf(pki.sigstore.verifyBundle(fb, TM)) === "sigstore/bad-bundle");
+  }
+  // An arm that is absent, or explicitly null, is not set.
+  var nulledArm = JSON.parse(JSON.stringify(BUNDLE));
+  nulledArm.verificationMaterial.publicKey = null;
+  check("a verificationMaterial arm explicitly null is not a second arm",
+    (await pki.sigstore.verifyBundle(nulledArm, TM)).verified === true);
   var phMiss = cl();
   (function () { var te = phMiss.verificationMaterial.tlogEntries[0]; var bo = JSON.parse(Buffer.from(te.canonicalizedBody, "base64").toString("utf8")); delete bo.spec.payloadHash; te.canonicalizedBody = Buffer.from(JSON.stringify(bo)).toString("base64"); })();
   check("Rekor dsse entry missing payloadHash -> sigstore/bad-tlog-entry", await codeOf(pki.sigstore.verifyBundle(phMiss, TM)) === "sigstore/bad-tlog-entry");

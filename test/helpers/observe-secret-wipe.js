@@ -131,6 +131,13 @@ function run(input) {
     // over-wide scalar OpenSSL accepted. The refusal therefore lands AFTER the secret exists, on a
     // path whose promise rejects rather than settles, so the module clears the secret itself.
     work = pki.kem.decapsulate(callerKey, b64(p.secret));
+  } else if (p.op === "crmf-agree-mac") {
+    // The RFC 2875 static DH proof allocates the agreed secret ZZ and the key K derived from it.
+    // Neither reaches the caller, so both are the module's own to clear.
+    work = pki.crmf.build({
+      certReqId: 7, certTemplate: { subject: [{ commonName: "device" }], publicKey: b64(p.csr) },
+      pop: { type: "keyAgreement", method: "agreeMAC", key: callerKey, caCert: b64(p.cert) },
+    });
   } else if (p.op === "composite-kem-public-from-private") {
     // The derivation re-encodes the ML-KEM seed as a OneAsymmetricKey for the key engine to read,
     // which is a second copy of the seed alongside the caller's snapshot and the key octets.
