@@ -20,6 +20,13 @@ lib/vendor/** -text binary
 CHANGELOG.md text eol=lf
 release-notes/*.json text eol=lf
 
+# Signed test artifacts — treat as binary so git never rewrites line endings.
+# These are an upstream interoperability suite's own bytes, and a signature and
+# a transparency-log entry record the digest of exactly those bytes: a CRLF
+# rewrite on a Windows checkout changes the digest and the fixture no longer
+# verifies. The vendor rule above exists for the same reason.
+test/fixtures/sigstore/conformance/** -text binary
+
 # Native modules — always binary.
 *.node binary
 *.so binary

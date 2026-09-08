@@ -1035,9 +1035,32 @@ async function runMessageSignature(TM) {
   var unspecAlg = clone(msBundle("v0.3")); unspecAlg.messageSignature.messageDigest.algorithm = "HASH_ALGORITHM_UNSPECIFIED";
   check("a messageDigest naming the unspecified hash algorithm is refused",
     await codeOf(pki.sigstore.verifyBundle(unspecAlg, trust)) === "sigstore/bad-message-signature");
-  var sha3Alg = clone(msBundle("v0.3")); sha3Alg.messageSignature.messageDigest.algorithm = "SHA3_256";
-  check("a messageDigest naming a hash with no hashedrekord counterpart is refused",
-    await codeOf(pki.sigstore.verifyBundle(sha3Alg, trust)) === "sigstore/bad-message-signature");
+  // The enum carries two SHA-3 members. They are marked deprecated, which says a producer should not
+  // choose them, not that a bundle carrying one is malformed; the digest is identification only and
+  // names its own algorithm independently of the one the log entry records, so a bundle stating one
+  // is verified rather than turned away before its signature is ever read.
+  var sha3Names = [["SHA3_256", "sha3-256"], ["SHA3_384", "sha3-384"]];
+  for (var s3 = 0; s3 < sha3Names.length; s3++) {
+    var okSha3 = clone(msBundle("v0.3"));
+    okSha3.messageSignature.messageDigest = { algorithm: sha3Names[s3][0],
+      digest: crypto.createHash(sha3Names[s3][1]).update(ARTIFACT).digest().toString("base64") };
+    var sha3Out = await pki.sigstore.verifyBundle(okSha3,
+      { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: ARTIFACT });
+    check("a messageDigest stated under " + sha3Names[s3][0] + " is checked and the bundle verifies",
+      sha3Out.verified === true && sha3Out.messageDigestChecked === true &&
+      sha3Out.digestAlgorithm === "sha256" && sha3Out.artifactDigest === ARTIFACT_SHA256);
+    var badSha3 = clone(msBundle("v0.3"));
+    badSha3.messageSignature.messageDigest = { algorithm: sha3Names[s3][0],
+      digest: crypto.createHash(sha3Names[s3][1]).update("other").digest().toString("base64") };
+    check("and a " + sha3Names[s3][0] + " digest that disagrees with the artifact is refused",
+      await codeOf(pki.sigstore.verifyBundle(badSha3,
+        { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: ARTIFACT })) === "sigstore/artifact-mismatch");
+  }
+  // A member outside the enum entirely is still refused, so the rule is the enum rather than a
+  // reader that takes any name it can hash under.
+  var notInEnum = clone(msBundle("v0.3")); notInEnum.messageSignature.messageDigest.algorithm = "SHA2_224";
+  check("a messageDigest naming a member outside the enum is refused",
+    await codeOf(pki.sigstore.verifyBundle(notInEnum, trust)) === "sigstore/bad-message-signature");
   var wrongLen = clone(msBundle("v0.3"));
   wrongLen.messageSignature.messageDigest.digest = Buffer.alloc(48).toString("base64");
   check("a messageDigest whose length disagrees with its own algorithm is refused",
@@ -1104,6 +1127,13 @@ async function runMessageSignature(TM) {
   check("an entry naming a hash algorithm outside the schema's three is refused",
     await codeOf(pki.sigstore.verifyBundle(
       withBody(msBundle("v0.3"), function (bd) { bd.spec.data.hash.algorithm = "md5"; }),
+      { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: ARTIFACT })) === "sigstore/bad-tlog-entry");
+  // The entry's algorithm comes from the hashedrekord schema's own enum, which is exactly sha256,
+  // sha384 and sha512. The digest the bundle states is a different field under a different enum, so
+  // admitting the SHA-3 members there does not admit them here.
+  check("an entry naming a SHA-3 algorithm is refused, since its schema enumerates three",
+    await codeOf(pki.sigstore.verifyBundle(
+      withBody(msBundle("v0.3"), function (bd) { bd.spec.data.hash.algorithm = "sha3-256"; }),
       { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: ARTIFACT })) === "sigstore/bad-tlog-entry");
   check("an entry whose artifact hash is not lowercase hex of its own algorithm is refused",
     await codeOf(pki.sigstore.verifyBundle(
