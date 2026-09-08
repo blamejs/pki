@@ -1130,6 +1130,85 @@ async function testPopoPrivKeyArms() {
     (await codeOf(pki.crmf.build({ certReqId: 59n, certTemplate: tpl(spkiForValue(1n)),
       pop: { type: "keyAgreement", method: "agreeMAC", caCert: dhCaCert,
         key: privWithExponent(0n) } }))) === "crmf/bad-popo");
+  // The same interval binds the authority's key, which is the other half of the same agreement. An
+  // authority whose public value is g agrees the requester's own public value, and one whose value is
+  // the inverse of g agrees its inverse; both appear in the request the proof travels in.
+  var caParts = (function () {
+    var n = pki.asn1.decode(caDhSpki);
+    var prm = pki.asn1.decode(n.children[0].children[1].bytes);
+    return { p: pki.asn1.read.integer(prm.children[0]), g: pki.asn1.read.integer(prm.children[1]) };
+  }());
+  var caBad = [
+    ["g, so the secret it agrees is the requester's own public value", caParts.g],
+    ["the inverse of g, so the secret it agrees is the inverse of that value",
+      modPowT(caParts.g, caParts.p - 2n, caParts.p)],
+  ];
+  for (var cb = 0; cb < caBad.length; cb++) {
+    var cbErr = null;
+    try {
+      await pki.crmf.build({ certReqId: 61n, certTemplate: tpl(eeDhSpki),
+        pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8,
+          caCert: await dhCertFor(pkcs3Spki(caParts.p, caParts.g, caBad[cb][1]),
+            { serialNumber: 70 + cb }) } });
+    } catch (e) { cbErr = e; }
+    check("V6b. an authority public value of " + caBad[cb][0] + " is refused",
+      cbErr !== null && cbErr.code === "crmf/bad-popo" && cbErr.message.indexOf("[2, q-2]") !== -1);
+  }
+  // A safe prime has element orders 1, 2, q and 2q, and the PKCS#3 form states no order, so a
+  // generator of the full order 2q is admitted. Its square root of one is p-1, which reflects every
+  // excluded value: g^(q+1) is p-g and g^(q-1) is p-g inverse. Both agree a secret that follows from
+  // the authority's public value, and neither equals g or its inverse, so the interval has to be read
+  // through that reflection rather than on the two values alone.
+  var fullOrderG = (function () {
+    for (var cand = 3n; cand < 200n; cand++) {
+      if (modPowT(cand, expoOrder, eePrivParts.p) === eePrivParts.p - 1n) return cand;
+    }
+    return 0n;
+  }());
+  check("V6b. the full-order generator fixture really has order 2q, not q",
+    fullOrderG > 2n && modPowT(fullOrderG, expoOrder, eePrivParts.p) === eePrivParts.p - 1n);
+  function pkcs3PrivWith(gv, x) {
+    return pki.asn1.build.sequence([pki.asn1.build.integer(0n),
+      pki.asn1.build.sequence([pki.asn1.build.oid("1.2.840.113549.1.3.1"),
+        pki.asn1.build.raw(pki.asn1.build.sequence([
+          pki.asn1.build.integer(eePrivParts.p), pki.asn1.build.integer(gv)]))]),
+      pki.asn1.build.octetString(Buffer.from(pki.asn1.build.integer(x)))]);
+  }
+  var fullOrderCa = await dhCertFor(
+    pkcs3Spki(eePrivParts.p, fullOrderG, modPowT(fullOrderG, 123456789n, eePrivParts.p)),
+    { serialNumber: 74 });
+  var reflected = [
+    ["the order less one, whose public value is p minus the inverse of g", expoOrder - 1n],
+    ["the order plus one, whose public value is p minus g", expoOrder + 1n],
+  ];
+  for (var rf = 0; rf < reflected.length; rf++) {
+    var rfY = modPowT(fullOrderG, reflected[rf][1], eePrivParts.p);
+    var rfErr = null;
+    try {
+      await pki.crmf.build({ certReqId: 63n,
+        certTemplate: tpl(pkcs3Spki(eePrivParts.p, fullOrderG, rfY)),
+        pop: { type: "keyAgreement", method: "agreeMAC", caCert: fullOrderCa,
+          key: pkcs3PrivWith(fullOrderG, reflected[rf][1]) } });
+    } catch (e) { rfErr = e; }
+    check("V6b. a requester exponent of " + reflected[rf][0] + " is refused",
+      rfErr !== null && rfErr.code === "crmf/bad-popo" && rfErr.message.indexOf("[2, q-2]") !== -1);
+  }
+  // Read the other way: an exponent this reflection does not name still agrees in that same group,
+  // so the rule excludes the values whose secret follows with no search and not the small ones.
+  check("V6b. an ordinary exponent in a full-order group still agrees",
+    (await codeOf(pki.crmf.build({ certReqId: 64n,
+      certTemplate: tpl(pkcs3Spki(eePrivParts.p, fullOrderG, modPowT(fullOrderG, 987654321n, eePrivParts.p))),
+      pop: { type: "keyAgreement", method: "agreeMAC", caCert: fullOrderCa,
+        key: pkcs3PrivWith(fullOrderG, 987654321n) } }))) === null);
+
+  // One is refused where the range of the group is read, which is a different sentence, so it is
+  // pinned separately rather than folded into the interval above.
+  check("V6b. an authority public value of one is refused on the range it lies outside",
+    (await codeOf(pki.crmf.build({ certReqId: 62n, certTemplate: tpl(eeDhSpki),
+      pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8,
+        caCert: await dhCertFor(pkcs3Spki(caParts.p, caParts.g, 1n),
+          { serialNumber: 73 }) } }))) === "crmf/bad-popo");
+
   // Read the other way: the smallest and largest exponents the interval admits still agree, so the
   // rule is the interval rather than a floor on how large an exponent has to be.
   var expoOk = [["two, the smallest the interval admits", 2n],
