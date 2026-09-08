@@ -988,9 +988,16 @@ async function runMessageSignature(TM) {
 
   // The DSSE arm keeps its shape, with the artifact fields present and null.
   var dsse = await pki.sigstore.verifyBundle(BUNDLE, trust);
-  check("a dsse bundle reports the artifact fields as null rather than omitting them",
-    "artifactDigest" in dsse && dsse.artifactDigest === null && dsse.digestAlgorithm === null &&
-    dsse.messageDigestChecked === false && dsse.contentType === "dsseEnvelope");
+  // The sentinel differs by what the field reports, and the two kinds are pinned separately so the
+  // documented contract and the verdict cannot drift apart: a field carrying a VALUE the arm has
+  // none of reads null, and a field reporting whether a CHECK RAN stays boolean.
+  check("a dsse bundle reports the artifact values as null rather than omitting them",
+    "artifactDigest" in dsse && dsse.artifactDigest === null &&
+    "digestAlgorithm" in dsse && dsse.digestAlgorithm === null && dsse.contentType === "dsseEnvelope");
+  check("a dsse bundle reports messageDigestChecked as false, not null",
+    dsse.messageDigestChecked === false);
+  check("and a message_signature reports predicateTypeChecked as false, not null, the same way",
+    v3.predicateTypeChecked === false && v3.messageDigestChecked === true);
 
   // The artifact door. There is no shape in which a caller hands over a digest instead of bytes.
   check("a message_signature bundle with no artifact is refused, never verified from the digest",
@@ -1290,10 +1297,43 @@ async function runMessageSignature(TM) {
       return reads === 1 ? realArm : { signature: Buffer.alloc(70, 9).toString("base64") };
     },
   });
-  var lyingOut = await pki.sigstore.verifyBundle(lying, withArtifact);
-  check("a content arm reached through an accessor is verified as the one answer taken",
-    lyingOut.verified === true && lyingOut.artifactDigest === ARTIFACT_SHA256);
-  check("and that arm was read exactly once, so no later answer reached any check", reads === 1);
+  check("a content arm that answers differently on each read is refused, never verified",
+    await codeOf(pki.sigstore.verifyBundle(lying, withArtifact)) !== "NO-THROW");
+  // Read the other way: an arm reached through an accessor that answers consistently verifies, so
+  // the refusal above is about the disagreement rather than about the field being an accessor.
+  var steady = clone(msBundle("v0.3"));
+  var steadyArm = steady.messageSignature;
+  Object.defineProperty(steady, "messageSignature", {
+    enumerable: true, configurable: true, get: function () { return steadyArm; },
+  });
+  var steadyOut = await pki.sigstore.verifyBundle(steady, withArtifact);
+  check("an arm reached through an accessor that answers consistently still verifies",
+    steadyOut.verified === true && steadyOut.artifactDigest === ARTIFACT_SHA256);
+  check("the accessor really was exercised", reads > 0);
+
+  // Serializing drops a value JSON cannot carry, so a bundle setting a second content arm to a
+  // function would arrive as one setting a single arm: a refusal turned into an accept. The oneof
+  // rules are therefore decided on the object as it was handed over, and both verbs refuse it alike.
+  var dropped = clone(msBundle("v0.3"));
+  dropped.dsseEnvelope = function () {};
+  check("a second content arm that JSON cannot carry is refused rather than dropped",
+    await codeOf(pki.sigstore.verifyBundle(dropped, withArtifact)) === "sigstore/bad-bundle");
+  var droppedVm = clone(msBundle("v0.3"));
+  droppedVm.verificationMaterial.publicKey = function () {};
+  check("a second verificationMaterial arm that JSON cannot carry is refused rather than dropped",
+    await codeOf(pki.sigstore.verifyBundle(droppedVm, withArtifact)) === "sigstore/bad-bundle");
+  // The same shape a symbol takes, since that is the other value serializing removes.
+  var droppedSym = clone(msBundle("v0.3"));
+  droppedSym.dsseEnvelope = Symbol("x");
+  check("a second content arm held as a symbol is refused rather than dropped",
+    await codeOf(pki.sigstore.verifyBundle(droppedSym, withArtifact)) === "sigstore/bad-bundle");
+  // Read the other way: a bundle carrying one arm and nothing beside it still verifies, so the rule
+  // is the second arm rather than any property serializing would remove.
+  var withNoise = clone(msBundle("v0.3"));
+  withNoise.someUnrelatedField = function () {};
+  var noiseOut = await pki.sigstore.verifyBundle(withNoise, withArtifact);
+  check("an unrelated property JSON cannot carry does not stop a single-armed bundle verifying",
+    noiseOut.verified === true && noiseOut.artifactDigest === ARTIFACT_SHA256);
 
   // The same bundle as JSON text and as bytes reaches the same verdict: text is already fixed and
   // is read as it came, so the snapshot is what an object input is brought to rather than a
