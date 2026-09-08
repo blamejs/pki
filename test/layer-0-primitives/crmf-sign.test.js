@@ -871,6 +871,55 @@ async function testPopoPrivKeyArms() {
       pErr !== null && pErr.code === "crmf/bad-popo" && pErr.message.indexOf(pkcs3Bad[pb][2]) !== -1);
   }
 
+  // The conforming shapes each rule admits, written for the least obvious valid input rather than
+  // the canonical one, since a suite of malformed inputs cannot fail when a rule is too strict.
+  var eeX942Parts = (function () {
+    var n = pki.asn1.decode(eeX942Spki);
+    var prm = pki.asn1.decode(n.children[0].children[1].bytes);
+    return { p: prm.children[0].bytes, g: prm.children[1].bytes, q: prm.children[2].bytes,
+      pub: n.children[1].bytes };
+  }());
+  function x942Domain(extra) {
+    var fields = [pki.asn1.build.raw(eeX942Parts.p), pki.asn1.build.raw(eeX942Parts.g),
+      pki.asn1.build.raw(eeX942Parts.q)];
+    for (var i = 0; extra && i < extra.length; i++) fields.push(extra[i]);
+    return pki.asn1.build.sequence([
+      pki.asn1.build.sequence([pki.asn1.build.oid("1.2.840.10046.2.1"),
+        pki.asn1.build.raw(pki.asn1.build.sequence(fields))]),
+      pki.asn1.build.raw(eeX942Parts.pub),
+    ]);
+  }
+  var realP = pki.asn1.read.integer(pki.asn1.decode(eeX942Parts.p));
+  var conforming = [
+    ["domain parameters carrying no optional field at all", x942Domain(null)],
+    ["a correct cofactor beside the order", x942Domain([pki.asn1.build.integer((realP - 1n) / ((realP - 1n) / 2n))])],
+    ["validation parameters with no cofactor before them", x942Domain([
+      pki.asn1.build.sequence([pki.asn1.build.bitString(Buffer.from([0x00])), pki.asn1.build.integer(1n)])])],
+  ];
+  for (var cf = 0; cf < conforming.length; cf++) {
+    check("V6b. a requested key stating " + conforming[cf][0] + " is proven",
+      (await codeOf(pki.crmf.build({ certReqId: 50n, certTemplate: tpl(conforming[cf][1]),
+        pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: dhCaCert } }))) === null);
+  }
+
+  // The PKCS#3 optional field, present and well-formed: the form the refusal vectors above only
+  // ever drive malformed.
+  var pkcs3WithPvl = (function () {
+    var n = pki.asn1.decode(caDhSpki);
+    var prm = pki.asn1.decode(n.children[0].children[1].bytes);
+    return pki.asn1.build.sequence([
+      pki.asn1.build.sequence([pki.asn1.build.oid("1.2.840.113549.1.3.1"),
+        pki.asn1.build.raw(pki.asn1.build.sequence([
+          pki.asn1.build.raw(prm.children[0].bytes), pki.asn1.build.raw(prm.children[1].bytes),
+          pki.asn1.build.integer(256n)]))]),
+      pki.asn1.build.raw(n.children[1].bytes),
+    ]);
+  }());
+  check("V6b. an authority key carrying a well-formed privateValueLength agrees",
+    (await codeOf(pki.crmf.build({ certReqId: 51n, certTemplate: tpl(eeDhSpki),
+      pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8,
+        caCert: await dhCertFor(pkcs3WithPvl, { serialNumber: 52 }) } }))) === null);
+
   // A certificate stating q = p-1 satisfies every structural test: p-1 divides itself, and g^(p-1)
   // and y^(p-1) are 1 for the whole group by Fermat. Only q being prime makes the subgroup test say
   // anything, since y^q = 1 otherwise bounds the order of y to a divisor of q rather than to q.
