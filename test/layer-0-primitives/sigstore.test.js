@@ -1044,6 +1044,25 @@ async function runMessageSignature(TM) {
       { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: ARTIFACT,
         predicateType: "https://slsa.dev/provenance/v1" })) === "sigstore/bad-input");
 
+  // An option is read the way the option gate reads it, so one supplied on the options object's
+  // prototype is the same option. Reading these as own properties made an inherited artifact look
+  // missing, let an inherited one pass unread on the arm that does not take it, and let an inherited
+  // predicateType through the refusal and then report predicateTypeChecked for a statement that does
+  // not exist.
+  function inherited(extra) {
+    var o = Object.create(extra);
+    o.fulcioRoots = trust.fulcioRoots; o.rekorKeys = trust.rekorKeys;
+    return o;
+  }
+  var inhArtifact = await pki.sigstore.verifyBundle(msBundle("v0.3"), inherited({ artifact: ARTIFACT }));
+  check("an artifact supplied on the options prototype is read as the artifact",
+    inhArtifact.verified === true && inhArtifact.artifactDigest === ARTIFACT_SHA256);
+  check("an inherited predicateType is refused on a message_signature, not silently counted",
+    await codeOf(pki.sigstore.verifyBundle(msBundle("v0.3"),
+      (function () { var o = inherited({ predicateType: "https://slsa.dev/provenance/v1" }); o.artifact = ARTIFACT; return o; }()))) === "sigstore/bad-input");
+  check("an inherited artifact is refused on a dsse bundle rather than ignored",
+    await codeOf(pki.sigstore.verifyBundle(BUNDLE, inherited({ artifact: ARTIFACT }))) === "sigstore/bad-input");
+
   // A wrong artifact, in each shape that could be mistaken for the right one.
   var oneOff = Buffer.from(ARTIFACT); oneOff[50] = oneOff[50] ^ 0x01;
   check("an artifact of the same length differing in one byte is refused",
@@ -1218,6 +1237,34 @@ async function runMessageSignature(TM) {
       await codeOf(pki.sigstore.verifyBundle(
         withBody(msBundle("v0.3"), entryShapes[es][1]), withArtifact)) === entryShapes[es][2]);
   }
+  // The Rekor field is "the public key that can verify the signature; this can also be an X509 code
+  // signing certificate that contains the raw public key information", so an entry naming the key
+  // itself is conforming and binds when that key is the leaf's. A different key does not bind.
+  var SYN_ART_PK = Buffer.from("artifact for the public-key verifier form");
+  var pubBuilt = buildSynBundle({ messageArtifact: SYN_ART_PK });
+  var pubLeaf = pki.schema.x509.parse(pubBuilt.keys.leafDer);
+  function pemOf(der, label) {
+    return "-----BEGIN " + label + "-----\n" +
+      Buffer.from(der).toString("base64").replace(/(.{64})/g, "$1\n").replace(/\n$/, "") +
+      "\n-----END " + label + "-----\n";
+  }
+  function withSynEntryKey(built, pem) {
+    var b = JSON.parse(JSON.stringify(built.bundle));
+    var te2 = b.verificationMaterial.tlogEntries[0];
+    var bd = JSON.parse(Buffer.from(te2.canonicalizedBody, "base64").toString("utf8"));
+    bd.spec.signature.publicKey = { content: Buffer.from(pem).toString("base64") };
+    te2.canonicalizedBody = Buffer.from(JSON.stringify(bd), "utf8").toString("base64");
+    return b;
+  }
+  var pubTrust = { fulcioRoots: pubBuilt.trust.fulcioRoots, rekorKeys: pubBuilt.trust.rekorKeys, artifact: SYN_ART_PK };
+  check("an entry naming the leaf's own public key rather than its certificate binds",
+    await codeOf(pki.sigstore.verifyBundle(
+      withSynEntryKey(pubBuilt, pemOf(pubLeaf.subjectPublicKeyInfo.bytes, "PUBLIC KEY")), pubTrust)) === "sigstore/inclusion-proof-mismatch");
+  var otherKey = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  check("an entry naming a different public key does not bind",
+    await codeOf(pki.sigstore.verifyBundle(
+      withSynEntryKey(pubBuilt, pemOf(otherKey.publicKey.export({ format: "der", type: "spki" }), "PUBLIC KEY")), pubTrust)) === "sigstore/entry-mismatch");
+
   // The verifier certificate the entry names has to be the bundle's own leaf.
   var otherLeaf = JSON.parse(JSON.stringify(BUNDLE)).verificationMaterial.certificate.rawBytes;
   check("an entry naming a different verifier certificate is refused",

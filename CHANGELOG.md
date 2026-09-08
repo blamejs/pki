@@ -18,6 +18,8 @@ A Sigstore bundle signed over an artifact's own bytes is verified, not just one 
 
 ### Changed
 
+- A hashedrekord entry may name the verifier as a public key rather than as a certificate. The Rekor field is documented as the public key that verifies the signature, which may also be an X509 code signing certificate carrying that key, so an entry writing the key itself is conforming; it binds when that key is the bundle leaf's, and an entry naming a different key does not bind. The armor says which form the entry wrote, so neither is guessed at from the bytes.
+- An option supplied on the options object's prototype is read as the option it is, which is how the unknown-option gate and the verdict already read it. Reading opts.artifact and opts.predicateType as own properties made an inherited artifact look missing on the arm that requires it, passed an inherited one over unread on the arm that refuses it, and let an inherited predicateType through that refusal and then be reported as checked by a verdict with no statement to check it against.
 - A transparency-log entry is read by its own kind and version together. The entry registry holds one row per kind and apiVersion, and each row states which content arm it may accompany, so a hashedrekord v0.0.2 body is refused as an unsupported version rather than read for v0.0.1 field names it does not carry, and an entry describing a DSSE envelope beside a message signature is refused rather than bound to it.
 - An option that belongs to the other arm is refused rather than ignored. opts.artifact on a dsse_envelope bundle and opts.predicateType on a message_signature are each an error, since an option read and passed over reads as a check that ran.
 
