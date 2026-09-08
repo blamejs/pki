@@ -748,11 +748,25 @@ async function testPopoPrivKeyArms() {
         pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8,
           caCert: sanCaHolding(ediBad[eb][1]) } }))) === "crmf/bad-popo");
   }
-  var x400 = sanCaHolding(pki.asn1.build.sequence([
-    pki.asn1.build.implicit(3, pki.asn1.build.sequence([pki.asn1.build.integer(1n)]))]));
-  check("V6b. an x400Address the shared reader accepts names somebody",
+  // ORAddress opens with the BuiltInStandardAttributes SEQUENCE (X.411), so an arm whose first
+  // element is not a sequence of attributes is not an address, however the shared reader reads it.
+  function x400Holding(first) {
+    return sanCaHolding(pki.asn1.build.sequence([
+      pki.asn1.build.implicit(3, pki.asn1.build.sequence([first]))]));
+  }
+  check("V6b. an x400Address opening with a value that is not the standard attributes is refused",
     (await codeOf(pki.crmf.build({ certReqId: 38n, certTemplate: tpl(eeDhSpki),
-      pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: x400 } }))) === null);
+      pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8,
+        caCert: x400Holding(pki.asn1.build.integer(1n)) } }))) === "crmf/bad-popo");
+  check("V6b. an x400Address opening with no attributes at all is refused",
+    (await codeOf(pki.crmf.build({ certReqId: 47n, certTemplate: tpl(eeDhSpki),
+      pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8,
+        caCert: x400Holding(pki.asn1.build.sequence([])) } }))) === "crmf/bad-popo");
+  check("V6b. an x400Address opening with standard attributes names somebody",
+    (await codeOf(pki.crmf.build({ certReqId: 48n, certTemplate: tpl(eeDhSpki),
+      pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8,
+        caCert: x400Holding(pki.asn1.build.sequence([
+          pki.asn1.build.implicit(2, Buffer.from([0x13, 0x02, 0x67, 0x62]))])) } }))) === null);
 
   // Name is a SEQUENCE OF RelativeDistinguishedName and permits none, which is exactly what the
   // subject field carried when this fallback was reached. An empty name for an empty name names
@@ -806,8 +820,17 @@ async function testPopoPrivKeyArms() {
         pki.asn1.build.integer(23n), pki.asn1.build.integer(5n), pki.asn1.build.nullValue()]))]),
     pki.asn1.build.bitString(Buffer.from(pki.asn1.build.integer(4n))),
   ]);
+  // An INTEGER carries at least one content octet, so a field tagged as one holding none is not a
+  // length. The tag alone does not say that; reading the value does.
+  var pkcs3EmptyPvl = pki.asn1.build.sequence([
+    pki.asn1.build.sequence([pki.asn1.build.oid("1.2.840.113549.1.3.1"),
+      pki.asn1.build.raw(pki.asn1.build.sequence([
+        pki.asn1.build.integer(23n), pki.asn1.build.integer(5n), pki.asn1.build.raw(Buffer.from([0x02, 0x00]))]))]),
+    pki.asn1.build.bitString(Buffer.from(pki.asn1.build.integer(4n))),
+  ]);
   var pkcs3Bad = [
     ["a privateValueLength that is not an INTEGER", pkcs3WithBadPvl, "privateValueLength is not an INTEGER"],
+    ["a privateValueLength carrying no octets", pkcs3EmptyPvl, "could not be read"],
     ["a modulus that is not prime", pkcs3Spki(15n, 4n, 11n), "modulus is not prime"],
     ["a public value of order one", pkcs3Spki(23n, 5n, 1n), "public value is outside the group"],
     ["a public value of order two", pkcs3Spki(23n, 5n, 22n), "public value is outside the group"],
