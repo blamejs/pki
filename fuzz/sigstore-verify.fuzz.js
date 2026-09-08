@@ -12,7 +12,9 @@
  * sigstore/bad-inclusion-proof, sigstore/inclusion-proof-mismatch,
  * sigstore/unsigned-root, sigstore/entry-mismatch, sigstore/chain-invalid,
  * sigstore/identity-mismatch, sigstore/bad-statement, sigstore/bad-certificate,
- * sigstore/unsupported-content, sigstore/bad-bundle-version, sigstore/bad-key) or
+ * sigstore/unsupported-content, sigstore/bad-bundle-version, sigstore/bad-key,
+ * sigstore/bad-message-signature, sigstore/artifact-required,
+ * sigstore/artifact-mismatch, sigstore/signature-verify-failed) or
  * a config-time TypeError on a non-bundle. Any other throw -- a raw SyntaxError
  * from the JSON reader, a bare RangeError, a node:crypto assertion, an unhandled
  * rejection, a hang -- is a finding and is rethrown so the fuzzer records a
@@ -27,6 +29,7 @@ var pki = require("..");
 
 var FX = path.join(__dirname, "..", "test", "fixtures", "sigstore");
 var REAL = fs.readFileSync(path.join(FX, "npm-provenance-bundle.json"), "utf8");
+var MSG = fs.readFileSync(path.join(FX, "conformance", "happy-path-v0.3.sigstore.json"), "utf8");
 var TRUST_ROOT = JSON.parse(fs.readFileSync(path.join(FX, "trusted-root.json"), "utf8"));
 var TRUST = { fulcioRoots: [], rekorKeys: (TRUST_ROOT.tlogs || []).map(function (t) { return { keyId: Buffer.from((t.logId && t.logId.keyId) || "", "base64"), spki: Buffer.from((t.publicKey && t.publicKey.rawBytes) || "", "base64") }; }) };
 (TRUST_ROOT.certificateAuthorities || []).forEach(function (ca) { ((ca.certChain && ca.certChain.certificates) || []).forEach(function (c) { TRUST.fulcioRoots.push(Buffer.from(c.rawBytes, "base64")); }); });
@@ -58,5 +61,21 @@ module.exports.fuzz = async function (data) {
   else te.inclusionProof.hashes = [inject];
 
   try { await pki.sigstore.verifyBundle(bundle, TRUST); }
+  catch (e) { if (!isPki(e)) throw e; }
+
+  // Target C -- the message_signature arm, whose artifact comes from the caller rather than from
+  // the bundle. The fuzzer drives both halves of that door: the bytes handed over as the artifact,
+  // and the arm and log-entry fields the artifact is compared against.
+  var ms;
+  try { ms = JSON.parse(MSG); } catch (_e2) { return; }
+  var mpick = data[0] % 5;
+  var mte = ms.verificationMaterial.tlogEntries[0];
+  if (mpick === 0) ms.messageSignature.signature = inject;
+  else if (mpick === 1) ms.messageSignature.messageDigest.digest = inject;
+  else if (mpick === 2) ms.messageSignature.messageDigest.algorithm = data.subarray(1).toString("latin1");
+  else if (mpick === 3) mte.canonicalizedBody = inject;
+
+  var opts = { fulcioRoots: TRUST.fulcioRoots, rekorKeys: TRUST.rekorKeys, artifact: data.subarray(1) };
+  try { await pki.sigstore.verifyBundle(ms, opts); }
   catch (e) { if (!isPki(e)) throw e; }
 };

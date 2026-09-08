@@ -4,6 +4,28 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.56 — 2026-09-08
+
+A Sigstore bundle signed over an artifact's own bytes is verified, not just one wrapping an attestation.
+
+### Added
+
+- pki.sigstore.verifyBundle verifies a bundle carrying a message_signature. The caller passes the artifact as opts.artifact and the verifier hashes it: under the algorithm the Rekor entry names, compared against the hash that entry records, and then under the leaf certificate's key against the signature the bundle carries. The three happy-path bundles the Sigstore conformance suite publishes are the vectors, covering all three bundle media types and both shapes of verification material.
+- opts.artifact takes the artifact's bytes and nothing else. The digest a message_signature carries is covered by no signature, and the field's own definition states that a client must not use it to verify the signature, so there is no shape in which a caller hands over a digest instead: a hex string is refused at the door, and the digest bytes are refused where the artifact is compared against the log entry. A message_signature bundle with no opts.artifact is refused rather than verified from the digest it carries.
+- The digest the bundle states is checked against the one computed, when it is there. It is optional, and a bundle omitting it verifies with messageDigestChecked reporting false. Where it disagrees with the artifact the request is refused, and the verdict reports the digest this computed rather than the one the bundle claimed.
+- The verdict has one shape for both content arms. contentType names the arm; artifactDigest, digestAlgorithm and messageDigestChecked carry the message signature's results and are null on a DSSE bundle, and payload, statement, subjects, predicateType and predicate are null on a message signature. A caller reads the same fields either way rather than telling a missing key from a false one.
+- opts.identity and opts.ctLogs run on this arm as they do on the other, so a caller pins who signed and whether the signing certificate was public when it was issued, whichever content the bundle carries.
+
+### Changed
+
+- A transparency-log entry is read by its own kind and version together. The entry registry holds one row per kind and apiVersion, and each row states which content arm it may accompany, so a hashedrekord v0.0.2 body is refused as an unsupported version rather than read for v0.0.1 field names it does not carry, and an entry describing a DSSE envelope beside a message signature is refused rather than bound to it.
+- An option that belongs to the other arm is refused rather than ignored. opts.artifact on a dsse_envelope bundle and opts.predicateType on a message_signature are each an error, since an option read and passed over reads as a check that ran.
+
+### Fixed
+
+- A bundle given as an object is taken as a snapshot before anything reads it. Its fields are the caller's own properties, and an accessor may answer differently each time it is read, so a value could be checked in one place and a different one used in another. The transparency-log entry's canonicalizedBody was read separately by the three things that examine it, the binding that ties the entry to the signature and certificate, the inclusion proof folded to the signed tree root, and the signed entry timestamp; a field answering differently across those reads let one body be bound while a different one was proven, so a signature the log never recorded was attested by an authentic entry for something else and verifyBundle returned verified. The same shape reached the DSSE payload and signature, the inclusion proof's root and hashes, and the log time the certificate is checked at. Serializing once and reading the result back means every check runs on plain data that cannot change under it, whichever field it reads and however many times. This affects both content arms and every version that shipped the DSSE one; a bundle given as JSON text was never affected, since parsing it yields fixed values. Object input now also carries the reader's size and depth caps.
+- The fields that name a registry row are read for being strings before they are used as keys. A messageDigest algorithm, a log entry's kind and apiVersion, and a log entry's hash algorithm reached a lookup as whatever the bundle carried, so a value whose own conversion throws escaped as an untyped error out of a verb whose contract is that malformed input is refused with a typed one.
+
 ## v0.6.55 — 2026-09-07
 
 A Diffie-Hellman key proves possession by agreeing a secret with the authority, without signing anything.

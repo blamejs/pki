@@ -111,14 +111,36 @@ function buildSynBundle(opts) {
   var leafDer = synCert({ serial: 2n, issuer: opts.leafIssuer || "syn-root", subject: "syn-leaf", notBefore: NB, notAfter: NA,
     subjectKey: opts.leafSubjectKey || leafKp.publicKey, signerKey: rootKp.privateKey,
     extensions: [synExt("keyUsage", true, synKuVal([0])), synExt("extKeyUsage", false, B.sequence([synOid("codeSigning")])), synExt("subjectAltName", false, B.sequence(san))].concat(opts.extraLeafExtensions || []) });
+  // The message_signature arm, built with the same held keys. `signOver` lets the signature cover
+  // bytes other than the artifact, which is how the digest-as-message construction and a plain
+  // forgery are driven: the log entry still records the signature the bundle carries, so those
+  // reach the signature check rather than being turned away by the entry binding.
+  var env, body, derSig;
   var payloadType = opts.payloadType || "application/vnd.in-toto+json";
-  var payloadObj = opts.payload !== undefined ? opts.payload
-    : { _type: "https://in-toto.io/Statement/v1", predicateType: "https://slsa.dev/provenance/v1", subject: [{ name: "pkg", digest: { sha512: "ab".repeat(64) } }], predicate: {} };
-  var payload = Buffer.from(JSON.stringify(payloadObj));
-  var derSig = crypto.sign("sha256", pki.sigstore.pae(payloadType, payload), { key: leafKp.privateKey, dsaEncoding: "der" });
-  var env = { payload: payload.toString("base64"), payloadType: payloadType, signatures: [{ sig: derSig.toString("base64") }] };
-  var body = { apiVersion: "0.0.1", kind: "dsse", spec: { signatures: [{ signature: derSig.toString("base64"), verifier: Buffer.from(synPem(leafDer)).toString("base64") }],
-    payloadHash: { algorithm: "sha256", value: crypto.createHash("sha256").update(payload).digest("hex") } } };
+  if (opts.messageArtifact !== undefined) {
+    var art = opts.messageArtifact;
+    var hashAlg = opts.messageHashAlgorithm || "sha256";
+    derSig = crypto.sign(opts.signHash || "sha256", opts.signOver !== undefined ? opts.signOver : art,
+      { key: leafKp.privateKey, dsaEncoding: "der" });
+    var ms = { signature: derSig.toString("base64") };
+    if (!opts.omitMessageDigest) {
+      ms.messageDigest = { algorithm: opts.messageDigestAlgorithm || "SHA2_256",
+        digest: crypto.createHash(hashAlg).update(art).digest().toString("base64") };
+    }
+    env = null;
+    body = { apiVersion: "0.0.1", kind: "hashedrekord", spec: {
+      signature: { content: derSig.toString("base64"), publicKey: { content: Buffer.from(synPem(leafDer)).toString("base64") } },
+      data: { hash: { algorithm: hashAlg, value: crypto.createHash(hashAlg).update(art).digest("hex") } } } };
+    opts._ms = ms;
+  } else {
+    var payloadObj = opts.payload !== undefined ? opts.payload
+      : { _type: "https://in-toto.io/Statement/v1", predicateType: "https://slsa.dev/provenance/v1", subject: [{ name: "pkg", digest: { sha512: "ab".repeat(64) } }], predicate: {} };
+    var payload = Buffer.from(JSON.stringify(payloadObj));
+    derSig = crypto.sign("sha256", pki.sigstore.pae(payloadType, payload), { key: leafKp.privateKey, dsaEncoding: "der" });
+    env = { payload: payload.toString("base64"), payloadType: payloadType, signatures: [{ sig: derSig.toString("base64") }] };
+    body = { apiVersion: "0.0.1", kind: "dsse", spec: { signatures: [{ signature: derSig.toString("base64"), verifier: Buffer.from(synPem(leafDer)).toString("base64") }],
+      payloadHash: { algorithm: "sha256", value: crypto.createHash("sha256").update(payload).digest("hex") } } };
+  }
   var canonBuf = Buffer.from(JSON.stringify(body));
   var rootHash = merkle.leafHash(canonBuf);          // single-leaf tree: root == leaf hash
   var rekorSpki = rekorKp.publicKey.export({ format: "der", type: "spki" });
@@ -128,7 +150,9 @@ function buildSynBundle(opts) {
   var cpSig = crypto.sign("sha256", cpBody, { key: rekorKp.privateKey, dsaEncoding: "der" });
   var cpBlob = Buffer.concat([keyId.subarray(0, 4), cpSig]);
   var cpEnvelope = cpBody.toString("utf8") + "\n" + String.fromCharCode(0x2014) + " rekor.local " + cpBlob.toString("base64") + "\n";
-  var setCanon = JSON.stringify({ body: canonBuf.toString("base64"), integratedTime: integratedTime, logID: keyId.toString("hex"), logIndex: logIndex });
+  // Number() as the verifier applies it, so a non-numeric integratedTime is signed in the same form
+  // the verifier canonicalizes it into and the SET still attests it.
+  var setCanon = JSON.stringify({ body: canonBuf.toString("base64"), integratedTime: Number(integratedTime), logID: keyId.toString("hex"), logIndex: logIndex });
   var setSig = crypto.sign("sha256", Buffer.from(setCanon, "utf8"), { key: rekorKp.privateKey, dsaEncoding: "der" });
   var te = { logId: { keyId: keyId.toString("base64") }, integratedTime: integratedTime, logIndex: logIndex,
     inclusionPromise: { signedEntryTimestamp: setSig.toString("base64") },
@@ -143,8 +167,15 @@ function buildSynBundle(opts) {
   } else {
     vmat.certificate = { rawBytes: leafDer.toString("base64") };
   }
-  var bundle = { mediaType: "application/vnd.dev.sigstore.bundle.v0.3+json", verificationMaterial: vmat, dsseEnvelope: env };
-  return { bundle: bundle, trust: { fulcioRoots: [{ der: rootDer }], rekorKeys: [{ keyId: keyId, spki: rekorSpki }] } };
+  var bundle = { mediaType: "application/vnd.dev.sigstore.bundle.v0.3+json", verificationMaterial: vmat };
+  if (env === null) bundle.messageSignature = opts._ms; else bundle.dsseEnvelope = env;
+  return {
+    bundle: bundle,
+    trust: { fulcioRoots: [{ der: rootDer }], rekorKeys: [{ keyId: keyId, spki: rekorSpki }] },
+    // The held keys, so a vector can construct material this bundle's own signer could have made
+    // but never logged, which is the difference a transparency log exists to state.
+    keys: { leafPrivate: leafKp.privateKey, leafDer: leafDer, leafPem: synPem(leafDer) },
+  };
 }
 
 // A synthetic bundle whose leaf is issued by an INTERMEDIATE the bundle carries, with a real embedded
@@ -564,8 +595,17 @@ async function run() {
     check("caller pins only the roots + bundle carries the intermediate -> verifies", ro && ro.verified === true);
   }
 
-  // --- A message_signature content arm (non-DSSE) is a recognize-and-defer. ---
-  check("message_signature arm -> sigstore/unsupported-content", (function () { var b = JSON.parse(JSON.stringify(BUNDLE)); delete b.dsseEnvelope; b.messageSignature = { messageDigest: { algorithm: "SHA2_256", digest: "" }, signature: "" }; try { pki.sigstore.parseBundle(b); return false; } catch (e) { return e.code === "sigstore/unsupported-content"; } })());
+  // --- A message_signature content arm parses on its own shape. An empty signature is not a
+  // signature, and the digest is held to the algorithm it names rather than to the arm being absent.
+  check("message_signature arm with an empty signature -> sigstore/bad-message-signature", (function () { var b = JSON.parse(JSON.stringify(BUNDLE)); delete b.dsseEnvelope; b.messageSignature = { messageDigest: { algorithm: "SHA2_256", digest: "" }, signature: "" }; try { pki.sigstore.parseBundle(b); return false; } catch (e) { return e.code === "sigstore/bad-message-signature"; } })());
+  // Let a throw surface rather than catching it: a failure here should name what parseBundle refused.
+  var msArmOk = (function () {
+    var b = JSON.parse(JSON.stringify(BUNDLE));
+    delete b.dsseEnvelope;
+    b.messageSignature = { messageDigest: { algorithm: "SHA2_256", digest: Buffer.alloc(32).toString("base64") }, signature: Buffer.alloc(64).toString("base64") };
+    return b;
+  }());
+  check("a well-formed message_signature arm parses", pki.sigstore.parseBundle(msArmOk) === msArmOk);
 
   // --- Malformed-but-structurally-shaped fields must fail closed with a typed
   // sigstore/* error, never a raw TypeError escaping the contract (a null array
@@ -846,7 +886,9 @@ async function run() {
   // time must be a valid date to bound the ephemeral Fulcio certificate. A
   // negative finite time cannot reach this arm -- the C.TIME.seconds scale guard
   // rejects it first -- so a non-finite value is the reachable malformed-time form.
-  var synBadTime = buildSynBundle({ integratedTime: NaN });
+  // Written as a string rather than as NaN, since JSON carries no NaN and a bundle
+  // reaches the verifier through its reader either way.
+  var synBadTime = buildSynBundle({ integratedTime: "not-a-time" });
   check("synthetic SET-attested non-finite integratedTime -> sigstore/bad-tlog-entry",
     await codeOf(pki.sigstore.verifyBundle(synBadTime.bundle, synBadTime.trust)) === "sigstore/bad-tlog-entry");
 
@@ -901,6 +943,431 @@ async function run() {
   var synDeep = buildSynBundle({ leafIssuer: "depth-1", extraChain: deep });
   check("synthetic over-deep DN chain -> sigstore/chain-incomplete",
     await codeOf(pki.sigstore.verifyBundle(synDeep.bundle, synDeep.trust)) === "sigstore/chain-incomplete");
+
+  await runMessageSignature(TM);
+}
+
+// ---------------------------------------------------------------------------
+// The message_signature content arm (Sigstore bundle protobuf, sigstore_common
+// MessageSignature). The three fixtures are the conformance suite's own vectors over one
+// 109-byte artifact, so the accepting cases are an independent implementation's output rather
+// than this suite's.
+// ---------------------------------------------------------------------------
+async function runMessageSignature(TM) {
+  var CFX = path.join(FX, "conformance");
+  var ARTIFACT = fs.readFileSync(path.join(CFX, "a.txt"));
+  var ARTIFACT_SHA256 = "a0cfc71271d6e278e57cd332ff957c3f7043fdda354c4cbb190a30d56efa01bf";
+  function msBundle(v) {
+    return JSON.parse(fs.readFileSync(path.join(CFX, "happy-path-" + v + ".sigstore.json"), "utf8"));
+  }
+  function clone(o) { return JSON.parse(JSON.stringify(o)); }
+  var trust = { fulcioRoots: TM.fulcioRoots, rekorKeys: TM.rekorKeys };
+
+  check("the artifact fixture is the 109 bytes the bundles were signed over",
+    ARTIFACT.length === 109 &&
+    crypto.createHash("sha256").update(ARTIFACT).digest("hex") === ARTIFACT_SHA256);
+
+  // Accept. Each vintage carries a different verificationMaterial arm and a different log time,
+  // so all three run rather than one standing in for the others.
+  var v3 = await pki.sigstore.verifyBundle(msBundle("v0.3"), { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: ARTIFACT });
+  check("a message_signature bundle over the artifact verifies",
+    v3.valid === true && v3.verified === true && v3.contentType === "messageSignature");
+  check("the verdict reports the log entry it was bound to", v3.integratedTime === 1710869186);
+  check("the verdict reports the digest it COMPUTED, in the algorithm the entry names",
+    v3.artifactDigest === ARTIFACT_SHA256 && v3.digestAlgorithm === "sha256");
+  check("the unauthenticated messageDigest was checked and agreed", v3.messageDigestChecked === true);
+  check("the statement fields the other arm carries are present and null, not absent",
+    "payload" in v3 && v3.payload === null && v3.statement === null && v3.subjects === null &&
+    v3.predicateType === null && v3.predicate === null && v3.predicateTypeChecked === false);
+
+  var v1 = await pki.sigstore.verifyBundle(msBundle("v0.1"), { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: ARTIFACT });
+  check("the v0.1 media type and its x509CertificateChain arm verify on this content arm",
+    v1.verified === true && v1.integratedTime === 1689177396);
+  var v2 = await pki.sigstore.verifyBundle(msBundle("v0.2"), { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: ARTIFACT });
+  check("the v0.2 media type verifies on this content arm", v2.verified === true);
+
+  // The DSSE arm keeps its shape, with the artifact fields present and null.
+  var dsse = await pki.sigstore.verifyBundle(BUNDLE, trust);
+  check("a dsse bundle reports the artifact fields as null rather than omitting them",
+    "artifactDigest" in dsse && dsse.artifactDigest === null && dsse.digestAlgorithm === null &&
+    dsse.messageDigestChecked === false && dsse.contentType === "dsseEnvelope");
+
+  // The artifact door. There is no shape in which a caller hands over a digest instead of bytes.
+  check("a message_signature bundle with no artifact is refused, never verified from the digest",
+    await codeOf(pki.sigstore.verifyBundle(msBundle("v0.3"), trust)) === "sigstore/artifact-required");
+  check("the same refusal on each vintage",
+    await codeOf(pki.sigstore.verifyBundle(msBundle("v0.1"), trust)) === "sigstore/artifact-required" &&
+    await codeOf(pki.sigstore.verifyBundle(msBundle("v0.2"), trust)) === "sigstore/artifact-required");
+  check("an artifact given as the hex digest is refused at the door, before any hashing",
+    await codeOf(pki.sigstore.verifyBundle(msBundle("v0.3"),
+      { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: ARTIFACT_SHA256 })) === "sigstore/bad-input");
+  check("an artifact given as the raw digest BYTES fails the entry hash, not the signature",
+    await codeOf(pki.sigstore.verifyBundle(msBundle("v0.3"),
+      { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys,
+        artifact: crypto.createHash("sha256").update(ARTIFACT).digest() })) === "sigstore/artifact-mismatch");
+  check("opts.artifact alongside a dsse bundle is refused rather than ignored",
+    await codeOf(pki.sigstore.verifyBundle(BUNDLE,
+      { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: ARTIFACT })) === "sigstore/bad-input");
+  check("opts.predicateType alongside a message_signature bundle is refused rather than ignored",
+    await codeOf(pki.sigstore.verifyBundle(msBundle("v0.3"),
+      { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: ARTIFACT,
+        predicateType: "https://slsa.dev/provenance/v1" })) === "sigstore/bad-input");
+
+  // A wrong artifact, in each shape that could be mistaken for the right one.
+  var oneOff = Buffer.from(ARTIFACT); oneOff[50] = oneOff[50] ^ 0x01;
+  check("an artifact of the same length differing in one byte is refused",
+    await codeOf(pki.sigstore.verifyBundle(msBundle("v0.3"),
+      { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: oneOff })) === "sigstore/artifact-mismatch");
+  check("a truncated artifact is refused",
+    await codeOf(pki.sigstore.verifyBundle(msBundle("v0.3"),
+      { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: ARTIFACT.subarray(0, 108) })) === "sigstore/artifact-mismatch");
+  check("an empty artifact is digested and compared rather than short-circuited",
+    await codeOf(pki.sigstore.verifyBundle(msBundle("v0.3"),
+      { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: Buffer.alloc(0) })) === "sigstore/artifact-mismatch");
+
+  // The arm's own shape.
+  var noSig = clone(msBundle("v0.3")); delete noSig.messageSignature.signature;
+  check("a message_signature with no signature is refused",
+    await codeOf(pki.sigstore.verifyBundle(noSig, trust)) === "sigstore/bad-message-signature");
+  var emptyArm = clone(msBundle("v0.3")); emptyArm.messageSignature = {};
+  check("an empty message_signature arm is refused",
+    await codeOf(pki.sigstore.verifyBundle(emptyArm, trust)) === "sigstore/bad-message-signature");
+  var unspecAlg = clone(msBundle("v0.3")); unspecAlg.messageSignature.messageDigest.algorithm = "HASH_ALGORITHM_UNSPECIFIED";
+  check("a messageDigest naming the unspecified hash algorithm is refused",
+    await codeOf(pki.sigstore.verifyBundle(unspecAlg, trust)) === "sigstore/bad-message-signature");
+  var sha3Alg = clone(msBundle("v0.3")); sha3Alg.messageSignature.messageDigest.algorithm = "SHA3_256";
+  check("a messageDigest naming a hash with no hashedrekord counterpart is refused",
+    await codeOf(pki.sigstore.verifyBundle(sha3Alg, trust)) === "sigstore/bad-message-signature");
+  var wrongLen = clone(msBundle("v0.3"));
+  wrongLen.messageSignature.messageDigest.digest = Buffer.alloc(48).toString("base64");
+  check("a messageDigest whose length disagrees with its own algorithm is refused",
+    await codeOf(pki.sigstore.verifyBundle(wrongLen, trust)) === "sigstore/bad-message-signature");
+  var noDigest = clone(msBundle("v0.3")); delete noDigest.messageSignature.messageDigest;
+  var ndOut = await pki.sigstore.verifyBundle(noDigest,
+    { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: ARTIFACT });
+  check("a message_signature carrying no messageDigest still verifies, and says it checked none",
+    ndOut.verified === true && ndOut.messageDigestChecked === false &&
+    ndOut.artifactDigest === ARTIFACT_SHA256);
+
+  // The digest the bundle claims is unauthenticated, so it is compared against the one computed
+  // here and never reported in its place.
+  var badDigest = clone(msBundle("v0.3"));
+  badDigest.messageSignature.messageDigest.digest = crypto.createHash("sha256").update("other").digest().toString("base64");
+  check("a messageDigest disagreeing with the artifact is refused",
+    await codeOf(pki.sigstore.verifyBundle(badDigest,
+      { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: ARTIFACT })) === "sigstore/artifact-mismatch");
+
+  // The log entry is the authority on what was signed. Editing the hash it carries breaks the
+  // signed body before any comparison of digests happens, which is what makes that hash the one
+  // worth binding to.
+  var editedEntry = clone(msBundle("v0.3"));
+  var body = JSON.parse(Buffer.from(editedEntry.verificationMaterial.tlogEntries[0].canonicalizedBody, "base64").toString("utf8"));
+  body.spec.data.hash.value = crypto.createHash("sha256").update("other").digest("hex");
+  editedEntry.verificationMaterial.tlogEntries[0].canonicalizedBody =
+    Buffer.from(JSON.stringify(body), "utf8").toString("base64");
+  check("editing the entry's own artifact hash breaks the inclusion proof, before any digest compare",
+    await codeOf(pki.sigstore.verifyBundle(editedEntry,
+      { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: ARTIFACT })) === "sigstore/inclusion-proof-mismatch");
+
+  // The entry kind and version come from the body the inclusion proof covers, not from the
+  // kindVersion beside it, which no signature reaches. The v0.0.1 field names are not the v0.0.2
+  // ones, so a version this build does not read is refused rather than parsed for names it may not
+  // carry, and that refusal happens before the proof so it names the version rather than the proof.
+  function withBody(bundle, edit) {
+    var b = clone(bundle);
+    var te = b.verificationMaterial.tlogEntries[0];
+    var body = JSON.parse(Buffer.from(te.canonicalizedBody, "base64").toString("utf8"));
+    edit(body);
+    te.canonicalizedBody = Buffer.from(JSON.stringify(body), "utf8").toString("base64");
+    return b;
+  }
+  check("a hashedrekord entry of an unsupported version is refused, never partly parsed",
+    await codeOf(pki.sigstore.verifyBundle(
+      withBody(msBundle("v0.3"), function (bd) { bd.apiVersion = "0.0.2"; }),
+      { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: ARTIFACT })) === "sigstore/unsupported-content");
+  check("an entry of a kind this build does not read is refused",
+    await codeOf(pki.sigstore.verifyBundle(
+      withBody(msBundle("v0.3"), function (bd) { bd.kind = "intoto"; }),
+      { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: ARTIFACT })) === "sigstore/unsupported-content");
+  // The entry kind and the content arm must describe the same signature: a dsse entry says nothing
+  // about a message signature, and the bundle carrying one alongside the other is refused.
+  check("a dsse entry beside a message_signature arm is refused",
+    await codeOf(pki.sigstore.verifyBundle(
+      withBody(msBundle("v0.3"), function (bd) { bd.kind = "dsse"; }),
+      { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: ARTIFACT })) === "sigstore/unsupported-content");
+  // The entry's signature and certificate are bound to the bundle's own, so an entry recording a
+  // different signature is refused before anything is verified with it.
+  check("an entry recording a different signature is refused",
+    await codeOf(pki.sigstore.verifyBundle(
+      withBody(msBundle("v0.3"), function (bd) { bd.spec.signature.content = Buffer.alloc(70, 7).toString("base64"); }),
+      { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: ARTIFACT })) === "sigstore/entry-mismatch");
+  check("an entry naming a hash algorithm outside the schema's three is refused",
+    await codeOf(pki.sigstore.verifyBundle(
+      withBody(msBundle("v0.3"), function (bd) { bd.spec.data.hash.algorithm = "md5"; }),
+      { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: ARTIFACT })) === "sigstore/bad-tlog-entry");
+  check("an entry whose artifact hash is not lowercase hex of its own algorithm is refused",
+    await codeOf(pki.sigstore.verifyBundle(
+      withBody(msBundle("v0.3"), function (bd) { bd.spec.data.hash.value = bd.spec.data.hash.value.toUpperCase(); }),
+      { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: ARTIFACT })) === "sigstore/bad-tlog-entry");
+
+  // Every field the entry row reads is held to being there and being what it claims, since the
+  // entry is what binds the signature and the certificate to the artifact.
+  var withArtifact = { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: ARTIFACT };
+  var entryShapes = [
+    ["no signature object", function (bd) { delete bd.spec.signature; }, "sigstore/bad-tlog-entry"],
+    ["a signature with no content", function (bd) { bd.spec.signature = {}; }, "sigstore/bad-tlog-entry"],
+    ["no verifier public key", function (bd) { delete bd.spec.signature.publicKey; }, "sigstore/bad-tlog-entry"],
+    ["a verifier that is not a certificate", function (bd) { bd.spec.signature.publicKey = { content: Buffer.from("not a pem").toString("base64") }; }, "sigstore/bad-tlog-entry"],
+    ["no data hash", function (bd) { delete bd.spec.data; }, "sigstore/bad-tlog-entry"],
+    ["a data hash that is not an object", function (bd) { bd.spec.data = { hash: "sha256:x" }; }, "sigstore/bad-tlog-entry"],
+    ["no hash algorithm at all", function (bd) { delete bd.spec.data.hash.algorithm; }, "sigstore/bad-tlog-entry"],
+    ["a hash value of the wrong length for its algorithm", function (bd) { bd.spec.data.hash.value = "abcd"; }, "sigstore/bad-tlog-entry"],
+  ];
+  for (var es = 0; es < entryShapes.length; es++) {
+    check("an entry with " + entryShapes[es][0] + " is refused",
+      await codeOf(pki.sigstore.verifyBundle(
+        withBody(msBundle("v0.3"), entryShapes[es][1]), withArtifact)) === entryShapes[es][2]);
+  }
+  // The verifier certificate the entry names has to be the bundle's own leaf.
+  var otherLeaf = JSON.parse(JSON.stringify(BUNDLE)).verificationMaterial.certificate.rawBytes;
+  check("an entry naming a different verifier certificate is refused",
+    await codeOf(pki.sigstore.verifyBundle(
+      withBody(msBundle("v0.3"), function (bd) {
+        bd.spec.signature.publicKey = { content: Buffer.from(
+          "-----BEGIN CERTIFICATE-----\n" + otherLeaf.replace(/(.{64})/g, "$1\n").replace(/\n$/, "") + "\n-----END CERTIFICATE-----\n"
+        ).toString("base64") };
+      }), withArtifact)) === "sigstore/entry-mismatch");
+
+  // The bundle may state its digest under an algorithm the entry does not use. Both are then
+  // computed from the artifact and both must agree, rather than one standing in for the other.
+  var sha512Claim = clone(msBundle("v0.3"));
+  sha512Claim.messageSignature.messageDigest = {
+    algorithm: "SHA2_512",
+    digest: crypto.createHash("sha512").update(ARTIFACT).digest().toString("base64"),
+  };
+  var s5 = await pki.sigstore.verifyBundle(sha512Claim, withArtifact);
+  check("a messageDigest under a different algorithm than the entry's is computed and agreed",
+    s5.verified === true && s5.messageDigestChecked === true &&
+    s5.digestAlgorithm === "sha256" && s5.artifactDigest === ARTIFACT_SHA256);
+  var sha512Wrong = clone(msBundle("v0.3"));
+  sha512Wrong.messageSignature.messageDigest = {
+    algorithm: "SHA2_512",
+    digest: crypto.createHash("sha512").update("other").digest().toString("base64"),
+  };
+  check("a messageDigest under a different algorithm that disagrees is refused",
+    await codeOf(pki.sigstore.verifyBundle(sha512Wrong, withArtifact)) === "sigstore/artifact-mismatch");
+
+  // Editing a real bundle cannot reach the signature check: the log entry records the signature, so
+  // a forged one breaks the inclusion proof first. These are built under keys the test holds, where
+  // the entry agrees with a signature that still does not verify over the artifact.
+  var SYN_ART = Buffer.from("synthetic artifact bytes");
+  var synMs = buildSynBundle({ messageArtifact: SYN_ART });
+  var synOut = await pki.sigstore.verifyBundle(synMs.bundle,
+    { fulcioRoots: synMs.trust.fulcioRoots, rekorKeys: synMs.trust.rekorKeys, artifact: SYN_ART });
+  check("a synthetic message_signature bundle verifies, so the refusals below are about the signature",
+    synOut.verified === true && synOut.contentType === "messageSignature" &&
+    synOut.artifactDigest === crypto.createHash("sha256").update(SYN_ART).digest("hex"));
+
+  // The construction the arm's own definition forbids: signing the DIGEST as if it were the
+  // message. The entry records the artifact's hash, so this reaches the signature check and fails
+  // there rather than being accepted as a second valid form.
+  var synPrehash = buildSynBundle({ messageArtifact: SYN_ART,
+    signOver: crypto.createHash("sha256").update(SYN_ART).digest() });
+  check("a signature made over the digest rather than the artifact is refused",
+    await codeOf(pki.sigstore.verifyBundle(synPrehash.bundle,
+      { fulcioRoots: synPrehash.trust.fulcioRoots, rekorKeys: synPrehash.trust.rekorKeys, artifact: SYN_ART })) === "sigstore/signature-verify-failed");
+
+  var synForged = buildSynBundle({ messageArtifact: SYN_ART, signOver: Buffer.from("other bytes entirely") });
+  check("a message signature over other bytes is refused at the signature, not earlier",
+    await codeOf(pki.sigstore.verifyBundle(synForged.bundle,
+      { fulcioRoots: synForged.trust.fulcioRoots, rekorKeys: synForged.trust.rekorKeys, artifact: SYN_ART })) === "sigstore/signature-verify-failed");
+
+  // A zero-length artifact is a real input shape: one actually signed over no bytes verifies, which
+  // is the acceptance half of the empty-artifact refusal above.
+  var synEmpty = buildSynBundle({ messageArtifact: Buffer.alloc(0) });
+  var emptyOut = await pki.sigstore.verifyBundle(synEmpty.bundle,
+    { fulcioRoots: synEmpty.trust.fulcioRoots, rekorKeys: synEmpty.trust.rekorKeys, artifact: Buffer.alloc(0) });
+  check("a bundle signed over zero bytes verifies against a zero-length artifact",
+    emptyOut.verified === true &&
+    emptyOut.artifactDigest === crypto.createHash("sha256").update(Buffer.alloc(0)).digest("hex"));
+
+  // The entry may record the artifact under sha384 or sha512, which the schema allows, and the
+  // digest is then computed under that algorithm rather than under a fixed one.
+  var syn384 = buildSynBundle({ messageArtifact: SYN_ART, messageHashAlgorithm: "sha384", omitMessageDigest: true });
+  var out384 = await pki.sigstore.verifyBundle(syn384.bundle,
+    { fulcioRoots: syn384.trust.fulcioRoots, rekorKeys: syn384.trust.rekorKeys, artifact: SYN_ART });
+  check("an entry recording the artifact under sha384 is digested under sha384",
+    out384.verified === true && out384.digestAlgorithm === "sha384" &&
+    out384.artifactDigest === crypto.createHash("sha384").update(SYN_ART).digest("hex"));
+  var syn512 = buildSynBundle({ messageArtifact: SYN_ART, messageHashAlgorithm: "sha512", omitMessageDigest: true });
+  var out512 = await pki.sigstore.verifyBundle(syn512.bundle,
+    { fulcioRoots: syn512.trust.fulcioRoots, rekorKeys: syn512.trust.rekorKeys, artifact: SYN_ART });
+  check("an entry recording the artifact under sha512 is digested under sha512",
+    out512.verified === true && out512.digestAlgorithm === "sha512");
+
+  // The artifact is taken in every byte-source form, and read once: a view whose backing store is
+  // rewritten after the call began is verified as the bytes that were there when it was taken.
+  var u8 = new Uint8Array(SYN_ART);
+  var viewOut = await pki.sigstore.verifyBundle(synMs.bundle,
+    { fulcioRoots: synMs.trust.fulcioRoots, rekorKeys: synMs.trust.rekorKeys, artifact: u8 });
+  check("an artifact given as a Uint8Array verifies to the same digest",
+    viewOut.artifactDigest === synOut.artifactDigest);
+  var backing = new ArrayBuffer(SYN_ART.length);
+  new Uint8Array(backing).set(SYN_ART);
+  var abOut = await pki.sigstore.verifyBundle(synMs.bundle,
+    { fulcioRoots: synMs.trust.fulcioRoots, rekorKeys: synMs.trust.rekorKeys, artifact: backing });
+  check("an artifact given as an ArrayBuffer verifies to the same digest",
+    abOut.artifactDigest === synOut.artifactDigest);
+  var dvOut = await pki.sigstore.verifyBundle(synMs.bundle,
+    { fulcioRoots: synMs.trust.fulcioRoots, rekorKeys: synMs.trust.rekorKeys, artifact: new DataView(backing) });
+  check("an artifact given as a DataView verifies to the same digest",
+    dvOut.artifactDigest === synOut.artifactDigest);
+
+  // A field that names a registry row is read for being a STRING before it is used as a key. A
+  // value whose own conversion throws would otherwise escape as an untyped error from a verb whose
+  // whole contract is that malformed input is refused with a typed one.
+  var hostileKey = { toString: null };
+  var algObj = clone(msBundle("v0.3")); algObj.messageSignature.messageDigest.algorithm = hostileKey;
+  check("a messageDigest algorithm that is not a string is refused with a typed error",
+    await codeOf(pki.sigstore.verifyBundle(algObj, withArtifact)) === "sigstore/bad-message-signature");
+  check("and parseBundle refuses it the same way rather than throwing an untyped error",
+    (function () {
+      var b2 = clone(msBundle("v0.3"));
+      b2.messageSignature.messageDigest.algorithm = hostileKey;
+      try { pki.sigstore.parseBundle(b2); return false; }
+      catch (e) { return e instanceof pki.errors.PkiError && e.code === "sigstore/bad-message-signature"; }
+    }()));
+  check("an entry kind that is not a string is refused with a typed error",
+    await codeOf(pki.sigstore.verifyBundle(
+      withBody(msBundle("v0.3"), function (bd) { bd.kind = hostileKey; }), withArtifact)) === "sigstore/unsupported-content");
+  check("an entry apiVersion that is not a string is refused with a typed error",
+    await codeOf(pki.sigstore.verifyBundle(
+      withBody(msBundle("v0.3"), function (bd) { bd.apiVersion = hostileKey; }), withArtifact)) === "sigstore/unsupported-content");
+  check("an entry hash algorithm that is not a string is refused with a typed error",
+    await codeOf(pki.sigstore.verifyBundle(
+      withBody(msBundle("v0.3"), function (bd) { bd.spec.data.hash.algorithm = hostileKey; }), withArtifact)) === "sigstore/bad-tlog-entry");
+
+  // A bundle handed over as an object carries the caller's own properties, so a field can answer
+  // differently each time it is read. It is taken as a snapshot at the door, so every check runs on
+  // the same answer: a later one cannot become the verified one, and the field is read once.
+  var lying = clone(msBundle("v0.3"));
+  var realArm = lying.messageSignature;
+  var reads = 0;
+  Object.defineProperty(lying, "messageSignature", {
+    enumerable: true, configurable: true,
+    get: function () {
+      reads++;
+      return reads === 1 ? realArm : { signature: Buffer.alloc(70, 9).toString("base64") };
+    },
+  });
+  var lyingOut = await pki.sigstore.verifyBundle(lying, withArtifact);
+  check("a content arm reached through an accessor is verified as the one answer taken",
+    lyingOut.verified === true && lyingOut.artifactDigest === ARTIFACT_SHA256);
+  check("and that arm was read exactly once, so no later answer reached any check", reads === 1);
+
+  // The same bundle as JSON text and as bytes reaches the same verdict: text is already fixed and
+  // is read as it came, so the snapshot is what an object input is brought to rather than a
+  // different route to a different answer.
+  var asText = await pki.sigstore.verifyBundle(JSON.stringify(msBundle("v0.3")), withArtifact);
+  check("a bundle given as a JSON string verifies to the same digest",
+    asText.verified === true && asText.artifactDigest === ARTIFACT_SHA256);
+  var asBytes = await pki.sigstore.verifyBundle(Buffer.from(JSON.stringify(msBundle("v0.3")), "utf8"), withArtifact);
+  check("a bundle given as bytes verifies to the same digest",
+    asBytes.verified === true && asBytes.artifactDigest === ARTIFACT_SHA256);
+
+  // A structure that cannot be serialized is not a bundle, and is refused at the door rather than
+  // part-way through a check that reads it.
+  var circular = clone(msBundle("v0.3"));
+  circular.self = circular;
+  check("a bundle object that cannot be serialized is refused",
+    await codeOf(pki.sigstore.verifyBundle(circular, withArtifact)) === "sigstore/bad-bundle");
+  check("a bundle object that serializes to nothing is refused",
+    await codeOf(pki.sigstore.verifyBundle({ toJSON: function () { return undefined; } }, withArtifact)) === "sigstore/bad-bundle");
+
+  // The same rule reaches the log entry, where getting it wrong is worse: an entry that answers with
+  // one body while it is bound and another while it is proven would let a signature over bytes the
+  // log never recorded be attested by an authentic entry for something else. The body is read once
+  // and the binding, the inclusion proof and the signed entry timestamp all run on that copy.
+  // The signer holds a legitimately issued certificate, so it can sign anything; what the log adds
+  // is that the signature was publicly recorded. The attack pairs an UNLOGGED body, which binds the
+  // signature and names the artifact, with the authentic body whose inclusion proof and signed
+  // timestamp actually verify. Both name the same leaf, so the binding accepts the first.
+  var LOGGED = Buffer.from("the artifact that was logged");
+  var UNLOGGED = Buffer.from("an artifact that never was");
+  var swapBuilt = buildSynBundle({ messageArtifact: LOGGED });
+  var unloggedSig = crypto.sign("sha256", UNLOGGED, { key: swapBuilt.keys.leafPrivate, dsaEncoding: "der" });
+  var unloggedBody = Buffer.from(JSON.stringify({
+    apiVersion: "0.0.1", kind: "hashedrekord",
+    spec: {
+      signature: { content: unloggedSig.toString("base64"),
+        publicKey: { content: Buffer.from(swapBuilt.keys.leafPem).toString("base64") } },
+      data: { hash: { algorithm: "sha256", value: crypto.createHash("sha256").update(UNLOGGED).digest("hex") } },
+    },
+  }), "utf8").toString("base64");
+  var swapped = JSON.parse(JSON.stringify(swapBuilt.bundle));
+  swapped.messageSignature = { signature: unloggedSig.toString("base64") };
+  var authenticBody = swapped.verificationMaterial.tlogEntries[0].canonicalizedBody;
+  var bodyReads = 0;
+  Object.defineProperty(swapped.verificationMaterial.tlogEntries[0], "canonicalizedBody", {
+    enumerable: true, configurable: true,
+    get: function () { bodyReads++; return bodyReads === 1 ? unloggedBody : authenticBody; },
+  });
+  check("a log entry whose body changes between the binding and the proof is refused",
+    await codeOf(pki.sigstore.verifyBundle(swapped,
+      { fulcioRoots: swapBuilt.trust.fulcioRoots, rekorKeys: swapBuilt.trust.rekorKeys, artifact: UNLOGGED })) !== "NO-THROW");
+  check("and that entry's body was read only once", bodyReads === 1);
+
+  // The DSSE arm reads the same entry through the same function, so the rule holds there too.
+  var dsseSwap = buildSynBundle({});
+  var dsseAuthentic = dsseSwap.bundle.verificationMaterial.tlogEntries[0].canonicalizedBody;
+  var dsseOther = Buffer.from(JSON.stringify({
+    apiVersion: "0.0.1", kind: "dsse",
+    spec: { signatures: [{ signature: "AA==", verifier: Buffer.from(dsseSwap.keys.leafPem).toString("base64") }],
+      payloadHash: { algorithm: "sha256", value: "00".repeat(32) } },
+  }), "utf8").toString("base64");
+  var dsseReads = 0;
+  Object.defineProperty(dsseSwap.bundle.verificationMaterial.tlogEntries[0], "canonicalizedBody", {
+    enumerable: true, configurable: true,
+    get: function () { dsseReads++; return dsseReads === 1 ? dsseOther : dsseAuthentic; },
+  });
+  check("a dsse entry whose body changes between the binding and the proof is refused",
+    await codeOf(pki.sigstore.verifyBundle(dsseSwap.bundle, dsseSwap.trust)) !== "NO-THROW");
+  check("and that dsse entry's body was read only once", dsseReads === 1);
+
+  // The DSSE entry row is held to its own shape the same way, and that check runs before the
+  // inclusion proof so it names the entry rather than the proof.
+  var synDsse = buildSynBundle({});
+  function withSynBody(built, edit) {
+    var b = JSON.parse(JSON.stringify(built.bundle));
+    var te2 = b.verificationMaterial.tlogEntries[0];
+    var bd = JSON.parse(Buffer.from(te2.canonicalizedBody, "base64").toString("utf8"));
+    edit(bd);
+    te2.canonicalizedBody = Buffer.from(JSON.stringify(bd), "utf8").toString("base64");
+    return b;
+  }
+  check("a dsse entry with an empty signatures array is refused as a malformed entry",
+    await codeOf(pki.sigstore.verifyBundle(
+      withSynBody(synDsse, function (bd) { bd.spec.signatures = []; }), synDsse.trust)) === "sigstore/bad-tlog-entry");
+  check("a dsse entry whose signature is not a string is refused as a malformed entry",
+    await codeOf(pki.sigstore.verifyBundle(
+      withSynBody(synDsse, function (bd) { bd.spec.signatures = [{ signature: 7 }]; }), synDsse.trust)) === "sigstore/bad-tlog-entry");
+
+  // An identity policy has to be an object naming fields. An array names none of them while reading
+  // as a policy in force.
+  check("an identity policy given as an array is refused",
+    await codeOf(pki.sigstore.verifyBundle(msBundle("v0.3"),
+      { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: ARTIFACT,
+        identity: ["https://github.com/x"] })) === "sigstore/bad-input");
+
+  // opts.identity and opts.ctLogs run on this arm too.
+  var idOut = await pki.sigstore.verifyBundle(msBundle("v0.3"), {
+    fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: ARTIFACT,
+    ctLogs: ctLogMaterial(),
+  });
+  check("the certificate-transparency receipt is checked on this arm",
+    idOut.sctChecked === true && idOut.validScts >= 1);
+  check("the signer identity is surfaced on this arm",
+    idOut.identity !== null && typeof idOut.identity === "object");
 }
 
 module.exports = { run: run };
