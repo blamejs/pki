@@ -1627,6 +1627,9 @@ async function runMessageSignature(TM) {
     // A number is charged the digits it takes, so the conversion that counts them decides whether a
     // padded bundle passes the size limit.
     ["String", globalThis, "String", function () { return ""; }],
+    // Every field the copy holds is defined with this one, so a replacement that drops the write
+    // leaves the copy empty.
+    ["Object.defineProperty", Object, "defineProperty", function (o) { return o; }],
   ];
   for (var sw = 0; sw < swaps.length; sw++) {
     var holder = swaps[sw][1], swapName = swaps[sw][2], original = holder[swapName];
@@ -1669,6 +1672,36 @@ async function runMessageSignature(TM) {
     Object.getPrototypeOf(protoOut) === null);
   check("and the bundle beside it still verifies as itself",
     (await pki.sigstore.verifyBundle(protoBeside, withArtifact)).artifactDigest === ARTIFACT_SHA256);
+
+  // The copy writes its fields as its own, never through a setter something else installed. An
+  // inherited index setter on the array prototype would otherwise see every element the copy writes
+  // and could hand back a different one, so a malformed element arrives valid and the checks read
+  // something the caller never sent.
+  var trapDesc = Object.getOwnPropertyDescriptor(Array.prototype, "0");
+  var elementSeen = 0;
+  var trapped = clone(msBundle("v0.3"));
+  trapped.dsseEnvelope = { payload: "e30=", payloadType: "application/vnd.in-toto+json", signatures: [{ sig: 7 }] };
+  delete trapped.messageSignature;
+  var trappedOut = null, trappedErr = null;
+  try {
+    Object.defineProperty(Array.prototype, "0", {
+      configurable: true,
+      get: function () { return undefined; },
+      set: function (v) {
+        elementSeen++;
+        Object.defineProperty(this, "0", {
+          value: (v && typeof v === "object" && "sig" in v) ? { sig: "AA==" } : v,
+          writable: true, enumerable: true, configurable: true,
+        });
+      },
+    });
+    trappedOut = pki.sigstore.parseBundle(trapped);
+  } catch (e) { trappedErr = e; } finally {
+    if (trapDesc) Object.defineProperty(Array.prototype, "0", trapDesc); else delete Array.prototype["0"];
+  }
+  check("an inherited index setter never sees what the copy writes", elementSeen === 0);
+  check("and the malformed element it would have replaced is still refused",
+    trappedErr !== null && trappedErr.code === "sigstore/bad-dsse" && trappedOut === null);
 
   // The size an object is charged is the size the same document costs as text, so one bundle is not
   // admitted one way and refused the other. A string's cost is what JSON writes it as: an escape
