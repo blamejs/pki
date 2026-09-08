@@ -871,9 +871,29 @@ async function testPopoPrivKeyArms() {
         pki.asn1.build.integer(23n), pki.asn1.build.integer(5n), pki.asn1.build.raw(Buffer.from([0x02, 0x00]))]))]),
     pki.asn1.build.bitString(Buffer.from(pki.asn1.build.integer(4n))),
   ]);
+  // privateValueLength states how many bits the private value has, and a private value is less than
+  // the modulus, so a length above the modulus's own bit count describes no value the group holds.
+  // It is carried through unchanged, so the request would travel stating one.
+  function pkcs3WithPvlOf(bits) {
+    var n = pki.asn1.decode(caDhSpki);
+    var prm = pki.asn1.decode(n.children[0].children[1].bytes);
+    return pki.asn1.build.sequence([
+      pki.asn1.build.sequence([pki.asn1.build.oid("1.2.840.113549.1.3.1"),
+        pki.asn1.build.raw(pki.asn1.build.sequence([
+          pki.asn1.build.raw(prm.children[0].bytes), pki.asn1.build.raw(prm.children[1].bytes),
+          pki.asn1.build.integer(bits)]))]),
+      pki.asn1.build.raw(n.children[1].bytes),
+    ]);
+  }
+  var caModulusBits = BigInt(pki.asn1.read.integer(pki.asn1.decode(
+    pki.asn1.decode(pki.asn1.decode(caDhSpki).children[0].children[1].bytes).children[0].bytes)).toString(2).length);
   var pkcs3Bad = [
     ["a privateValueLength that is not an INTEGER", pkcs3WithBadPvl, "privateValueLength is not an INTEGER"],
     ["a privateValueLength carrying no octets", pkcs3EmptyPvl, "could not be read"],
+    ["a privateValueLength one bit longer than its own modulus",
+      pkcs3WithPvlOf(caModulusBits + 1n), "longer than its own modulus"],
+    ["a privateValueLength far longer than any value the group holds",
+      pkcs3WithPvlOf(999999n), "longer than its own modulus"],
     ["a modulus that is not prime", pkcs3Spki(15n, 4n, 11n), "modulus is not prime"],
     ["a public value of order one", pkcs3Spki(23n, 5n, 1n), "public value is outside the group"],
     ["a public value of order two", pkcs3Spki(23n, 5n, 22n), "public value is outside the group"],
@@ -946,6 +966,24 @@ async function testPopoPrivKeyArms() {
       pki.asn1.build.raw(n.children[1].bytes),
     ]);
   }());
+  // The largest length the modulus admits is the modulus's own bit count, so it is the boundary the
+  // refusals above sit one past and it still agrees.
+  check("V6b. a privateValueLength exactly as long as the modulus still agrees",
+    (await codeOf(pki.crmf.build({ certReqId: 65n, certTemplate: tpl(eeDhSpki),
+      pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8,
+        caCert: await dhCertFor(pkcs3WithPvlOf(caModulusBits), { serialNumber: 75 }) } }))) === null);
+  // The requested key is read by the same function, and a refusal has to name the key it is about
+  // rather than the authority certificate, which this caller supplied correctly.
+  var tplPvlErr = null;
+  try {
+    await pki.crmf.build({ certReqId: 66n, certTemplate: tpl(pkcs3WithPvlOf(999999n)),
+      pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: dhCaCert } });
+  } catch (e) { tplPvlErr = e; }
+  check("V6b. a requested key stating an impossible privateValueLength is refused, naming that key",
+    tplPvlErr !== null && tplPvlErr.code === "crmf/bad-popo" &&
+    tplPvlErr.message.indexOf("longer than its own modulus") !== -1 &&
+    tplPvlErr.message.indexOf("certTemplate.publicKey") !== -1);
+
   check("V6b. an authority key carrying a well-formed privateValueLength agrees",
     (await codeOf(pki.crmf.build({ certReqId: 51n, certTemplate: tpl(eeDhSpki),
       pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8,
