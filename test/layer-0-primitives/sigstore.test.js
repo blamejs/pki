@@ -1297,8 +1297,20 @@ async function runMessageSignature(TM) {
       return reads === 1 ? realArm : { signature: Buffer.alloc(70, 9).toString("base64") };
     },
   });
-  check("a content arm that answers differently on each read is refused, never verified",
-    await codeOf(pki.sigstore.verifyBundle(lying, withArtifact)) !== "NO-THROW");
+  // Each own property is read EXACTLY ONCE, which is what makes a differing second answer
+  // unreachable rather than merely checked for: there is no second observation to disagree with the
+  // first, so the verdict describes what the one read saw.
+  await pki.sigstore.verifyBundle(lying, withArtifact).then(function () { return null; }, function () { return null; });
+  check("a content arm reached through an accessor is read exactly once", reads === 1);
+  // The same for a log entry's body, which three separate checks depend on.
+  var countedBody = clone(msBundle("v0.3"));
+  var cbTe = countedBody.verificationMaterial.tlogEntries[0];
+  var cbReal = cbTe.canonicalizedBody, cbReads = 0;
+  Object.defineProperty(cbTe, "canonicalizedBody", {
+    enumerable: true, configurable: true, get: function () { cbReads++; return cbReal; },
+  });
+  await pki.sigstore.verifyBundle(countedBody, withArtifact);
+  check("and a log entry's canonicalizedBody is read exactly once", cbReads === 1);
   // Read the other way: an arm reached through an accessor that answers consistently verifies, so
   // the refusal above is about the disagreement rather than about the field being an accessor.
   var steady = clone(msBundle("v0.3"));
@@ -1311,29 +1323,92 @@ async function runMessageSignature(TM) {
     steadyOut.verified === true && steadyOut.artifactDigest === ARTIFACT_SHA256);
   check("the accessor really was exercised", reads > 0);
 
-  // Serializing drops a value JSON cannot carry, so a bundle setting a second content arm to a
-  // function would arrive as one setting a single arm: a refusal turned into an accept. The oneof
-  // rules are therefore decided on the object as it was handed over, and both verbs refuse it alike.
-  var dropped = clone(msBundle("v0.3"));
-  dropped.dsseEnvelope = function () {};
-  check("a second content arm that JSON cannot carry is refused rather than dropped",
-    await codeOf(pki.sigstore.verifyBundle(dropped, withArtifact)) === "sigstore/bad-bundle");
-  var droppedVm = clone(msBundle("v0.3"));
-  droppedVm.verificationMaterial.publicKey = function () {};
-  check("a second verificationMaterial arm that JSON cannot carry is refused rather than dropped",
-    await codeOf(pki.sigstore.verifyBundle(droppedVm, withArtifact)) === "sigstore/bad-bundle");
-  // The same shape a symbol takes, since that is the other value serializing removes.
-  var droppedSym = clone(msBundle("v0.3"));
-  droppedSym.dsseEnvelope = Symbol("x");
-  check("a second content arm held as a symbol is refused rather than dropped",
-    await codeOf(pki.sigstore.verifyBundle(droppedSym, withArtifact)) === "sigstore/bad-bundle");
-  // Read the other way: a bundle carrying one arm and nothing beside it still verifies, so the rule
-  // is the second arm rather than any property serializing would remove.
-  var withNoise = clone(msBundle("v0.3"));
-  withNoise.someUnrelatedField = function () {};
-  var noiseOut = await pki.sigstore.verifyBundle(withNoise, withArtifact);
-  check("an unrelated property JSON cannot carry does not stop a single-armed bundle verifying",
-    noiseOut.verified === true && noiseOut.artifactDigest === ARTIFACT_SHA256);
+  // A bundle is JSON data. A value JSON does not carry is refused rather than skipped, because
+  // skipping one turns a bundle setting two content arms into one setting a single arm: a refusal
+  // sanitized into an accept. The rule is stated over the whole structure rather than over the arms,
+  // so there is no field where the reasoning has to be repeated.
+  var notJson = [
+    ["a second content arm held as a function", function (b) { b.dsseEnvelope = function () {}; }],
+    ["a second content arm held as a symbol", function (b) { b.dsseEnvelope = Symbol("x"); }],
+    ["a second verificationMaterial arm held as a function", function (b) { b.verificationMaterial.publicKey = function () {}; }],
+    ["an unrelated property held as a function", function (b) { b.someUnrelatedField = function () {}; }],
+    ["a value nested inside an array held as a function", function (b) { b.verificationMaterial.tlogEntries.push(function () {}); }],
+    ["a number JSON cannot represent", function (b) { b.someNumber = Infinity; }],
+    ["a bigint", function (b) { b.someBig = 1n; }],
+  ];
+  for (var nj = 0; nj < notJson.length; nj++) {
+    var njB = clone(msBundle("v0.3"));
+    notJson[nj][1](njB);
+    check("a bundle carrying " + notJson[nj][0] + " is refused rather than having it dropped",
+      await codeOf(pki.sigstore.verifyBundle(njB, withArtifact)) === "sigstore/bad-bundle");
+  }
+  // A field explicitly set to undefined is what an absent field means, and is skipped rather than
+  // refused, which is how the presence test already reads it.
+  var undefArm = clone(msBundle("v0.3"));
+  undefArm.dsseEnvelope = undefined;
+  var undefOut = await pki.sigstore.verifyBundle(undefArm, withArtifact);
+  check("a field explicitly set to undefined reads as absent rather than as a second arm",
+    undefOut.verified === true && undefOut.contentType === "messageSignature");
+  // Sharing one sub-object between two properties doubles the values a copy visits per level, so a
+  // structure of a few hundred bytes expands past anything a depth cap bounds: twenty-eight levels
+  // of { a: previous, b: previous } is 268 million values. The count of values visited is bounded on
+  // the way, so the refusal costs what the bound allows rather than what the structure expands to.
+  var bomb = clone(msBundle("v0.3"));
+  var shared = { x: 1 };
+  for (var bz = 0; bz < 28; bz++) shared = { a: shared, b: shared };
+  bomb.bomb = shared;
+  var bombStart = Date.now();
+  var bombErr = null;
+  try { await pki.sigstore.verifyBundle(bomb, withArtifact); } catch (e) { bombErr = e; }
+  check("a bundle sharing sub-objects to expand exponentially is refused on its size",
+    bombErr !== null && bombErr.code === "sigstore/bad-bundle" &&
+    bombErr.message.indexOf("larger than") !== -1);
+  check("and that refusal is bounded rather than proportional to what the structure expands to",
+    (Date.now() - bombStart) < 10000);
+
+  // The other shape the same bound covers: a handful of values holding tens of megabytes. The size
+  // is charged as the copy is built, so the refusal comes before the allocation rather than after.
+  var fatStrings = clone(msBundle("v0.3"));
+  fatStrings.fat = new Array(2048).fill("a".repeat(32768));
+  var fatStart = Date.now();
+  var fatErr = null;
+  try { await pki.sigstore.verifyBundle(fatStrings, withArtifact); } catch (e) { fatErr = e; }
+  check("a bundle whose values hold far more than the size limit is refused on its size",
+    fatErr !== null && fatErr.code === "sigstore/bad-bundle" &&
+    fatErr.message.indexOf("larger than") !== -1);
+  check("and that refusal happens without building the whole of it",
+    (Date.now() - fatStart) < 10000);
+
+  // A property is charged for by the name it is enumerated under, before its value is read, so a
+  // structure made of properties the copy would skip is bounded like any other rather than walked
+  // for free.
+  var manyUndef = clone(msBundle("v0.3"));
+  for (var mu = 0; mu < 40000; mu++) manyUndef["k".repeat(64) + mu] = undefined;
+  var muStart = Date.now();
+  check("a bundle of many properties the copy skips is still refused on its size",
+    await codeOf(pki.sigstore.verifyBundle(manyUndef, withArtifact)) === "sigstore/bad-bundle");
+  check("and that refusal is bounded", (Date.now() - muStart) < 10000);
+
+  // Reading a caller's object runs the caller's own accessors, and one that throws must surface as
+  // this module's refusal rather than as whatever it threw: the contract is that a bundle this
+  // cannot read is refused with a typed error.
+  var throwing = clone(msBundle("v0.3"));
+  Object.defineProperty(throwing, "someField", {
+    enumerable: true, configurable: true,
+    get: function () { throw new RangeError("from the caller's own accessor"); },
+  });
+  var thrownErr = null;
+  try { await pki.sigstore.verifyBundle(throwing, withArtifact); } catch (e) { thrownErr = e; }
+  check("an accessor that throws is reported as a typed refusal, not as what it threw",
+    thrownErr !== null && thrownErr instanceof pki.errors.PkiError &&
+    thrownErr.code === "sigstore/bad-bundle");
+
+  // A structure nesting past the reader's depth cap is refused rather than walked.
+  var deep = clone(msBundle("v0.3"));
+  var cur = deep;
+  for (var dz = 0; dz < 40; dz++) { cur.nest = {}; cur = cur.nest; }
+  check("a bundle nesting past the depth cap is refused",
+    await codeOf(pki.sigstore.verifyBundle(deep, withArtifact)) === "sigstore/bad-bundle");
 
   // The same bundle as JSON text and as bytes reaches the same verdict: text is already fixed and
   // is read as it came, so the snapshot is what an object input is brought to rather than a
