@@ -1624,6 +1624,9 @@ async function runMessageSignature(TM) {
       var o = realCreateForSwap(p);
       return new Proxy(o, { set: function (t, k, v) { if (k === "messageSignature") return true; t[k] = v; return true; } });
     }],
+    // A number is charged the digits it takes, so the conversion that counts them decides whether a
+    // padded bundle passes the size limit.
+    ["String", globalThis, "String", function () { return ""; }],
   ];
   for (var sw = 0; sw < swaps.length; sw++) {
     var holder = swaps[sw][1], swapName = swaps[sw][2], original = holder[swapName];
@@ -1727,12 +1730,19 @@ async function runMessageSignature(TM) {
       pOut.verified === true && pOut.artifactDigest === ARTIFACT_SHA256);
   }
 
-  // A structure nesting past the reader's depth cap is refused rather than walked.
-  var deep = clone(msBundle("v0.3"));
-  var cur = deep;
-  for (var dz = 0; dz < 40; dz++) { cur.nest = {}; cur = cur.nest; }
-  check("a bundle nesting past the depth cap is refused",
-    await codeOf(pki.sigstore.verifyBundle(deep, withArtifact)) === "sigstore/bad-bundle");
+  // One depth limit governs both representations, so a bundle is not admitted one way and refused
+  // the other for how deeply something unrelated to it nests. Both sides of the limit are driven.
+  var depthCases = [["within the limit", 40, false], ["past it", 80, true]];
+  for (var dc = 0; dc < depthCases.length; dc++) {
+    var deep = clone(msBundle("v0.3"));
+    var cur = deep;
+    for (var dz = 0; dz < depthCases[dc][1]; dz++) { cur.nest = {}; cur = cur.nest; }
+    var deepObject = await codeOf(pki.sigstore.verifyBundle(deep, withArtifact));
+    var deepText = await codeOf(pki.sigstore.verifyBundle(JSON.stringify(deep), withArtifact));
+    check("a bundle nesting " + depthCases[dc][0] + " is judged the same way as an object and as text",
+      (deepObject === "sigstore/bad-bundle") === depthCases[dc][2] &&
+      (deepObject === "sigstore/bad-bundle") === (deepText === "sigstore/bad-bundle"));
+  }
 
   // The same bundle as JSON text and as bytes reaches the same verdict: text is already fixed and
   // is read as it came, so the snapshot is what an object input is brought to rather than a
