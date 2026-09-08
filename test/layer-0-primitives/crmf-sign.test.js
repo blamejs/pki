@@ -492,6 +492,24 @@ async function testPopoPrivKeyArms() {
       pki.asn1.build.raw(n.children[1].bytes),
     ]);
   }());
+  // The template's p and g are the authority's, which the agreement forces it to share, but its q
+  // and j are the caller's own and the conversion drops them. A request must not carry a subgroup
+  // order its own key does not have, since whoever reads the request next reads those parameters.
+  var templateBadQ = (function () {
+    var n = pki.asn1.decode(eeX942Spki);
+    var prm = pki.asn1.decode(n.children[0].children[1].bytes);
+    return pki.asn1.build.sequence([
+      pki.asn1.build.sequence([pki.asn1.build.oid("1.2.840.10046.2.1"),
+        pki.asn1.build.raw(pki.asn1.build.sequence([
+          pki.asn1.build.raw(prm.children[0].bytes), pki.asn1.build.raw(prm.children[1].bytes),
+          pki.asn1.build.integer(3n)]))]),
+      pki.asn1.build.raw(n.children[1].bytes),
+    ]);
+  }());
+  check("V6b. a requested key stating a subgroup order its own group does not have is refused",
+    (await codeOf(pki.crmf.build({ certReqId: 35n, certTemplate: tpl(templateBadQ),
+      pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: dhCaCert } }))) === "crmf/bad-popo");
+
   check("V6b. a template naming the requested key in the X9.42 form is still proven",
     (await codeOf(pki.crmf.build({ certReqId: 22n, certTemplate: tpl(eeX942Spki),
       pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: dhCaCert } }))) === null);
@@ -700,7 +718,16 @@ async function testPopoPrivKeyArms() {
       pki.asn1.build.bitString(Buffer.from(pki.asn1.build.integer(yv))),
     ]);
   }
+  // DHParameter carries one optional field, privateValueLength, and it is an INTEGER. A third field
+  // of another type is not that field, and this reader is the only thing that reads these bytes.
+  var pkcs3WithBadPvl = pki.asn1.build.sequence([
+    pki.asn1.build.sequence([pki.asn1.build.oid("1.2.840.113549.1.3.1"),
+      pki.asn1.build.raw(pki.asn1.build.sequence([
+        pki.asn1.build.integer(23n), pki.asn1.build.integer(5n), pki.asn1.build.nullValue()]))]),
+    pki.asn1.build.bitString(Buffer.from(pki.asn1.build.integer(4n))),
+  ]);
   var pkcs3Bad = [
+    ["a privateValueLength that is not an INTEGER", pkcs3WithBadPvl, "privateValueLength is not an INTEGER"],
     ["a modulus that is not prime", pkcs3Spki(15n, 4n, 11n), "modulus is not prime"],
     ["a public value of order one", pkcs3Spki(23n, 5n, 1n), "public value is outside the group"],
     ["a public value of order two", pkcs3Spki(23n, 5n, 22n), "public value is outside the group"],
@@ -871,6 +898,33 @@ async function testPopoPrivKeyArms() {
   var encMsg = parse(encDer)[0];
   check("POP encryptedKey round-trips through the parser's own content-type check",
     encMsg.popo && encMsg.popo.type === "keyEncipherment" && encMsg.popo.method === "encryptedKey");
+
+  // The encryptedKey arm sends a private key to be archived and agrees nothing, so the group floors
+  // the agreement needs do not apply to it. A legacy 1024-bit Diffie-Hellman key is exactly what
+  // archival exists for, and the same key is still refused for a proof that agrees a secret.
+  var legacyDh = nodeCrypto.generateKeyPairSync("dh", { group: "modp2" });
+  var legacySpki = legacyDh.publicKey.export({ format: "der", type: "spki" });
+  var legacyPk8 = legacyDh.privateKey.export({ format: "der", type: "pkcs8" });
+  var legacyX942 = (function () {
+    var n = pki.asn1.decode(legacySpki);
+    var prm = pki.asn1.decode(n.children[0].children[1].bytes);
+    var p = pki.asn1.read.integer(prm.children[0]);
+    return pki.asn1.build.sequence([
+      pki.asn1.build.sequence([pki.asn1.build.oid("1.2.840.10046.2.1"),
+        pki.asn1.build.raw(pki.asn1.build.sequence([
+          pki.asn1.build.integer(p), pki.asn1.build.integer(pki.asn1.read.integer(prm.children[1])),
+          pki.asn1.build.integer((p - 1n) / 2n)]))]),
+      pki.asn1.build.raw(n.children[1].bytes),
+    ]);
+  }());
+  check("V7. a legacy X9.42 key still archives through encryptedKey, which agrees nothing",
+    (await codeOf(pki.crmf.build({ certReqId: 40n, certTemplate: tpl(legacyX942),
+      pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: legacyPk8,
+        identifier: "device-42", recipients: [{ cert: recip.cert }], archive: true } }))) === null);
+  check("V7. and the same key is refused for a proof that does agree a secret",
+    (await codeOf(pki.crmf.build({ certReqId: 41n, certTemplate: tpl(legacyX942),
+      pop: { type: "keyAgreement", method: "agreeMAC", key: legacyPk8,
+        caCert: await dhCertFor(legacySpki, { serialNumber: 50 }) } }))) === "crmf/bad-popo");
 
   // V8 -- the ASN.1 marks identifier OPTIONAL and sec. 4.2.1 then makes it MUST for a POP. A builder
   // derived from the module rather than the prose emits it absent and still round-trips.
