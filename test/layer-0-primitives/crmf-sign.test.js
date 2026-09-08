@@ -972,6 +972,14 @@ async function testPopoPrivKeyArms() {
     pop: { type: "keyAgreement", method: "agreeMAC", key: eeX942Pk8, caCert: dhCaCert } });
   var pkcs3PrivDer = await pki.crmf.build({ certReqId: 53n, certTemplate: tpl(eeDhSpki),
     pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: dhCaCert } });
+  // A PEM key now takes the decode-and-translate path, so the ordinary form has to still arrive:
+  // the PKCS#3 key this runtime already read, which the translation leaves alone.
+  check("V6b. an ordinary PKCS#3 key supplied as PEM still agrees",
+    (await codeOf(pki.crmf.build({ certReqId: 54n, certTemplate: tpl(eeDhSpki),
+      pop: { type: "keyAgreement", method: "agreeMAC", caCert: dhCaCert,
+        key: nodeCrypto.createPrivateKey({ key: Buffer.from(eeDhPk8), format: "der", type: "pkcs8" })
+          .export({ format: "pem", type: "pkcs8" }) } }))) === null);
+
   // The same key under a PEM armor is the same key. Admitting one form and not the other would
   // support the encoding for a caller holding DER and refuse the caller holding identical bytes.
   var eeX942Pem = "-----BEGIN PRIVATE KEY-----\n" +
