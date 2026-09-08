@@ -762,6 +762,18 @@ async function testPopoPrivKeyArms() {
     (await codeOf(pki.crmf.build({ certReqId: 47n, certTemplate: tpl(eeDhSpki),
       pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8,
         caCert: x400Holding(pki.asn1.build.sequence([])) } }))) === "crmf/bad-popo");
+  // X.411 makes every built-in standard field optional, so an address can carry its naming data in
+  // the domain-defined attributes that follow. An empty first component is not an empty address.
+  var x400Domain = sanCaHolding(pki.asn1.build.sequence([
+    pki.asn1.build.implicit(3, pki.asn1.build.sequence([
+      pki.asn1.build.sequence([]),
+      pki.asn1.build.sequence([pki.asn1.build.sequence([
+        pki.asn1.build.raw(Buffer.from([0x13, 0x01, 0x54])),
+        pki.asn1.build.raw(Buffer.from([0x13, 0x01, 0x56]))])])]))]));
+  check("V6b. an x400Address named by its domain-defined attributes names somebody",
+    (await codeOf(pki.crmf.build({ certReqId: 49n, certTemplate: tpl(eeDhSpki),
+      pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: x400Domain } }))) === null);
+
   check("V6b. an x400Address opening with standard attributes names somebody",
     (await codeOf(pki.crmf.build({ certReqId: 48n, certTemplate: tpl(eeDhSpki),
       pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8,
