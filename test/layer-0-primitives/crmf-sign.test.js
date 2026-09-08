@@ -1088,6 +1088,60 @@ async function testPopoPrivKeyArms() {
       pop: { type: "keyAgreement", method: "agreeMAC", caCert: dhCaCert,
         key: privPgq([goodVp]) } }))) === null);
 
+  // RFC 2631 sec. 2.2: "X9.42 requires that the private key x be in the interval [2, (q - 2)]."
+  // The excluded exponents are the ones whose agreed secret follows from the authority's certificate:
+  // x = 0 agrees one, x = 1 agrees the authority's public value itself, and x = q-1 agrees its
+  // inverse. A proof made with any of them demonstrates possession of nothing.
+  function modPowT(b, e, m) { var r = 1n; b %= m; while (e > 0n) { if (e & 1n) r = r * b % m; b = b * b % m; e >>= 1n; } return r; }
+  function privWithExponent(x) {
+    var n = pki.asn1.decode(eeDhPk8);
+    return pki.asn1.build.sequence([
+      pki.asn1.build.raw(n.children[0].bytes), pki.asn1.build.raw(n.children[1].bytes),
+      pki.asn1.build.octetString(Buffer.from(pki.asn1.build.integer(x))),
+    ]);
+  }
+  function spkiForValue(y) {
+    var n = pki.asn1.decode(eeDhSpki);
+    return pki.asn1.build.sequence([
+      pki.asn1.build.raw(n.children[0].bytes),
+      pki.asn1.build.bitString(Buffer.from(pki.asn1.build.integer(y))),
+    ]);
+  }
+  var expoOrder = (eePrivParts.p - 1n) / 2n;
+  var expoBad = [
+    ["one, so the secret it agrees is the authority's own public value", 1n],
+    ["the order less one, so the secret it agrees is the inverse of that value", expoOrder - 1n],
+  ];
+  for (var xe = 0; xe < expoBad.length; xe++) {
+    var xeY = modPowT(eePrivParts.g, expoBad[xe][1], eePrivParts.p);
+    var xeErr = null;
+    try {
+      await pki.crmf.build({ certReqId: 58n, certTemplate: tpl(spkiForValue(xeY)),
+        pop: { type: "keyAgreement", method: "agreeMAC", caCert: dhCaCert,
+          key: privWithExponent(expoBad[xe][1]) } });
+    } catch (e) { xeErr = e; }
+    check("V6b. a requester private exponent of " + expoBad[xe][0] + " is refused",
+      xeErr !== null && xeErr.code === "crmf/bad-popo" &&
+      xeErr.message.indexOf("[2, q-2]") !== -1);
+  }
+  // Zero is refused where the public value it produces is read, which is a different sentence, so it
+  // is pinned separately rather than folded into the interval above.
+  check("V6b. a requester private exponent of zero is refused on the value it produces",
+    (await codeOf(pki.crmf.build({ certReqId: 59n, certTemplate: tpl(spkiForValue(1n)),
+      pop: { type: "keyAgreement", method: "agreeMAC", caCert: dhCaCert,
+        key: privWithExponent(0n) } }))) === "crmf/bad-popo");
+  // Read the other way: the smallest and largest exponents the interval admits still agree, so the
+  // rule is the interval rather than a floor on how large an exponent has to be.
+  var expoOk = [["two, the smallest the interval admits", 2n],
+    ["the order less two, the largest it admits", expoOrder - 2n]];
+  for (var xo = 0; xo < expoOk.length; xo++) {
+    var xoY = modPowT(eePrivParts.g, expoOk[xo][1], eePrivParts.p);
+    check("V6b. a requester private exponent of " + expoOk[xo][0] + " agrees",
+      (await codeOf(pki.crmf.build({ certReqId: 60n, certTemplate: tpl(spkiForValue(xoY)),
+        pop: { type: "keyAgreement", method: "agreeMAC", caCert: dhCaCert,
+          key: privWithExponent(expoOk[xo][1]) } }))) === null);
+  }
+
   // A certificate stating q = p-1 satisfies every structural test: p-1 divides itself, and g^(p-1)
   // and y^(p-1) are 1 for the whole group by Fermat. Only q being prime makes the subgroup test say
   // anything, since y^q = 1 otherwise bounds the order of y to a divisor of q rather than to q.

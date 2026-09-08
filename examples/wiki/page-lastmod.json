@@ -1,5 +1,5 @@
 {
-  "README.md": "2026-09-08",
+  "README.md": "2026-09-07",
   "examples/wiki/concepts.js": "2026-09-03",
   "examples/wiki/lib/assets.js": "2026-07-13",
   "examples/wiki/lib/auto-site-entries.js": "2026-07-04",
@@ -14,7 +14,7 @@
   "examples/wiki/lib/symbol-index.js": "2026-07-13",
   "examples/wiki/site.config.js": "2026-07-04",
   "lib/acme.js": "2026-09-05",
-  "lib/asn1-der.js": "2026-09-08",
+  "lib/asn1-der.js": "2026-09-07",
   "lib/asn1-schema.js": "2026-07-04",
   "lib/attrcert-sign.js": "2026-09-05",
   "lib/attrcert-verify.js": "2026-09-01",
