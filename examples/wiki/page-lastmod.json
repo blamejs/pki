@@ -36,7 +36,7 @@
   "lib/constants.js": "2026-09-07",
   "lib/crl-sign.js": "2026-09-05",
   "lib/crl-verify.js": "2026-09-01",
-  "lib/crmf-sign.js": "2026-09-07",
+  "lib/crmf-sign.js": "2026-09-08",
   "lib/crmf-verify.js": "2026-09-01",
   "lib/csr-sign.js": "2026-09-05",
   "lib/csr-verify.js": "2026-09-01",

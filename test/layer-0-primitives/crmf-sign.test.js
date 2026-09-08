@@ -754,6 +754,19 @@ async function testPopoPrivKeyArms() {
     (await codeOf(pki.crmf.build({ certReqId: 38n, certTemplate: tpl(eeDhSpki),
       pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: x400 } }))) === null);
 
+  // Name is a SEQUENCE OF RelativeDistinguishedName and permits none, which is exactly what the
+  // subject field carried when this fallback was reached. An empty name for an empty name names
+  // nobody, so it is refused; a directoryName holding one RDN names somebody.
+  var emptyDirName = sanCaHolding(Buffer.from([0x30, 0x04, 0xa4, 0x02, 0x30, 0x00]));
+  check("V6b. an authority subjectAltName whose directoryName is an empty Name is refused",
+    (await codeOf(pki.crmf.build({ certReqId: 45n, certTemplate: tpl(eeDhSpki),
+      pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: emptyDirName } }))) === "crmf/bad-popo");
+  var goodDirName = sanCaHolding(pki.asn1.build.sequence([
+    pki.asn1.build.explicit(4, pki.asn1.build.raw(pki.schema.x509.parse(dhCaCert).subject.bytes))]));
+  check("V6b. a directoryName naming a directory entry names somebody",
+    (await codeOf(pki.crmf.build({ certReqId: 46n, certTemplate: tpl(eeDhSpki),
+      pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: goodDirName } }))) === null);
+
   check("V6b. an authority subjectAltName whose iPAddress is not an address is refused",
     (await codeOf(pki.crmf.build({ certReqId: 33n, certTemplate: tpl(eeDhSpki),
       pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: badIpSanCa } }))) === "crmf/bad-popo");
