@@ -92,6 +92,9 @@
             "DH_MIN_SUBGROUP_BYTES": {
               "kind": "number"
             },
+            "DH_PRIME_MEMO_ENTRIES": {
+              "kind": "number"
+            },
             "HEADER_LINE_MAX_OCTETS": {
               "kind": "number"
             },
@@ -1435,6 +1438,9 @@
               "kind": "number"
             },
             "DH_MIN_SUBGROUP_BYTES": {
+              "kind": "number"
+            },
+            "DH_PRIME_MEMO_ENTRIES": {
               "kind": "number"
             },
             "HEADER_LINE_MAX_OCTETS": {

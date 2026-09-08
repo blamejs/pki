@@ -687,6 +687,22 @@ async function testPopoPrivKeyArms() {
     check("V6b. the malformed-iPAddress fixture really replaced one name list", swapped.count === 1);
     return swapped.der;
   }());
+  // ediPartyName [5] and x400Address [3] are read as non-empty constructed values and no further, so
+  // a [5] holding a NULL is a name-shaped hole. The derivation keys from these bytes, so a list
+  // offering nothing but those two arms names nobody it can answer for.
+  var ediSanCa = (function () {
+    var real = pki.schema.x509.parse(emptySubjectCa);
+    var san = real.extensions.filter(function (e) { return e.name === "subjectAltName"; })[0];
+    var swapped = surgery.replaceTlv(emptySubjectCa,
+      pki.asn1.build.octetString(Buffer.from(san.value)),
+      pki.asn1.build.octetString(Buffer.from([0x30, 0x04, 0xa5, 0x02, 0x05, 0x00])));
+    check("V6b. the ediPartyName fixture really replaced one name list", swapped.count === 1);
+    return swapped.der;
+  }());
+  check("V6b. an authority subjectAltName offering only an unread arm is refused",
+    (await codeOf(pki.crmf.build({ certReqId: 36n, certTemplate: tpl(eeDhSpki),
+      pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: ediSanCa } }))) === "crmf/bad-popo");
+
   check("V6b. an authority subjectAltName whose iPAddress is not an address is refused",
     (await codeOf(pki.crmf.build({ certReqId: 33n, certTemplate: tpl(eeDhSpki),
       pop: { type: "keyAgreement", method: "agreeMAC", key: eeDhPk8, caCert: badIpSanCa } }))) === "crmf/bad-popo");
@@ -921,6 +937,21 @@ async function testPopoPrivKeyArms() {
     (await codeOf(pki.crmf.build({ certReqId: 40n, certTemplate: tpl(legacyX942),
       pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: legacyPk8,
         identifier: "device-42", recipients: [{ cert: recip.cert }], archive: true } }))) === null);
+  // The encryptedKey arm carries the caller's template too, so a PKCS#3 one is read in its own
+  // right rather than passed through unexamined because it needed no conversion.
+  var encMisaligned = pki.asn1.build.sequence([
+    pki.asn1.build.raw(pki.asn1.decode(legacySpki).children[0].bytes),
+    pki.asn1.build.bitString(Buffer.from(pki.asn1.build.integer(4n)), 1),
+  ]);
+  var emErr = null;
+  try {
+    await pki.crmf.build({ certReqId: 42n, certTemplate: tpl(encMisaligned),
+      pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: legacyPk8,
+        identifier: "device-42", recipients: [{ cert: recip.cert }], archive: true } });
+  } catch (e) { emErr = e; }
+  check("V7. a PKCS#3 template whose BIT STRING is not octet-aligned is refused on this arm too",
+    emErr !== null && emErr.code === "crmf/bad-popo" && emErr.message.indexOf("must be octet-aligned") !== -1);
+
   check("V7. and the same key is refused for a proof that does agree a secret",
     (await codeOf(pki.crmf.build({ certReqId: 41n, certTemplate: tpl(legacyX942),
       pop: { type: "keyAgreement", method: "agreeMAC", key: legacyPk8,
