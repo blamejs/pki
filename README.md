@@ -64,7 +64,7 @@ Crypto API with its limits on streaming, opaque keys, and algorithm reach.
 npm i @blamejs/pki
 ```
 
-Requires Node.js 24.19+ and runs on the shipped runtime, with no build step and
+Requires Node.js 24.21+ and runs on the shipped runtime, with no build step and
 no transpilation.
 
 ```js

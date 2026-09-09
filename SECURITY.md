@@ -119,10 +119,11 @@ security-only patches after the next major releases.
   whole input as consumed, so neither the output nor a consumed-length check can
   see that the frame was cut: a peer strips a frame's tail and the receiver
   processes a prefix as though it were the whole message. The shared primitive
-  probes each algorithm once at startup and drops any whose decompressor behaves
-  that way, so it is neither advertised nor accepted. On the current LTS Node
-  this drops zstd from `pki.tls`, leaving zlib and brotli; it returns on a runtime
-  that faults.
+  probes each algorithm once at startup, handing it a frame with the last two
+  bytes cut, and drops any decompressor that returns anything at all rather than
+  faulting, so that algorithm is neither offered nor accepted. At the Node 24.21
+  engine floor zlib, brotli and zstd all fault on a cut frame, so all three are
+  offered; on a runtime where one returns instead, that algorithm is dropped.
 - **Unbounded certificate-entry allocation (CWE-770).** A TLS Certificate
   message's byte ceiling does not bound how many `CertificateEntry` elements it
   declares. The smallest legal entry is 6 bytes, so a message well inside the

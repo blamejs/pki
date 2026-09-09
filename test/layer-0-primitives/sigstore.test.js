@@ -1063,6 +1063,34 @@ async function runMessageSignature(TM) {
   check("an inherited artifact is refused on a dsse bundle rather than ignored",
     await codeOf(pki.sigstore.verifyBundle(BUNDLE, inherited({ artifact: ARTIFACT }))) === "sigstore/bad-input");
 
+  // Each option is read once and every use reads that one answer, so an option reached through an
+  // accessor cannot pass a refusal with one answer and be reported by the verdict with another.
+  // The counter lives outside the options object: a bookkeeping property on it is an unknown option
+  // and is refused before any option is read.
+  var optReads = 0;
+  function accessorOpt(name, first, later) {
+    var o = { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: ARTIFACT };
+    Object.defineProperty(o, name, {
+      enumerable: true, configurable: true,
+      get: function () { optReads++; return optReads === 1 ? first : later; },
+    });
+    return o;
+  }
+  optReads = 0;
+  var ptOpt = accessorOpt("predicateType", undefined, "https://slsa.dev/provenance/v1");
+  var ptErr = null, ptOut = null;
+  try { ptOut = await pki.sigstore.verifyBundle(msBundle("v0.3"), ptOpt); } catch (e) { ptErr = e; }
+  check("an accessor-backed predicateType cannot pass the arm refusal and then be reported as checked",
+    ptErr !== null || (ptOut !== null && ptOut.predicateTypeChecked === false));
+  check("and that option was read exactly once", optReads === 1);
+  optReads = 0;
+  var tmOpt = accessorOpt("time", new Date("2024-03-19T17:30:00Z"), undefined);
+  var tmOut = null, tmErr = null;
+  try { tmOut = await pki.sigstore.verifyBundle(msBundle("v0.3"), tmOpt); } catch (e) { tmErr = e; }
+  check("an accessor-backed time is read exactly once", optReads === 1);
+  check("and the verify reaches a verdict on that one answer",
+    tmErr !== null || (tmOut !== null && tmOut.verified === true));
+
   // A wrong artifact, in each shape that could be mistaken for the right one.
   var oneOff = Buffer.from(ARTIFACT); oneOff[50] = oneOff[50] ^ 0x01;
   check("an artifact of the same length differing in one byte is refused",

@@ -996,6 +996,47 @@ function testAssertCallable() {
   // The returned value is the input, so a caller can bind it in one expression.
   var fn = function () {};
   check("assertCallable: it returns the value it accepted", identifier.assertCallable(fn, E, "x/bad-input", "opts.transport") === fn);
+
+  // snapshotOptions: one read per named option, so a verify path that gates on an option and then
+  // reports it cannot be handed two different answers by an accessor.
+  var KNOWN = Object.assign(Object.create(null), { alpha: 1, beta: 1, gamma: 1 });
+  var reads = 0;
+  var moving = { beta: 2 };
+  Object.defineProperty(moving, "alpha", {
+    enumerable: true, configurable: true,
+    get: function () { reads++; return reads; },
+  });
+  var snap = identifier.snapshotOptions(moving, KNOWN);
+  check("snapshotOptions: an accessor-backed option is read exactly once", reads === 1);
+  check("snapshotOptions: and every later read returns that one answer",
+    snap.alpha === 1 && snap.alpha === 1 && snap.alpha === 1 && reads === 1);
+  check("snapshotOptions: a plain option is carried across", snap.beta === 2);
+  check("snapshotOptions: an option that was not supplied reads as undefined",
+    "gamma" in snap && snap.gamma === undefined);
+
+  // It reads the way an option gate reads an option, so an option on the prototype still counts.
+  var inherited = Object.create({ alpha: "from-proto" });
+  check("snapshotOptions: an inherited option is captured",
+    identifier.snapshotOptions(inherited, KNOWN).alpha === "from-proto");
+
+  // Only the named set is copied, so a key the caller added cannot ride along into the snapshot.
+  var extra = { alpha: 1, sneaky: "no" };
+  check("snapshotOptions: a name outside the known set is not copied",
+    identifier.snapshotOptions(extra, KNOWN).sneaky === undefined);
+
+  // The snapshot has no prototype, so a supplied __proto__ stays an ordinary field.
+  var polluting = JSON.parse("{\"alpha\":1,\"__proto__\":{\"polluted\":true}}");
+  var POLL_KNOWN = Object.assign(Object.create(null), { alpha: 1, __proto__: 1 });
+  var pollSnap = identifier.snapshotOptions(polluting, POLL_KNOWN);
+  check("snapshotOptions: the snapshot carries no prototype", Object.getPrototypeOf(pollSnap) === null);
+  check("snapshotOptions: a __proto__ option stays a field and pollutes nothing",
+    ({}).polluted === undefined && Object.prototype.polluted === undefined);
+
+  // A missing options object is an empty snapshot rather than a throw, so a caller that defaults
+  // afterwards still reads undefined for every name.
+  check("snapshotOptions: an absent options object yields an empty snapshot",
+    identifier.snapshotOptions(undefined, KNOWN).alpha === undefined &&
+    identifier.snapshotOptions(null, KNOWN).alpha === undefined);
 }
 
 module.exports = { run: run };

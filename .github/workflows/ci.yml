@@ -42,10 +42,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Node 24.19.0 LTS
+      - name: Set up Node 24.21.0 LTS
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
-          node-version: '24.19.0'
+          node-version: '24.21.0'
 
       - name: Show Node + npm version
         run: node --version && npm --version
@@ -86,10 +86,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Node 24.19.0 LTS
+      - name: Set up Node 24.21.0 LTS
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
-          node-version: '24.19.0'
+          node-version: '24.21.0'
 
       - name: Install devDependencies
         run: npm ci --no-audit --no-fund
@@ -127,6 +127,12 @@ jobs:
         # lifecycle-reviews.json) or a deprecation has reached its remove-by.
         run: node scripts/check-status-lifecycle.js
 
+      - name: Engine-floor agreement gate
+        # package.json engines.node is the supported floor. Every runtime pin CI
+        # installs, the container the smoke and interop phases run in, and the
+        # prose an operator reads must name that same version.
+        run: node scripts/check-engine-floor.js
+
       - name: Lockfile / supply-chain pin currency
         # The committed lockfiles must record the current package.json
         # version and pinned specs. A release that bumps package.json but
@@ -144,10 +150,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Node 24.19.0 LTS
+      - name: Set up Node 24.21.0 LTS
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
-          node-version: '24.19.0'
+          node-version: '24.21.0'
 
       - name: Install devDependencies
         run: npm ci --no-audit --no-fund

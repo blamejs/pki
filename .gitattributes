@@ -12,6 +12,12 @@ lib/vendor/** -text binary
 # script fails at line 1.
 *.sh text eol=lf
 
+# The version-manager files are read as a bare version string. nvm and asdf take
+# the whole line, so a CRLF checkout hands them "24.21.0\r" and the install fails
+# on a version that does not exist.
+.nvmrc text eol=lf
+.node-version text eol=lf
+
 # Derived artifacts the release-notes generator owns end-to-end —
 # rebuild emits LF, so the on-disk file is pinned to LF on every
 # platform. Without this, Windows checkouts would get CRLF and the
