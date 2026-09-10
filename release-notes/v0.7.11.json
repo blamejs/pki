@@ -1,0 +1,16 @@
+{
+  "version": "0.7.11",
+  "date": "2026-09-10",
+  "headline": "A name constraint whose base is a zero-length name is read rather than rejected.",
+  "summary": "A certificate whose nameConstraints carried a zero-length dNSName, rfc822Name or uniformResourceIdentifier subtree base could not be validated at all: the extension failed to decode and pki.path.validate reported path/bad-name-constraints. RFC 5280 places the zero-length prohibition on subjectAltName, not on a constraint base, and an empty base is how a technically-constrained sub-CA writes a whole name form. The base is now read, and the prohibition still holds everywhere a GeneralName names something.",
+  "sections": {
+    "Fixed": [
+      "A zero-length subtree base in a certificate's nameConstraints decodes. RFC 5280 section 4.2.1.6 states the prohibition for subjectAltName, that an extension with a dNSName of \"\" must not be used, and section 4.2.1.10 places no length floor on a constraint base. A zero-length dNSName in a subjectAltName is still refused, which is where the rule belongs.",
+      "For dNSName the empty base names the root of the namespace, the same as the bare-dot base already did: section 4.2.1.10 satisfies the constraint by adding zero or more labels to its left-hand side, and every name is that base plus labels. An excluded empty base therefore excludes every dNSName, and a permitted one permits every dNSName. A leaf naming no dNSName is untouched by either.",
+      "For rfc822Name and uniformResourceIdentifier the base decodes but the comparison reports path/name-constraint-unsupported and refuses. Section 4.2.1.10 gives a mail constraint a mailbox, a host or a leading-period domain, and a URI constraint a fully qualified domain name, so an empty base is none of the shapes either names and is not read as covering everything. The verdict now says the constraint could not be evaluated instead of saying the extension could not be parsed."
+    ],
+    "Changed": [
+      "pki.path.validate still refuses a caller-supplied subtree seed whose base is empty, through opts.initialPermittedSubtrees, opts.initialExcludedSubtrees or a trust anchor's nameConstraints. A seed that permits everything is a restriction the caller believes they applied, so that door is unchanged and is separate from decoding a certificate's own extension."
+    ]
+  }
+}

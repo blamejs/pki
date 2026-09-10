@@ -1124,6 +1124,74 @@ async function testSelfIssuedAndConstraints() {
   var resNc = await run([interNc, leafNc], { time: T2027, trustAnchors: anchor });
   check("SAN within permitted subtree validates", resNc.valid === true);
 
+  // RFC 5280 sec. 4.2.1.6 forbids a zero-length dNSName in subjectAltName ("subjectAltName
+  // extensions with a dNSName of ' ' MUST NOT be used"). Sec. 4.2.1.10 places no length floor on a
+  // subtree BASE, and an empty base is how "every name of this form" is written, which is how a
+  // technically-constrained sub-CA excludes a whole name form. Such a certificate is one to
+  // validate against, not one to refuse outright.
+  var emptyExclCa = await mkCert({ subject: "EmptyExclInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i",
+    extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt(null, [gnDns("")])] });
+  var emptyExclLeaf = await mkCert({ subject: "EmptyExclLeaf", issuer: "EmptyExclInter", signWith: "ed25519i", subjectKeys: "ed25519leaf",
+    extensions: [sanExt([gnDns("anything.example")])] });
+  var resEmptyExcl = await run([emptyExclCa, emptyExclLeaf], { time: T2027, trustAnchors: anchor });
+  check("an empty excluded dNSName base excludes every dNSName, rather than failing to parse",
+    resEmptyExcl.valid === false &&
+    failCodes(resEmptyExcl).indexOf("path/name-constraint-excluded") !== -1 &&
+    failCodes(resEmptyExcl).indexOf("path/bad-name-constraints") === -1);
+  // The same base on the permitted side permits NO dNSName, so a leaf naming one is outside it.
+  var emptyPermCa = await mkCert({ subject: "EmptyPermInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i",
+    extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt([gnDns("")], null)] });
+  var emptyPermLeaf = await mkCert({ subject: "EmptyPermLeaf", issuer: "EmptyPermInter", signWith: "ed25519i", subjectKeys: "ed25519leaf",
+    extensions: [sanExt([gnDns("anything.example")])] });
+  var resEmptyPerm = await run([emptyPermCa, emptyPermLeaf], { time: T2027, trustAnchors: anchor });
+  // An empty base is the ROOT of the namespace, so it names every name of its form: sec. 4.2.1.10
+  // satisfies a dNSName constraint by "adding zero or more labels to the left-hand side", and every
+  // name is the empty base plus labels. The permitted direction therefore admits every dNSName,
+  // the mirror of the excluded direction above, and neither fails to parse.
+  check("an empty permitted dNSName base permits every dNSName",
+    resEmptyPerm.valid === true && failCodes(resEmptyPerm).indexOf("path/bad-name-constraints") === -1);
+  // A leaf naming no dNSName at all is unaffected by either, which shows the empty base bounds one
+  // name form rather than the certificate.
+  var emptyExclOtherLeaf = await mkCert({ subject: "EmptyExclOther", issuer: "EmptyExclInter", signWith: "ed25519i", subjectKeys: "ed25519leaf",
+    extensions: [sanExt([gnEmail("someone@example.com")])] });
+  check("an empty excluded dNSName base leaves a leaf naming no dNSName alone",
+    (await run([emptyExclCa, emptyExclOtherLeaf], { time: T2027, trustAnchors: anchor })).valid === true);
+  // The mail form reads the same way.
+  var emptyMailCa = await mkCert({ subject: "EmptyMailInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i",
+    extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt(null, [gnEmail("")])] });
+  var emptyMailLeaf = await mkCert({ subject: "EmptyMailLeaf", issuer: "EmptyMailInter", signWith: "ed25519i", subjectKeys: "ed25519leaf",
+    extensions: [sanExt([gnEmail("someone@example.com")])] });
+  var resEmptyMail = await run([emptyMailCa, emptyMailLeaf], { time: T2027, trustAnchors: anchor });
+  // The mail form does NOT read an empty base as a root. Sec. 4.2.1.10 gives a mail constraint three
+  // shapes, a complete address, a host, or a leading-period domain, and an empty string is none of
+  // them, so reading it as "every address" would extrapolate past the clause. The base now parses,
+  // and the comparison says it cannot evaluate that constraint and refuses: a truthful verdict in
+  // place of the extension failing to parse at all.
+  check("an empty excluded rfc822Name base parses and refuses as unevaluable, not as unparseable",
+    resEmptyMail.valid === false &&
+    failCodes(resEmptyMail).indexOf("path/name-constraint-unsupported") !== -1 &&
+    failCodes(resEmptyMail).indexOf("path/bad-name-constraints") === -1);
+  // The URI form is exempted at decode alongside the other two IA5 forms, so record what the
+  // comparison then makes of it rather than leaving a changed tag unmeasured.
+  var emptyUriCa = await mkCert({ subject: "EmptyUriInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i",
+    extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt(null, [gnUri("")])] });
+  var emptyUriLeaf = await mkCert({ subject: "EmptyUriLeaf", issuer: "EmptyUriInter", signWith: "ed25519i", subjectKeys: "ed25519leaf",
+    extensions: [sanExt([gnUri("https://anything.example/x")])] });
+  var resEmptyUri = await run([emptyUriCa, emptyUriLeaf], { time: T2027, trustAnchors: anchor });
+  check("an empty excluded uniformResourceIdentifier base parses and refuses as unevaluable",
+    resEmptyUri.valid === false &&
+    failCodes(resEmptyUri).indexOf("path/name-constraint-unsupported") !== -1 &&
+    failCodes(resEmptyUri).indexOf("path/bad-name-constraints") === -1);
+
+  // The sec. 4.2.1.6 prohibition stays where it belongs: a zero-length dNSName in a leaf's OWN
+  // subjectAltName is still refused. This is the vector that proves the change was scoped to the
+  // base and did not lift the rule the existing check exists for.
+  var emptySanLeaf = await mkCert({ subject: "EmptySanLeaf", issuer: "Inter", signWith: "ed25519i", subjectKeys: "ed25519leaf",
+    extensions: [sanExt([gnDns("")])] });
+  var resEmptySan = await run([inter, emptySanLeaf], { time: T2027, trustAnchors: anchor });
+  check("a zero-length dNSName in subjectAltName is still refused (sec. 4.2.1.6)",
+    resEmptySan.valid === false);
+
   // A wildcard SAN is a set of names, not one name, so an excluded subtree asks whether that set
   // REACHES the excluded tree while a permitted subtree asks whether the set stays INSIDE the
   // permitted one. Comparing the literal string answers the permitted question correctly and the
@@ -4675,11 +4743,13 @@ async function testCoverageEdges() {
   await cap("418 rfc822 SAN without '@' vs full-mailbox constraint", async function () { return ncCase([gnEmail("user@example.com")], null, [gnEmail("noat")]); });
   await cap("426 rfc822 SAN with empty host", async function () { return ncCase([gnEmail("example.com")], null, [gnEmail("user@")]); });
   // A dNSName constraint that is a bare dot names the root of the namespace, so it matches every
-  // name. A certificate carrying one is compared as the certificate wrote it; an empty one is
-  // refused when the extension is decoded, and a caller cannot seed either, because a seed that
-  // permits everything is a restriction the caller believes they applied.
+  // name, and an EMPTY base names the same root: sec. 4.2.1.10 satisfies the constraint by adding
+  // zero or more labels to its left-hand side. A certificate carrying either is compared as the
+  // certificate wrote it. A caller still cannot SEED either, because a seed that permits everything
+  // is a restriction the caller believes they applied; that door is guard.name.constraintBaseRefusal
+  // and is separate from decoding a certificate's own extension.
   await cap("441 bare-dot dNSName permitted constraint matches all", async function () { return ncCase([gnDns(".")], null, [gnDns("anything.example")]); });
-  await cap("441 empty dNSName permitted constraint refused at decode", async function () { return ncCase([gnDns("")], null, [gnDns("anything.example")]); });
+  await cap("441 empty dNSName permitted constraint matches all", async function () { return ncCase([gnDns("")], null, [gnDns("anything.example")]); });
   await cap("441 empty dNSName permitted seed refused", async function () {
     var leaf = await mkCert({ subject: "Empty441", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("anything.example")])] });
     return run([leaf], { time: T2027, trustAnchors: anchor, initialPermittedSubtrees: [{ tag: 2, base: "" }] });
@@ -5063,7 +5133,7 @@ async function testCoverageEdges() {
     "418 rfc822 SAN without '@' vs full-mailbox constraint": { code: NCU },
     "426 rfc822 SAN with empty host": { code: NCU },
     "441 bare-dot dNSName permitted constraint matches all": { valid: true },
-    "441 empty dNSName permitted constraint refused at decode": { code: "path/bad-name-constraints" },
+    "441 empty dNSName permitted constraint matches all": { valid: true },
     "441 empty dNSName permitted seed refused": { throw: BADIN },
     "670 dNSName seed a host name cannot hold rejected": { throw: BADIN },
     "670 rfc822Name seed with two at-signs rejected": { throw: BADIN },
