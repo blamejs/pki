@@ -55,6 +55,87 @@ async function run() {
   // typed ocsp/bad-input, not the native TypeError the Date constructor throws on a BigInt.
   check("BigInt thisUpdate -> typed ocsp/bad-input", (await codeOfAsync(function () { return pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: "good", thisUpdate: 1n, nextUpdate: NU }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 }); })) === "ocsp/bad-input");
   check("BigInt producedAt -> typed ocsp/bad-input", (await codeOfAsync(function () { return pki.ocsp.sign({ responderID: "byName", producedAt: 1n, responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: "good", thisUpdate: TU, nextUpdate: NU }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 }); })) === "ocsp/bad-input");
+  // RFC 6960 sec. 4.2.2.1: thisUpdate and nextUpdate "define a recommended validity interval",
+  // corresponding to the {thisUpdate, nextUpdate} interval in CRLs. An interval whose end precedes
+  // its start is not one, and the response cannot be acted on: pki.ocsp.verify reports it unknown.
+  // pki.x509.sign, pki.crl.sign, pki.attrcert.sign and pki.crmf.build all refuse their own reversed
+  // window, so this is the same rule in the one place it was missing.
+  function signWindow(tu, nu, extra) {
+    var entry = { cert: w.targetCertDer, issuer: w.issuerCertDer, status: "good", thisUpdate: tu, nextUpdate: nu };
+    var rd = Object.assign({ responderID: "byName", responses: [entry] }, extra || {});
+    return pki.ocsp.sign(rd, { cert: w.responderCertDer, key: w.responderKeyPkcs8 });
+  }
+  check("CONTROL a well-ordered OCSP window still signs",
+    Buffer.isBuffer(await signWindow(TU, NU)));
+  check("thisUpdate after nextUpdate -> ocsp/bad-input",
+    (await codeOfAsync(function () { return signWindow(NU, TU); })) === "ocsp/bad-input");
+  check("an equal thisUpdate and nextUpdate is left alone, as it is for a CRL",
+    Buffer.isBuffer(await signWindow(TU, TU)));
+  // The CALLER's instants are compared at their full precision. Two instants inside one second
+  // encode to the same whole-second GeneralizedTime, so comparing the encoded values would accept a
+  // descending pair and quietly emit the zero-length window it truncates to. A caller naming a later
+  // thisUpdate has stated a reversed window whatever the seconds round to. This is what the sibling
+  // signing verbs do, and the parity is asserted below rather than assumed.
+  var SUB_HI = new Date("2027-01-01T12:00:00.900Z"), SUB_LO = new Date("2027-01-01T12:00:00.100Z");
+  check("the two sub-second instants really do encode to one GeneralizedTime",
+    pki.asn1.decode(b.generalizedTime(SUB_HI)).content.toString("latin1") ===
+    pki.asn1.decode(b.generalizedTime(SUB_LO)).content.toString("latin1"));
+  check("a descending pair inside one second is refused, not truncated to an equal window",
+    (await codeOfAsync(function () { return signWindow(SUB_HI, SUB_LO); })) === "ocsp/bad-input");
+  check("the same pair ascending signs",
+    Buffer.isBuffer(await signWindow(SUB_LO, SUB_HI)));
+  check("a window reversed by a whole second is refused",
+    (await codeOfAsync(function () {
+      return signWindow(new Date("2027-01-01T12:00:01Z"), new Date("2027-01-01T12:00:00Z"));
+    })) === "ocsp/bad-input");
+  // pki.x509.sign, pki.crl.sign and pki.crmf.build refuse a descending sub-second pair the same
+  // way and accept an exactly equal one, so no verb is the odd one out in either direction. Their
+  // own suites hold them to it; this file answers for the OCSP side of that parity.
+  // Every SingleResponse is measured, not only the first: a batch is where a reversed window hides.
+  check("a reversed window in the SECOND response is refused too",
+    (await codeOfAsync(function () {
+      return pki.ocsp.sign({ responderID: "byName", responses: [
+        { cert: w.targetCertDer, issuer: w.issuerCertDer, status: "good", thisUpdate: TU, nextUpdate: NU },
+        { cert: w.targetCertDer, issuer: w.issuerCertDer, status: "good", thisUpdate: NU, nextUpdate: TU }] },
+        { cert: w.responderCertDer, key: w.responderKeyPkcs8 });
+    })) === "ocsp/bad-input");
+  // RFC 6960 sec. 2.5 lets a responder PRE-PRODUCE a response, where producedAt is when it was
+  // signed and thisUpdate is when the status was known correct, so producedAt before thisUpdate is
+  // conforming and must keep signing.
+  check("a pre-produced response, producedAt before thisUpdate, still signs",
+    Buffer.isBuffer(await signWindow(TU, NU, { producedAt: new Date("2026-06-01T00:00:00Z") })));
+  // Entries are built through a map into Promise.all, so a SYNCHRONOUS throw for one entry aborts
+  // the map before Promise.all attaches handlers and orphans an earlier entry's rejection: the
+  // caller catches sign()'s failure and the process still sees an unhandled rejection, which ends
+  // it on a default Node. Every per-entry refusal has to stay inside the chain.
+  var orphaned = [];
+  function onUnhandled(e) { orphaned.push((e && e.code) || String(e)); }
+  process.on("unhandledRejection", onUnhandled);
+  var mixedBatchCode = await codeOfAsync(function () {
+    return pki.ocsp.sign({ responderID: "byName", responses: [
+      {},
+      { cert: w.targetCertDer, issuer: w.issuerCertDer, status: "good", thisUpdate: NU, nextUpdate: TU }] },
+      { cert: w.responderCertDer, key: w.responderKeyPkcs8 });
+  });
+  await new Promise(function (r) { setImmediate(r); });
+  process.removeListener("unhandledRejection", onUnhandled);
+  check("a batch failing for two different reasons orphans no rejection",
+    mixedBatchCode === "ocsp/bad-input" && orphaned.length === 0);
+  // The same hazard for a date the codec refuses, which was already a per-entry throw before this.
+  var orphaned2 = [];
+  function onUnhandled2(e) { orphaned2.push((e && e.code) || String(e)); }
+  process.on("unhandledRejection", onUnhandled2);
+  var badDateBatch = await codeOfAsync(function () {
+    return pki.ocsp.sign({ responderID: "byName", responses: [
+      {},
+      { cert: w.targetCertDer, issuer: w.issuerCertDer, status: "good", thisUpdate: 1n, nextUpdate: NU }] },
+      { cert: w.responderCertDer, key: w.responderKeyPkcs8 });
+  });
+  await new Promise(function (r) { setImmediate(r); });
+  process.removeListener("unhandledRejection", onUnhandled2);
+  check("a batch with an unusable date orphans no rejection either",
+    badDateBatch === "ocsp/bad-input" && orphaned2.length === 0);
+
   var _goodResp = await signGood(w);
   check("BigInt verify time -> typed ocsp/bad-input", (await codeOfAsync(function () { return pki.ocsp.verify(_goodResp, { cert: w.targetCertDer, issuer: w.issuerCertDer, time: 1n }); })) === "ocsp/bad-input");
   check("buildRequest round-trips: one Request with the target serial",

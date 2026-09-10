@@ -4,6 +4,16 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.10 — 2026-09-10
+
+An OCSP response is no longer signed with a status window that runs backwards.
+
+### Fixed
+
+- pki.ocsp.sign raises ocsp/bad-input for a response entry whose thisUpdate is after its nextUpdate, before anything is signed. RFC 6960 section 4.2.2.1 makes the pair a validity interval corresponding to the {thisUpdate, nextUpdate} interval in CRLs, and pki.crl.sign, pki.x509.sign, pki.attrcert.sign and pki.crmf.build each already refuse their own reversed window. Every entry in a batch is measured, not the first alone, and a nextUpdate that came from the default is held to the rule a supplied one is.
+- An entry whose thisUpdate equals its nextUpdate still signs, as the equivalent CRL does: a zero-length window is not forbidden. A response entry that names no certificate still reports that first. The times are compared as given, so a thisUpdate later than its nextUpdate is refused even where the two fall inside one second and would encode to the same GeneralizedTime, which is how pki.x509.sign, pki.crl.sign and pki.crmf.build read their own.
+- A pre-produced response still signs. RFC 6960 section 2.5 lets a responder sign a response ahead of the window it certifies, where producedAt is when the response was signed and thisUpdate is when the status was known correct, so a producedAt earlier than thisUpdate is conforming and is left alone.
+
 ## v0.7.9 — 2026-09-10
 
 Certificate revocation lists can now be linted against the RFC 5280 profile.
