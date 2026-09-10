@@ -1118,6 +1118,27 @@ function testCrlProfile() {
     hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(),
       idpExt(b.sequence([b.contextPrimitive(5, Buffer.from([0xff]))]))] })),
       "lint/rfc5280-crl/idp-profile"));
+  // Section 5.2.5 gives distributionPoint the syntax and semantics of section 4.2.1.13, where
+  // naming a distribution point relative to the CRL issuer is a SHOULD NOT. DistributionPointName
+  // is a CHOICE, so [0] is EXPLICIT; nameRelativeToCRLIssuer is [1] IMPLICIT on the RDN's SET.
+  var idpRelativeName = idpExt(b.sequence([b.contextConstructed(0, b.contextConstructed(1,
+    b.sequence([b.oid(oid.byName("commonName")), b.utf8("Fragment")])))]));
+  var idpFullName = idpExt(b.sequence([b.contextConstructed(0, b.contextConstructed(0,
+    b.contextPrimitive(6, Buffer.from("http://crl.example/a.crl", "ascii"))))]));
+  var relativeNameReport = pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), idpRelativeName] }));
+  check("an IDP naming its distribution point relative to the CRL issuer -> idp-name-relative-to-crl-issuer",
+    hasId(relativeNameReport, "lint/rfc5280-crl/idp-name-relative-to-crl-issuer"));
+  check("...graded warn, because section 4.2.1.13 states it as a SHOULD NOT",
+    relativeNameReport.findings.filter(function (f) {
+      return f.id === "lint/rfc5280-crl/idp-name-relative-to-crl-issuer";
+    })[0].severity === "warn");
+  check("an IDP naming a fullName distribution point is not flagged",
+    !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), idpFullName] })),
+      "lint/rfc5280-crl/idp-name-relative-to-crl-issuer"));
+  check("an IDP with no distributionPoint at all is not flagged",
+    !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), scopeOf([1])] })),
+      "lint/rfc5280-crl/idp-name-relative-to-crl-issuer"));
+
   check("an IDP stating a single scope is not flagged",
     !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(),
       idpExt(b.sequence([b.contextPrimitive(1, Buffer.from([0xff]))]))] })),
