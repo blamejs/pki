@@ -92,6 +92,24 @@ security-only patches after the next major releases.
   certificates before any pre-authentication signature work. A small hostile
   input cannot fan out into unbounded allocations or unbounded asymmetric-verify
   work.
+- **Unbounded transparency-log entry fanout (CWE-834).** A Sigstore bundle's
+  entry list was bounded only by the 1 MiB bundle byte budget. An entry is tried
+  until one passes every check that depends on which entry it is, and those
+  checks include a certification-path validation whose instant comes from the
+  entry itself unless the caller pins `opts.time`, so each additional entry buys
+  another path validation. A measured entry is about 6.7 KB, which leaves room
+  for roughly 155 in a budget-sized bundle, while every bundle in the Sigstore
+  conformance corpus carries exactly one. `pki.sigstore.verifyBundle` caps the
+  count at `C.LIMITS.TLOG_MAX_COUNT` (32) and refuses before reading any entry.
+  The ceiling is a local resource bound, not a rule the bundle specification
+  states.
+- **A DSSE envelope signature the verdict never covered.** The Sigstore bundle
+  specification states that an envelope in a bundle carries exactly one
+  signature, and that a verifier rejects an envelope whose signature count is
+  not one. Only `signatures[0]` was ever read, so an envelope carrying a second
+  was accepted and its verdict described a check that had not been run against
+  the rest of what the envelope carried. The count is now enforced at the bundle
+  door as `sigstore/bad-dsse`.
 - **A work bound answered with a value that is not a number (CWE-834).**
   `opts.maxIterations` lowers the key-derivation work a PKCS#12 store is allowed
   to demand. The option was read once for each part of its shape check and again

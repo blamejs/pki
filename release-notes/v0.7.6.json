@@ -1,0 +1,14 @@
+{
+  "version": "0.7.6",
+  "date": "2026-09-10",
+  "headline": "A Sigstore bundle is held to the shape its specification states, in signature count and in entry count.",
+  "summary": "A bundle's DSSE envelope may carry exactly one signature, and the specification requires a verifier to reject any other count. This one accepted more and verified the first, so a second signature rode through a check that never read it. Separately, nothing bounded how many transparency-log entries a bundle could offer, and each candidate now costs a certification-path validation, so a bundle sized to the byte budget was a work multiplier. Both are refused at the bundle door, before any per-item verification runs.",
+  "sections": {
+    "Fixed": [
+      "A DSSE envelope carrying more than one signature is refused with sigstore/bad-dsse, naming the count it carried. The Sigstore bundle specification states the rule on the producer, that an envelope in a bundle has exactly one signature, and again on the verifier, that a client rejects an envelope whose signature count is not one. Only the first signature was ever read, so an envelope with a second was accepted and returned a verdict that said nothing about it. An envelope with exactly one is unaffected, and an empty signature list keeps the refusal it already had."
+    ],
+    "Changed": [
+      "A bundle offering more than 32 transparency-log entries is refused with sigstore/bad-bundle, naming the count it offered. Each entry a bundle offers can cost a certification-path validation, since an entry is tried until one passes every check that depends on which entry it is, and the validation instant comes from the entry itself unless the caller pins opts.time. Nothing bounded the count: the 1 MiB bundle budget leaves room for roughly 155 entries, and every bundle in the Sigstore conformance suite carries exactly one. The ceiling is a local resource bound rather than a rule the specification states, and it is checked before any entry is read. It is available as pki.C.LIMITS.TLOG_MAX_COUNT."
+    ]
+  }
+}

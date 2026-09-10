@@ -4,6 +4,18 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.6 — 2026-09-10
+
+A Sigstore bundle is held to the shape its specification states, in signature count and in entry count.
+
+### Changed
+
+- A bundle offering more than 32 transparency-log entries is refused with sigstore/bad-bundle, naming the count it offered. Each entry a bundle offers can cost a certification-path validation, since an entry is tried until one passes every check that depends on which entry it is, and the validation instant comes from the entry itself unless the caller pins opts.time. Nothing bounded the count: the 1 MiB bundle budget leaves room for roughly 155 entries, and every bundle in the Sigstore conformance suite carries exactly one. The ceiling is a local resource bound rather than a rule the specification states, and it is checked before any entry is read. It is available as pki.C.LIMITS.TLOG_MAX_COUNT.
+
+### Fixed
+
+- A DSSE envelope carrying more than one signature is refused with sigstore/bad-dsse, naming the count it carried. The Sigstore bundle specification states the rule on the producer, that an envelope in a bundle has exactly one signature, and again on the verifier, that a client rejects an envelope whose signature count is not one. Only the first signature was ever read, so an envelope with a second was accepted and returned a verdict that said nothing about it. An envelope with exactly one is unaffected, and an empty signature list keeps the refusal it already had.
+
 ## v0.7.5 — 2026-09-10
 
 Certificate linting now covers the ML-DSA and SLH-DSA certificate profiles.

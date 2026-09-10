@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.7.5",
+  "packageVersion": "0.7.6",
   "surface": {
     "C": {
       "kind": "object",
@@ -207,6 +207,9 @@
               "kind": "number"
             },
             "SCT_MAX_COUNT": {
+              "kind": "number"
+            },
+            "TLOG_MAX_COUNT": {
               "kind": "number"
             },
             "TLS_CERT_MAX_ENTRIES": {
@@ -1555,6 +1558,9 @@
               "kind": "number"
             },
             "SCT_MAX_COUNT": {
+              "kind": "number"
+            },
+            "TLOG_MAX_COUNT": {
               "kind": "number"
             },
             "TLS_CERT_MAX_ENTRIES": {

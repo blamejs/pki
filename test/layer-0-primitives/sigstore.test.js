@@ -297,6 +297,29 @@ async function run() {
   var v = await pki.sigstore.verifyBundle(BUNDLE, TM);
   check("verifyBundle: the real bundle verifies (all legs)", v && v.verified === true);
   check("#78 valid aliases verified on the sigstore verdict", v.valid === true && v.valid === v.verified);
+
+  // An entry is tried until one passes every entry-dependent check, and those include a path
+  // validation. The count is bounded so a bundle that fits the byte budget cannot multiply that
+  // work. At the ceiling the bundle still verifies; one past it is refused before any entry is
+  // touched, which is why the over-ceiling bundle here carries entries that are not even objects:
+  // reaching the loop would report THAT instead.
+  var C_LIMITS = require("../../lib/constants.js").LIMITS;
+  function withTlogCount(n, filler) {
+    var b = JSON.parse(JSON.stringify(BUNDLE));
+    var one = b.verificationMaterial.tlogEntries[0];
+    var list = [one];
+    for (var i = 1; i < n; i++) list.push(filler === undefined ? JSON.parse(JSON.stringify(one)) : filler);
+    b.verificationMaterial.tlogEntries = list;
+    return b;
+  }
+  check("a bundle AT the transparency-log entry ceiling still verifies",
+    (await pki.sigstore.verifyBundle(withTlogCount(C_LIMITS.TLOG_MAX_COUNT), TM)).verified === true);
+  check("a bundle one PAST the ceiling -> sigstore/bad-bundle",
+    await codeOf(pki.sigstore.verifyBundle(withTlogCount(C_LIMITS.TLOG_MAX_COUNT + 1), TM)) === "sigstore/bad-bundle");
+  var junkOverMsg = await pki.sigstore.verifyBundle(withTlogCount(C_LIMITS.TLOG_MAX_COUNT + 1, 7), TM)
+    .then(function () { return "NO-THROW"; }, function (e) { return e.message; });
+  check("the count refusal fires BEFORE any per-entry work, so non-object entries never report",
+    junkOverMsg.indexOf("at most " + C_LIMITS.TLOG_MAX_COUNT) !== -1);
   // The verdict ends the prototype lookup for `then` on itself, so resolving it does not hand an
   // inherited accessor the verdict as a receiver. verdict-shield.test.js drives that behavior.
   check("the sigstore verdict owns then", Object.prototype.hasOwnProperty.call(v, "then") && v.then === undefined);
@@ -652,6 +675,29 @@ async function run() {
   // sigstore/* error, never a raw TypeError escaping the contract (a null array
   // element or a non-object JSON value where an object is required). ---
   check("dsseEnvelope.signatures[null] -> sigstore/bad-dsse", (function () { var b = JSON.parse(JSON.stringify(BUNDLE)); b.dsseEnvelope.signatures = [null]; try { pki.sigstore.parseBundle(b); return false; } catch (e) { return e.code === "sigstore/bad-dsse"; } })());
+
+  // The bundle protobuf states the rule on the producer and again on the verifier: a bundle's DSSE
+  // envelope carries exactly one signature, and a verifier rejects an envelope whose signature
+  // count is not one. Only signatures[0] is ever read, so a second signature would otherwise ride
+  // through a verification that never looked at it.
+  check("dsseEnvelope.signatures with TWO entries -> sigstore/bad-dsse", (function () {
+    var b = JSON.parse(JSON.stringify(BUNDLE));
+    b.dsseEnvelope.signatures = [b.dsseEnvelope.signatures[0], JSON.parse(JSON.stringify(b.dsseEnvelope.signatures[0]))];
+    try { pki.sigstore.parseBundle(b); return false; } catch (e) { return e.code === "sigstore/bad-dsse"; }
+  })());
+  check("a SECOND signature is refused even when it is structurally junk, so the count is what decides", (function () {
+    var b = JSON.parse(JSON.stringify(BUNDLE));
+    b.dsseEnvelope.signatures = [b.dsseEnvelope.signatures[0], { sig: "AA==" }];
+    try { pki.sigstore.parseBundle(b); return false; } catch (e) { return e.code === "sigstore/bad-dsse"; }
+  })());
+  check("dsseEnvelope.signatures with exactly ONE still parses", (function () {
+    var b = JSON.parse(JSON.stringify(BUNDLE));
+    return b.dsseEnvelope.signatures.length === 1 && !!pki.sigstore.parseBundle(b);
+  })());
+  check("an EMPTY dsseEnvelope.signatures keeps its own refusal", (function () {
+    var b = JSON.parse(JSON.stringify(BUNDLE)); b.dsseEnvelope.signatures = [];
+    try { pki.sigstore.parseBundle(b); return false; } catch (e) { return e.code === "sigstore/bad-dsse"; }
+  })());
   var nullCert = JSON.parse(JSON.stringify(BUNDLE));
   delete nullCert.verificationMaterial.certificate;
   nullCert.verificationMaterial.x509CertificateChain = { certificates: [null] };
