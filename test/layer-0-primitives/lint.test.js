@@ -803,6 +803,106 @@ function testCrlProfile() {
       crlExt("freshestCRL", false, b.sequence([b.sequence([b.contextConstructed(0,
         b.contextConstructed(0, b.contextPrimitive(6, Buffer.from("http://e/x", "latin1"))))])]))] })),
       "lint/rfc5280-crl/freshest-in-delta"));
+  // Three semantic rules the ISSUING path already enforces, applied to a CRL that arrived from
+  // elsewhere. Recognizing an extension by its identifier says only that the profile names it, so
+  // each of these reports clean without its own row.
+  function deltaExt(base) { return crlExt("deltaCRLIndicator", true, b.integer(BigInt(base))); }
+  check("a delta CRL whose cRLNumber does not exceed its baseCRLNumber -> delta-number-not-advancing",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(3), akiKeyId(), deltaExt(9)] })),
+      "lint/rfc5280-crl/delta-number-not-advancing"));
+  check("a delta CRL whose cRLNumber equals its baseCRLNumber -> delta-number-not-advancing",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(5), akiKeyId(), deltaExt(5)] })),
+      "lint/rfc5280-crl/delta-number-not-advancing"));
+  check("a delta CRL that advances its number is not flagged",
+    !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(9), akiKeyId(), deltaExt(3)] })),
+      "lint/rfc5280-crl/delta-number-not-advancing"));
+
+  var removeReason = crlExt("reasonCode", false, b.enumerated(8n));
+  check("removeFromCRL in a COMPLETE CRL -> remove-from-crl-outside-delta (sec. 5.3.1)",
+    hasId(pki.lint.crl(makeCrl({ revoked: [entry(5, [removeReason])] })),
+      "lint/rfc5280-crl/remove-from-crl-outside-delta"));
+  check("removeFromCRL in a DELTA CRL is not flagged",
+    !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(9), akiKeyId(), deltaExt(3)], revoked: [entry(5, [removeReason])] })),
+      "lint/rfc5280-crl/remove-from-crl-outside-delta"));
+  check("an ordinary reason code in a complete CRL is not flagged",
+    !hasId(pki.lint.crl(makeCrl({ revoked: [entry(5, [crlExt("reasonCode", false, b.enumerated(1n))])] })),
+      "lint/rfc5280-crl/remove-from-crl-outside-delta"));
+
+  // A recognized extension whose VALUE no consumer can read. The criticality row is satisfied and
+  // the unknown-critical row cannot fire, because the identifier is one the profile names.
+  check("a critical issuingDistributionPoint whose value is a NULL -> extension-value-syntax",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), crlExt("issuingDistributionPoint", true, b.nullValue())] })),
+      "lint/rfc5280-crl/extension-value-syntax"));
+  check("a freshestCRL whose value is a NULL -> extension-value-syntax",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), crlExt("freshestCRL", false, b.nullValue())] })),
+      "lint/rfc5280-crl/extension-value-syntax"));
+  check("an entry certificateIssuer whose value is a NULL -> extension-value-syntax",
+    hasId(pki.lint.crl(makeCrl({ revoked: [entry(5, [crlExt("certificateIssuer", true, b.nullValue())])] })),
+      "lint/rfc5280-crl/extension-value-syntax"));
+  check("a deltaCRLIndicator whose value is a SEQUENCE -> extension-value-syntax",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), crlExt("deltaCRLIndicator", true, b.sequence([]))] })),
+      "lint/rfc5280-crl/extension-value-syntax"));
+  // reasonCode and invalidityDate are NOT in the table: the parser decodes both and refuses a value
+  // that is not the type they name, so a row for either could never fire.
+  check("an entry reasonCode whose value is a NULL is fatal at parse, not a value-syntax row",
+    fatalCode(makeCrl({ revoked: [entry(5, [crlExt("reasonCode", false, b.nullValue())])] })) === "crl/bad-extension-value");
+  // The value is walked through the shared schema, not matched on its outer tag. A SEQUENCE
+  // carrying a NULL has the right outer type and is still not an IssuingDistributionPoint.
+  check("an issuingDistributionPoint of SEQUENCE { NULL } -> extension-value-syntax",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(),
+      crlExt("issuingDistributionPoint", true, b.sequence([b.nullValue()]))] })),
+      "lint/rfc5280-crl/extension-value-syntax"));
+  // Whether the value DECODES and whether section 5.2.5 PERMITS the scope it states are different
+  // decisions, so they are different rows. An empty IDP and one claiming two exclusive scopes both
+  // decode perfectly well.
+  function idpExt(inner) { return crlExt("issuingDistributionPoint", true, inner); }
+  check("an EMPTY issuingDistributionPoint -> idp-profile (sec. 5.2.5)",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), idpExt(b.sequence([]))] })),
+      "lint/rfc5280-crl/idp-profile"));
+  check("an IDP setting both onlyContainsUserCerts and onlyContainsCACerts -> idp-profile",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(),
+      idpExt(b.sequence([b.contextPrimitive(1, Buffer.from([0xff])), b.contextPrimitive(2, Buffer.from([0xff]))]))] })),
+      "lint/rfc5280-crl/idp-profile"));
+  check("an IDP setting onlyContainsAttributeCerts -> idp-profile",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(),
+      idpExt(b.sequence([b.contextPrimitive(5, Buffer.from([0xff]))]))] })),
+      "lint/rfc5280-crl/idp-profile"));
+  check("an IDP stating a single scope is not flagged",
+    !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(),
+      idpExt(b.sequence([b.contextPrimitive(1, Buffer.from([0xff]))]))] })),
+      "lint/rfc5280-crl/idp-profile"));
+  check("a malformed IDP draws the syntax row and NOT the profile row",
+    (function () {
+      var r = pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), idpExt(b.nullValue())] }));
+      return hasId(r, "lint/rfc5280-crl/extension-value-syntax") && !hasId(r, "lint/rfc5280-crl/idp-profile");
+    })());
+
+  // Read through the same decoder path validation uses, so the two verbs cannot disagree about a
+  // well-formed IssuingDistributionPoint. The shared schema alone leaves distributionPoint as
+  // `any`, which would admit a [0] wrapper carrying a NULL.
+  check("an issuingDistributionPoint of SEQUENCE { [0] NULL } -> extension-value-syntax",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(),
+      crlExt("issuingDistributionPoint", true, b.sequence([b.contextConstructed(0, b.nullValue())]))] })),
+      "lint/rfc5280-crl/extension-value-syntax"));
+  check("an issuingDistributionPoint carrying a real distributionPoint is not flagged",
+    !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(),
+      crlExt("issuingDistributionPoint", true, b.sequence([b.contextConstructed(0,
+        b.contextConstructed(0, b.contextPrimitive(6, Buffer.from("http://e/c", "latin1"))))]))] })),
+      "lint/rfc5280-crl/extension-value-syntax"));
+  check("a certificateIssuer of SEQUENCE { NULL } -> extension-value-syntax",
+    hasId(pki.lint.crl(makeCrl({ revoked: [entry(5, [crlExt("certificateIssuer", true, b.sequence([b.nullValue()]))])] })),
+      "lint/rfc5280-crl/extension-value-syntax"));
+  // BaseCRLNumber is a CRLNumber, which sec. 5.2.3 constrains to a non-negative integer. A negative
+  // one passes an outer-tag check AND the advancing comparison, so it needs its own coverage.
+  check("a deltaCRLIndicator carrying a NEGATIVE base number -> extension-value-syntax",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), crlExt("deltaCRLIndicator", true, b.integer(-1n))] })),
+      "lint/rfc5280-crl/extension-value-syntax"));
+  check("a well-formed issuingDistributionPoint is not flagged",
+    !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), crlExt("issuingDistributionPoint", true, b.sequence([]))] })),
+      "lint/rfc5280-crl/extension-value-syntax"));
+  check("the conforming baseline draws no value-syntax row",
+    !hasId(okReport, "lint/rfc5280-crl/extension-value-syntax"));
+
   check("an unrecognized CRITICAL extension -> unknown-critical-extension",
     hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(),
       b.sequence([b.oid("1.3.6.1.4.1.55738.777.2"), b.boolean(true), b.octetString(b.nullValue())])] })),
