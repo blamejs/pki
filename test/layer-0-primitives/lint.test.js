@@ -873,8 +873,20 @@ function testCrlProfile() {
   check("a serial of exactly 20 octets is accepted (the ceiling is inclusive)",
     !hasId(pki.lint.crl(makeCrl({ revoked: [entrySerial((1n << 152n) + 1n)] })), "lint/rfc5280-crl/entry-serial-too-long"));
 
-  check("a CRL with no authorityKeyIdentifier -> aki-missing at warn",
+  check("a CRL with no authorityKeyIdentifier -> aki-missing",
     hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1)] })), "lint/rfc5280-crl/aki-missing"));
+  // Sections 5.2.1 and 5.2.3 state their requirements in the same terms, so the rows must carry the
+  // same severity: a caller filtering at `error` sees both or neither, never one of the two.
+  check("the authorityKeyIdentifier and cRLNumber rows are graded alike, since both clauses are MUSTs",
+    (function () {
+      var sev = {};
+      pki.lint.rules("rfc5280-crl").forEach(function (r) { sev[r.id] = r.severity; });
+      return sev["lint/rfc5280-crl/aki-missing"] === "error"
+        && sev["lint/rfc5280-crl/aki-without-key-identifier"] === "error"
+        && sev["lint/rfc5280-crl/crl-number-missing"] === "error";
+    })());
+  check("a CRL missing its authorityKeyIdentifier survives a severity floor of error",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1)] }), { severity: "error" }), "lint/rfc5280-crl/aki-missing"));
   // Section 5.2.1 states two things: include the extension, and use the key identifier method. An
   // AKI that is present but carries no keyIdentifier satisfies the first and fails the second.
   check("an authorityKeyIdentifier with no keyIdentifier -> aki-without-key-identifier",
