@@ -920,6 +920,34 @@ async function testPreEncodedExtProfile() {
   // A conforming pre-encoded delta (critical, base 2) + spec.crlNumber 5 is accepted.
   var c = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 5n, extensions: [extDer("deltaCRLIndicator", true, B.integer(2n))] }, issuerOf(s)));
   check("conforming pre-encoded delta + spec.crlNumber accepted", (crlExt(c, "deltaCRLIndicator") || {}).critical === true);
+  // The profile rules above govern WHICH extension may appear and how it is marked. They say
+  // nothing about whether its value decodes as the structure its OID names, which is what the
+  // shared extension decoders answer. The sibling authoring verbs pass that decoder map into the
+  // builder; a value that does not decode must not ride into a signed CRL either.
+  var okIan = extDer("issuerAltName", false, B.sequence([B.contextPrimitive(2, Buffer.from("crl.example", "latin1"))]));
+  check("CONTROL: a well-formed pre-encoded issuerAltName is accepted",
+    (await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: [okIan] }, issuerOf(s)))) === null);
+  // The decoder's own typed code is kept, because it names the field that failed. This is the same
+  // answer pki.x509.sign gives for the same malformed value. The check runs AFTER this module's own
+  // profile rules, so an extension it already answers for (authorityKeyIdentifier, cRLNumber,
+  // issuingDistributionPoint) keeps the code it has always raised; these are the ones nothing read.
+  check("pre-encoded issuerAltName whose value is a NULL -> crl/bad-extension-value",
+    (await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU,
+      extensions: [extDer("issuerAltName", false, B.nullValue())] }, issuerOf(s)))) === "crl/bad-extension-value");
+  check("pre-encoded keyUsage whose value is a NULL -> crl/bad-key-usage",
+    (await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU,
+      extensions: [extDer("keyUsage", false, B.nullValue())] }, issuerOf(s)))) === "crl/bad-key-usage");
+  // issuingDistributionPoint has no registered decoder, so this module's own profile check is what
+  // refuses it. The row is here so the two paths stay told apart.
+  check("pre-encoded issuingDistributionPoint whose value is an INTEGER -> crl/bad-input",
+    (await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU,
+      extensions: [extDer("issuingDistributionPoint", true, B.integer(1n))] }, issuerOf(s)))) === "crl/bad-input");
+  // The revoked-entry escape hatch takes the same check, since it is the same class of input.
+  check("pre-encoded ENTRY extension whose value is malformed is refused",
+    (await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU,
+      revoked: [{ serialNumber: 1n, revocationDate: RD,
+        extensions: [extDer("invalidityDate", false, B.nullValue())] }] }, issuerOf(s)))) !== null);
+
   // The entry-extension escape hatch is held to the same profile: reasonCode MUST be non-critical (sec. 5.3.1).
   check("pre-encoded critical entry reasonCode -> crl/bad-input",
     await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 1n, revocationDate: RD, extensions: [extDer("reasonCode", true, B.enumerated(1n))] }] }, issuerOf(s))) === "crl/bad-input");
@@ -927,8 +955,15 @@ async function testPreEncodedExtProfile() {
   check("freshestCRL DP with an empty fullName -> crl/bad-input",
     await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: { freshestCRL: [{ fullName: [] }] } }, issuerOf(s))) === "crl/bad-input");
   // A pre-encoded freshestCRL co-present with a pre-encoded delta indicator is rejected (sec. 5.2.6).
+  // The freshestCRL here must be WELL FORMED, so that the sec. 5.2.6 co-presence rule is what
+  // refuses the CRL. CRLDistributionPoints is SIZE (1..MAX), so an empty SEQUENCE is refused as a
+  // malformed value first and the co-presence rule would never be reached.
+  var goodFreshest = B.sequence([B.sequence([B.contextConstructed(0,
+    B.contextConstructed(0, B.contextPrimitive(6, Buffer.from("http://e/x", "latin1"))))])]);
   check("pre-encoded freshestCRL in a pre-encoded delta CRL -> crl/bad-input",
-    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 5n, extensions: [extDer("deltaCRLIndicator", true, B.integer(2n)), extDer("freshestCRL", false, B.sequence([]))] }, issuerOf(s))) === "crl/bad-input");
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 5n, extensions: [extDer("deltaCRLIndicator", true, B.integer(2n)), extDer("freshestCRL", false, goodFreshest)] }, issuerOf(s))) === "crl/bad-input");
+  check("an EMPTY pre-encoded freshestCRL is refused as a malformed value (SIZE 1..MAX)",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: [extDer("freshestCRL", false, B.sequence([]))] }, issuerOf(s))) === "crl/bad-crl-distribution-points");
   // Value validation on the escape hatch: a pre-encoded cRLNumber whose value is not an INTEGER is rejected.
   check("pre-encoded cRLNumber with a non-INTEGER value -> crl/bad-crl-number",
     await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: [extDer("cRLNumber", false, B.boolean(true))] }, issuerOf(s))) === "crl/bad-crl-number");

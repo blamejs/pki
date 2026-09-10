@@ -1,0 +1,13 @@
+{
+  "version": "0.7.8",
+  "date": "2026-09-10",
+  "headline": "A pre-encoded CRL extension whose value does not decode is refused instead of signed.",
+  "summary": "pki.crl.sign accepts extensions as pre-encoded Extension DER, and it checked that each one was a well-formed Extension SEQUENCE without checking that its value decoded as the structure its extension identifier names. An issuerAltName wrapping a NULL was signed into a CRL. The sibling authoring verbs already put such a value through the shared extension decoders, and CRL issuance now does the same, for the CRL's own extensions and for a revoked entry's.",
+  "sections": {
+    "Fixed": [
+      "A pre-encoded extension supplied to pki.crl.sign is put through the extension decoder registered for its identifier, and a value that does not decode is refused with the decoder's own typed code, the same one pki.x509.sign raises for the same bytes. An issuerAltName whose value is a NULL now raises crl/bad-extension-value and a keyUsage whose value is a NULL raises crl/bad-key-usage, where both were previously signed. Revoked-entry extensions take the same check.",
+      "The check runs after the per-extension profile rules this verb already applied, so a CRL whose only fault is one malformed extension keeps the code it has always raised: a pre-encoded cRLNumber that is not an INTEGER stays crl/bad-crl-number, and the criticality, delta-ordering and issuingDistributionPoint rules are unchanged. No CRL that was accepted before is refused for a different reason; the extensions newly refused are ones nothing was reading, and an extension with no registered decoder is unaffected.",
+      "Where a CRL carries more than one fault, the reported code can differ from earlier releases. The rules that compare extensions to each other, such as freshestCRL not appearing in a delta CRL and a delta's cRLNumber exceeding its baseCRLNumber, run once every extension has been read, so a malformed value found first is now reported first. Such a CRL was refused before and is refused now; only which of its faults is named has changed. A caller matching on a specific code for a CRL with several faults should re-check the code it expects."
+    ]
+  }
+}

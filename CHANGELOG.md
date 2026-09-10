@@ -4,6 +4,16 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.8 — 2026-09-10
+
+A pre-encoded CRL extension whose value does not decode is refused instead of signed.
+
+### Fixed
+
+- A pre-encoded extension supplied to pki.crl.sign is put through the extension decoder registered for its identifier, and a value that does not decode is refused with the decoder's own typed code, the same one pki.x509.sign raises for the same bytes. An issuerAltName whose value is a NULL now raises crl/bad-extension-value and a keyUsage whose value is a NULL raises crl/bad-key-usage, where both were previously signed. Revoked-entry extensions take the same check.
+- The check runs after the per-extension profile rules this verb already applied, so a CRL whose only fault is one malformed extension keeps the code it has always raised: a pre-encoded cRLNumber that is not an INTEGER stays crl/bad-crl-number, and the criticality, delta-ordering and issuingDistributionPoint rules are unchanged. No CRL that was accepted before is refused for a different reason; the extensions newly refused are ones nothing was reading, and an extension with no registered decoder is unaffected.
+- Where a CRL carries more than one fault, the reported code can differ from earlier releases. The rules that compare extensions to each other, such as freshestCRL not appearing in a delta CRL and a delta's cRLNumber exceeding its baseCRLNumber, run once every extension has been read, so a malformed value found first is now reported first. Such a CRL was refused before and is refused now; only which of its faults is named has changed. A caller matching on a specific code for a CRL with several faults should re-check the code it expects.
+
 ## v0.7.7 — 2026-09-10
 
 The two GeneralName arms that were taken on their tag alone are now read.
