@@ -70,6 +70,30 @@ async function testClassicRoundTrip() {
   check("#1 an accessor-backed cap cannot answer the comparison with a non-number",
     capErr !== null && capErr.code === "pkcs12/iteration-limit" && capOut === null);
   check("#1 and that cap was read exactly once", capReads === 1);
+
+  // A store with no MAC never reaches the MAC work cap, so the bag path is the only thing holding
+  // the caller's bound. Each legacy bag consulted the option again, so a cap satisfied at the door
+  // and answered with a non-number by a bag left NaN, and the key derivation ran unbounded on a
+  // store opened with allowUnauthenticated.
+  var legacyFx = require("../fixtures/pkcs12/legacy-nomac.json");
+  var legacy = Buffer.from(legacyFx.store_base64, "base64");
+  check("#1 the legacy fixture carries no MAC", pki.schema.pkcs12.parse(legacy).integrityMode === "none");
+  check("#1 a plain cap below the legacy bag count refuses",
+    (await codeOf(pki.pkcs12.open(legacy, legacyFx.password, { maxIterations: 1000, allowUnauthenticated: true })))
+      === "pkcs12/iteration-limit");
+  var legacyDefeated = [];
+  for (var lf = 1; lf <= 14; lf++) {
+    var lr = 0, lo = { allowUnauthenticated: true };
+    (function (f) {
+      Object.defineProperty(lo, "maxIterations", {
+        enumerable: true, configurable: true,
+        get: function () { lr++; return lr === f ? "not-a-number" : 1000; },
+      });
+    })(lf);
+    if ((await codeOf(pki.pkcs12.open(legacy, legacyFx.password, lo))) === null) legacyDefeated.push(lf);
+  }
+  check("#1 no read of an accessor-backed cap can open a legacy store past it",
+    legacyDefeated.length === 0);
 }
 
 // ---- #2 PBMAC1-SHA256 round-trip -------------------------------------------
