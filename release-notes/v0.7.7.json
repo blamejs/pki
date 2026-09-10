@@ -1,0 +1,15 @@
+{
+  "version": "0.7.7",
+  "date": "2026-09-10",
+  "headline": "The two GeneralName arms that were taken on their tag alone are now read.",
+  "summary": "Seven of the nine GeneralName alternatives were held to their structure and two were not. A certificate could carry an alternative name whose ediPartyName wrapped a NULL, encoding no name at all, and every reader that walks names accepted it as a name. Both arms are now read like the rest, so a name-shaped hole is refused at the same door as any other malformed name.",
+  "sections": {
+    "Fixed": [
+      "GeneralName ediPartyName [5] is read as the EDIPartyName it holds: an optional nameAssigner [0] before a required partyName [1], each wrapping a DirectoryString of at least one character, in that order and with nothing else alongside. It was previously accepted as any non-empty constructed value, so a [5] over a NULL, over an INTEGER, or carrying nameAssigner without partyName all decoded as names while encoding none. GeneralName is defined in the RFC 5280 Appendix A.2 implicitly tagged module, so the [5] tag replaces the EDIPartyName SEQUENCE tag and its children are the two arms directly.",
+      "GeneralName x400Address [3] must open with the BuiltInStandardAttributes SEQUENCE that begins an ORAddress, so an arm carrying that tag over some other value is refused. What the components hold is an X.400 structure this does not read, and every one of them is optional, so an address whose components are all empty is conforming and is not refused."
+    ],
+    "Changed": [
+      "Every verb that walks a name is affected, since they share one reader: certification-path validation, certificate and attribute-certificate parsing, CRL and CMP name handling, certificate linting, and the name-carrying extension decoders. A certificate carrying one of these two arms malformed was accepted before and is refused now, with the typed code that verb already raises for a bad name. A conforming arm is unaffected, and no error code was added or changed."
+    ]
+  }
+}
