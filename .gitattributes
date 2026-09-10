@@ -33,6 +33,12 @@ release-notes/*.json text eol=lf
 # verifies. The vendor rule above exists for the same reason.
 test/fixtures/sigstore/conformance/** -text binary
 
+# The x509-limbo conformance slice, for the same reason. Every certificate in it
+# is a PEM string carrying a signature over its own bytes, and the suite's first
+# check pins the file's SHA-256, so a CRLF rewrite on a Windows checkout changes
+# the digest and the suite fails before it validates anything.
+test/fixtures/x509-limbo/** -text binary
+
 # Native modules — always binary.
 *.node binary
 *.so binary
