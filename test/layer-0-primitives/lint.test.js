@@ -724,6 +724,19 @@ function testCrlProfile() {
 
   check("hostile bytes return a fatal lint/unparseable rather than throwing",
     pki.lint.crl(Buffer.from([0x30, 0x03, 0x02, 0x01, 0x01])).worst === "fatal");
+  // The PEM string is a documented input, so both of its outcomes are driven: a string that is not
+  // a decodable CRL fails closed as the engine's fatal, and a real one lints like the DER form.
+  check("a string that is not a decodable CRL PEM -> fatal lint/unparseable",
+    (function () {
+      var r = pki.lint.crl("-----BEGIN X509 CRL-----\nnot base64 at all\n-----END X509 CRL-----\n");
+      return r.worst === "fatal" && hasId(r, "lint/unparseable");
+    })());
+  check("a CRL supplied as PEM lints the same as the DER",
+    (function () {
+      var der = makeCrl();
+      var pem = pki.schema.crl.pemEncode(der);
+      return JSON.stringify(ids(pki.lint.crl(pem))) === JSON.stringify(ids(pki.lint.crl(der)));
+    })());
 
   check("a CRL with no nextUpdate -> next-update-missing",
     hasId(pki.lint.crl(makeCrl({ noNextUpdate: true })), "lint/rfc5280-crl/next-update-missing"));
