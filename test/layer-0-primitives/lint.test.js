@@ -751,7 +751,12 @@ function testCrlProfile() {
     return r.worst === "fatal" && hasId(r, "lint/unparseable") && r.findings[0].context
       ? r.findings[0].context.code : null;
   }
-  check("a v1 CRL carrying extensions is fatal at parse (sec. 5.1.2.1)",
+  // The version must be OMITTED here, not set to 0. An explicit INTEGER 0 is refused as a bad
+  // version VALUE whether or not extensions are present, so it would pass this row without ever
+  // exercising the version-against-extensions gate the clause states.
+  check("a CRL carrying extensions with no version field is fatal at parse (sec. 5.1.2.1)",
+    fatalCode(makeCrl({ version: null })) === "crl/bad-version");
+  check("...and an explicit v1 is refused too, as a bad version value",
     fatalCode(makeCrl({ version: 0 })) === "crl/bad-version");
   check("an empty issuer name is fatal at parse (sec. 5.1.2.3)",
     fatalCode(makeCrl({ issuer: b.sequence([]) })) === "crl/bad-issuer");
@@ -819,6 +824,24 @@ function testCrlProfile() {
   check("a reasonCode encoding unspecified(0) -> reason-code-unspecified at warn",
     hasId(pki.lint.crl(makeCrl({ revoked: [entry(5, [crlExt("reasonCode", false, b.enumerated(0n))])] })),
       "lint/rfc5280-crl/reason-code-unspecified"));
+  // Section 5.2.5 makes the same encoding a MUST violation where the CRL is scoped to some reason
+  // codes, because the reason is what decides which partition an entry belongs in. The SHOULD row
+  // stands aside there so one fault is not reported twice at two strengths.
+  // onlySomeReasons [3] IMPLICIT BIT STRING with keyCompromise(1) set: 6 unused bits, byte 0x40.
+  var idpReasons = crlExt("issuingDistributionPoint", true, b.sequence([b.contextPrimitive(3, Buffer.from([0x06, 0x40]))]));
+  var scopedUnspecified = pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), idpReasons],
+    revoked: [entry(5, [crlExt("reasonCode", false, b.enumerated(0n))])] }));
+  check("unspecified(0) in a reason-scoped CRL -> unspecified-reason-in-reason-scoped-crl at error",
+    hasId(scopedUnspecified, "lint/rfc5280-crl/unspecified-reason-in-reason-scoped-crl"));
+  check("...and the SHOULD row stands aside, so the fault is reported once",
+    !hasId(scopedUnspecified, "lint/rfc5280-crl/reason-code-unspecified"));
+  check("a reason-scoped CRL with a meaningful reason is not flagged",
+    !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), idpReasons],
+      revoked: [entry(5, [crlExt("reasonCode", false, b.enumerated(1n))])] })),
+      "lint/rfc5280-crl/unspecified-reason-in-reason-scoped-crl"));
+  check("a reason-scoped CRL entry carrying NO reasonCode is permitted (sec. 5.2.5 says so)",
+    !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), idpReasons], revoked: [entry(5)] })),
+      "lint/rfc5280-crl/unspecified-reason-in-reason-scoped-crl"));
   check("a meaningful reason code is not flagged",
     !hasId(pki.lint.crl(makeCrl({ revoked: [entry(5, [crlExt("reasonCode", false, b.enumerated(1n))])] })),
       "lint/rfc5280-crl/reason-code-unspecified"));
