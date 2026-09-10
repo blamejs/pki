@@ -141,27 +141,40 @@ function buildSynBundle(opts) {
     body = { apiVersion: "0.0.1", kind: "dsse", spec: { signatures: [{ signature: derSig.toString("base64"), verifier: Buffer.from(synPem(leafDer)).toString("base64") }],
       payloadHash: { algorithm: "sha256", value: crypto.createHash("sha256").update(payload).digest("hex") } } };
   }
-  var canonBuf = Buffer.from(JSON.stringify(body));
-  var rootHash = merkle.leafHash(canonBuf);          // single-leaf tree: root == leaf hash
   var rekorSpki = rekorKp.publicKey.export({ format: "der", type: "spki" });
   var keyId = crypto.createHash("sha256").update(rekorSpki).digest();
   var logIndex = 1234;
-  var cpBody = Buffer.from("rekor.local\n1\n" + rootHash.toString("base64") + "\n", "utf8");
-  var cpSig = crypto.sign("sha256", cpBody, { key: rekorKp.privateKey, dsaEncoding: "der" });
-  var cpBlob = Buffer.concat([keyId.subarray(0, 4), cpSig]);
-  var cpEnvelope = cpBody.toString("utf8") + "\n" + String.fromCharCode(0x2014) + " rekor.local " + cpBlob.toString("base64") + "\n";
-  // Number() as the verifier applies it, so a non-numeric integratedTime is signed in the same form
-  // the verifier canonicalizes it into and the SET still attests it.
-  var setCanon = JSON.stringify({ body: canonBuf.toString("base64"), integratedTime: Number(integratedTime), logID: keyId.toString("hex"), logIndex: logIndex });
-  var setSig = crypto.sign("sha256", Buffer.from(setCanon, "utf8"), { key: rekorKp.privateKey, dsaEncoding: "der" });
-  var te = { logId: { keyId: keyId.toString("base64") }, integratedTime: integratedTime, logIndex: logIndex,
-    inclusionPromise: { signedEntryTimestamp: setSig.toString("base64") },
-    inclusionProof: { logIndex: 0, treeSize: 1, hashes: [], rootHash: rootHash.toString("base64"), checkpoint: { envelope: cpEnvelope } },
-    canonicalizedBody: canonBuf.toString("base64") };
+  // One entry, built the way the log builds one. A vector asking for a second gets one that binds
+  // just as hard, with its own proof and signed entry timestamp, differing only in what it records.
+  function makeEntry(bodyObj) {
+    var canonBuf = Buffer.from(JSON.stringify(bodyObj));
+    var rootHash = merkle.leafHash(canonBuf);        // single-leaf tree: root == leaf hash
+    var cpBody = Buffer.from("rekor.local\n1\n" + rootHash.toString("base64") + "\n", "utf8");
+    var cpSig = crypto.sign("sha256", cpBody, { key: rekorKp.privateKey, dsaEncoding: "der" });
+    var cpBlob = Buffer.concat([keyId.subarray(0, 4), cpSig]);
+    var cpEnvelope = cpBody.toString("utf8") + "\n" + String.fromCharCode(0x2014) + " rekor.local " + cpBlob.toString("base64") + "\n";
+    // Number() as the verifier applies it, so a non-numeric integratedTime is signed in the same form
+    // the verifier canonicalizes it into and the SET still attests it.
+    var setCanon = JSON.stringify({ body: canonBuf.toString("base64"), integratedTime: Number(integratedTime), logID: keyId.toString("hex"), logIndex: logIndex });
+    var setSig = crypto.sign("sha256", Buffer.from(setCanon, "utf8"), { key: rekorKp.privateKey, dsaEncoding: "der" });
+    return { logId: { keyId: keyId.toString("base64") }, integratedTime: integratedTime, logIndex: logIndex,
+      inclusionPromise: { signedEntryTimestamp: setSig.toString("base64") },
+      inclusionProof: { logIndex: 0, treeSize: 1, hashes: [], rootHash: rootHash.toString("base64"), checkpoint: { envelope: cpEnvelope } },
+      canonicalizedBody: canonBuf.toString("base64") };
+  }
+  var te = makeEntry(body);
   // extraChain rides in the bundle x509CertificateChain (path steps only, never a
   // terminal anchor) so the chain-building walk can be driven with a cyclic or an
   // over-deep DN graph -- the leaf stays cert[0].
-  var vmat = { tlogEntries: [te] };
+  // An entry that binds exactly as hard as the real one, carrying the same signature and the same
+  // certificate, and naming a different artifact. A log can hold several entries for one signer.
+  var entries = [te];
+  if (opts.decoyArtifact !== undefined) {
+    var decoyBody = JSON.parse(JSON.stringify(body));
+    decoyBody.spec.data.hash.value = crypto.createHash(hashAlg).update(opts.decoyArtifact).digest("hex");
+    entries = [makeEntry(decoyBody), te];
+  }
+  var vmat = { tlogEntries: entries };
   if (opts.extraChain && opts.extraChain.length) {
     vmat.x509CertificateChain = { certificates: [{ rawBytes: leafDer.toString("base64") }].concat(opts.extraChain.map(function (d) { return { rawBytes: d.toString("base64") }; })) };
   } else {
@@ -1102,6 +1115,32 @@ async function runMessageSignature(TM) {
   check("an empty artifact is digested and compared rather than short-circuited",
     await codeOf(pki.sigstore.verifyBundle(msBundle("v0.3"),
       { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: Buffer.alloc(0) })) === "sigstore/artifact-mismatch");
+
+  // A log may hold more than one entry for the same signature and certificate. Choosing among them
+  // asks which entry records THIS artifact, so an earlier entry that binds and names a different one
+  // is passed over rather than taken and then failed. Taking the first that bound refused a bundle
+  // whose later entry recorded the artifact the caller supplied.
+  // The bundle's own messageDigest is omitted, so the entry's recorded hash is the ONLY thing
+  // binding the artifact here. With it present, that second comparison raises the same code and
+  // would answer for a log-entry comparison that had stopped running.
+  var decoyBuilt = buildSynBundle({ messageArtifact: ARTIFACT, omitMessageDigest: true,
+    decoyArtifact: Buffer.from("a different artifact entirely") });
+  check("a decoy entry is present and is first",
+    decoyBuilt.bundle.verificationMaterial.tlogEntries.length === 2);
+  var decoyOut = null, decoyErr = null;
+  try {
+    decoyOut = await pki.sigstore.verifyBundle(decoyBuilt.bundle, {
+      fulcioRoots: decoyBuilt.trust.fulcioRoots, rekorKeys: decoyBuilt.trust.rekorKeys, artifact: ARTIFACT });
+  } catch (e) { decoyErr = e; }
+  check("an earlier binding entry naming another artifact does not sink the verify",
+    decoyErr === null && decoyOut !== null && decoyOut.verified === true);
+  check("and the verdict reports the digest the matching entry recorded",
+    decoyOut !== null && decoyOut.artifactDigest === crypto.createHash("sha256").update(ARTIFACT).digest("hex"));
+  // The artifact still has to be recorded by SOME entry: with neither naming it, the refusal stands.
+  check("with no entry naming the artifact the bundle is still refused",
+    await codeOf(pki.sigstore.verifyBundle(decoyBuilt.bundle, {
+      fulcioRoots: decoyBuilt.trust.fulcioRoots, rekorKeys: decoyBuilt.trust.rekorKeys,
+      artifact: Buffer.from("neither of them") })) === "sigstore/artifact-mismatch");
 
   // The arm's own shape.
   var noSig = clone(msBundle("v0.3")); delete noSig.messageSignature.signature;
