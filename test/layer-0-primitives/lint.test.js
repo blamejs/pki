@@ -762,6 +762,16 @@ function testCrlProfile() {
       "lint/rfc5280-crl/aki-without-key-identifier"));
   check("an authorityKeyIdentifier carrying a keyIdentifier is not flagged",
     !hasId(pki.lint.crl(makeCrl()), "lint/rfc5280-crl/aki-without-key-identifier"));
+  // The value is read through the shared AuthorityKeyIdentifier decoder, so a container that merely
+  // carries a [0] child is refused. A hand-rolled scan for the tag would admit both of these.
+  check("an AKI encoded as a SET carrying [0] -> aki-without-key-identifier",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), crlExt("authorityKeyIdentifier", false,
+      b.set([b.contextPrimitive(0, Buffer.alloc(20, 7))])) ] })),
+      "lint/rfc5280-crl/aki-without-key-identifier"));
+  check("an AKI whose [0] is CONSTRUCTED -> aki-without-key-identifier",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), crlExt("authorityKeyIdentifier", false,
+      b.sequence([b.contextConstructed(0, b.octetString(Buffer.alloc(20, 7)))])) ] })),
+      "lint/rfc5280-crl/aki-without-key-identifier"));
   check("an AKI naming only an issuer and serial (no keyIdentifier) -> aki-without-key-identifier",
     hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), crlExt("authorityKeyIdentifier", false,
       b.sequence([b.contextConstructed(1, b.contextPrimitive(2, Buffer.from("ca.example", "latin1"))),
