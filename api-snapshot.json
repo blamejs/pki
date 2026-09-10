@@ -2832,10 +2832,6 @@
           "kind": "function",
           "arity": 2
         },
-        "decodeIdp": {
-          "kind": "function",
-          "arity": 1
-        },
         "ocspChecker": {
           "kind": "function",
           "arity": 1

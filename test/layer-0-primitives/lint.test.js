@@ -981,6 +981,13 @@ function testCrlProfile() {
   check("a deltaCRLIndicator carrying a NEGATIVE base number -> extension-value-syntax",
     hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), crlExt("deltaCRLIndicator", true, b.integer(-1n))] })),
       "lint/rfc5280-crl/extension-value-syntax"));
+  // ReasonFlags is a NamedBitList, so DER drops its trailing zero bits. A value keeping them is
+  // malformed for the linter exactly as it is for path validation, which is why the check lives in
+  // the shared structural read rather than in either caller.
+  check("an IDP whose onlySomeReasons keeps trailing zero bits -> extension-value-syntax",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(),
+      crlExt("issuingDistributionPoint", true, b.raw(Buffer.from([0x30, 0x04, 0x83, 0x02, 0x00, 0x40])))] })),
+      "lint/rfc5280-crl/extension-value-syntax"));
   check("a well-formed issuingDistributionPoint is not flagged",
     !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), crlExt("issuingDistributionPoint", true, b.sequence([]))] })),
       "lint/rfc5280-crl/extension-value-syntax"));
