@@ -1,0 +1,11 @@
+{
+  "version": "0.7.3",
+  "date": "2026-09-10",
+  "headline": "A timestamp verification takes its options once, so every pass reads the same answer.",
+  "summary": "pki.tsp.verify examines a token in several passes: the signature over it, and then the chain from the signer to the caller's anchors. Each pass consulted the caller's options object again, so an option supplied through an accessor could answer one pass differently from another and the verdict would describe two different inputs as one. The options are taken once, at entry, and every pass reads that copy.",
+  "sections": {
+    "Changed": [
+      "pki.tsp.verify reads each option once. A token is examined in more than one pass, and opts.certs was consulted again by each of them, so an option reached through an accessor could hand one set of certificates to the signature check and another to the chain the signer is traced through. No route was found that turns this into a wrong verdict, and a caller passing options as plain values was never affected; the change makes the verdict describe one set of inputs rather than relying on a caller object to answer consistently. It follows the same read-once shape applied to the PKCS#12 verbs in 0.7.2."
+    ]
+  }
+}

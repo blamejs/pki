@@ -42,6 +42,22 @@ async function testRoundTrip() {
   });
   var v = await pki.cms.verify(token);
   check("timestamp token -> cms.verify valid", v.valid === true);
+
+  // A token is examined in several passes: the signature over it, then the chain from the signer to
+  // the caller's anchors. Each pass consulted opts.certs again, so an option reached through an
+  // accessor could hand one set of certificates to the signature and a different set to the chain,
+  // and the verdict would describe two different certificates as one. The option is taken once.
+  var certReads = 0;
+  var movingCerts = {};
+  Object.defineProperty(movingCerts, "certs", {
+    enumerable: true, configurable: true,
+    get: function () { certReads++; return []; },
+  });
+  var mvRes = null, mvErr = null;
+  try { mvRes = await pki.tsp.verify(token, DATA, movingCerts); } catch (e) { mvErr = e; }
+  check("opts.certs is read exactly once by tsp.verify", certReads === 1);
+  check("and the verify still reaches a verdict on that one answer",
+    mvErr !== null || (mvRes !== null && typeof mvRes.valid === "boolean"));
   var parsed = pki.schema.tsp.parseToken(token);
   var tst = parsed.tstInfo;
   check("token content is a TSTInfo v1", tst.version === 1);

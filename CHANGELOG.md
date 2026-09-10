@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.3 — 2026-09-10
+
+A timestamp verification takes its options once, so every pass reads the same answer.
+
+### Changed
+
+- pki.tsp.verify reads each option once. A token is examined in more than one pass, and opts.certs was consulted again by each of them, so an option reached through an accessor could hand one set of certificates to the signature check and another to the chain the signer is traced through. No route was found that turns this into a wrong verdict, and a caller passing options as plain values was never affected; the change makes the verdict describe one set of inputs rather than relying on a caller object to answer consistently. It follows the same read-once shape applied to the PKCS#12 verbs in 0.7.2.
+
 ## v0.7.2 — 2026-09-10
 
 A PKCS#12 iteration cap is read once, so it cannot be answered with a value that is not a number.
