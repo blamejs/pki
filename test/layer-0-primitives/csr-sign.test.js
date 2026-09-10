@@ -43,6 +43,20 @@ async function testPemOutput() {
   check("opts.pem returns a string", typeof pem === "string");
   check("opts.pem has BEGIN CERTIFICATE REQUEST", /-----BEGIN CERTIFICATE REQUEST-----/.test(pem));
   check("PEM decodes to a parseable CSR", pki.schema.csr.parse(pki.schema.csr.pemDecode(pem)).subject.dn.length > 0);
+
+  // The options this verb reads are the three its sibling pki.x509.sign reads, and that verb refuses
+  // a name outside them. Here an unrecognized name was accepted and dropped, so asking for PEM and
+  // misspelling the option returned DER with nothing reported.
+  check("an unknown option is refused rather than dropped",
+    (await codeOf(pki.csr.sign({ subject: "PEM", subjectPublicKey: s.spki }, { key: s.key }, { pemm: true })))
+      === "csr/bad-input");
+  check("a name every object inherits is not a recognized option",
+    (await codeOf(pki.csr.sign({ subject: "PEM", subjectPublicKey: s.spki }, { key: s.key }, { toString: 1 })))
+      === "csr/bad-input");
+  // The three it does read still reach the signature.
+  check("the recognized options are still accepted",
+    typeof (await pki.csr.sign({ subject: "PEM", subjectPublicKey: s.spki }, { key: s.key },
+      { pem: true, digestAlgorithm: "sha256" })) === "string");
 }
 
 // ---- version == 0 bare INTEGER (not the cert [0] EXPLICIT) ------------------
