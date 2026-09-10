@@ -1,0 +1,10 @@
+{
+  "_comment": "A PKCS#12 store with no MAC whose bags use the RFC 7292 App. C legacy PBE scheme, produced by OpenSSL so the decrypt-only legacy path has an input. The key inside is a throwaway generated for this fixture and secures nothing.",
+  "produced_by": "openssl pkcs12 -export -legacy -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -iter 300000 -nomac",
+  "openssl_version": "OpenSSL 3.5.7 9 Jun 2026",
+  "password": "pw",
+  "iterations": 300000,
+  "integrityMode": "none",
+  "exercises": "the legacy PBE work cap in pki.pkcs12.open, which the MAC path does not reach when a store carries no MAC and is opened with allowUnauthenticated",
+  "store_base64": "MIIDBQIBAzCCAv4GCSqGSIb3DQEHAaCCAu8EggLrMIIC5zCCAdwGCSqGSIb3DQEHAaCCAc0EggHJMIIBxTCCAcEGCyqGSIb3DQEMCgEDoIIBiTCCAYUGCiqGSIb3DQEJFgGgggF1BIIBcTCCAW0wggEToAMCAQICFEfNWKGEo2+dIy9z+ssqEO4FF7M3MAoGCCqGSM49BAMCMAwxCjAIBgNVBAMMAXQwHhcNMjYwOTEwMDcwMDE4WhcNMzYwOTA3MDcwMDE4WjAMMQowCAYDVQQDDAF0MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAECZnZmaTLW/412PpfuZRzENnbHoFby0O+MWS/qUQ+/rFc072SrRTaowgy1CNSFygqFp3ienlOfCFaPsJnwVxHwKNTMFEwHQYDVR0OBBYEFE6Z8+VdhMA3oKBO3hckNzQVOWu6MB8GA1UdIwQYMBaAFE6Z8+VdhMA3oKBO3hckNzQVOWu6MA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSAAwRQIgIH7lQLni+S68WKuFUTnBWYDbu579GVppZu48YbHleRECIQDLO50w1NaOeUed+Cy3uZCOJu9SZ4j/WuhpXa7FpPt7lDElMCMGCSqGSIb3DQEJFTEWBBTZCeanZntNdwEBLXheKct2yHnLUzCCAQMGCSqGSIb3DQEHAaCB9QSB8jCB7zCB7AYLKoZIhvcNAQwKAQKggbUwgbIwHQYKKoZIhvcNAQwBAzAPBAjo9FLyixgpHAIDBJPgBIGQLHk2QPEaOCnEo2XKpNoIhCg2SuiI8DWOtQaj95aym/zYFcWkpLP2eaMIlOdN3nZuLxTzxgR1r2sc/F25jMsJT24c2YdxS/6rxNMd5qaypY/JcJBs15o3EMK5EvMcOpCTwy4Zd3hVCc1C/0s4CNGxZ33roBaxikedu0GuS13eAE1hVPqpq4vrqUUC81EipURKMSUwIwYJKoZIhvcNAQkVMRYEFNkJ5qdme013AQEteF4py3bIectT"
+}
