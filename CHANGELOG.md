@@ -4,6 +4,16 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.5 — 2026-09-10
+
+Certificate linting now covers the ML-DSA and SLH-DSA certificate profiles.
+
+### Added
+
+- pki.lint checks an ML-DSA certificate's key usage against RFC 9881 section 5, as the finding id lint/rfc9881/mldsa-key-usage under the new profile name rfc9881. Where the keyUsage extension is present, at least one of digitalSignature, nonRepudiation, keyCertSign or cRLSign must be set and none of keyEncipherment, dataEncipherment, keyAgreement, encipherOnly or decipherOnly may be. The finding carries which key-establishment bits were set and whether a signing bit was present. A certificate carrying no keyUsage extension is unconstrained. All three parameter sets are covered.
+- pki.lint checks an SLH-DSA certificate's key usage against RFC 9909 section 6, as the finding id lint/rfc9909/slhdsa-key-usage under the new profile name rfc9909. The requirement is the same pair. RFC 9909 section 5 admits both the pure id-slh-dsa-* and the prehash id-hash-slh-dsa-*-with-* identifiers as a subject public key algorithm, and the rule reaches both, across all twelve parameter sets of each.
+- pki.lint.profiles() returns rfc5280, rfc9881, rfc9909, rfc9935 and cabf-tls. Passing rfc9881 or rfc9909 as opts.profile runs that profile on its own, and pki.lint.rules(name) enumerates its rows.
+
 ## v0.7.4 — 2026-09-10
 
 Two authoring inputs that were accepted quietly are now refused by name.

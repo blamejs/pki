@@ -489,6 +489,92 @@ function run() {
   check("a non-KEM cert never carries the rfc9935 rows",
     !has(pki.lint.certificate(REAL), "lint/rfc9935/kem-key-usage") && !has(pki.lint.certificate(REAL), "lint/rfc9935/kem-key-length"));
 
+  // ---- RFC 9881 sec. 5 (ML-DSA) + RFC 9909 sec. 6 (SLH-DSA) key usage rows ----
+  // Both clauses are the same pair of requirements, conditioned on keyUsage being PRESENT:
+  // at least one of digitalSignature / nonRepudiation / keyCertSign / cRLSign MUST be set, and
+  // none of keyEncipherment / dataEncipherment / keyAgreement / encipherOnly / decipherOnly may
+  // be. The nine defined bits are exhausted by those two lists, so the only input that fails the
+  // signing-bit half WITHOUT also setting a key-establishment bit is one whose sole bit is
+  // reserved (bit 9 or above). A keyUsage with no bits at all cannot reach either rule: the
+  // decoder refuses it as lint/bad-key-usage, surfaced as lint/rfc5280/extension-undecodable.
+  var nodeCrypto = require("node:crypto");
+  function spkiOf(type) { return nodeCrypto.generateKeyPairSync(type).publicKey.export({ format: "der", type: "spki" }); }
+  function reOid(spkiDer, name) {
+    var kids = asn1.decode(spkiDer).children;
+    return b.sequence([b.sequence([b.oid(oid.byName(name))]), kids[1].bytes]);
+  }
+  var KU_DS = 0, KU_NR = 1, KU_KE = 2, KU_DE = 3, KU_KA = 4, KU_KCS = 5, KU_CRL = 6, KU_EO = 7, KU_DO = 8;
+  var KU_RESERVED = 9;
+
+  var mldsaSpki = spkiOf("ml-dsa-44");
+  function mldsaReport(exts) { return pki.lint.certificate(makeCert({ spki: mldsaSpki, exts: exts })); }
+  check("ML-DSA cert with digitalSignature keyUsage is silent on the rfc9881 row",
+    !has(mldsaReport([keyUsage([KU_DS], true), ski()]), "lint/rfc9881/mldsa-key-usage"));
+  check("ML-DSA cert with keyCertSign+cRLSign keyUsage is silent on the rfc9881 row",
+    !has(mldsaReport([keyUsage([KU_KCS, KU_CRL], true), ski()]), "lint/rfc9881/mldsa-key-usage"));
+  check("ML-DSA cert WITHOUT keyUsage is silent (RFC 9881 sec. 5 is conditioned on presence)",
+    !has(mldsaReport([ski()]), "lint/rfc9881/mldsa-key-usage"));
+  check("ML-DSA cert asserting keyEncipherment -> lint/rfc9881/mldsa-key-usage",
+    has(mldsaReport([keyUsage([KU_DS, KU_KE], true), ski()]), "lint/rfc9881/mldsa-key-usage"));
+  check("ML-DSA cert asserting keyAgreement -> lint/rfc9881/mldsa-key-usage",
+    has(mldsaReport([keyUsage([KU_DS, KU_KA], true), ski()]), "lint/rfc9881/mldsa-key-usage"));
+  check("ML-DSA cert asserting dataEncipherment -> lint/rfc9881/mldsa-key-usage",
+    has(mldsaReport([keyUsage([KU_DS, KU_DE], true), ski()]), "lint/rfc9881/mldsa-key-usage"));
+  check("ML-DSA cert asserting encipherOnly -> lint/rfc9881/mldsa-key-usage",
+    has(mldsaReport([keyUsage([KU_DS, KU_EO], true), ski()]), "lint/rfc9881/mldsa-key-usage"));
+  check("ML-DSA cert asserting decipherOnly -> lint/rfc9881/mldsa-key-usage",
+    has(mldsaReport([keyUsage([KU_DS, KU_DO], true), ski()]), "lint/rfc9881/mldsa-key-usage"));
+  check("ML-DSA cert whose only keyUsage bit is reserved -> lint/rfc9881/mldsa-key-usage",
+    has(mldsaReport([keyUsage([KU_RESERVED], true), ski()]), "lint/rfc9881/mldsa-key-usage"));
+  check("ML-DSA cert with a reserved bit ALONGSIDE digitalSignature is silent (sec. 5 constrains neither)",
+    !has(mldsaReport([keyUsage([KU_DS, KU_RESERVED], true), ski()]), "lint/rfc9881/mldsa-key-usage"));
+  check("an empty ML-DSA keyUsage is refused by the decoder before any profile rule runs",
+    has(mldsaReport([ext("keyUsage", true, b.bitString(Buffer.alloc(0), 0)), ski()]), "lint/rfc5280/extension-undecodable"));
+  check("the rfc9881 row reaches all three ML-DSA parameter sets", ["ml-dsa-44", "ml-dsa-65", "ml-dsa-87"]
+    .every(function (t) {
+      return has(pki.lint.certificate(makeCert({ spki: spkiOf(t), exts: [keyUsage([KU_KE], true), ski()] })), "lint/rfc9881/mldsa-key-usage");
+    }));
+
+  // RFC 9909 sec. 6 names BOTH the pure id-slh-dsa-* and the prehash id-hash-slh-dsa-* OIDs as
+  // subject public key identifiers, so the rule must reach the prehash half too.
+  var slhSpki = spkiOf("slh-dsa-sha2-128s");
+  function slhReport(spki, exts) { return pki.lint.certificate(makeCert({ spki: spki, exts: exts })); }
+  check("pure SLH-DSA cert with digitalSignature is silent on the rfc9909 row",
+    !has(slhReport(slhSpki, [keyUsage([KU_DS], true), ski()]), "lint/rfc9909/slhdsa-key-usage"));
+  check("pure SLH-DSA cert WITHOUT keyUsage is silent (conditioned on presence)",
+    !has(slhReport(slhSpki, [ski()]), "lint/rfc9909/slhdsa-key-usage"));
+  check("pure SLH-DSA cert asserting keyEncipherment -> lint/rfc9909/slhdsa-key-usage",
+    has(slhReport(slhSpki, [keyUsage([KU_DS, KU_KE], true), ski()]), "lint/rfc9909/slhdsa-key-usage"));
+  check("pure SLH-DSA cert asserting keyAgreement -> lint/rfc9909/slhdsa-key-usage",
+    has(slhReport(slhSpki, [keyUsage([KU_NR, KU_KA], true), ski()]), "lint/rfc9909/slhdsa-key-usage"));
+  check("pure SLH-DSA cert whose only keyUsage bit is reserved -> lint/rfc9909/slhdsa-key-usage",
+    has(slhReport(slhSpki, [keyUsage([KU_RESERVED], true), ski()]), "lint/rfc9909/slhdsa-key-usage"));
+  check("PREHASH HashSLH-DSA cert asserting keyEncipherment -> lint/rfc9909/slhdsa-key-usage",
+    has(slhReport(reOid(slhSpki, "id-hash-slh-dsa-sha2-128s-with-sha256"), [keyUsage([KU_DS, KU_KE], true), ski()]),
+      "lint/rfc9909/slhdsa-key-usage"));
+  check("the rfc9909 row reaches a shake parameter set as well as a sha2 one",
+    has(slhReport(reOid(spkiOf("slh-dsa-shake-128f"), "id-slh-dsa-shake-128f"), [keyUsage([KU_KE], true), ski()]),
+      "lint/rfc9909/slhdsa-key-usage"));
+
+  check("an ML-DSA cert never carries the SLH-DSA row, and the reverse",
+    !has(mldsaReport([keyUsage([KU_KE], true), ski()]), "lint/rfc9909/slhdsa-key-usage") &&
+    !has(slhReport(slhSpki, [keyUsage([KU_KE], true), ski()]), "lint/rfc9881/mldsa-key-usage"));
+  check("a classical cert never carries either PQC signature row",
+    !has(pki.lint.certificate(REAL), "lint/rfc9881/mldsa-key-usage") &&
+    !has(pki.lint.certificate(REAL), "lint/rfc9909/slhdsa-key-usage"));
+  // An SPKI algorithm outside every registry family parses with a null name, so the two
+  // applicability tests read a name that is not a string and must decline rather than throw.
+  var unknownSpki = b.sequence([b.sequence([b.oid("1.3.6.1.4.1.55738.777.1")]), b.bitString(Buffer.alloc(32, 7), 0)]);
+  var unknownReport = pki.lint.certificate(makeCert({ spki: unknownSpki, exts: [keyUsage([KU_KE], true), ski()] }));
+  check("a cert whose SPKI algorithm has no registered name carries neither PQC signature row",
+    !has(unknownReport, "lint/rfc9881/mldsa-key-usage") && !has(unknownReport, "lint/rfc9909/slhdsa-key-usage"));
+  check("pki.lint.profiles() lists the two PQC signature profiles",
+    pki.lint.profiles().indexOf("rfc9881") !== -1 && pki.lint.profiles().indexOf("rfc9909") !== -1);
+  check("pki.lint.rules('rfc9881') filters to that profile",
+    pki.lint.rules("rfc9881").length > 0 && pki.lint.rules("rfc9881").every(function (r) { return r.source === "rfc9881"; }));
+  check("pki.lint.rules('rfc9909') filters to that profile",
+    pki.lint.rules("rfc9909").length > 0 && pki.lint.rules("rfc9909").every(function (r) { return r.source === "rfc9909"; }));
+
   // ---- RFC 5280 4.2.1.4 userNotice DisplayText ----
   // These four rules live here rather than in the decoder because 4.2.1.4 directs certificate users
   // to gracefully handle an over-long explicitText: a verifier that rejected one would refuse
