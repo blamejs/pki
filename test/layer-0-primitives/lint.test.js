@@ -842,6 +842,59 @@ function testCrlProfile() {
   check("a reason-scoped CRL entry carrying NO reasonCode is permitted (sec. 5.2.5 says so)",
     !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), idpReasons], revoked: [entry(5)] })),
       "lint/rfc5280-crl/unspecified-reason-in-reason-scoped-crl"));
+  // Section 5.2.5: a CRL declaring a reason scope carries only those reasons. The CRLReason and
+  // ReasonFlags enumerations do NOT line up (CRLReason 7 is unused, privilegeWithdrawn is 9 against
+  // bit 7, aACompromise is 10 against bit 8), so every value is driven: a wrong mapping here would
+  // report conforming CRLs, which is the worst thing a linter can do.
+  // A ReasonFlags BIT STRING over the given bit positions, minimally encoded: DER drops trailing
+  // zero bits, so the length follows the HIGHEST bit set. [3] is IMPLICIT, so the content is the
+  // unused-bit count followed by the data bytes.
+  function scopeOf(bits) {
+    var highest = Math.max.apply(null, bits);
+    var nBytes = (highest >> 3) + 1;
+    var data = Buffer.alloc(nBytes);
+    bits.forEach(function (n) { data[n >> 3] |= (0x80 >> (n & 7)); });
+    var unused = (nBytes * 8) - (highest + 1);
+    return crlExt("issuingDistributionPoint", true,
+      b.sequence([b.contextPrimitive(3, Buffer.concat([Buffer.from([unused]), data]))]));
+  }
+  // A scope naming keyCompromise(1) only.
+  var scopeKeyCompromise = scopeOf([1]);
+  [[1, false], [2, true], [3, true], [4, true], [5, true], [6, true], [9, true], [10, true]].forEach(function (pair) {
+    var reason = pair[0], shouldFire = pair[1];
+    var r = pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), scopeKeyCompromise],
+      revoked: [entry(5, [crlExt("reasonCode", false, b.enumerated(BigInt(reason)))])] }));
+    check("reason " + reason + " against a keyCompromise-only scope " + (shouldFire ? "-> reason-outside-crl-scope" : "is in scope"),
+      hasId(r, "lint/rfc5280-crl/reason-outside-crl-scope") === shouldFire);
+  });
+  check("removeFromCRL has no ReasonFlags bit, so it is never out of scope",
+    !hasId(pki.lint.crl(makeCrl({
+      exts: [crlNumber(9), akiKeyId(), scopeKeyCompromise, crlExt("deltaCRLIndicator", true, b.integer(3n))],
+      revoked: [entry(5, [crlExt("reasonCode", false, b.enumerated(8n))])],
+    })), "lint/rfc5280-crl/reason-outside-crl-scope"));
+  // These two prove the mapping is NOT identity. privilegeWithdrawn is CRLReason 9 against
+  // ReasonFlags bit 7, and aACompromise is CRLReason 10 against bit 8. Under an identity mapping
+  // both of these conforming CRLs would be reported, since bits 9 and 10 do not exist.
+  check("privilegeWithdrawn(9) is IN scope when the CRL declares ReasonFlags bit 7",
+    !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), scopeOf([7])],
+      revoked: [entry(5, [crlExt("reasonCode", false, b.enumerated(9n))])] })),
+      "lint/rfc5280-crl/reason-outside-crl-scope"));
+  check("aACompromise(10) is IN scope when the CRL declares ReasonFlags bit 8",
+    !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), scopeOf([8])],
+      revoked: [entry(5, [crlExt("reasonCode", false, b.enumerated(10n))])] })),
+      "lint/rfc5280-crl/reason-outside-crl-scope"));
+  check("...and privilegeWithdrawn is still OUT of scope where only bit 8 is declared",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), scopeOf([8])],
+      revoked: [entry(5, [crlExt("reasonCode", false, b.enumerated(9n))])] })),
+      "lint/rfc5280-crl/reason-outside-crl-scope"));
+
+  check("a CRL declaring NO reason scope never draws the row",
+    !hasId(pki.lint.crl(makeCrl({ revoked: [entry(5, [crlExt("reasonCode", false, b.enumerated(5n))])] })),
+      "lint/rfc5280-crl/reason-outside-crl-scope"));
+  check("an entry with no reasonCode never draws the row",
+    !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), scopeKeyCompromise], revoked: [entry(5)] })),
+      "lint/rfc5280-crl/reason-outside-crl-scope"));
+
   check("a meaningful reason code is not flagged",
     !hasId(pki.lint.crl(makeCrl({ revoked: [entry(5, [crlExt("reasonCode", false, b.enumerated(1n))])] })),
       "lint/rfc5280-crl/reason-code-unspecified"));
@@ -1094,6 +1147,45 @@ function testCrlProfile() {
   check("a non-critical reasonCode entry extension is not flagged",
     !hasId(pki.lint.crl(makeCrl({ revoked: [entry(5, [crlExt("reasonCode", false, b.enumerated(1n))])] })),
       "lint/rfc5280-crl/entry-extension-criticality"));
+
+  // Every finding must carry a human message. `rules()` does not expose one, so a rule shipped
+  // without it renders as undefined to an operator and no id-based assertion notices. This drives a
+  // battery covering every CRL row and reads the message off each finding produced.
+  var messageBattery = [
+    makeCrl({ noNextUpdate: true }),
+    makeCrl({ thisUpdate: "2026-03-01T00:00:00Z" }),
+    makeCrl({ exts: [akiKeyId()] }),
+    makeCrl({ exts: [crlExt("cRLNumber", false, b.integer((1n << 168n) + 1n)), akiKeyId()] }),
+    makeCrl({ exts: [crlNumber(1)] }),
+    makeCrl({ exts: [crlNumber(1), crlExt("authorityKeyIdentifier", false, b.sequence([]))] }),
+    makeCrl({ exts: [crlExt("cRLNumber", true, b.integer(1n)), akiKeyId()] }),
+    makeCrl({ exts: [crlNumber(1), akiKeyId(), critIan] }),
+    makeCrl({ exts: [crlNumber(3), akiKeyId(), deltaExt(9)] }),
+    makeCrl({ exts: [crlNumber(1), akiKeyId(), idpExt(b.sequence([]))] }),
+    makeCrl({ exts: [crlNumber(1), akiKeyId(), idpExt(b.nullValue())] }),
+    makeCrl({ exts: [crlNumber(1), akiKeyId(), crlExt("basicConstraints", true, b.sequence([]))] }),
+    makeCrl({ revoked: [entry(5, [crlExt("reasonCode", true, b.enumerated(1n))])] }),
+    makeCrl({ revoked: [entry(5, [removeReason])] }),
+    makeCrl({ revoked: [entry(5, [certIssuerExt])] }),
+    makeCrl({ revoked: [entrySerial(0)] }),
+    makeCrl({ revoked: [entrySerial((1n << 168n) + 1n)] }),
+    makeCrl({ revoked: [entry(5), entry(5)] }),
+    makeCrl({ revoked: [entry(5, [crlExt("reasonCode", false, b.enumerated(0n))])] }),
+    makeCrl({ exts: [crlNumber(1), akiKeyId(), idpReasons],
+      revoked: [entry(5, [crlExt("reasonCode", false, b.enumerated(0n))])] }),
+    makeCrl({ exts: [crlNumber(1), akiKeyId(), idpIndirect],
+      revoked: [entry(5, [certIssuerExt])] }),
+  ];
+  var seenIds = Object.create(null), messageless = [];
+  messageBattery.forEach(function (der) {
+    pki.lint.crl(der).findings.forEach(function (f) {
+      seenIds[f.id] = true;
+      if (typeof f.message !== "string" || f.message.length === 0) messageless.push(f.id);
+    });
+  });
+  check("every CRL finding the battery produces carries a message", messageless.length === 0);
+  check("the battery reaches most of the CRL registry, so the message check is not vacuous",
+    Object.keys(seenIds).length >= 15);
 
   // Surface: the CRL rules are their own registry and the two verbs do not accept each other's
   // profile names, so a caller cannot silently lint a CRL against certificate rules.
