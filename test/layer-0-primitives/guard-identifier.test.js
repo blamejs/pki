@@ -1008,8 +1008,11 @@ function testAssertCallable() {
   });
   var snap = identifier.snapshotOptions(moving, KNOWN);
   check("snapshotOptions: an accessor-backed option is read exactly once", reads === 1);
+  // Read the snapshot repeatedly: the getter would hand back a rising counter, so an unchanging
+  // value across several reads with the count still at one is the property being pinned.
+  var repeated = [snap.alpha, snap.alpha, snap.alpha];
   check("snapshotOptions: and every later read returns that one answer",
-    snap.alpha === 1 && snap.alpha === 1 && snap.alpha === 1 && reads === 1);
+    repeated.every(function (v) { return v === 1; }) && reads === 1);
   check("snapshotOptions: a plain option is carried across", snap.beta === 2);
   check("snapshotOptions: an option that was not supplied reads as undefined",
     "gamma" in snap && snap.gamma === undefined);
@@ -1024,12 +1027,23 @@ function testAssertCallable() {
   check("snapshotOptions: a name outside the known set is not copied",
     identifier.snapshotOptions(extra, KNOWN).sneaky === undefined);
 
-  // The snapshot has no prototype, so a supplied __proto__ stays an ordinary field.
+  // The snapshot has no prototype, so a supplied __proto__ stays an ordinary field. The known set
+  // must carry __proto__ as a DATA property: written as an object-literal key it is the prototype
+  // syntax instead, which a number silently does nothing to, leaving the name out of the set and
+  // the copy never reaching for it.
   var polluting = JSON.parse("{\"alpha\":1,\"__proto__\":{\"polluted\":true}}");
-  var POLL_KNOWN = Object.assign(Object.create(null), { alpha: 1, __proto__: 1 });
+  var POLL_KNOWN = Object.assign(Object.create(null), { alpha: 1 });
+  Object.defineProperty(POLL_KNOWN, "__proto__", {
+    value: 1, writable: true, enumerable: true, configurable: true,
+  });
+  check("snapshotOptions: the known set really carries __proto__ as a name",
+    Object.getOwnPropertyNames(POLL_KNOWN).indexOf("__proto__") !== -1);
   var pollSnap = identifier.snapshotOptions(polluting, POLL_KNOWN);
   check("snapshotOptions: the snapshot carries no prototype", Object.getPrototypeOf(pollSnap) === null);
-  check("snapshotOptions: a __proto__ option stays a field and pollutes nothing",
+  check("snapshotOptions: a __proto__ option is copied as an ordinary field",
+    Object.getOwnPropertyNames(pollSnap).indexOf("__proto__") !== -1 &&
+    pollSnap.__proto__ !== null && pollSnap.__proto__.polluted === true);
+  check("snapshotOptions: and copying it pollutes nothing",
     ({}).polluted === undefined && Object.prototype.polluted === undefined);
 
   // A missing options object is an empty snapshot rather than a throw, so a caller that defaults
