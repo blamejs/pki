@@ -1065,6 +1065,51 @@ function testCrlProfile() {
     !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(),
       idpExt(b.sequence([b.contextPrimitive(1, Buffer.from([0xff]))]))] })),
       "lint/rfc5280-crl/idp-profile"));
+  // Sec. 5.2.5 says the reason codes associated with a distribution point MUST be specified in
+  // onlySomeReasons, and ReasonFlags bit 0 is named `unused`. A mask setting nothing, or setting
+  // only bit 0, specifies no reason code, so the extension states a scope covering no revocation.
+  function rawScope(content) { return idpExt(b.sequence([b.contextPrimitive(3, content)])); }
+  function reasonExt(n) { return crlExt("reasonCode", false, b.enumerated(BigInt(n))); }
+  var SCOPE_NONE = Buffer.from([0x00]);            // no data bytes at all
+  var SCOPE_UNUSED_ONLY = Buffer.from([0x07, 0x80]); // only bit 0
+  check("an onlySomeReasons naming no reason -> idp-profile",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), rawScope(SCOPE_NONE)] })),
+      "lint/rfc5280-crl/idp-profile"));
+  check("an onlySomeReasons setting only the unused bit -> idp-profile",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), rawScope(SCOPE_UNUSED_ONLY)] })),
+      "lint/rfc5280-crl/idp-profile"));
+  check("a scope naming one real reason is not flagged",
+    !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), scopeOf([1])] })),
+      "lint/rfc5280-crl/idp-profile"));
+  // The fault is the extension's, so it is reported once against the extension rather than once
+  // per revoked entry: a mask naming nothing gives the entry rows no partition to judge against.
+  var emptyScopeWithEntries = pki.lint.crl(makeCrl({
+    exts: [crlNumber(1), akiKeyId(), rawScope(SCOPE_NONE)],
+    revoked: [entry(5, [reasonExt(1)]), entry(6, [reasonExt(2)]), entry(7, [reasonExt(0)])] }));
+  check("a scope naming no reason reports the extension, not each entry",
+    hasId(emptyScopeWithEntries, "lint/rfc5280-crl/idp-profile") &&
+    !hasId(emptyScopeWithEntries, "lint/rfc5280-crl/reason-outside-crl-scope") &&
+    !hasId(emptyScopeWithEntries, "lint/rfc5280-crl/unspecified-reason-in-reason-scoped-crl"));
+  // The two unspecified(0) rows partition on whether the CRL is meaningfully reason scoped, so
+  // exactly one answers for a given entry. A scope naming nothing is not meaningfully scoped, and
+  // the entry falls to the sec. 5.3.1 SHOULD rather than to an error that blames it for the
+  // extension's fault.
+  check("a degenerate scope leaves an unspecified reason to the SHOULD row",
+    hasId(emptyScopeWithEntries, "lint/rfc5280-crl/reason-code-unspecified"));
+  function unspecifiedRows(r) {
+    return ["lint/rfc5280-crl/unspecified-reason-in-reason-scoped-crl", "lint/rfc5280-crl/reason-code-unspecified"]
+      .filter(function (id) { return hasId(r, id); });
+  }
+  check("exactly one unspecified row answers, whatever the scope shape",
+    unspecifiedRows(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), rawScope(SCOPE_NONE)],
+      revoked: [entry(5, [reasonExt(0)])] }))).length === 1 &&
+    unspecifiedRows(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), scopeOf([1])],
+      revoked: [entry(5, [reasonExt(0)])] }))).length === 1 &&
+    unspecifiedRows(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId()],
+      revoked: [entry(5, [reasonExt(0)])] }))).length === 1);
+  check("a real scope still judges entry reasons against it",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), scopeOf([1])],
+      revoked: [entry(6, [reasonExt(2)])] })), "lint/rfc5280-crl/reason-outside-crl-scope"));
   check("a malformed IDP draws the syntax row and NOT the profile row",
     (function () {
       var r = pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), idpExt(b.nullValue())] }));
