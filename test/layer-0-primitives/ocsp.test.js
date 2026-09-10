@@ -58,7 +58,7 @@ async function run() {
   // RFC 6960 sec. 4.2.2.1: thisUpdate and nextUpdate "define a recommended validity interval",
   // corresponding to the {thisUpdate, nextUpdate} interval in CRLs. An interval whose end precedes
   // its start is not one, and the response cannot be acted on: pki.ocsp.verify reports it unknown.
-  // pki.x509.sign, pki.crl.sign, pki.attrcert.sign and pki.crmf.sign all refuse their own reversed
+  // pki.x509.sign, pki.crl.sign, pki.attrcert.sign and pki.crmf.build all refuse their own reversed
   // window, so this is the same rule in the one place it was missing.
   function signWindow(tu, nu, extra) {
     var entry = { cert: w.targetCertDer, issuer: w.issuerCertDer, status: "good", thisUpdate: tu, nextUpdate: nu };
