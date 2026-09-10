@@ -1,0 +1,11 @@
+{
+  "version": "0.7.2",
+  "date": "2026-09-10",
+  "headline": "A PKCS#12 iteration cap is read once, so it cannot be answered with a value that is not a number.",
+  "summary": "opts.maxIterations lowers the key-derivation work a store is allowed to demand. It was read separately by the shape check and by the comparison that applies it, so a caller object supplying it through an accessor could satisfy every check as a number and then answer the comparison with something that is not one. The cap became NaN, nothing compares above NaN, and a store far past the limit was accepted. Every use now reads the one value the check ran on.",
+  "sections": {
+    "Security": [
+      "pki.pkcs12.open and pki.pkcs12.verifyMac hold a store to opts.maxIterations however that option is supplied. The option is the caller's own bound on key-derivation work, and it was read once for each part of its shape check and again for the comparison that applies it. An option reached through an accessor answers each read separately, so one that returned a valid integer to every check and a non-numeric value to the comparison left the cap as NaN. No count is above NaN, so the comparison stopped refusing anything and a store demanding far more work than the caller allowed was accepted and processed. A caller passing the option as a plain number was never affected. The same read-once shape is applied to the PBES2 and CMP iteration caps, where no route was found that reaches them this way."
+    ]
+  }
+}

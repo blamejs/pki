@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.2 — 2026-09-10
+
+A PKCS#12 iteration cap is read once, so it cannot be answered with a value that is not a number.
+
+### Security
+
+- pki.pkcs12.open and pki.pkcs12.verifyMac hold a store to opts.maxIterations however that option is supplied. The option is the caller's own bound on key-derivation work, and it was read once for each part of its shape check and again for the comparison that applies it. An option reached through an accessor answers each read separately, so one that returned a valid integer to every check and a non-numeric value to the comparison left the cap as NaN. No count is above NaN, so the comparison stopped refusing anything and a store demanding far more work than the caller allowed was accepted and processed. A caller passing the option as a plain number was never affected. The same read-once shape is applied to the PBES2 and CMP iteration caps, where no route was found that reaches them this way.
+
 ## v0.7.1 — 2026-09-10
 
 A wildcard name in a certificate is held to an excluded name constraint it can reach.

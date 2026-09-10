@@ -92,6 +92,15 @@ security-only patches after the next major releases.
   certificates before any pre-authentication signature work. A small hostile
   input cannot fan out into unbounded allocations or unbounded asymmetric-verify
   work.
+- **A work bound answered with a value that is not a number (CWE-834).**
+  `opts.maxIterations` lowers the key-derivation work a PKCS#12 store is allowed
+  to demand. The option was read once for each part of its shape check and again
+  for the comparison that applies it, so an option supplied through an accessor
+  could return a valid integer to every check and a non-numeric value to the
+  comparison. The cap became NaN, and no count is above NaN, so the comparison
+  stopped refusing anything. `pki.pkcs12.open` and `pki.pkcs12.verifyMac` read
+  the option once and every use reads that one value. The same read-once shape is
+  applied to the PBES2 and CMP iteration caps.
 - **Decompression bombs (CWE-409).** Every decompression in the toolkit runs
   through one bounded primitive, so the defense cannot be picked up by one caller
   and missed by the next. The output is capped at the decompressor itself (Node's

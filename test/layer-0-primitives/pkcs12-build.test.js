@@ -49,6 +49,27 @@ async function testClassicRoundTrip() {
   var pem = await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] }, { password: "1234", pem: true });
   check("#1 pem output carries the PKCS12 armor", /-----BEGIN PKCS12-----/.test(pem));
   check("#1 verifyMac accepts a PEM store", (await pki.pkcs12.verifyMac(pem, "1234")).valid === true);
+
+  // opts.maxIterations is the caller's own work bound, so it is read once and every use reads that
+  // one answer. Read separately by the shape check and by the comparison, an option reached through
+  // an accessor could satisfy every check as a number and then answer the comparison with something
+  // that is not one, leaving the bound as NaN. Nothing is ever above NaN, so the cap stopped
+  // stopping anything and a store far past it was accepted.
+  var heavy = await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] },
+    { password: "1234", mac: { iterations: 300000 } });
+  check("#1 a plain numeric cap below the stored count refuses",
+    (await codeOf(pki.pkcs12.verifyMac(heavy, "1234", { maxIterations: 1000 }))) === "pkcs12/iteration-limit");
+  var capReads = 0;
+  var movingCap = {};
+  Object.defineProperty(movingCap, "maxIterations", {
+    enumerable: true, configurable: true,
+    get: function () { capReads++; return capReads >= 7 ? "not-a-number" : 1000; },
+  });
+  var capErr = null, capOut = null;
+  try { capOut = await pki.pkcs12.verifyMac(heavy, "1234", movingCap); } catch (e) { capErr = e; }
+  check("#1 an accessor-backed cap cannot answer the comparison with a non-number",
+    capErr !== null && capErr.code === "pkcs12/iteration-limit" && capOut === null);
+  check("#1 and that cap was read exactly once", capReads === 1);
 }
 
 // ---- #2 PBMAC1-SHA256 round-trip -------------------------------------------
