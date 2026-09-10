@@ -4,6 +4,20 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.11 — 2026-09-10
+
+A name constraint whose base is a zero-length name is read rather than rejected.
+
+### Changed
+
+- pki.path.validate still refuses a caller-supplied subtree seed whose base is empty, through opts.initialPermittedSubtrees, opts.initialExcludedSubtrees or a trust anchor's nameConstraints. A seed that permits everything is a restriction the caller believes they applied, so that door is unchanged and is separate from decoding a certificate's own extension.
+
+### Fixed
+
+- A zero-length subtree base in a certificate's nameConstraints decodes. RFC 5280 section 4.2.1.6 states the prohibition for subjectAltName, that an extension with a dNSName of "" must not be used, and section 4.2.1.10 places no length floor on a constraint base. A zero-length dNSName in a subjectAltName is still refused, which is where the rule belongs.
+- For dNSName the empty base names the root of the namespace, the same as the bare-dot base already did: section 4.2.1.10 satisfies the constraint by adding zero or more labels to its left-hand side, and every name is that base plus labels. An excluded empty base therefore excludes every dNSName, and a permitted one permits every dNSName. A leaf naming no dNSName is untouched by either.
+- For rfc822Name and uniformResourceIdentifier the base decodes but the comparison reports path/name-constraint-unsupported and refuses. Section 4.2.1.10 gives a mail constraint a mailbox, a host or a leading-period domain, and a URI constraint a fully qualified domain name, so an empty base is none of the shapes either names and is not read as covering everything. The verdict now says the constraint could not be evaluated instead of saying the extension could not be parsed.
+
 ## v0.7.10 — 2026-09-10
 
 An OCSP response is no longer signed with a status window that runs backwards.
