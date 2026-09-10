@@ -4,6 +4,15 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.4 — 2026-09-10
+
+Two authoring inputs that were accepted quietly are now refused by name.
+
+### Fixed
+
+- pki.csr.sign refuses an option it does not recognize. It reads the same three options its sibling pki.x509.sign reads, and that verb already refused anything else, so a name outside the set was accepted and dropped here alone: a caller asking for PEM output and misspelling the option received DER and no error. A name every object inherits, such as toString, is not a recognized option either. The three it does read are unchanged.
+- A distinguished name given as an array with a missing element is refused with this toolkit's own typed error. Encoding walks the array per element, and a gap left the element absent all the way to the encoder, which then failed on it as an untyped read of undefined rather than as a verdict naming the input. It affected the subject of a certificate and of a certification request, and an explicitly supplied issuer name. Every other authoring list already refused a gap, and this now answers the same way, in the domain of the verb that was called.
+
 ## v0.7.3 — 2026-09-10
 
 A timestamp verification takes its options once, so every pass reads the same answer.

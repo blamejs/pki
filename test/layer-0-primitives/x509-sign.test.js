@@ -67,6 +67,27 @@ async function testPemOutput() {
   check("opts.pem has BEGIN CERTIFICATE", /-----BEGIN CERTIFICATE-----/.test(pem));
   var der = pki.schema.x509.pemDecode(pem);
   check("PEM decodes to a parseable cert", pki.schema.x509.parse(der).subject.dn.length > 0);
+
+  // Malformed authoring input is refused with this module's typed error. A name given as an array
+  // with a hole in it reached the encoder, whose per-element map leaves the hole in place, so the
+  // failure surfaced as a bare TypeError from inside the builder rather than as a verdict a caller
+  // can act on. Every other authoring list already refuses one.
+  function holed() { var a = []; a[2] = { commonName: "t" }; return a; }
+  check("a sparse subject array is a typed refusal",
+    (await codeOf(pki.x509.sign({ subject: holed(), subjectPublicKey: s.spki, notBefore: NB, notAfter: NA },
+      { key: s.key }))) === "x509/bad-input");
+  check("a sparse issuer name array is a typed refusal",
+    (await codeOf(pki.x509.sign({ subject: "CN=t", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA },
+      { key: s.key, name: holed(), publicKey: s.spki }))) === "x509/bad-input");
+  // A hole before any element is the same fault; the first index is not special.
+  var leading = []; leading[1] = { commonName: "t" };
+  check("a hole at the head of the array is refused too",
+    (await codeOf(pki.x509.sign({ subject: leading, subjectPublicKey: s.spki, notBefore: NB, notAfter: NA },
+      { key: s.key }))) === "x509/bad-input");
+  // A dense array still builds.
+  check("a dense subject array still signs",
+    Buffer.isBuffer(await pki.x509.sign({ subject: [{ commonName: "t" }], subjectPublicKey: s.spki, notBefore: NB, notAfter: NA },
+      { key: s.key })));
 }
 
 // ---- independent verification (path.validate) ------------------------------
