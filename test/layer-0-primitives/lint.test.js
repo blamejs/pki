@@ -776,6 +776,28 @@ function testCrlProfile() {
   check("a cRLNumber longer than 20 octets -> crl-number-too-long",
     hasId(pki.lint.crl(makeCrl({ exts: [crlExt("cRLNumber", false, b.integer((1n << 168n) + 1n)), akiKeyId()] })),
       "lint/rfc5280-crl/crl-number-too-long"));
+  // Sec. 5.2.4 defines BaseCRLNumber as a CRLNumber, so the sec. 5.2.3 ceiling governs the delta
+  // indicator's value too. The issuance path bounds both; the profile answers for both.
+  var OVER_20 = (1n << 168n) + 1n;
+  function tooLongFindings(r) {
+    return r.findings.filter(function (f) { return f.id === "lint/rfc5280-crl/crl-number-too-long"; });
+  }
+  var baseOverlong = pki.lint.crl(makeCrl({
+    exts: [crlNumber(3), akiKeyId(), crlExt("deltaCRLIndicator", true, b.integer(OVER_20))] }));
+  check("a baseCRLNumber longer than 20 octets -> crl-number-too-long",
+    hasId(baseOverlong, "lint/rfc5280-crl/crl-number-too-long"));
+  check("the overlong baseCRLNumber finding names the extension it measured",
+    tooLongFindings(baseOverlong).length === 1 &&
+    tooLongFindings(baseOverlong)[0].context.extension === "deltaCRLIndicator");
+  var bothOverlong = pki.lint.crl(makeCrl({
+    exts: [crlExt("cRLNumber", false, b.integer(OVER_20)), akiKeyId(),
+      crlExt("deltaCRLIndicator", true, b.integer(OVER_20))] }));
+  check("both numbers overlong -> one finding per carrier, not one for the pair",
+    tooLongFindings(bothOverlong).length === 2 &&
+    tooLongFindings(bothOverlong).map(function (f) { return f.context.extension; }).sort().join(",") ===
+      "cRLNumber,deltaCRLIndicator");
+  check("a delta CRL with in-range numbers reports no length finding",
+    tooLongFindings(pki.lint.crl(makeCrl({ exts: [crlNumber(9), akiKeyId(), deltaExt(3)] }))).length === 0);
   // A revoked entry's userCertificate is a CertificateSerialNumber, so it carries the same
   // sec. 4.1.2.2 profile the certificate rows apply to a certificate's own serial.
   function entrySerial(n) {
