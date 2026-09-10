@@ -755,6 +755,11 @@ function testCrlProfile() {
     fatalCode(makeCrl({ version: 0 })) === "crl/bad-version");
   check("an empty issuer name is fatal at parse (sec. 5.1.2.3)",
     fatalCode(makeCrl({ issuer: b.sequence([]) })) === "crl/bad-issuer");
+  check("a repeated CRL extension is fatal at parse, not a profile row (sec. 4.2)",
+    fatalCode(makeCrl({ exts: [crlNumber(1), akiKeyId(), crlExt("cRLNumber", false, b.integer(2n))] })) === "crl/duplicate-extension");
+  check("a repeated ENTRY extension is fatal at parse too",
+    fatalCode(makeCrl({ revoked: [entry(5, [crlExt("reasonCode", false, b.enumerated(1n)),
+      crlExt("reasonCode", false, b.enumerated(2n))])] })) === "crl/duplicate-extension");
   check("a present-but-empty revokedCertificates is fatal at parse (sec. 5.1.2.6)",
     fatalCode(makeCrl({ revoked: [] })) === "crl/bad-revoked-certificates");
   check("a CRL listing a revoked certificate lints cleanly",
