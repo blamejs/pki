@@ -71,6 +71,26 @@ async function run() {
     (await codeOfAsync(function () { return signWindow(NU, TU); })) === "ocsp/bad-input");
   check("an equal thisUpdate and nextUpdate is left alone, as it is for a CRL",
     Buffer.isBuffer(await signWindow(TU, TU)));
+  // The CALLER's instants are compared at their full precision. Two instants inside one second
+  // encode to the same whole-second GeneralizedTime, so comparing the encoded values would accept a
+  // descending pair and quietly emit the zero-length window it truncates to. A caller naming a later
+  // thisUpdate has stated a reversed window whatever the seconds round to. This is what the sibling
+  // signing verbs do, and the parity is asserted below rather than assumed.
+  var SUB_HI = new Date("2027-01-01T12:00:00.900Z"), SUB_LO = new Date("2027-01-01T12:00:00.100Z");
+  check("the two sub-second instants really do encode to one GeneralizedTime",
+    pki.asn1.decode(b.generalizedTime(SUB_HI)).content.toString("latin1") ===
+    pki.asn1.decode(b.generalizedTime(SUB_LO)).content.toString("latin1"));
+  check("a descending pair inside one second is refused, not truncated to an equal window",
+    (await codeOfAsync(function () { return signWindow(SUB_HI, SUB_LO); })) === "ocsp/bad-input");
+  check("the same pair ascending signs",
+    Buffer.isBuffer(await signWindow(SUB_LO, SUB_HI)));
+  check("a window reversed by a whole second is refused",
+    (await codeOfAsync(function () {
+      return signWindow(new Date("2027-01-01T12:00:01Z"), new Date("2027-01-01T12:00:00Z"));
+    })) === "ocsp/bad-input");
+  // pki.x509.sign, pki.crl.sign and pki.crmf.build refuse a descending sub-second pair the same
+  // way and accept an exactly equal one, so no verb is the odd one out in either direction. Their
+  // own suites hold them to it; this file answers for the OCSP side of that parity.
   // Every SingleResponse is measured, not only the first: a batch is where a reversed window hides.
   check("a reversed window in the SECOND response is refused too",
     (await codeOfAsync(function () {
