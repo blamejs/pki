@@ -1170,18 +1170,36 @@ function testCrlProfile() {
   var idpFullName = idpExt(b.sequence([b.contextConstructed(0, b.contextConstructed(0,
     b.contextPrimitive(6, Buffer.from("http://crl.example/a.crl", "ascii"))))]));
   var relativeNameReport = pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), idpRelativeName] }));
-  check("an IDP naming its distribution point relative to the CRL issuer -> idp-name-relative-to-crl-issuer",
-    hasId(relativeNameReport, "lint/rfc5280-crl/idp-name-relative-to-crl-issuer"));
+  check("an IDP naming its distribution point relative to the CRL issuer -> distribution-point-name-relative",
+    hasId(relativeNameReport, "lint/rfc5280-crl/distribution-point-name-relative"));
   check("...graded warn, because section 4.2.1.13 states it as a SHOULD NOT",
     relativeNameReport.findings.filter(function (f) {
-      return f.id === "lint/rfc5280-crl/idp-name-relative-to-crl-issuer";
+      return f.id === "lint/rfc5280-crl/distribution-point-name-relative";
     })[0].severity === "warn");
   check("an IDP naming a fullName distribution point is not flagged",
     !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), idpFullName] })),
-      "lint/rfc5280-crl/idp-name-relative-to-crl-issuer"));
+      "lint/rfc5280-crl/distribution-point-name-relative"));
   check("an IDP with no distributionPoint at all is not flagged",
     !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), scopeOf([1])] })),
-      "lint/rfc5280-crl/idp-name-relative-to-crl-issuer"));
+      "lint/rfc5280-crl/distribution-point-name-relative"));
+  // Section 5.2.6 adopts the same section 4.2.1.13 syntax AND its encoding conventions, so the
+  // recommendation reaches freshestCRL's distribution points as well. One requirement, two
+  // carriers, so one row measures both and the context names which extension it read.
+  var relativeArm = b.contextConstructed(0, b.contextConstructed(1,
+    b.sequence([b.oid(oid.byName("commonName")), b.utf8("Fragment")])));
+  var freshestRelative = crlExt("freshestCRL", false, b.sequence([b.sequence([relativeArm])]));
+  var freshestRelativeReport = pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), freshestRelative] }));
+  check("a freshestCRL naming a distribution point relative to the CRL issuer -> distribution-point-name-relative",
+    hasId(freshestRelativeReport, "lint/rfc5280-crl/distribution-point-name-relative"));
+  check("the finding names which extension carried the relative name",
+    freshestRelativeReport.findings.filter(function (f) {
+      return f.id === "lint/rfc5280-crl/distribution-point-name-relative";
+    })[0].context.extension === "freshestCRL");
+  check("both carriers at once report once each",
+    pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), idpRelativeName, freshestRelative] }))
+      .findings.filter(function (f) { return f.id === "lint/rfc5280-crl/distribution-point-name-relative"; })
+      .map(function (f) { return f.context.extension; }).sort().join(",") ===
+        "freshestCRL,issuingDistributionPoint");
 
   // Section 5.2.7 states three requirements on a CRL's authorityInfoAccess beyond its criticality:
   // at least one caIssuers AccessDescription, no other access method at all, and a SHOULD that one

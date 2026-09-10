@@ -67,8 +67,10 @@ module.exports.fuzz = function (data) {
   }
 
   // (3) the bytes AS a recognized extension value, which is the path the rules that
-  // decode a value take. issuingDistributionPoint is read through the same decoder
-  // certification-path validation uses, so this drives that reader too.
+  // decode a value take. Every extension the CRL profile reads a value out of appears
+  // here, so a rule that decodes one is driven on attacker-controlled bytes:
+  // issuingDistributionPoint and freshestCRL go through the same readers certification
+  // path validation and the certificate profile use, so those readers are driven too.
   if (data.length >= 1 && data.length <= 4096) {
     var withIdp;
     try {
@@ -76,6 +78,8 @@ module.exports.fuzz = function (data) {
         ext("cRLNumber", false, b.integer(1n)), AKI,
         ext("issuingDistributionPoint", true, data),
         ext("deltaCRLIndicator", true, data),
+        ext("authorityInfoAccess", false, data),
+        ext("freshestCRL", false, data),
       ]);
     } catch (_e) {
       // The BUILDER refusing these bytes is not the contract under test; only the
