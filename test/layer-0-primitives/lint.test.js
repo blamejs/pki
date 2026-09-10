@@ -706,7 +706,8 @@ function testCrlProfile() {
     if (o.revoked) kids.push(b.sequence(o.revoked));
     var exts = o.exts === undefined ? [crlNumber(1), akiKeyId()] : o.exts;
     if (exts !== null) kids.push(b.explicit(0, b.sequence(exts)));
-    return b.sequence([b.sequence(kids), ALG, SIG]);
+    // outerAlg lets the two AlgorithmIdentifiers differ, which section 5.1.1.2 forbids.
+    return b.sequence([b.sequence(kids), o.outerAlg || ALG, SIG]);
   }
   function entry(serial, entryExts) {
     var kids = [b.integer(BigInt(serial)), utc("2026-01-15T00:00:00Z")];
@@ -743,7 +744,7 @@ function testCrlProfile() {
   check("a CRL whose thisUpdate follows its nextUpdate -> update-times-inverted",
     hasId(pki.lint.crl(makeCrl({ thisUpdate: "2026-03-01T00:00:00Z" })), "lint/rfc5280-crl/update-times-inverted"));
 
-  // Four sec. 5 rules have no row, because the strict parser refuses them first and a rule for
+  // Six sec. 5 rules have no row, because the strict parser refuses them first and a rule for
   // them could never fire. Each is pinned here as the engine's fatal, so the boundary between the
   // parser and the profile stays stated rather than assumed.
   function fatalCode(der) {
@@ -760,6 +761,17 @@ function testCrlProfile() {
     fatalCode(makeCrl({ version: 0 })) === "crl/bad-version");
   check("an empty issuer name is fatal at parse (sec. 5.1.2.3)",
     fatalCode(makeCrl({ issuer: b.sequence([]) })) === "crl/bad-issuer");
+  check("a signatureAlgorithm differing from tbsCertList.signature is fatal at parse (sec. 5.1.1.2)",
+    fatalCode(makeCrl({ outerAlg: b.sequence([b.oid(oid.byName("ecdsaWithSHA384"))]) })) === "crl/bad-signature-algorithm");
+  // Sections 5.1.2.4, 5.1.2.6 and 5.3.2 fix which time type carries which date: UTCTime through
+  // 2049, GeneralizedTime from 2050. The codec holds both ends, so a CRL dating 2026 in a
+  // GeneralizedTime never reaches a rule.
+  check("a GeneralizedTime carrying a pre-2050 date is fatal at parse (sec. 5.1.2.4)",
+    fatalCode(b.sequence([b.sequence([b.integer(1n), ALG, ISSUER,
+      b.generalizedTime(new Date("2026-01-01T00:00:00Z")), utc("2026-02-01T00:00:00Z"),
+      b.explicit(0, b.sequence([crlNumber(1), akiKeyId()]))]), ALG, SIG])) === "crl/bad-time");
+  check("...and the encoder refuses to write a UTCTime outside 1950..2049 in the first place",
+    throwsCode(function () { b.utcTime(new Date("2051-01-01T00:00:00Z")); }) === "asn1/bad-utctime");
   check("a repeated CRL extension is fatal at parse, not a profile row (sec. 4.2)",
     fatalCode(makeCrl({ exts: [crlNumber(1), akiKeyId(), crlExt("cRLNumber", false, b.integer(2n))] })) === "crl/duplicate-extension");
   check("a repeated ENTRY extension is fatal at parse too",
@@ -932,9 +944,18 @@ function testCrlProfile() {
   check("a CRL declaring NO reason scope never draws the row",
     !hasId(pki.lint.crl(makeCrl({ revoked: [entry(5, [crlExt("reasonCode", false, b.enumerated(5n))])] })),
       "lint/rfc5280-crl/reason-outside-crl-scope"));
+  // Section 5.2.5 closes the sentence that requires a reason other than unspecified with "however,
+  // there is no requirement to include the reasonCode CRL entry extension in the corresponding CRL
+  // entry". An entry omitting reasonCode on a reason-scoped CRL is therefore conforming, and NEITHER
+  // reason row may report it. Reading the requirement without its closing clause would report every
+  // conforming CRL that leaves the extension out.
+  var scopedNoReason = pki.lint.crl(makeCrl({
+    exts: [crlNumber(1), akiKeyId(), scopeKeyCompromise], revoked: [entry(5)] }));
   check("an entry with no reasonCode never draws the row",
-    !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), scopeKeyCompromise], revoked: [entry(5)] })),
-      "lint/rfc5280-crl/reason-outside-crl-scope"));
+    !hasId(scopedNoReason, "lint/rfc5280-crl/reason-outside-crl-scope"));
+  check("...and it is not reported as an unspecified reason either",
+    !hasId(scopedNoReason, "lint/rfc5280-crl/unspecified-reason-in-reason-scoped-crl") &&
+    !hasId(scopedNoReason, "lint/rfc5280-crl/reason-code-unspecified"));
 
   check("a meaningful reason code is not flagged",
     !hasId(pki.lint.crl(makeCrl({ revoked: [entry(5, [crlExt("reasonCode", false, b.enumerated(1n))])] })),
@@ -1054,6 +1075,29 @@ function testCrlProfile() {
       crlExt("freshestCRL", false, b.sequence([b.sequence([b.contextConstructed(0,
         b.contextConstructed(0, b.contextPrimitive(6, Buffer.from("http://e/x", "latin1"))))])]))] })),
       "lint/rfc5280-crl/freshest-in-delta"));
+  // Section 5.2.6 reuses the cRLDistributionPoints syntax but states that only the distribution
+  // point field is meaningful here, and that reasons and cRLIssuer MUST be omitted. The shared
+  // decoder accepts both, because the certificate extension permits them, so the CRL profile is
+  // what answers for the restriction the certificate profile does not carry.
+  var dpNameArm = b.contextConstructed(0, b.contextConstructed(0,
+    b.contextPrimitive(6, Buffer.from("http://delta.example/d.crl", "ascii"))));
+  var dpReasons = b.contextPrimitive(1, Buffer.from([0x06, 0x40]));
+  var dpCrlIssuer = b.contextConstructed(2, b.contextConstructed(4,
+    b.sequence([b.set([b.sequence([b.oid(oid.byName("commonName")), b.utf8("Other CA")])])])));
+  function freshestOf(kids) { return crlExt("freshestCRL", false, b.sequence([b.sequence(kids)])); }
+  check("CONTROL a freshestCRL naming only a distribution point lints clean",
+    ids(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), freshestOf([dpNameArm])] })))
+      .filter(function (i) { return i.indexOf("lint/rfc5280-crl/") === 0; }).length === 0);
+  check("a freshestCRL carrying reasons -> freshest-crl-forbidden-field",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), freshestOf([dpNameArm, dpReasons])] })),
+      "lint/rfc5280-crl/freshest-crl-forbidden-field"));
+  check("a freshestCRL carrying cRLIssuer -> freshest-crl-forbidden-field",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), freshestOf([dpCrlIssuer])] })),
+      "lint/rfc5280-crl/freshest-crl-forbidden-field"));
+  check("the finding names which forbidden field it found",
+    pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), freshestOf([dpNameArm, dpReasons, dpCrlIssuer])] }))
+      .findings.filter(function (f) { return f.id === "lint/rfc5280-crl/freshest-crl-forbidden-field"; })
+      .map(function (f) { return f.context.field; }).sort().join(",") === "cRLIssuer,reasons");
   // Three semantic rules the ISSUING path already enforces, applied to a CRL that arrived from
   // elsewhere. Recognizing an extension by its identifier says only that the profile names it, so
   // each of these reports clean without its own row.
@@ -1138,6 +1182,52 @@ function testCrlProfile() {
   check("an IDP with no distributionPoint at all is not flagged",
     !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), scopeOf([1])] })),
       "lint/rfc5280-crl/idp-name-relative-to-crl-issuer"));
+
+  // Section 5.2.7 states three requirements on a CRL's authorityInfoAccess beyond its criticality:
+  // at least one caIssuers AccessDescription, no other access method at all, and a SHOULD that one
+  // location be an HTTP or LDAP URI. AccessDescription ::= SEQUENCE { accessMethod, accessLocation }.
+  function accessDesc(methodName, tag, value) {
+    return b.sequence([b.oid(oid.byName(methodName)), b.contextPrimitive(tag, Buffer.from(value, "ascii"))]);
+  }
+  function aiaExt(descs, critical) { return crlExt("authorityInfoAccess", !!critical, b.sequence(descs)); }
+  var caIssuersHttp = accessDesc("caIssuers", 6, "http://ca.example/ca.cer");
+  var caIssuersLdap = accessDesc("caIssuers", 6, "ldap://ca.example/cn=CA");
+  var caIssuersFtp = accessDesc("caIssuers", 6, "ftp://ca.example/ca.cer");
+  var ocspHttp = accessDesc("ocsp", 6, "http://ocsp.example/");
+  check("CONTROL a caIssuers AIA over HTTP lints clean",
+    ids(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), aiaExt([caIssuersHttp])] })))
+      .filter(function (i) { return i.indexOf("lint/rfc5280-crl/") === 0; }).length === 0);
+  check("an AIA with no caIssuers accessMethod -> aia-without-ca-issuers",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), aiaExt([ocspHttp])] })),
+      "lint/rfc5280-crl/aia-without-ca-issuers"));
+  check("an AIA carrying an access method other than caIssuers -> aia-forbidden-access-method",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), aiaExt([caIssuersHttp, ocspHttp])] })),
+      "lint/rfc5280-crl/aia-forbidden-access-method"));
+  check("...and that CRL is not also told its caIssuers is missing",
+    !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), aiaExt([caIssuersHttp, ocspHttp])] })),
+      "lint/rfc5280-crl/aia-without-ca-issuers"));
+  check("an LDAP caIssuers location satisfies the location recommendation",
+    !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), aiaExt([caIssuersLdap])] })),
+      "lint/rfc5280-crl/aia-location-not-http-or-ldap"));
+  var ftpOnly = pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), aiaExt([caIssuersFtp])] }));
+  check("a caIssuers location that is neither HTTP nor LDAP -> aia-location-not-http-or-ldap",
+    hasId(ftpOnly, "lint/rfc5280-crl/aia-location-not-http-or-ldap"));
+  check("...graded warn, because section 5.2.7 states it as a SHOULD",
+    ftpOnly.findings.filter(function (f) {
+      return f.id === "lint/rfc5280-crl/aia-location-not-http-or-ldap";
+    })[0].severity === "warn");
+  // An AIA whose value does not read reaches the three rows above, which decode it and find
+  // nothing to judge. The value-syntax row is what reports the malformation, and none of the three
+  // may add a second, wrong account of the same extension.
+  var aiaUnreadable = pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), aiaExt([])] }));
+  check("an AIA whose value does not read draws the syntax row",
+    hasId(aiaUnreadable, "lint/rfc5280-crl/extension-value-syntax"));
+  check("...and none of the three content rows reports on it",
+    ["aia-without-ca-issuers", "aia-forbidden-access-method", "aia-location-not-http-or-ldap"]
+      .every(function (id) { return !hasId(aiaUnreadable, "lint/rfc5280-crl/" + id); }));
+  check("a CRL with no authorityInfoAccess draws none of the three rows",
+    ["aia-without-ca-issuers", "aia-forbidden-access-method", "aia-location-not-http-or-ldap"]
+      .every(function (id) { return !hasId(okReport, "lint/rfc5280-crl/" + id); }));
 
   check("an IDP stating a single scope is not flagged",
     !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(),
