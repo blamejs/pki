@@ -1,0 +1,16 @@
+{
+  "version": "0.7.9",
+  "date": "2026-09-10",
+  "headline": "Certificate revocation lists can now be linted against the RFC 5280 profile.",
+  "summary": "The lint engine read certificates and nothing else, so a CRL arriving from another issuer could only be parsed or path-validated, never surveyed for the profile rules RFC 5280 section 5 states. pki.lint.crl reports those rules as graded advisory findings, in the same report shape pki.lint.certificate returns and with the same promise that the data path never throws.",
+  "sections": {
+    "Added": [
+      "pki.lint.crl(pem | der | parsed, opts) lints a certificate revocation list against RFC 5280 section 5, under the new profile name rfc5280-crl. It returns the same LintReport as pki.lint.certificate, and hostile bytes produce a single fatal lint/unparseable finding carrying the strict parser's code rather than raising.",
+      "The rows cover the fields and the extensions: nextUpdate presence (section 5.1.2.5), thisUpdate not following nextUpdate, cRLNumber presence and its 20-octet ceiling (section 5.2.3), both halves of the authorityKeyIdentifier requirement, that the extension is present and that it uses the key identifier method (section 5.2.1, both at warn, since the clause obliges the issuer rather than the consumer), the criticality every profiled extension is required to carry (sections 5.2 and 5.3, for the CRL and for each revoked entry, with issuerAltName reported separately at warn because section 5.2.2 states its criticality as a recommendation rather than a requirement), freshestCRL appearing in a delta CRL (section 5.2.6), and an unrecognized critical extension, which sections 5.2 and 5.3 forbid on the CRL and on a revoked entry alike.",
+      "pki.lint.rules(\"rfc5280-crl\") enumerates the CRL registry, and pki.lint.rules() with no argument now returns the certificate and CRL rules together. The two verbs do not accept each other's profile names: passing a CRL profile to pki.lint.certificate, or a certificate profile to pki.lint.crl, raises lint/unknown-profile naming the verb to use instead."
+    ],
+    "Changed": [
+      "Three section 5 rules have no row, because the strict parser refuses them before a rule could run: a CRL whose version does not match the extensions it carries (section 5.1.2.1), an empty issuer name (section 5.1.2.3), and a present-but-empty revokedCertificates (section 5.1.2.6). Each reaches a caller as the fatal lint/unparseable finding carrying crl/bad-version, crl/bad-issuer or crl/bad-revoked-certificates."
+    ]
+  }
+}

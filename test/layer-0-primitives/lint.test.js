@@ -671,7 +671,199 @@ function run() {
   check("lint.certificate still accepts the options it reads",
         pki.lint.certificate(REAL, { severity: "error" }).findings !== undefined);
 
+  testCrlProfile();
+
   console.log("CHECKS " + helpers.getChecks());
+}
+
+// ---- RFC 5280 sec. 5, the CRL profile ----
+// A CertificateList is assembled from parts so a single clause can be broken while the rest stays
+// conforming. The signature is a placeholder: linting reads structure and never verifies it, the
+// same way the certificate fixtures above are built.
+function testCrlProfile() {
+  var ALG = b.sequence([b.oid(oid.byName("ecdsaWithSHA256"))]);
+  var ISSUER = b.sequence([b.set([b.sequence([b.oid(oid.byName("commonName")), b.utf8("Test CA")])])]);
+  var SIG = b.bitString(Buffer.alloc(8, 1), 0);
+  function utc(s) { return b.utcTime(new Date(s)); }
+  function crlExt(name, critical, innerDer) {
+    var kids = [b.oid(oid.byName(name))];
+    if (critical) kids.push(b.boolean(true));
+    kids.push(b.octetString(innerDer));
+    return b.sequence(kids);
+  }
+  function akiKeyId() { return crlExt("authorityKeyIdentifier", false, b.sequence([b.contextPrimitive(0, Buffer.alloc(20, 7))])); }
+  function crlNumber(n) { return crlExt("cRLNumber", false, b.integer(BigInt(n))); }
+  // o: { version, noNextUpdate, revoked (array of entry DER), exts (array of extension DER),
+  //      thisUpdate, nextUpdate, issuer }
+  function makeCrl(o) {
+    o = o || {};
+    var kids = [];
+    if (o.version !== null) kids.push(b.integer(BigInt(o.version === undefined ? 1 : o.version)));
+    kids.push(ALG);
+    kids.push(o.issuer === undefined ? ISSUER : o.issuer);
+    kids.push(utc(o.thisUpdate || "2026-01-01T00:00:00Z"));
+    if (!o.noNextUpdate) kids.push(utc(o.nextUpdate || "2026-02-01T00:00:00Z"));
+    if (o.revoked) kids.push(b.sequence(o.revoked));
+    var exts = o.exts === undefined ? [crlNumber(1), akiKeyId()] : o.exts;
+    if (exts !== null) kids.push(b.explicit(0, b.sequence(exts)));
+    return b.sequence([b.sequence(kids), ALG, SIG]);
+  }
+  function entry(serial, entryExts) {
+    var kids = [b.integer(BigInt(serial)), utc("2026-01-15T00:00:00Z")];
+    if (entryExts) kids.push(b.sequence(entryExts));
+    return b.sequence(kids);
+  }
+  function ids(r) { return r.findings.map(function (f) { return f.id; }); }
+  function hasId(r, id) { return ids(r).indexOf(id) !== -1; }
+
+  // CONTROL FIRST: a conforming CRL must draw none of these rows, or no result below is evidence.
+  var okReport = pki.lint.crl(makeCrl());
+  check("CONTROL: a conforming CRL is clean of the rfc5280-crl rows",
+    ids(okReport).filter(function (i) { return i.indexOf("lint/rfc5280-crl/") === 0; }).length === 0);
+  check("CONTROL: a conforming CRL is not fatal", okReport.worst !== "fatal");
+
+  check("hostile bytes return a fatal lint/unparseable rather than throwing",
+    pki.lint.crl(Buffer.from([0x30, 0x03, 0x02, 0x01, 0x01])).worst === "fatal");
+
+  check("a CRL with no nextUpdate -> next-update-missing",
+    hasId(pki.lint.crl(makeCrl({ noNextUpdate: true })), "lint/rfc5280-crl/next-update-missing"));
+  check("a CRL whose thisUpdate follows its nextUpdate -> update-times-inverted",
+    hasId(pki.lint.crl(makeCrl({ thisUpdate: "2026-03-01T00:00:00Z" })), "lint/rfc5280-crl/update-times-inverted"));
+
+  // Three sec. 5 rules have no row, because the strict parser refuses them first and a rule for
+  // them could never fire. Each is pinned here as the engine's fatal, so the boundary between the
+  // parser and the profile stays stated rather than assumed.
+  function fatalCode(der) {
+    var r = pki.lint.crl(der);
+    return r.worst === "fatal" && hasId(r, "lint/unparseable") && r.findings[0].context
+      ? r.findings[0].context.code : null;
+  }
+  check("a v1 CRL carrying extensions is fatal at parse (sec. 5.1.2.1)",
+    fatalCode(makeCrl({ version: 0 })) === "crl/bad-version");
+  check("an empty issuer name is fatal at parse (sec. 5.1.2.3)",
+    fatalCode(makeCrl({ issuer: b.sequence([]) })) === "crl/bad-issuer");
+  check("a present-but-empty revokedCertificates is fatal at parse (sec. 5.1.2.6)",
+    fatalCode(makeCrl({ revoked: [] })) === "crl/bad-revoked-certificates");
+  check("a CRL listing a revoked certificate lints cleanly",
+    ids(pki.lint.crl(makeCrl({ revoked: [entry(5)] })))
+      .filter(function (i) { return i.indexOf("lint/rfc5280-crl/") === 0; }).length === 0);
+
+  check("a CRL with no cRLNumber -> crl-number-missing",
+    hasId(pki.lint.crl(makeCrl({ exts: [akiKeyId()] })), "lint/rfc5280-crl/crl-number-missing"));
+  check("a cRLNumber longer than 20 octets -> crl-number-too-long",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlExt("cRLNumber", false, b.integer((1n << 168n) + 1n)), akiKeyId()] })),
+      "lint/rfc5280-crl/crl-number-too-long"));
+  check("a CRL with no authorityKeyIdentifier -> aki-missing at warn",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1)] })), "lint/rfc5280-crl/aki-missing"));
+  // Section 5.2.1 states two things: include the extension, and use the key identifier method. An
+  // AKI that is present but carries no keyIdentifier satisfies the first and fails the second.
+  check("an authorityKeyIdentifier with no keyIdentifier -> aki-without-key-identifier",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), crlExt("authorityKeyIdentifier", false, b.sequence([])) ] })),
+      "lint/rfc5280-crl/aki-without-key-identifier"));
+  check("an authorityKeyIdentifier carrying a keyIdentifier is not flagged",
+    !hasId(pki.lint.crl(makeCrl()), "lint/rfc5280-crl/aki-without-key-identifier"));
+  check("an AKI naming only an issuer and serial (no keyIdentifier) -> aki-without-key-identifier",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), crlExt("authorityKeyIdentifier", false,
+      b.sequence([b.contextConstructed(1, b.contextPrimitive(2, Buffer.from("ca.example", "latin1"))),
+        b.contextPrimitive(2, Buffer.from([0x2a]))])) ] })),
+      "lint/rfc5280-crl/aki-without-key-identifier"));
+
+  check("a critical cRLNumber -> extension-criticality (sec. 5.2.3 requires non-critical)",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlExt("cRLNumber", true, b.integer(1n)), akiKeyId()] })),
+      "lint/rfc5280-crl/extension-criticality"));
+  check("a NON-critical deltaCRLIndicator -> extension-criticality (sec. 5.2.4 requires critical)",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), crlExt("deltaCRLIndicator", false, b.integer(1n))] })),
+      "lint/rfc5280-crl/extension-criticality"));
+  check("a freshestCRL in a delta CRL -> freshest-in-delta",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(5), akiKeyId(),
+      crlExt("deltaCRLIndicator", true, b.integer(1n)),
+      crlExt("freshestCRL", false, b.sequence([b.sequence([b.contextConstructed(0,
+        b.contextConstructed(0, b.contextPrimitive(6, Buffer.from("http://e/x", "latin1"))))])]))] })),
+      "lint/rfc5280-crl/freshest-in-delta"));
+  check("an unrecognized CRITICAL extension -> unknown-critical-extension",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(),
+      b.sequence([b.oid("1.3.6.1.4.1.55738.777.2"), b.boolean(true), b.octetString(b.nullValue())])] })),
+      "lint/rfc5280-crl/unknown-critical-extension"));
+  // The recognized set is the one section 5.2 profiles, not the certificate registry. Two of the
+  // extensions this section REQUIRES to be critical are unknown to the certificate path validator,
+  // and several extensions it does recognize have no meaning on a CRL at all.
+  check("a conforming delta CRL (critical deltaCRLIndicator) draws no unknown-critical row",
+    !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(5), akiKeyId(), crlExt("deltaCRLIndicator", true, b.integer(1n))] })),
+      "lint/rfc5280-crl/unknown-critical-extension"));
+  check("a conforming scoped CRL (critical issuingDistributionPoint) draws no unknown-critical row",
+    !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), crlExt("issuingDistributionPoint", true, b.sequence([]))] })),
+      "lint/rfc5280-crl/unknown-critical-extension"));
+  // Section 5.2.2 states issuerAltName's criticality as a SHOULD, not a MUST, so a critical one is
+  // a warn of its own rather than an error from the required-criticality table. It is still a
+  // RECOGNIZED extension, so it must not be reported as an unknown critical one either.
+  var critIan = crlExt("issuerAltName", true, b.sequence([b.contextPrimitive(2, Buffer.from("ca.example", "latin1"))]));
+  var ianReport = pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), critIan] }));
+  check("a critical issuerAltName -> issuer-alt-name-critical at warn (sec. 5.2.2 is a SHOULD)",
+    hasId(ianReport, "lint/rfc5280-crl/issuer-alt-name-critical"));
+  check("a critical issuerAltName is NOT an extension-criticality error",
+    !hasId(ianReport, "lint/rfc5280-crl/extension-criticality"));
+  check("a critical issuerAltName is NOT reported as an unknown critical extension",
+    !hasId(ianReport, "lint/rfc5280-crl/unknown-critical-extension"));
+  check("a critical issuerAltName is suppressed by a severity floor of error",
+    !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), critIan] }), { severity: "error" }),
+      "lint/rfc5280-crl/issuer-alt-name-critical"));
+  check("a NON-critical issuerAltName is not flagged",
+    !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(),
+      crlExt("issuerAltName", false, b.sequence([b.contextPrimitive(2, Buffer.from("ca.example", "latin1"))]))] })),
+      "lint/rfc5280-crl/issuer-alt-name-critical"));
+
+  check("a certificate-only critical extension on a CRL -> unknown-critical-extension",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), crlExt("basicConstraints", true, b.sequence([]))] })),
+      "lint/rfc5280-crl/unknown-critical-extension"));
+
+  check("an unrecognized NON-critical extension is not flagged",
+    !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(),
+      b.sequence([b.oid("1.3.6.1.4.1.55738.777.2"), b.octetString(b.nullValue())])] })),
+      "lint/rfc5280-crl/unknown-critical-extension"));
+
+  // Sections 5.2 and 5.3 state the same obligation about an unrecognized CRITICAL extension, so a
+  // revoked entry carrying one is refused the same way the CRL's own list is.
+  check("an unrecognized CRITICAL entry extension -> unknown-critical-extension (sec. 5.3)",
+    hasId(pki.lint.crl(makeCrl({ revoked: [entry(5, [
+      b.sequence([b.oid("1.3.6.1.4.1.55738.777.3"), b.boolean(true), b.octetString(b.nullValue())])])] })),
+      "lint/rfc5280-crl/unknown-critical-extension"));
+  check("an unrecognized NON-critical entry extension is not flagged",
+    !hasId(pki.lint.crl(makeCrl({ revoked: [entry(5, [
+      b.sequence([b.oid("1.3.6.1.4.1.55738.777.3"), b.octetString(b.nullValue())])])] })),
+      "lint/rfc5280-crl/unknown-critical-extension"));
+
+  // The parsed-input door is the shared guard, not a property test, so an object that merely looks
+  // CRL-shaped is refused with the typed config error rather than faulting inside a rule.
+  check("an object that is not a parsed CRL -> lint/bad-input",
+    throwsCode(function () { pki.lint.crl({ crlExtensions: {} }); }) === "lint/bad-input");
+  check("a number is refused with the typed config error",
+    throwsCode(function () { pki.lint.crl(42); }) === "lint/bad-input");
+
+  check("a CRITICAL reasonCode entry extension -> entry-extension-criticality (sec. 5.3.1)",
+    hasId(pki.lint.crl(makeCrl({ revoked: [entry(5, [crlExt("reasonCode", true, b.enumerated(1n))])] })),
+      "lint/rfc5280-crl/entry-extension-criticality"));
+  check("a non-critical reasonCode entry extension is not flagged",
+    !hasId(pki.lint.crl(makeCrl({ revoked: [entry(5, [crlExt("reasonCode", false, b.enumerated(1n))])] })),
+      "lint/rfc5280-crl/entry-extension-criticality"));
+
+  // Surface: the CRL rules are their own registry and the two verbs do not accept each other's
+  // profile names, so a caller cannot silently lint a CRL against certificate rules.
+  check("pki.lint.profiles() lists the CRL profile so it is discoverable",
+    pki.lint.profiles().indexOf("rfc5280-crl") !== -1);
+  check("every name profiles() lists resolves through rules()",
+    pki.lint.profiles().every(function (p) { return pki.lint.rules(p).length > 0; }));
+  check("pki.lint.rules('rfc5280-crl') enumerates the CRL registry",
+    pki.lint.rules("rfc5280-crl").length > 0 &&
+    pki.lint.rules("rfc5280-crl").every(function (r) { return r.source === "rfc5280-crl"; }));
+  check("pki.lint.certificate refuses a CRL profile name",
+    throwsCode(function () { pki.lint.certificate(REAL, { profile: "rfc5280-crl" }); }) === "lint/unknown-profile");
+  check("pki.lint.crl refuses a certificate profile name",
+    throwsCode(function () { pki.lint.crl(makeCrl(), { profile: "cabf-tls" }); }) === "lint/unknown-profile");
+  check("pki.lint.crl refuses an unknown option",
+    throwsCode(function () { pki.lint.crl(makeCrl(), { severty: "error" }); }) === "lint/bad-input");
+  check("pki.lint.crl honors the severity threshold",
+    pki.lint.crl(makeCrl({ exts: [crlNumber(1)] }), { severity: "error" }).findings
+      .every(function (f) { return f.severity === "error" || f.severity === "fatal"; }));
 }
 
 module.exports = { run: run };
