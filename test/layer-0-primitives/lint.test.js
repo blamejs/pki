@@ -822,9 +822,28 @@ function testCrlProfile() {
   check("certificateIssuer on an INDIRECT CRL is not flagged",
     !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), idpIndirect], revoked: [entry(5, [certIssuerExt])] })),
       "lint/rfc5280-crl/certificate-issuer-on-direct-crl"));
-  check("a MALFORMED issuingDistributionPoint does not read as a declaration of indirectness",
-    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), crlExt("issuingDistributionPoint", true, b.nullValue())],
-      revoked: [entry(5, [certIssuerExt])] })), "lint/rfc5280-crl/certificate-issuer-on-direct-crl"));
+  // A malformed issuingDistributionPoint declares neither direction. The rows below only mean
+  // something on a CRL that IS direct, so they stand aside and the value-syntax row reports the
+  // extension: an unreadable declaration is the extension's fault, not the entries'. Nothing is
+  // lost, because that row is an error, so no CRL reaches a clean report with them unevaluated.
+  var idpMalformed = crlExt("issuingDistributionPoint", true, b.nullValue());
+  var idpDirect = crlExt("issuingDistributionPoint", true, b.sequence([b.contextPrimitive(1, Buffer.from([0xff]))]));
+  var malformedWithCertIssuer = pki.lint.crl(makeCrl({
+    exts: [crlNumber(1), akiKeyId(), idpMalformed], revoked: [entry(5, [certIssuerExt])] }));
+  check("a MALFORMED issuingDistributionPoint reports the extension, not the entry",
+    hasId(malformedWithCertIssuer, "lint/rfc5280-crl/extension-value-syntax") &&
+    !hasId(malformedWithCertIssuer, "lint/rfc5280-crl/certificate-issuer-on-direct-crl"));
+  check("a MALFORMED issuingDistributionPoint does not accuse entries of duplicate serials",
+    !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), idpMalformed],
+      revoked: [entry(5, [certIssuerExt]), entry(5, [certIssuerExt])] })),
+      "lint/rfc5280-crl/duplicate-entry-serial"));
+  // Standing aside is for an unreadable declaration only. A CRL with NO issuingDistributionPoint
+  // is direct by omission, and one whose well-formed extension omits indirectCRL says so outright.
+  check("a CRL with a well-formed IDP that omits indirectCRL is still direct",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), idpDirect], revoked: [entry(5, [certIssuerExt])] })),
+      "lint/rfc5280-crl/certificate-issuer-on-direct-crl") &&
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), idpDirect], revoked: [entry(5), entry(5)] })),
+      "lint/rfc5280-crl/duplicate-entry-serial"));
 
   // Section 5.3.3 requires the DN from the certificate's issuer field, which in a GeneralNames is
   // the directoryName [4] arm. A certificateIssuer carrying only another name form decodes fine and
@@ -1214,6 +1233,28 @@ function testCrlProfile() {
   check("a non-critical reasonCode entry extension is not flagged",
     !hasId(pki.lint.crl(makeCrl({ revoked: [entry(5, [crlExt("reasonCode", false, b.enumerated(1n))])] })),
       "lint/rfc5280-crl/entry-extension-criticality"));
+  // A finding against an entry names which entry, as every other entry-scope row does. Without it
+  // two entries breaking the same rule are indistinguishable and a caller has to rescan the CRL.
+  var lateEntryCriticality = pki.lint.crl(makeCrl({ revoked: [
+    entry(5, [crlExt("reasonCode", false, b.enumerated(1n))]),
+    entry(6, [crlExt("reasonCode", false, b.enumerated(1n))]),
+    entry(7, [crlExt("reasonCode", true, b.enumerated(1n))])] }));
+  check("an entry-criticality finding names the entry it came from",
+    lateEntryCriticality.findings.filter(function (f) {
+      return f.id === "lint/rfc5280-crl/entry-extension-criticality";
+    }).map(function (f) { return f.context.entry; }).join(",") === "2");
+  var twoBadEntries = pki.lint.crl(makeCrl({ revoked: [
+    entry(5, [crlExt("reasonCode", true, b.enumerated(1n))]),
+    entry(6, [crlExt("invalidityDate", true, b.generalizedTime(new Date("2026-01-02T00:00:00Z")))])] }));
+  check("two entries breaking the criticality rule are distinguishable",
+    twoBadEntries.findings.filter(function (f) {
+      return f.id === "lint/rfc5280-crl/entry-extension-criticality";
+    }).map(function (f) { return f.context.entry + ":" + f.context.extension; }).sort().join(",") ===
+      "0:reasonCode,1:invalidityDate");
+  check("a CRL-level criticality finding carries no entry index",
+    pki.lint.crl(makeCrl({ exts: [crlExt("cRLNumber", true, b.integer(1n)), akiKeyId()] })).findings
+      .filter(function (f) { return f.id === "lint/rfc5280-crl/extension-criticality"; })
+      .every(function (f) { return f.context.entry === undefined && f.context.scope === "crlExtensions"; }));
 
   // Every finding must carry a human message. `rules()` does not expose one, so a rule shipped
   // without it renders as undefined to an operator and no id-based assertion notices. This drives a
@@ -1242,15 +1283,27 @@ function testCrlProfile() {
       revoked: [entry(5, [crlExt("reasonCode", false, b.enumerated(0n))])] }),
     makeCrl({ exts: [crlNumber(1), akiKeyId(), idpIndirect],
       revoked: [entry(5, [certIssuerExt])] }),
+    // A critical extension the entry profile does not recognize, so the battery covers a second
+    // entry-scoped row and the locatability check below is not answering for one rule alone.
+    makeCrl({ revoked: [entry(5, [crlExt("basicConstraints", true, b.sequence([]))])] }),
   ];
-  var seenIds = Object.create(null), messageless = [];
+  var seenIds = Object.create(null), messageless = [], unlocatable = [], entryScoped = 0;
   messageBattery.forEach(function (der) {
     pki.lint.crl(der).findings.forEach(function (f) {
       seenIds[f.id] = true;
       if (typeof f.message !== "string" || f.message.length === 0) messageless.push(f.id);
+      // A finding against an entry extension must say WHICH entry, or two entries breaking the
+      // same rule are indistinguishable and a caller has to rescan the CRL to place it.
+      if (f.context && f.context.scope === "crlEntryExtensions") {
+        entryScoped++;
+        if (typeof f.context.entry !== "number") unlocatable.push(f.id);
+      }
     });
   });
   check("every CRL finding the battery produces carries a message", messageless.length === 0);
+  check("every entry-scoped finding names the entry it came from", unlocatable.length === 0);
+  check("the battery actually produces entry-scoped findings, so that check is not vacuous",
+    entryScoped >= 2);
   check("the battery reaches most of the CRL registry, so the message check is not vacuous",
     Object.keys(seenIds).length >= 15);
 
