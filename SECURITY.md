@@ -572,6 +572,16 @@ security-only patches after the next major releases.
 
 ### Path validation, revocation, and signed messages
 
+- **A wildcard name escaping an excluded subtree (CWE-295).** An excluded
+  `dNSName` subtree states the names a certificate must not present. A wildcard
+  subject alternative name is not one name: it stands for every name one label
+  below its parent. Compared as literal text, `*.example.com` is not the string
+  `bar.example.com`, so an exclusion of `bar.example.com` admitted a certificate
+  that presents that very name. The comparison asks whether a wildcard reaches
+  into an excluded subtree and refuses it when it does. The permitted direction
+  keeps asking the containment question and is not widened, so a permitted base
+  must still cover the whole of a wildcard. A wildcard reaches exactly one label,
+  so an excluded name below that depth remains out of its reach.
 - **Certification-path validation bypass.** `pki.path.validate` enforces the RFC
   5280 §6 algorithm fail-closed. The basic-constraints CA check is the single
   authoritative gate that no later check can overwrite (CVE-2021-3450). The

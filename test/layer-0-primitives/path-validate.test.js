@@ -1124,6 +1124,38 @@ async function testSelfIssuedAndConstraints() {
   var resNc = await run([interNc, leafNc], { time: T2027, trustAnchors: anchor });
   check("SAN within permitted subtree validates", resNc.valid === true);
 
+  // A wildcard SAN is a set of names, not one name, so an excluded subtree asks whether that set
+  // REACHES the excluded tree while a permitted subtree asks whether the set stays INSIDE the
+  // permitted one. Comparing the literal string answers the permitted question correctly and the
+  // excluded question in the fail-open direction: `*.example.com` is not the string
+  // `bar.example.com`, so an exclusion of `bar.example.com` let through a certificate that presents
+  // exactly the name the exclusion forbids.
+  var wcExcl = await mkCert({ subject: "WcExclInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt(null, [gnDns("bar.example.com")])] });
+  var wcLeaf = await mkCert({ subject: "WcExclLeaf", issuer: "WcExclInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("*.example.com")])] });
+  var resWcExcl = await run([wcExcl, wcLeaf], { time: T2027, trustAnchors: anchor });
+  check("a wildcard SAN reaching an excluded name is refused",
+    resWcExcl.valid === false && failCodes(resWcExcl).indexOf("path/name-constraint-excluded") !== -1);
+
+  // The wildcard spans exactly one label, so an excluded name two labels below its parent is out of
+  // its reach and the certificate is not refused on that ground.
+  var wcDeep = await mkCert({ subject: "WcDeepInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt(null, [gnDns("deep.bar.example.com")])] });
+  var wcDeepLeaf = await mkCert({ subject: "WcDeepLeaf", issuer: "WcDeepInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("*.example.com")])] });
+  check("a wildcard SAN that cannot reach the excluded name is admitted",
+    (await run([wcDeep, wcDeepLeaf], { time: T2027, trustAnchors: anchor })).valid === true);
+
+  // The permitted direction keeps asking for containment. A permitted base of `foo.com` covers the
+  // whole of `*.foo.com`, so the certificate validates, and widening the excluded rule must not
+  // widen this one: a wildcard is NOT permitted by a base that merely intersects it.
+  var wcPermIn = await mkCert({ subject: "WcPermInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt([gnDns("foo.com")], null)] });
+  var wcPermLeaf = await mkCert({ subject: "WcPermLeaf", issuer: "WcPermInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("*.foo.com")])] });
+  check("a permitted base covering the whole wildcard admits it",
+    (await run([wcPermIn, wcPermLeaf], { time: T2027, trustAnchors: anchor })).valid === true);
+  var wcPermNarrow = await mkCert({ subject: "WcNarrowInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt([gnDns("bar.example.com")], null)] });
+  var wcNarrowLeaf = await mkCert({ subject: "WcNarrowLeaf", issuer: "WcNarrowInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("*.example.com")])] });
+  var resWcNarrow = await run([wcPermNarrow, wcNarrowLeaf], { time: T2027, trustAnchors: anchor });
+  check("a permitted base the wildcard only reaches into does not permit it",
+    resWcNarrow.valid === false && failCodes(resWcNarrow).indexOf("path/name-constraint-not-permitted") !== -1);
+
   // A URI subtree base of a single label is one the comparison cannot read as a fully qualified
   // domain name (RFC 5280 sec. 4.2.1.10), so every URI-bearing certificate under it is refused,
   // whether or not the URI is one the base was meant to cover. The same base is refused at the

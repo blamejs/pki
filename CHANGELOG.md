@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.1 — 2026-09-10
+
+A wildcard name in a certificate is held to an excluded name constraint it can reach.
+
+### Security
+
+- pki.path.validate refuses a certificate whose wildcard dNSName reaches a name an excluded subtree forbids. An excluded subtree states the names a certificate must not present, and a wildcard subject alternative name stands for every name one label below its parent rather than for the literal text. Comparing the text alone let a leaf carrying only *.example.com pass an exclusion of bar.example.com, which is a name that leaf presents. Any chain whose certificate authority relies on an excluded dNSName subtree to keep a subordinate away from a name was affected, in every version that shipped name-constraint validation. The permitted direction is unchanged and is not widened by this: a permitted subtree still has to cover the whole of a wildcard, so a base of foo.com admits *.foo.com while a base of bar.example.com does not admit *.example.com. A wildcard reaches exactly one label, so an excluded name deeper than that is out of its reach and is not refused: *.example.com is still admitted against an exclusion of deep.bar.example.com.
+
 ## v0.7.0 — 2026-09-09
 
 A Sigstore bundle signed over an artifact's own bytes is verified, not just one wrapping an attestation.
