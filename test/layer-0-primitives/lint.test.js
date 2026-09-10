@@ -766,6 +766,26 @@ function testCrlProfile() {
   check("a cRLNumber longer than 20 octets -> crl-number-too-long",
     hasId(pki.lint.crl(makeCrl({ exts: [crlExt("cRLNumber", false, b.integer((1n << 168n) + 1n)), akiKeyId()] })),
       "lint/rfc5280-crl/crl-number-too-long"));
+  // A revoked entry's userCertificate is a CertificateSerialNumber, so it carries the same
+  // sec. 4.1.2.2 profile the certificate rows apply to a certificate's own serial.
+  function entrySerial(n) {
+    var kids = [b.integer(BigInt(n)), utc("2026-01-15T00:00:00Z")];
+    return b.sequence(kids);
+  }
+  check("a revoked entry with a ZERO serial -> entry-serial-not-positive",
+    hasId(pki.lint.crl(makeCrl({ revoked: [entrySerial(0)] })), "lint/rfc5280-crl/entry-serial-not-positive"));
+  check("a revoked entry with a NEGATIVE serial -> entry-serial-not-positive",
+    hasId(pki.lint.crl(makeCrl({ revoked: [entrySerial(-5)] })), "lint/rfc5280-crl/entry-serial-not-positive"));
+  check("a revoked entry with a serial past 20 octets -> entry-serial-too-long",
+    hasId(pki.lint.crl(makeCrl({ revoked: [entrySerial((1n << 168n) + 1n)] })), "lint/rfc5280-crl/entry-serial-too-long"));
+  check("a revoked entry with an ordinary serial draws neither row",
+    (function () {
+      var r = pki.lint.crl(makeCrl({ revoked: [entrySerial(5)] }));
+      return !hasId(r, "lint/rfc5280-crl/entry-serial-not-positive") && !hasId(r, "lint/rfc5280-crl/entry-serial-too-long");
+    })());
+  check("a serial of exactly 20 octets is accepted (the ceiling is inclusive)",
+    !hasId(pki.lint.crl(makeCrl({ revoked: [entrySerial((1n << 152n) + 1n)] })), "lint/rfc5280-crl/entry-serial-too-long"));
+
   check("a CRL with no authorityKeyIdentifier -> aki-missing at warn",
     hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1)] })), "lint/rfc5280-crl/aki-missing"));
   // Section 5.2.1 states two things: include the extension, and use the key identifier method. An

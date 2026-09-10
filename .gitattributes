@@ -39,6 +39,13 @@ test/fixtures/sigstore/conformance/** -text binary
 # the digest and the suite fails before it validates anything.
 test/fixtures/x509-limbo/** -text binary
 
+# Fuzzing seed corpora — raw DER and deliberately malformed bytes, for every target
+# rather than the newest one. A seed's whole value is being the exact bytes that
+# reached a parser, so a CRLF rewrite on a Windows checkout silently changes what the
+# corpus explores, and a truncated or garbage seed has no structure for git to detect
+# as binary.
+fuzz/*_seed_corpus/** -text binary
+
 # Native modules — always binary.
 *.node binary
 *.so binary
