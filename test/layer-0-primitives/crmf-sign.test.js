@@ -718,9 +718,10 @@ async function testPopoPrivKeyArms() {
     check("V6b. the malformed-iPAddress fixture really replaced one name list", swapped.count === 1);
     return swapped.der;
   }());
-  // ediPartyName [5] and x400Address [3] are read as non-empty constructed values and no further, so
-  // a [5] holding a NULL is a name-shaped hole. The derivation keys from these bytes, so a list
-  // offering nothing but those two arms names nobody it can answer for.
+  // The shared reader now walks ediPartyName [5] into its own shape and holds x400Address [3] to
+  // the ORAddress opening, so a [5] holding a NULL is refused there rather than here. This vector
+  // stays because the derivation keys from these bytes: it pins that a name-shaped hole cannot
+  // reach the derivation, whichever layer refuses it.
   var ediSanCa = (function () {
     var real = pki.schema.x509.parse(emptySubjectCa);
     var san = real.extensions.filter(function (e) { return e.name === "subjectAltName"; })[0];

@@ -353,10 +353,13 @@ function run() {
   var otherNameGn = b.contextConstructed(0, Buffer.concat([b.oid("1.3.6.1.4.1.99999.3.1"), b.explicit(0, b.utf8("hi"))]));
   check("inspect: issuerAltName otherName renders as labeled hex, not raw bytes",
     /X509v3 Issuer Alternative Name:\n\s+othername:a0:12:/.test(pki.inspect.certificate(injectExt(ianExt(otherNameGn)))));
-  // ediPartyName [5] -- another opaque constructed choice -> its whole TLV as hex.
-  var ediGn = b.contextConstructed(5, b.sequence([b.explicit(1, b.utf8("party"))]));
+  // ediPartyName [5] -- another opaque constructed choice -> its whole TLV as hex. GeneralName is
+  // defined in the implicitly tagged module (RFC 5280 A.2), so [5] REPLACES the EDIPartyName
+  // SEQUENCE tag and its children are the nameAssigner [0] / partyName [1] arms directly. Its own
+  // arms hold a DirectoryString, a CHOICE, so those stay explicit.
+  var ediGn = b.contextConstructed(5, b.explicit(1, b.utf8("party")));
   check("inspect: issuerAltName ediPartyName [5] renders labeled hex",
-    /X509v3 Issuer Alternative Name:\n\s+EdiPartyName:a5:0b:/.test(pki.inspect.certificate(injectExt(ianExt(ediGn)))));
+    /X509v3 Issuer Alternative Name:\n\s+EdiPartyName:a5:09:/.test(pki.inspect.certificate(injectExt(ianExt(ediGn)))));
   // registeredID [8] -- a bare OID choice -> the dotted OID string.
   var regGn = b.contextPrimitive(8, b.oid("1.2.3.4").subarray(2));
   check("inspect: issuerAltName registeredID [8] renders the OID",

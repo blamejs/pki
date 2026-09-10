@@ -717,6 +717,39 @@ function testGeneralNameArms() {
   check("gn directoryName [4] with != 1 wrapped child rejected",
     rej(b.contextConstructed(4, Buffer.concat([b.sequence([]), b.sequence([])]))) === "path/bad-general-name");
 
+  // ediPartyName [5] ::= SEQUENCE { nameAssigner [0] DirectoryString OPTIONAL,
+  //                                 partyName [1] DirectoryString }   (RFC 5280 sec. 4.2.1.6)
+  // The arm was previously taken on its tag alone, so a [5] over any non-empty constructed value
+  // decoded as a name while encoding none.
+  function ds(tag, s) { return b.contextConstructed(tag, b.utf8(s)); }
+  check("gn ediPartyName [5] over a NULL rejected",
+    rej(b.contextConstructed(5, b.nullValue())) === "path/bad-general-name");
+  check("gn ediPartyName [5] over an INTEGER rejected",
+    rej(b.contextConstructed(5, b.integer(5n))) === "path/bad-general-name");
+  check("gn ediPartyName [5] with partyName alone accepted",
+    schema.walk(GNv, asn1.decode(b.contextConstructed(5, ds(1, "acme"))), NS).tagNumber === 5);
+  check("gn ediPartyName [5] with nameAssigner + partyName accepted",
+    schema.walk(GNv, asn1.decode(b.contextConstructed(5, Buffer.concat([ds(0, "a"), ds(1, "b")]))), NS).tagNumber === 5);
+  check("gn ediPartyName [5] carrying nameAssigner ALONE rejected (partyName is not OPTIONAL)",
+    rej(b.contextConstructed(5, ds(0, "a"))) === "path/bad-general-name");
+  check("gn ediPartyName [5] with its two arms out of order rejected",
+    rej(b.contextConstructed(5, Buffer.concat([ds(1, "b"), ds(0, "a")]))) === "path/bad-general-name");
+  check("gn ediPartyName [5] with an empty DirectoryString rejected (SIZE 1..MAX)",
+    rej(b.contextConstructed(5, ds(1, ""))) === "path/bad-general-name");
+  check("gn ediPartyName [5] whose arm holds a non-DirectoryString rejected",
+    rej(b.contextConstructed(5, b.contextConstructed(1, b.integer(1n)))) === "path/bad-general-name");
+  check("gn ediPartyName [5] with three arms rejected",
+    rej(b.contextConstructed(5, Buffer.concat([ds(0, "a"), ds(1, "b"), ds(1, "c")]))) === "path/bad-general-name");
+
+  // x400Address [3] ::= ORAddress, which opens with the BuiltInStandardAttributes SEQUENCE (X.411).
+  // The structural rule is that opening; what the components hold is not read here.
+  check("gn x400Address [3] over a NULL rejected",
+    rej(b.contextConstructed(3, b.nullValue())) === "path/bad-general-name");
+  check("gn x400Address [3] not opening with a SEQUENCE rejected",
+    rej(b.contextConstructed(3, b.integer(1n))) === "path/bad-general-name");
+  check("gn x400Address [3] opening with BuiltInStandardAttributes accepted",
+    schema.walk(GNv, asn1.decode(b.contextConstructed(3, b.sequence([]))), NS).tagNumber === 3);
+
   // rfc822Name/dNSName/URI [1]/[2]/[6] — non-empty IA5.
   check("gn IA5 name [2] empty content rejected", rej(b.contextPrimitive(2, Buffer.alloc(0))) === "path/bad-general-name");
 
