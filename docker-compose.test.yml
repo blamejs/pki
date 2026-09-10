@@ -23,7 +23,7 @@
 services:
 
   interop:
-    image: node:24-alpine
+    image: node:24.21.0-alpine
     container_name: pkijs-test-interop
     working_dir: /pki
     volumes:

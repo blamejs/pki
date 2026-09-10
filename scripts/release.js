@@ -408,9 +408,10 @@ function _staticGates() {
   _run("node", ["scripts/check-api-snapshot.js"]);
   _runScriptIfPresent("scripts/check-spelling-consistency.js");
   _runScriptIfPresent("scripts/check-status-lifecycle.js");
+  _runScriptIfPresent("scripts/check-engine-floor.js");
   _run("node", ["scripts/pin-all.js", "--check"]);
   _ok("eslint + codebase-patterns + source-comment-blocks + api-snapshot + spelling + " +
-      "status-lifecycle + lockfile pin currency clean");
+      "status-lifecycle + engine floor + lockfile pin currency clean");
 }
 
 function cmdPrepare(opts) {

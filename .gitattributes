@@ -12,6 +12,12 @@ lib/vendor/** -text binary
 # script fails at line 1.
 *.sh text eol=lf
 
+# The version-manager files are read as a bare version string. nvm and asdf take
+# the whole line, so a CRLF checkout hands them "24.21.0\r" and the install fails
+# on a version that does not exist.
+.nvmrc text eol=lf
+.node-version text eol=lf
+
 # Derived artifacts the release-notes generator owns end-to-end —
 # rebuild emits LF, so the on-disk file is pinned to LF on every
 # platform. Without this, Windows checkouts would get CRLF and the
@@ -19,6 +25,13 @@ lib/vendor/** -text binary
 # eating the cost of normalizing both sides before comparing.
 CHANGELOG.md text eol=lf
 release-notes/*.json text eol=lf
+
+# Signed test artifacts — treat as binary so git never rewrites line endings.
+# These are an upstream interoperability suite's own bytes, and a signature and
+# a transparency-log entry record the digest of exactly those bytes: a CRLF
+# rewrite on a Windows checkout changes the digest and the fixture no longer
+# verifies. The vendor rule above exists for the same reason.
+test/fixtures/sigstore/conformance/** -text binary
 
 # Native modules — always binary.
 *.node binary

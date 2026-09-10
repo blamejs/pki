@@ -164,6 +164,22 @@ async function run() {
   check("mds: a BLOB that does not advance past the baseline is refused",
     (await codeFor({}, { previousNo: 42 })) === "webauthn/metadata-rollback");
 
+  // The baseline is read once, so a baseline reached through an accessor cannot answer absent where
+  // the comparison runs and present where the result reports on it. Answering that way skipped the
+  // comparison and still returned a result saying a baseline of 42 had been checked, which is a
+  // rollback accepted under a verdict that says rollback was ruled out.
+  var baselineReads = 0;
+  var movingBaseline = { rootCertificates: [base.rootDer], time: T };
+  Object.defineProperty(movingBaseline, "previousNo", {
+    enumerable: true, configurable: true,
+    get: function () { baselineReads++; return baselineReads <= 2 ? undefined : 42; },
+  });
+  var movedErr = null, movedOut = null;
+  try { movedOut = await pki.webauthn.verifyMetadataBlob(base.blob, movingBaseline); } catch (e) { movedErr = e; }
+  check("mds: a result never reports a rollback check the comparison did not run",
+    movedErr !== null || (movedOut !== null && movedOut.rollbackChecked === false && movedOut.previousNo === null));
+  check("mds: and the baseline was read exactly once", baselineReads === 1);
+
   // Verified provenance says the supplied catalogue is real; it does not say the ENTRY came out of
   // it. A process holding two catalogues could otherwise pair an entry from one with the other, and
   // the second's statusPolicy and freshness would decide about the first's status reports -- a
