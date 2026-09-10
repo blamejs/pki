@@ -772,6 +772,28 @@ function testCrlProfile() {
     var kids = [b.integer(BigInt(n)), utc("2026-01-15T00:00:00Z")];
     return b.sequence(kids);
   }
+  // Two more rules the toolkit already applies elsewhere, applied to a CRL that arrived from
+  // elsewhere. A serial listed twice on a direct CRL states two revocations of one certificate,
+  // and certificateIssuer means nothing unless the CRL declares itself indirect.
+  var certIssuerExt = crlExt("certificateIssuer", true, b.sequence([b.contextPrimitive(2, Buffer.from("other.example", "latin1"))]));
+  var idpIndirect = crlExt("issuingDistributionPoint", true, b.sequence([b.contextPrimitive(4, Buffer.from([0xff]))]));
+  check("a direct CRL listing one serial twice -> duplicate-entry-serial",
+    hasId(pki.lint.crl(makeCrl({ revoked: [entry(5), entry(5)] })), "lint/rfc5280-crl/duplicate-entry-serial"));
+  check("a direct CRL listing distinct serials is not flagged",
+    !hasId(pki.lint.crl(makeCrl({ revoked: [entry(5), entry(6)] })), "lint/rfc5280-crl/duplicate-entry-serial"));
+  check("an INDIRECT CRL is exempt from the duplicate-serial row",
+    !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), idpIndirect], revoked: [entry(5), entry(5)] })),
+      "lint/rfc5280-crl/duplicate-entry-serial"));
+  check("certificateIssuer on a DIRECT CRL -> certificate-issuer-on-direct-crl",
+    hasId(pki.lint.crl(makeCrl({ revoked: [entry(5, [certIssuerExt])] })),
+      "lint/rfc5280-crl/certificate-issuer-on-direct-crl"));
+  check("certificateIssuer on an INDIRECT CRL is not flagged",
+    !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), idpIndirect], revoked: [entry(5, [certIssuerExt])] })),
+      "lint/rfc5280-crl/certificate-issuer-on-direct-crl"));
+  check("a MALFORMED issuingDistributionPoint does not read as a declaration of indirectness",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), crlExt("issuingDistributionPoint", true, b.nullValue())],
+      revoked: [entry(5, [certIssuerExt])] })), "lint/rfc5280-crl/certificate-issuer-on-direct-crl"));
+
   check("a revoked entry with a ZERO serial -> entry-serial-not-positive",
     hasId(pki.lint.crl(makeCrl({ revoked: [entrySerial(0)] })), "lint/rfc5280-crl/entry-serial-not-positive"));
   check("a revoked entry with a NEGATIVE serial -> entry-serial-not-positive",
