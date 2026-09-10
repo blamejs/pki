@@ -799,6 +799,43 @@ function testCrlProfile() {
     hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), crlExt("issuingDistributionPoint", true, b.nullValue())],
       revoked: [entry(5, [certIssuerExt])] })), "lint/rfc5280-crl/certificate-issuer-on-direct-crl"));
 
+  // Section 5.3.3 requires the DN from the certificate's issuer field, which in a GeneralNames is
+  // the directoryName [4] arm. A certificateIssuer carrying only another name form decodes fine and
+  // still attributes the entry to nobody, so it is a profile row rather than a syntax one.
+  var dnName = b.sequence([b.set([b.sequence([b.oid(oid.byName("commonName")), b.utf8("Other CA")])])]);
+  var ciWithDn = crlExt("certificateIssuer", true, b.sequence([b.contextConstructed(4, dnName)]));
+  check("a certificateIssuer carrying only a dNSName -> certificate-issuer-without-dn",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), idpIndirect], revoked: [entry(5, [certIssuerExt])] })),
+      "lint/rfc5280-crl/certificate-issuer-without-dn"));
+  check("a certificateIssuer whose directoryName wraps an EMPTY Name -> certificate-issuer-without-dn",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), idpIndirect],
+      revoked: [entry(5, [crlExt("certificateIssuer", true, b.sequence([b.contextConstructed(4, b.sequence([]))]))])] })),
+      "lint/rfc5280-crl/certificate-issuer-without-dn"));
+  check("a certificateIssuer carrying a directoryName is not flagged",
+    !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), idpIndirect], revoked: [entry(5, [ciWithDn])] })),
+      "lint/rfc5280-crl/certificate-issuer-without-dn"));
+
+  // Section 5.3.1 states this as a SHOULD, so it is a warn, like the issuerAltName criticality row.
+  check("a reasonCode encoding unspecified(0) -> reason-code-unspecified at warn",
+    hasId(pki.lint.crl(makeCrl({ revoked: [entry(5, [crlExt("reasonCode", false, b.enumerated(0n))])] })),
+      "lint/rfc5280-crl/reason-code-unspecified"));
+  check("a meaningful reason code is not flagged",
+    !hasId(pki.lint.crl(makeCrl({ revoked: [entry(5, [crlExt("reasonCode", false, b.enumerated(1n))])] })),
+      "lint/rfc5280-crl/reason-code-unspecified"));
+  check("the unspecified reason row is suppressed by a severity floor of error",
+    !hasId(pki.lint.crl(makeCrl({ revoked: [entry(5, [crlExt("reasonCode", false, b.enumerated(0n))])] }), { severity: "error" }),
+      "lint/rfc5280-crl/reason-code-unspecified"));
+
+  // A certificate-only extension carried NON-critically on a CRL is an unrecognized extension the
+  // profile lets a consumer ignore, so its inner value has no CRL syntax to enforce. Decoding it
+  // against the CERTIFICATE profile would report a fault section 5 does not state.
+  check("a NON-critical certificate-only extension with a junk value is not a syntax fault",
+    !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), crlExt("basicConstraints", false, b.nullValue())] })),
+      "lint/rfc5280-crl/extension-value-syntax"));
+  check("...but the same extension marked CRITICAL is still an unknown critical extension",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(1), akiKeyId(), crlExt("basicConstraints", true, b.nullValue())] })),
+      "lint/rfc5280-crl/unknown-critical-extension"));
+
   check("a revoked entry with a ZERO serial -> entry-serial-not-positive",
     hasId(pki.lint.crl(makeCrl({ revoked: [entrySerial(0)] })), "lint/rfc5280-crl/entry-serial-not-positive"));
   check("a revoked entry with a NEGATIVE serial -> entry-serial-not-positive",
