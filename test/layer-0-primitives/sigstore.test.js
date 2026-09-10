@@ -146,7 +146,8 @@ function buildSynBundle(opts) {
   var logIndex = 1234;
   // One entry, built the way the log builds one. A vector asking for a second gets one that binds
   // just as hard, with its own proof and signed entry timestamp, differing only in what it records.
-  function makeEntry(bodyObj) {
+  function makeEntry(bodyObj, atTime) {
+    var entryTime = atTime === undefined ? integratedTime : atTime;
     var canonBuf = Buffer.from(JSON.stringify(bodyObj));
     var rootHash = merkle.leafHash(canonBuf);        // single-leaf tree: root == leaf hash
     var cpBody = Buffer.from("rekor.local\n1\n" + rootHash.toString("base64") + "\n", "utf8");
@@ -155,9 +156,9 @@ function buildSynBundle(opts) {
     var cpEnvelope = cpBody.toString("utf8") + "\n" + String.fromCharCode(0x2014) + " rekor.local " + cpBlob.toString("base64") + "\n";
     // Number() as the verifier applies it, so a non-numeric integratedTime is signed in the same form
     // the verifier canonicalizes it into and the SET still attests it.
-    var setCanon = JSON.stringify({ body: canonBuf.toString("base64"), integratedTime: Number(integratedTime), logID: keyId.toString("hex"), logIndex: logIndex });
+    var setCanon = JSON.stringify({ body: canonBuf.toString("base64"), integratedTime: Number(entryTime), logID: keyId.toString("hex"), logIndex: logIndex });
     var setSig = crypto.sign("sha256", Buffer.from(setCanon, "utf8"), { key: rekorKp.privateKey, dsaEncoding: "der" });
-    return { logId: { keyId: keyId.toString("base64") }, integratedTime: integratedTime, logIndex: logIndex,
+    return { logId: { keyId: keyId.toString("base64") }, integratedTime: entryTime, logIndex: logIndex,
       inclusionPromise: { signedEntryTimestamp: setSig.toString("base64") },
       inclusionProof: { logIndex: 0, treeSize: 1, hashes: [], rootHash: rootHash.toString("base64"), checkpoint: { envelope: cpEnvelope } },
       canonicalizedBody: canonBuf.toString("base64") };
@@ -173,6 +174,9 @@ function buildSynBundle(opts) {
     var decoyBody = JSON.parse(JSON.stringify(body));
     decoyBody.spec.data.hash.value = crypto.createHash(hashAlg).update(opts.decoyArtifact).digest("hex");
     entries = [makeEntry(decoyBody), te];
+  } else if (opts.decoyIntegratedTime !== undefined) {
+    // The same body, authentically logged, attesting an instant the leaf certificate does not cover.
+    entries = [makeEntry(body, opts.decoyIntegratedTime), te];
   }
   var vmat = { tlogEntries: entries };
   if (opts.extraChain && opts.extraChain.length) {
@@ -1141,6 +1145,23 @@ async function runMessageSignature(TM) {
     await codeOf(pki.sigstore.verifyBundle(decoyBuilt.bundle, {
       fulcioRoots: decoyBuilt.trust.fulcioRoots, rekorKeys: decoyBuilt.trust.rekorKeys,
       artifact: Buffer.from("neither of them") })) === "sigstore/artifact-mismatch");
+
+  // The instant an entry attests decides whether the certificate covers it, so that check belongs to
+  // choosing the entry too. An earlier entry attesting a moment after the leaf expired is passed
+  // over for a later one the certificate does cover, rather than sinking the bundle.
+  var lateBuilt = buildSynBundle({ messageArtifact: ARTIFACT, omitMessageDigest: true,
+    decoyIntegratedTime: Math.floor(new Date("2035-01-01T00:00:00Z").getTime() / 1000) });
+  check("a decoy entry attesting a later instant is present and first",
+    lateBuilt.bundle.verificationMaterial.tlogEntries.length === 2 &&
+    lateBuilt.bundle.verificationMaterial.tlogEntries[0].integratedTime >
+      lateBuilt.bundle.verificationMaterial.tlogEntries[1].integratedTime);
+  var lateOut = null, lateErr = null;
+  try {
+    lateOut = await pki.sigstore.verifyBundle(lateBuilt.bundle, {
+      fulcioRoots: lateBuilt.trust.fulcioRoots, rekorKeys: lateBuilt.trust.rekorKeys, artifact: ARTIFACT });
+  } catch (e) { lateErr = e; }
+  check("an entry attesting an instant the certificate does not cover does not sink the verify",
+    lateErr === null && lateOut !== null && lateOut.verified === true);
 
   // The arm's own shape.
   var noSig = clone(msBundle("v0.3")); delete noSig.messageSignature.signature;
