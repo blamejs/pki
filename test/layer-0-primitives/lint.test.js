@@ -743,7 +743,7 @@ function testCrlProfile() {
   check("a CRL whose thisUpdate follows its nextUpdate -> update-times-inverted",
     hasId(pki.lint.crl(makeCrl({ thisUpdate: "2026-03-01T00:00:00Z" })), "lint/rfc5280-crl/update-times-inverted"));
 
-  // Three sec. 5 rules have no row, because the strict parser refuses them first and a rule for
+  // Four sec. 5 rules have no row, because the strict parser refuses them first and a rule for
   // them could never fire. Each is pinned here as the engine's fatal, so the boundary between the
   // parser and the profile stays stated rather than assumed.
   function fatalCode(der) {
@@ -959,6 +959,44 @@ function testCrlProfile() {
     hasId(pki.lint.crl(makeCrl({ revoked: [entrySerial(-5)] })), "lint/rfc5280-crl/entry-serial-not-positive"));
   check("a revoked entry with a serial past 20 octets -> entry-serial-too-long",
     hasId(pki.lint.crl(makeCrl({ revoked: [entrySerial((1n << 168n) + 1n)] })), "lint/rfc5280-crl/entry-serial-too-long"));
+  // DER prefixes a 0x00 to a positive integer whose top bit is set, so a 20-octet number encodes as
+  // 21 content octets. That pad is encoding overhead, not part of the number the 20-octet ceiling
+  // bounds, and the certificate serial rule already measures it that way.
+  var MAG20_HIGHBIT = BigInt("0x80" + "00".repeat(19));  // 20 octets, needs a sign pad
+  var MAG20_LOWBIT = BigInt("0x7f" + "ff".repeat(19));   // 20 octets, no pad
+  var MAG21 = BigInt("0x80" + "00".repeat(20));          // genuinely 21 octets
+  check("a 20-octet entry serial whose top bit is set is NOT too long",
+    !hasId(pki.lint.crl(makeCrl({ revoked: [entrySerial(MAG20_HIGHBIT)] })), "lint/rfc5280-crl/entry-serial-too-long") &&
+    !hasId(pki.lint.crl(makeCrl({ revoked: [entrySerial(MAG20_LOWBIT)] })), "lint/rfc5280-crl/entry-serial-too-long"));
+  check("a genuinely 21-octet entry serial is still too long",
+    hasId(pki.lint.crl(makeCrl({ revoked: [entrySerial(MAG21)] })), "lint/rfc5280-crl/entry-serial-too-long"));
+  // The exact boundary. Sections 4.1.2.2 and 5.2.3 bound the VALUE: users must handle values up to
+  // 20 octets, and every value from 2^159 up needs a 21st DER content octet for the sign, so a
+  // ceiling read against the encoding would make conforming 20-octet values unrepresentable.
+  check("the largest 20-octet value is accepted and the smallest 21-octet value is not",
+    !hasId(pki.lint.crl(makeCrl({ revoked: [entrySerial((1n << 160n) - 1n)] })), "lint/rfc5280-crl/entry-serial-too-long") &&
+    hasId(pki.lint.crl(makeCrl({ revoked: [entrySerial(1n << 160n)] })), "lint/rfc5280-crl/entry-serial-too-long") &&
+    !hasId(pki.lint.crl(makeCrl({ exts: [crlExt("cRLNumber", false, b.integer((1n << 160n) - 1n)), akiKeyId()] })),
+      "lint/rfc5280-crl/crl-number-too-long") &&
+    hasId(pki.lint.crl(makeCrl({ exts: [crlExt("cRLNumber", false, b.integer(1n << 160n)), akiKeyId()] })),
+      "lint/rfc5280-crl/crl-number-too-long"));
+  // The same helper measures both CRLNumber carriers, so the sign pad reached them too.
+  check("a 20-octet cRLNumber whose top bit is set is NOT too long",
+    !hasId(pki.lint.crl(makeCrl({ exts: [crlExt("cRLNumber", false, b.integer(MAG20_HIGHBIT)), akiKeyId()] })),
+      "lint/rfc5280-crl/crl-number-too-long"));
+  check("a genuinely 21-octet cRLNumber is still too long",
+    hasId(pki.lint.crl(makeCrl({ exts: [crlExt("cRLNumber", false, b.integer(MAG21)), akiKeyId()] })),
+      "lint/rfc5280-crl/crl-number-too-long"));
+  check("a 20-octet baseCRLNumber whose top bit is set is NOT too long",
+    !hasId(pki.lint.crl(makeCrl({ exts: [crlNumber(3), akiKeyId(),
+      crlExt("deltaCRLIndicator", true, b.integer(MAG20_HIGHBIT))] })), "lint/rfc5280-crl/crl-number-too-long"));
+  // The certificate and CRL rules must answer alike for one value, or the toolkit disagrees with
+  // itself about what a 20-octet number is.
+  check("the certificate and CRL serial rules agree on the same 20-octet value",
+    has(pki.lint.certificate(makeCert({ serial: b.integer(MAG20_HIGHBIT) })), "lint/rfc5280/serial-too-long") ===
+    hasId(pki.lint.crl(makeCrl({ revoked: [entrySerial(MAG20_HIGHBIT)] })), "lint/rfc5280-crl/entry-serial-too-long") &&
+    has(pki.lint.certificate(makeCert({ serial: b.integer(MAG21) })), "lint/rfc5280/serial-too-long") ===
+    hasId(pki.lint.crl(makeCrl({ revoked: [entrySerial(MAG21)] })), "lint/rfc5280-crl/entry-serial-too-long"));
   check("a revoked entry with an ordinary serial draws neither row",
     (function () {
       var r = pki.lint.crl(makeCrl({ revoked: [entrySerial(5)] }));
