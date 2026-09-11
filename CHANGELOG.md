@@ -4,6 +4,18 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.12 — 2026-09-10
+
+An issuer can draw a certificate serial number before signing with it.
+
+### Added
+
+- pki.x509.randomSerial() returns a BigInt drawn from 20 octets of the platform CSPRNG, the same draw pki.x509.sign makes when spec.serialNumber is omitted. The value meets the RFC 5280 section 4.1.2.2 profile the signer enforces: positive, and at most 20 octets. Pass it back as spec.serialNumber and the certificate carries exactly that number, so a serial can be reserved or logged before issuance.
+
+### Changed
+
+- The serial draw redraws when the leading octet comes out zero, instead of replacing it with 1. Every value the leading octet can take is now equally likely; previously 1 occurred about twice as often as any other value, because it absorbed the zero case. Serials already issued are unaffected, and the draw carries the same 20 octets it always did.
+
 ## v0.7.11 — 2026-09-10
 
 A name constraint whose base is a zero-length name is read rather than rejected.
