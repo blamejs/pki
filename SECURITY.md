@@ -599,6 +599,18 @@ security-only patches after the next major releases.
 
 ### Path validation, revocation, and signed messages
 
+- **A name constraint a relying party may ignore (CWE-693).** RFC 5280 fixes the
+  criticality of nine certificate extensions, and `nameConstraints` is one it
+  requires critical. A verifier that does not recognize an extension marked
+  non-critical may ignore it, so a sub-CA issued with a non-critical
+  `nameConstraints` is unconstrained in the hands of that verifier.
+  `pki.x509.sign` and `pki.csr.sign` refuse a pre-encoded extension carrying a
+  criticality the RFC does not permit, in both directions: the six it requires
+  non-critical (`authorityKeyIdentifier`, `subjectKeyIdentifier`,
+  `subjectDirectoryAttributes`, `freshestCRL`, `authorityInfoAccess`,
+  `subjectInfoAccess`) and the three it requires critical (`nameConstraints`,
+  `policyConstraints`, `inhibitAnyPolicy`). The CRL and attribute-certificate
+  signers hold the same line for the criticality their own profiles fix.
 - **A wildcard name escaping an excluded subtree (CWE-295).** An excluded
   `dNSName` subtree states the names a certificate must not present. A wildcard
   subject alternative name is not one name: it stands for every name one label

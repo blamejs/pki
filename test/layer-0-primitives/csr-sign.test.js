@@ -274,6 +274,35 @@ async function testFailClosed() {
   check("recognized challengePassword via opaque attributes -> csr/bad-input", await codeOf(pki.csr.sign({ subject: "x", subjectPublicKey: s.spki, attributes: [cpOpaque] }, { key: s.key })) === "csr/bad-input");
 }
 
+// ---- RFC 5280 sec. 4.2 fixed extension criticality in a request -------------
+
+// A requested extension is a certificate extension, so the clauses that fix criticality apply to it
+// on the requesting side as well. Two structurally different members: one the RFC requires critical,
+// one it requires non-critical.
+async function testRequestedCriticality() {
+  var s = makeSigner("ec-p256");
+  var B = pki.asn1.build, oidB = pki.oid.byName;
+  var ncVal = B.sequence([B.contextConstructed(0, B.sequence([B.contextPrimitive(2, Buffer.from("example.com", "ascii"))]))]);
+  var aiaVal = B.sequence([B.sequence([B.oid(oidB("caIssuers")), B.contextPrimitive(6, Buffer.from("http://ca.example/x", "ascii"))])]);
+  function extOf(name, value, critical) {
+    var kids = [B.oid(oidB(name))];
+    if (critical) kids.push(B.boolean(true));
+    kids.push(B.octetString(value));
+    return B.sequence(kids);
+  }
+  function req(list) {
+    return pki.csr.sign({ subject: "x", subjectPublicKey: s.spki, extensionRequest: list }, { key: s.key });
+  }
+  check("a requested non-critical nameConstraints -> csr/bad-input",
+    await codeOf(req([extOf("nameConstraints", ncVal, false)])) === "csr/bad-input");
+  check("a requested critical nameConstraints is accepted",
+    Buffer.isBuffer(await req([extOf("nameConstraints", ncVal, true)])));
+  check("a requested critical authorityInfoAccess -> csr/bad-input",
+    await codeOf(req([extOf("authorityInfoAccess", aiaVal, true)])) === "csr/bad-input");
+  check("a requested non-critical authorityInfoAccess is accepted",
+    Buffer.isBuffer(await req([extOf("authorityInfoAccess", aiaVal, false)])));
+}
+
 async function main() {
   await testRoundTrip();
   await testPemOutput();
@@ -285,6 +314,7 @@ async function main() {
   await testChallengePassword();
   await testProofOfPossession();
   await testFailClosed();
+  await testRequestedCriticality();
   console.log("CHECKS " + helpers.getChecks());
 }
 

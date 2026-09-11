@@ -1103,6 +1103,62 @@ async function testRandomSerial() {
     pki.schema.x509.parse(der).serialNumber === chosen);
 }
 
+// ---- RFC 5280 sec. 4.2 fixed extension criticality --------------------------
+
+// Nine extensions leave the issuer no choice about criticality. A pre-encoded Extension carries
+// its own critical flag, so the array form is held to the same rule pki.lint.certificate grades.
+async function testFixedCriticality() {
+  var s = makeSigner("ed25519");
+  var B = pki.asn1.build, oidB = pki.oid.byName;
+  var uri = Buffer.from("http://ca.example/x", "ascii");
+  // A well-formed value for each, so a refusal can only be about the criticality flag.
+  var VALUES = {
+    authorityKeyIdentifier: B.sequence([B.contextPrimitive(0, Buffer.alloc(20, 7))]),
+    subjectKeyIdentifier: B.octetString(Buffer.alloc(20, 3)),
+    subjectDirectoryAttributes: B.sequence([B.sequence([B.oid(oidB("title")), B.set([B.utf8("Director")])])]),
+    freshestCRL: B.sequence([B.sequence([B.contextConstructed(0, B.contextConstructed(0, B.contextPrimitive(6, uri)))])]),
+    authorityInfoAccess: B.sequence([B.sequence([B.oid(oidB("caIssuers")), B.contextPrimitive(6, uri)])]),
+    subjectInfoAccess: B.sequence([B.sequence([B.oid(oidB("id-ad-caRepository")), B.contextPrimitive(6, uri)])]),
+    nameConstraints: B.sequence([B.contextConstructed(0, B.sequence([B.contextPrimitive(2, Buffer.from("example.com", "ascii"))]))]),
+    policyConstraints: B.sequence([B.contextPrimitive(0, Buffer.from([0x00]))]),
+    inhibitAnyPolicy: B.integer(0n),
+  };
+  // MUST be non-critical: 4.2.1.1, 4.2.1.2, 4.2.1.8, 4.2.1.15, 4.2.2.1, 4.2.2.2.
+  // MUST be critical: 4.2.1.10, 4.2.1.11, 4.2.1.14.
+  var FIXED = {
+    authorityKeyIdentifier: false, subjectKeyIdentifier: false, subjectDirectoryAttributes: false,
+    freshestCRL: false, authorityInfoAccess: false, subjectInfoAccess: false,
+    nameConstraints: true, policyConstraints: true, inhibitAnyPolicy: true,
+  };
+  function extOf(name, critical) {
+    var kids = [B.oid(oidB(name))];
+    if (critical) kids.push(B.boolean(true));
+    kids.push(B.octetString(VALUES[name]));
+    return B.sequence(kids);
+  }
+  // nameConstraints appears only in a CA certificate, so every arm rides a CA carrier.
+  var carrier = [
+    B.sequence([B.oid(oidB("basicConstraints")), B.boolean(true), B.octetString(B.sequence([B.boolean(true)]))]),
+    B.sequence([B.oid(oidB("keyUsage")), B.boolean(true), B.octetString(B.namedBitString([5]))]),
+  ];
+  function signWith(e) {
+    return pki.x509.sign({ subject: "crit.example", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA,
+      extensions: carrier.concat([e]) }, { key: s.key });
+  }
+  var names = Object.keys(FIXED);
+  for (var i = 0; i < names.length; i++) {
+    var n = names[i], required = FIXED[n];
+    check("pre-encoded " + n + " marked " + (required ? "non-critical" : "critical") + " -> x509/bad-input",
+      await codeOf(signWith(extOf(n, !required))) === "x509/bad-input");
+    check("pre-encoded " + n + " marked " + (required ? "critical" : "non-critical") + " is accepted",
+      Buffer.isBuffer(await signWith(extOf(n, required))));
+  }
+  // The emitted certificate carries no error-severity criticality finding from the linter.
+  var der = await signWith(extOf("nameConstraints", true));
+  var errs = pki.lint.certificate(der).findings.filter(function (f) { return f.severity === "error"; });
+  check("a certificate the signer accepts carries no error-severity lint finding", errs.length === 0);
+}
+
 async function main() {
   await testRoundTrip();
   await testPemOutput();
@@ -1127,6 +1183,7 @@ async function main() {
   await testFailClosed();
   await testOpensslInterop();
   await testRandomSerial();
+  await testFixedCriticality();
   console.log("CHECKS " + helpers.getChecks());
 }
 

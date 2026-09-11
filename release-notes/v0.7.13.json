@@ -1,0 +1,14 @@
+{
+  "version": "0.7.13",
+  "date": "2026-09-10",
+  "headline": "The certificate signer refuses a pre-encoded extension whose criticality RFC 5280 fixes.",
+  "summary": "pki.x509.sign accepts an array of pre-encoded Extension DER, and that path never checked the criticality flag against the clauses that fix it. A certificate could be signed carrying a non-critical nameConstraints. A relying party that does not recognize an extension marked non-critical may ignore it, so a sub-CA issued to be name-constrained was not constrained in the hands of that verifier. pki.lint.certificate already graded such a certificate error; the signer emitted it anyway.",
+  "sections": {
+    "Fixed": [
+      "pki.x509.sign and pki.csr.sign now refuse a pre-encoded extension carrying a criticality RFC 5280 does not permit, throwing x509/bad-input or csr/bad-input with the governing clause in the message. Nine extensions leave the issuer no choice. authorityKeyIdentifier (section 4.2.1.1), subjectKeyIdentifier (section 4.2.1.2), subjectDirectoryAttributes (section 4.2.1.8), freshestCRL (section 4.2.1.15), authorityInfoAccess (section 4.2.2.1) and subjectInfoAccess (section 4.2.2.2) must be non-critical. nameConstraints (section 4.2.1.10), policyConstraints (section 4.2.1.11) and inhibitAnyPolicy (section 4.2.1.14) must be critical. The check covers the pre-encoded array form on both verbs, which is the only way to supply these six extensions."
+    ],
+    "Changed": [
+      "A call that supplied one of the nine fixed-criticality extensions with the wrong flag now throws where it previously produced a certificate or a request. Set the flag the clause requires: omit the critical BOOLEAN for the non-critical set, and encode it TRUE for the critical set. The extensions and extensionRequest object forms already emitted the correct flag and are unaffected, as are the CRL and attribute-certificate signers, which enforce the criticality their own profiles fix."
+    ]
+  }
+}
