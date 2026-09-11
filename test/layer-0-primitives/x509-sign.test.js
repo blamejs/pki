@@ -1163,6 +1163,15 @@ async function testAccessAndDistributionSpec() {
     fullDp.children.length === 2 && fullDp.children[0].tagNumber === 0 && fullDp.children[1].tagNumber === 1);
   check("a cRLIssuer-only DistributionPoint is accepted (sec. 4.2.1.13 permits either)",
     !!extOf(await pki.x509.sign(leaf({ cRLDistributionPoints: [{ cRLIssuer: [{ directoryName: [{ commonName: "CRL Issuer" }] }] }] }), { key: s.key }), "cRLDistributionPoints"));
+  // sec. 4.2.1.13: cRLIssuer "MUST be present and contain the Name of the CRL issuer". A Name is the
+  // X.501 Name, which a GeneralName can carry only as directoryName, and the path validator compares
+  // only directoryName entries. A cRLIssuer naming no directoryName matches no CRL issuer, so the
+  // distribution point would leave revocation undetermined rather than point at anything.
+  check("a cRLIssuer naming no directoryName -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ cRLDistributionPoints: [{ cRLIssuer: ["http://crl.example"] }] }), { key: s.key })) === "x509/bad-input");
+  check("a cRLIssuer mixing a URI with a directoryName is accepted",
+    !!extOf(await pki.x509.sign(leaf({ cRLDistributionPoints: [{ fullName: ["http://c.example"],
+      cRLIssuer: [{ uniformResourceIdentifier: "http://crl.example" }, { directoryName: [{ commonName: "CRL Issuer" }] }] }] }), { key: s.key }), "cRLDistributionPoints"));
   // "a DistributionPoint MUST NOT consist of only the reasons field".
   check("a DistributionPoint carrying only reasons -> x509/bad-input",
     await codeOf(pki.x509.sign(leaf({ cRLDistributionPoints: [{ reasons: ["keyCompromise"] }] }), { key: s.key })) === "x509/bad-input");
