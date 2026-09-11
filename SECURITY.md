@@ -119,6 +119,21 @@ security-only patches after the next major releases.
   stopped refusing anything. `pki.pkcs12.open` and `pki.pkcs12.verifyMac` read
   the option once and every use reads that one value. The same read-once shape is
   applied to the PBES2 and CMP iteration caps.
+- **A verdict describing a check that ran on a different value (CWE-367).** A
+  verify verb reads one option to decide whether a rule applies and reads it again
+  for the value the rule uses, so an option supplied through an accessor can
+  answer those reads differently and the verdict then reports a check that never
+  ran against what the caller supplied. `pki.jose.verify` read `opts.key` seven
+  times, among them the RFC 7638 thumbprint comparison against the jwk a JWS
+  embeds and the key the signature is verified under, so the key compared need not
+  have been the key used and a JWS naming an unpinned signer returned a verdict
+  instead of `jose/key-mismatch`. `pki.webauthn.parseClientData` read each
+  `expected*` option once to decide whether to compare and once for the value
+  compared, so `checked.challenge`, `checked.origin` and `checked.type` could
+  report a comparison against a value the caller never supplied. Both take each
+  named option once, at entry, before any of it is examined, as do the `pki.smime`
+  verbs. `pki.webauthn.verify` and `pki.webauthn.verifyAssertion` already copied
+  their inputs.
 - **Decompression bombs (CWE-409).** Every decompression in the toolkit runs
   through one bounded primitive, so the defense cannot be picked up by one caller
   and missed by the next. The output is capped at the decompressor itself (Node's

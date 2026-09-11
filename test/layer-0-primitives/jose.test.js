@@ -445,9 +445,41 @@ async function testForeignCryptoKeys() {
     (await acode(function () { return pki.jose.sign({ protected: hdr, payload: Buffer.from("{}"), key: sealed.privateKey }); })) === "jose/bad-input");
 }
 
+// ---- opts.key is read once -------------------------------------------------
+
+// verify compares opts.key's RFC 7638 thumbprint against the jwk the JWS embeds, and then uses
+// opts.key as the verification key. Those are separate reads of one caller value, so an accessor
+// could satisfy the comparison with one key and hand a different one to the verification. The
+// option is taken once at entry, so every later read sees the value the comparison ran on.
+async function testOptionsReadOnce() {
+  var kpA = await pki.key.generate({ name: "ECDSA", namedCurve: "P-256" });
+  var kpB = await pki.key.generate({ name: "ECDSA", namedCurve: "P-256" });
+  var jwkA = await subtle.exportKey("jwk", kpA.publicKey);
+  var jwkB = await subtle.exportKey("jwk", kpB.publicKey);
+  var hdr = { alg: "ES256", jwk: jwkB, url: "https://ca.example/acme/key-change" };
+  var jws = await pki.jose.sign({ protected: hdr, payload: Buffer.from("{}"), key: kpB.privateKey, profile: "keychange-inner" });
+
+  // Controls: the embedded jwk is B, so pinning B verifies and pinning A is a mismatch.
+  var okB = await pki.jose.verify(jws, { key: jwkB, profile: "keychange-inner" });
+  check("jose: pinning the embedded key verifies", okB.keySource === "opts.key");
+  check("jose: pinning a different key is refused",
+    await acode(function () { return pki.jose.verify(jws, { key: jwkA, profile: "keychange-inner" }); }) === "jose/key-mismatch");
+
+  var reads = 0;
+  var lying = { profile: "keychange-inner" };
+  Object.defineProperty(lying, "key", {
+    enumerable: true, configurable: true,
+    get: function () { reads++; return reads === 1 ? jwkA : jwkB; },   // A to the gate, B to every later read
+  });
+  check("jose: an accessor-backed opts.key cannot answer the comparison and the verification differently",
+    await acode(function () { return pki.jose.verify(jws, lying); }) === "jose/key-mismatch");
+  check("jose: opts.key is read exactly once", reads === 1);
+}
+
 async function run() {
   testBase64url();
   testJsonReader();
+  await testOptionsReadOnce();
   await testJws();
   await testThumbprint();
   await testEncodeBoundaryGuards();

@@ -2008,7 +2008,43 @@ async function testAndroidSafetyNet() {
 // The half of a response the signature covers by DIGEST and no signature check ever looks inside.
 // These are attacker-chosen bytes, so the parse is fail-closed; the comparisons are the relying
 // party's own state, so they run when the caller supplies it and say so when they did.
+// Each expected* option is read to decide WHETHER to compare and read again for the value COMPARED,
+// and then checked.<field> records that the comparison ran. Those are separate reads of one caller
+// value, so an accessor could enter the branch on the challenge the ceremony issued and be compared
+// against the one the response carries, leaving checked.challenge true for a comparison that never
+// ran against the caller's value. Each option is taken once at entry.
+function testClientDataOptionsReadOnce() {
+  var issued = Buffer.alloc(16, 9);                       // what this ceremony issued
+  var carried = Buffer.alloc(16, 4);                      // what the response actually carries
+  var cd = _clientDataJson({});                           // carries `carried`
+
+  // Controls: comparing against the carried challenge passes, against the issued one it does not.
+  check("clientData: the carried challenge compares equal",
+    pki.webauthn.parseClientData(cd, { expectedChallenge: carried }).checked.challenge === true);
+  check("clientData: a different expected challenge is refused",
+    codeOf(function () { return pki.webauthn.parseClientData(cd, { expectedChallenge: issued }); }) === "webauthn/client-data-mismatch");
+
+  var reads = 0, opts = {};
+  Object.defineProperty(opts, "expectedChallenge", {
+    enumerable: true, configurable: true,
+    get: function () { reads++; return reads === 1 ? issued : carried; },   // enter on issued, compare the carried one
+  });
+  check("clientData: an accessor-backed expectedChallenge cannot enter the branch on one value and be compared against another",
+    codeOf(function () { return pki.webauthn.parseClientData(cd, opts); }) === "webauthn/client-data-mismatch");
+  check("clientData: expectedChallenge is read exactly once", reads === 1);
+
+  var oReads = 0, oOpts = {};
+  Object.defineProperty(oOpts, "expectedOrigin", {
+    enumerable: true, configurable: true,
+    get: function () { oReads++; return oReads === 1 ? "https://attacker.example" : "https://example.com"; },
+  });
+  check("clientData: an accessor-backed expectedOrigin is compared against the value it was gated on",
+    codeOf(function () { return pki.webauthn.parseClientData(cd, oOpts); }) === "webauthn/client-data-mismatch");
+  check("clientData: expectedOrigin is read exactly once", oReads === 1);
+}
+
 async function testClientData() {
+  testClientDataOptionsReadOnce();
   var cd = _clientDataJson({});
   var parsed = pki.webauthn.parseClientData(cd);
   check("clientData: type / origin / crossOrigin come back as they were",

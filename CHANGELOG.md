@@ -4,6 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.14 — 2026-09-11
+
+Every option a verify verb decides with is taken once.
+
+### Changed
+
+- The pki.smime verbs take their options once at entry. sign, verify, encrypt, decrypt, compress, decompress and buildCertsOnly share one option-checking helper, and it now returns the options it checked rather than leaving the caller's object to be read again by each later pass.
+
+### Security
+
+- pki.jose.verify took opts.key seven times: a type gate, the RFC 7638 thumbprint comparison against the jwk the JWS embeds, and the key the signature is verified under. An accessor-backed opts.key could satisfy the comparison with the embedded key and hand a different one to the verification, so a JWS naming a signer the caller did not pin returned a verdict of keySource "opts.key" instead of the jose/key-mismatch refusal a plain object gets. The option is taken once, so the key compared is the key used.
+- pki.webauthn.parseClientData took each expected* option twice: once to decide whether to compare, once for the value compared, and the returned checked field then recorded that the comparison ran. An accessor-backed expectedChallenge could enter the branch on the challenge a ceremony issued and be compared against the challenge the response carried, returning checked.challenge true for a comparison that never ran against the caller's value. expectedType and expectedOrigin behaved the same way. Each option is taken once, so checked answers for the value the caller supplied. pki.webauthn.verify and pki.webauthn.verifyAssertion already copied their inputs and were not affected.
+
 ## v0.7.13 — 2026-09-10
 
 The certificate signer refuses a pre-encoded extension whose criticality RFC 5280 fixes.
