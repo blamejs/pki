@@ -19,6 +19,8 @@ var ctx = require("./_interop-ctx");
 var pki = ctx.pki;
 var check = ctx.check;
 var signing = require("../helpers/signing");
+var pkixMod = require("../../lib/schema-pkix");
+var oidMod = require("../../lib/oid");
 var os = require("node:os");
 var fs = require("node:fs");
 var path = require("node:path");
@@ -211,9 +213,16 @@ async function run() {
     check("openssl decodes the subject information access method and its location",
       (/Subject Information Access/i.test(siaT.stdout) || siaT.stdout.indexOf("1.3.6.1.5.5.7.1.11") >= 0) &&
       /CA Repository/i.test(siaT.stdout) && /URI:https:\/\/ca\.interop\.example\/repo/.test(siaT.stdout));
-    check("openssl decodes the subject directory attribute and its value",
+    // Whether openssl prints a private attribute's OID or renders the Attribute opaquely depends on
+    // the release, so the assertion asks only that the extension is there and that the value it
+    // carries survived. The toolkit's own reader below is the oracle for the type.
+    check("openssl shows the subject directory attributes extension and the value it carries",
       (/Subject Directory Attributes/i.test(siaT.stdout) || siaT.stdout.indexOf("2.5.29.9") >= 0) &&
-      siaT.stdout.indexOf("1.3.6.1.4.1.99999.1") >= 0 && /\bDE\b/.test(siaT.stdout));
+      /\bDE\b/.test(siaT.stdout));
+    var sdaBack = pki.schema.x509.parse(pki.schema.x509.pemDecode(siaPem, "CERTIFICATE"))
+      .extensions.filter(function (e) { return (e.name || e.oid) === "subjectDirectoryAttributes"; })[0];
+    check("the attribute type round-trips through the toolkit's own reader",
+      pkixMod.certExtensionDecoders(pkixMod.makeNS("path", pki.errors.PathError, oidMod)).byOid[oidMod.byName("subjectDirectoryAttributes")](sdaBack.value)[0].type === "1.3.6.1.4.1.99999.1");
     check("openssl shows the OCSP no-check marker",
       /OCSP No ?Check/i.test(siaT.stdout) || siaT.stdout.indexOf("1.3.6.1.5.5.7.48.1.5") >= 0);
 
