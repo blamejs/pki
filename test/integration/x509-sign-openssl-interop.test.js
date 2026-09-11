@@ -211,11 +211,15 @@ async function run() {
     var msFile = path.join(dir, "ms.pem"); fs.writeFileSync(msFile, msPem);
     var msT = ctx.runOpenssl(["x509", "-in", msFile, "-noout", "-text"], { allowNonZero: true });
     check("openssl x509 -text parses the enterprise-CA certificate", msT.code === 0);
-    check("openssl names the Microsoft certificate template extension",
-      /Microsoft certificate template/i.test(msT.stdout));
-    check("openssl lists the remaining enrollment extensions by their OIDs",
-      msT.stdout.indexOf("1.3.6.1.4.1.311.20.2") >= 0 && msT.stdout.indexOf("1.3.6.1.4.1.311.21.1") >= 0 &&
-      msT.stdout.indexOf("1.3.6.1.4.1.311.21.2") >= 0);
+    // Whether openssl prints a friendly name or the bare OID depends on the built-in object table of
+    // the release under test, so the assertion takes either. What is version-independent is that the
+    // extension is there and openssl read the certificate.
+    check("openssl shows the certificate template extension, named or by OID",
+      /Microsoft certificate template/i.test(msT.stdout) || msT.stdout.indexOf("1.3.6.1.4.1.311.21.7") >= 0);
+    check("openssl lists the remaining enrollment extensions by name or OID",
+      [["1.3.6.1.4.1.311.20.2", /enrollment certificate type/i], ["1.3.6.1.4.1.311.21.1", /CA version/i],
+        ["1.3.6.1.4.1.311.21.2", /previous CA certificate hash/i]]
+        .every(function (r) { return msT.stdout.indexOf(r[0]) >= 0 || r[1].test(msT.stdout); }));
     var msBack = pki.schema.x509.parse(pki.schema.x509.pemDecode(msPem, "CERTIFICATE"));
     function msExt(n) { return msBack.extensions.filter(function (e) { return (e.name || e.oid) === n; })[0]; }
     check("the CA version round-trips as the DWORD its two indexes compose",
