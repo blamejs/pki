@@ -1358,6 +1358,14 @@ async function testPrecertificateSpec() {
   // both describes no stage of the exchange and its SCTs could never verify.
   check("a poison and an SCT list together -> x509/bad-input",
     await codeOf(pki.x509.sign(leaf({ precertificatePoison: true, signedCertificateTimestampList: [sct] }), { key: s.key })) === "x509/bad-input");
+  // The pre-encoded array reaches the same certificate, so it is held to the same rule. Each half
+  // alone is the control: the pair is refused for being a pair, not for either extension.
+  var poisonDer = asn1.build.sequence([asn1.build.oid(pki.oid.byName("precertificatePoison")), asn1.build.boolean(true), asn1.build.octetString(asn1.build.nullValue())]);
+  var sctDer = asn1.build.sequence([asn1.build.oid(pki.oid.byName("signedCertificateTimestampList")), asn1.build.octetString(pki.ct.encodeSctList([sct]))]);
+  check("CONTROL: a pre-encoded poison alone is accepted", Buffer.isBuffer(await pki.x509.sign(leaf([poisonDer]), { key: s.key })));
+  check("CONTROL: a pre-encoded SCT list alone is accepted", Buffer.isBuffer(await pki.x509.sign(leaf([sctDer]), { key: s.key })));
+  check("a pre-encoded poison and SCT list together -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf([poisonDer, sctDer]), { key: s.key })) === "x509/bad-input");
 
   // The pre-encoded array is the other route into the same extension, and a malformed value there is
   // read by the registered decoder. It answers in this verb's domain rather than pki.ct's.
