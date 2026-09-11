@@ -1286,6 +1286,98 @@ async function testQcStatementsSpec() {
 // policyConstraints (RFC 5280 sec. 4.2.1.11), inhibitAnyPolicy (sec. 4.2.1.14) and policyMappings
 // (sec. 4.2.1.5) are what sec. 6.1 path validation acts on, and issuerAltName (sec. 4.2.1.7) is the
 // GeneralNames sibling of subjectAltName. All four were reachable only as hand-encoded DER.
+// The Active Directory Certificate Services enrollment extensions. These are proprietary, so the
+// toolkit's own reader is the contract the builder is held to: every vector round-trips through
+// pki.schema.x509.parse, which is what "one structure drives both directions" means here.
+async function testMicrosoftEnrollmentSpec() {
+  var s = makeSigner("ed25519");
+  var TEMPLATE = "1.3.6.1.4.1.311.21.8.1.2";
+  function leaf(exts) {
+    return { subject: "ms.example", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: exts };
+  }
+  function extOf(der, name) {
+    return pki.schema.x509.parse(der).extensions.filter(function (e) { return (e.name || e.oid) === name; })[0];
+  }
+  function noLintErrors(der) {
+    return pki.lint.certificate(der).findings.filter(function (f) { return f.severity === "error"; }).length === 0;
+  }
+
+  // msCertificateTemplate: SEQUENCE { templateID, templateMajorVersion?, templateMinorVersion? }.
+  var tpl = await pki.x509.sign(leaf({ msCertificateTemplate: { templateID: TEMPLATE, templateMajorVersion: 100, templateMinorVersion: 2 } }), { key: s.key });
+  var tplExt = extOf(tpl, "msCertificateTemplate");
+  check("msCertificateTemplate is emitted from the spec", tplExt !== undefined);
+  check("the template is emitted non-critical, since neither reader processes it", tplExt !== undefined && !tplExt.critical);
+  check("a certificate carrying a certificate template lints clean", noLintErrors(tpl));
+  check("the template round-trips through the toolkit's own reader", (function () {
+    var kids = asn1.decode(tplExt.value).children;
+    return asn1.read.oid(kids[0]) === TEMPLATE && asn1.read.integer(kids[1]) === 100n && asn1.read.integer(kids[2]) === 2n;
+  })());
+  check("a template naming only its id is accepted",
+    Buffer.isBuffer(await pki.x509.sign(leaf({ msCertificateTemplate: { templateID: TEMPLATE } }), { key: s.key })));
+  check("a minor version without a major -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ msCertificateTemplate: { templateID: TEMPLATE, templateMinorVersion: 2 } }), { key: s.key })) === "x509/bad-input");
+  check("a template version above a DWORD -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ msCertificateTemplate: { templateID: TEMPLATE, templateMajorVersion: 4294967296 } }), { key: s.key })) === "x509/bad-input");
+  check("a template missing its id -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ msCertificateTemplate: { templateMajorVersion: 1 } }), { key: s.key })) === "x509/bad-input");
+  check("an unknown key on the template -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ msCertificateTemplate: { templateID: TEMPLATE, templateVersion: 1 } }), { key: s.key })) === "x509/bad-input");
+
+  // msEnrollCertType: the legacy v1 template name, a BMPString.
+  var ect = await pki.x509.sign(leaf({ msEnrollCertType: "WebServer" }), { key: s.key });
+  check("msEnrollCertType is emitted as a BMPString",
+    asn1.decode(extOf(ect, "msEnrollCertType").value).tagNumber === 30);
+  check("the enroll cert type reads back as written",
+    asn1.read.string(asn1.decode(extOf(ect, "msEnrollCertType").value)) === "WebServer");
+  check("an empty enroll cert type -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ msEnrollCertType: "" }), { key: s.key })) === "x509/bad-input");
+  // A BMPString is UCS-2, so it cannot carry a character outside the basic multilingual plane.
+  check("an enroll cert type outside the BMP -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ msEnrollCertType: String.fromCharCode(0xD83D) + String.fromCharCode(0xDE00) }), { key: s.key })) === "x509/bad-input");
+
+  // msCaVersion: one DWORD the reader splits into a key index and a certificate index.
+  var cav = await pki.x509.sign(leaf({ msCaVersion: { caKeyIndex: 3, certIndex: 7 } }), { key: s.key });
+  check("msCaVersion composes the DWORD from its two indexes",
+    asn1.read.integer(asn1.decode(extOf(cav, "msCaVersion").value)) === BigInt((3 << 16) | 7));
+  check("msCaVersion also takes the raw DWORD",
+    asn1.read.integer(asn1.decode(extOf(await pki.x509.sign(leaf({ msCaVersion: 196615 }), { key: s.key }), "msCaVersion").value)) === 196615n);
+  check("a caKeyIndex above a WORD -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ msCaVersion: { caKeyIndex: 65536, certIndex: 0 } }), { key: s.key })) === "x509/bad-input");
+  check("a caVersion above a DWORD -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ msCaVersion: 4294967296 }), { key: s.key })) === "x509/bad-input");
+  check("an unknown key on msCaVersion -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ msCaVersion: { caKeyIndex: 1, certIndex: 1, caVersion: 5 } }), { key: s.key })) === "x509/bad-input");
+
+  // msPreviousCertHash: the 20-octet SHA-1 thumbprint of the previous CA certificate.
+  var hash = Buffer.alloc(20, 0xab);
+  var pch = await pki.x509.sign(leaf({ msPreviousCertHash: hash }), { key: s.key });
+  check("msPreviousCertHash is emitted as a 20-octet OCTET STRING",
+    Buffer.from(asn1.read.octetString(asn1.decode(extOf(pch, "msPreviousCertHash").value))).equals(hash));
+  check("a previous-certificate hash that is not 20 octets -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ msPreviousCertHash: Buffer.alloc(19, 1) }), { key: s.key })) === "x509/bad-input");
+
+  // msApplicationPolicies is read with the certificate-policies rules, so it takes the same spec.
+  var ap = await pki.x509.sign(leaf({ msApplicationPolicies: [{ oid: "1.3.6.1.4.1.99999.1", cps: "https://cps.example" }] }), { key: s.key });
+  check("msApplicationPolicies takes the certificatePolicies spec, qualifiers included",
+    extOf(ap, "msApplicationPolicies") !== undefined && noLintErrors(ap));
+  check("an empty application-policies list -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ msApplicationPolicies: [] }), { key: s.key })) === "x509/bad-input");
+
+  // All five in one certificate, which is the shape an enterprise CA actually issues.
+  var all = await pki.x509.sign(leaf({
+    msCertificateTemplate: { templateID: TEMPLATE, templateMajorVersion: 100, templateMinorVersion: 2 },
+    msEnrollCertType: "WebServer",
+    msCaVersion: { caKeyIndex: 0, certIndex: 0 },
+    msPreviousCertHash: hash,
+    msApplicationPolicies: ["1.3.6.1.4.1.99999.1"],
+  }), { key: s.key });
+  check("all five enrollment extensions are issued together and lint clean", noLintErrors(all));
+  check("all five decode under their own readers",
+    pki.schema.x509.parse(all).extensions.filter(function (e) {
+      return String(e.name || "").indexOf("ms") === 0;
+    }).length === 5);
+}
+
 // RFC 5280 sec. 4.2.1.4 policy qualifiers and the sec. 4.2.1.1 authority key identifier in full. The
 // readers already decode both, so these vectors hold the builder to what pki.schema.x509.parse and
 // pki.lint.certificate read back.
@@ -1990,6 +2082,7 @@ async function main() {
   await testQcStatementsSpec();
   await testPrecertificateSpec();
   await testPolicyQualifiersAndAkiSpec();
+  await testMicrosoftEnrollmentSpec();
   console.log("CHECKS " + helpers.getChecks());
 }
 
