@@ -1202,6 +1202,29 @@ async function testQcStatementsSpec() {
     await codeOf(pki.x509.sign(leaf([{ statementId: "qcCClegislation", info: { countries: [] } }]), { key: s.key })) === "x509/bad-input");
   check("a qcPDS language that is not two letters -> x509/bad-input",
     await codeOf(pki.x509.sign(leaf([{ statementId: "qcPDS", info: { locations: [{ url: "https://p.example", language: "eng" }] } }]), { key: s.key })) === "x509/bad-input");
+  // A typo in a statementInfo field would otherwise be dropped silently, issuing a statement that is
+  // not the one the caller wrote. Every typed info shape refuses a key it does not define.
+  check("a misspelled semanticsIdentifier -> x509/bad-input, not a silently dropped field",
+    await codeOf(pki.x509.sign(leaf([{ statementId: "qcsPkixQCSyntaxV1", info: { semanticsIdentifer: "1.3.6.1.5.5.7.11.1", nameRegistrationAuthorities: [{ dNSName: "ra.example" }] } }]), { key: s.key })) === "x509/bad-input");
+  check("an unknown key on qcLimitValue info -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf([{ statementId: "qcLimitValue", info: { currency: "EUR", amount: 1, exponent: 0, currancy: "USD" } }]), { key: s.key })) === "x509/bad-input");
+  check("an unknown key on a qcPDS location -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf([{ statementId: "qcPDS", info: { locations: [{ url: "https://p.example", language: "en", lang: "de" }] } }]), { key: s.key })) === "x509/bad-input");
+  check("an unknown key on qcType info -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf([{ statementId: "qcType", info: { types: ["qctEsign"], type: ["qctEseal"] } }]), { key: s.key })) === "x509/bad-input");
+  check("an unknown key on qcCClegislation info -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf([{ statementId: "qcCClegislation", info: { countries: ["DE"], country: ["FR"] } }]), { key: s.key })) === "x509/bad-input");
+  check("an unknown key on qcRetentionPeriod info -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf([{ statementId: "qcRetentionPeriod", info: { years: 5, year: 6 } }]), { key: s.key })) === "x509/bad-input");
+  // statementInfo is OPTIONAL for every statement (RFC 3739 sec. 3.2.6), so a proprietary
+  // presence-only statement is a valid shape and the id alone is emitted.
+  check("an unknown statementId with no info is issued as a presence-only statement",
+    Buffer.isBuffer(await pki.x509.sign(leaf([{ statementId: "1.3.6.1.4.1.99999.7" }]), { key: s.key })));
+  check("an unknown statementId with no info still round-trips through the parser", await (async function () {
+    var der = await pki.x509.sign(leaf([{ statementId: "1.3.6.1.4.1.99999.7" }]), { key: s.key });
+    var errs = pki.lint.certificate(der).findings.filter(function (f) { return f.severity === "error"; });
+    return errs.length === 0;
+  })());
   // A PrintableString carries digits, spaces and punctuation, so the string type alone does not make
   // a value an ISO code. Each of the three alphabetic-code fields is checked for letters.
   check("a qcCClegislation country of digits -> x509/bad-input",

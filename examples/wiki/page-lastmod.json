@@ -38,7 +38,7 @@
   "lib/crl-verify.js": "2026-09-01",
   "lib/crmf-sign.js": "2026-09-10",
   "lib/crmf-verify.js": "2026-09-01",
-  "lib/csr-sign.js": "2026-09-10",
+  "lib/csr-sign.js": "2026-09-11",
   "lib/csr-verify.js": "2026-09-01",
   "lib/ct.js": "2026-09-05",
   "lib/edwards-point.js": "2026-09-05",
