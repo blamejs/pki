@@ -191,6 +191,35 @@ async function run() {
     check("openssl x509 -text renders Policy Mappings and the Issuer Alternative Name",
       /Policy Mappings/i.test(polT.stdout) && /Issuer Alternative Name/i.test(polT.stdout) &&
       /DNS:issuer\.interop\.example/.test(polT.stdout));
+
+    // RFC 6962. OpenSSL names the poison and, for the SCT list, decodes the TLS structure itself
+    // (log id, timestamp, signature), so it is an independent oracle for the encoding rather than
+    // only for the extension's presence.
+    var ctKp = signing.makeSigner("ec-p256");
+    var ctBase = {
+      subject: [{ commonName: "ct.interop.example" }], subjectPublicKey: ctKp.spki,
+      notBefore: NB, notAfter: NA, serialNumber: "0102030405",
+    };
+    var poisonPem = await pki.x509.sign(Object.assign({}, ctBase, {
+      extensions: { keyUsage: ["digitalSignature"], precertificatePoison: true },
+    }), { key: ctKp.key }, { pem: true });
+    var poisonFile = path.join(dir, "precert.pem"); fs.writeFileSync(poisonFile, poisonPem);
+    var poisonT = ctx.runOpenssl(["x509", "-in", poisonFile, "-noout", "-text"], { allowNonZero: true });
+    check("openssl x509 -text parses the toolkit-issued precertificate", poisonT.code === 0);
+    check("openssl names the CT precertificate poison and marks it critical",
+      /CT Precertificate Poison/i.test(poisonT.stdout) && /Poison[\s\S]{0,40}critical|critical[\s\S]{0,40}Poison/i.test(poisonT.stdout));
+
+    var ctLog = await pki.key.generate({ name: "ECDSA", namedCurve: "P-256" });
+    var ctLogPriv = await pki.key.export(ctLog.privateKey);
+    var seedSct = await pki.ct.signSct({ entryType: 0, leafCert: pki.schema.x509.pemDecode(poisonPem, "CERTIFICATE") }, ctLogPriv);
+    var sctPem = await pki.x509.sign(Object.assign({}, ctBase, {
+      extensions: { keyUsage: ["digitalSignature"], signedCertificateTimestampList: [seedSct] },
+    }), { key: ctKp.key }, { pem: true });
+    var sctFile = path.join(dir, "sct.pem"); fs.writeFileSync(sctFile, sctPem);
+    var sctT = ctx.runOpenssl(["x509", "-in", sctFile, "-noout", "-text"], { allowNonZero: true });
+    check("openssl x509 -text parses the certificate carrying an embedded SCT list", sctT.code === 0);
+    check("openssl decodes the embedded SCT list down to its log id and timestamp",
+      /CT Precertificate SCTs/i.test(sctT.stdout) && /Log ID/i.test(sctT.stdout) && /Timestamp/i.test(sctT.stdout));
   } finally {
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
   }

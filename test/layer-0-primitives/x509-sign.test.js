@@ -1286,6 +1286,126 @@ async function testQcStatementsSpec() {
 // policyConstraints (RFC 5280 sec. 4.2.1.11), inhibitAnyPolicy (sec. 4.2.1.14) and policyMappings
 // (sec. 4.2.1.5) are what sec. 6.1 path validation acts on, and issuerAltName (sec. 4.2.1.7) is the
 // GeneralNames sibling of subjectAltName. All four were reachable only as hand-encoded DER.
+// RFC 6962 certificate transparency: the poison that makes a precertificate unusable, and the SCT
+// list the final certificate embeds. Both drive pki.x509.sign and assert through the shipped
+// readers (pki.schema.x509.parse, pki.ct.parseSctList, pki.path.validate).
+async function testPrecertificateSpec() {
+  var s = makeSigner("ed25519");
+  function leaf(exts) {
+    return { subject: "ct.example", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: exts };
+  }
+  function extOf(der, name) {
+    return pki.schema.x509.parse(der).extensions.filter(function (e) { return (e.name || e.oid) === name; })[0];
+  }
+
+  // RFC 6962 sec. 3.1: a critical poison extension whose extnValue OCTET STRING contains ASN.1 NULL.
+  var poisoned = await pki.x509.sign(leaf({ precertificatePoison: true }), { key: s.key });
+  var poison = extOf(poisoned, "precertificatePoison");
+  check("precertificatePoison is emitted from the spec", poison !== undefined);
+  check("the poison is critical (RFC 6962 sec. 3.1)", poison !== undefined && poison.critical === true);
+  check("the poison value is ASN.1 NULL", poison !== undefined && Buffer.from(poison.value).equals(Buffer.from([0x05, 0x00])));
+  check("a spec naming no poison emits none", extOf(await pki.x509.sign(leaf({}), { key: s.key }), "precertificatePoison") === undefined);
+
+  // The poison exists so "the Precertificate cannot be validated by a standard X.509v3 client"
+  // (sec. 3.1). The control proves the same leaf validates without it.
+  var plainCert = pki.schema.x509.parse(await pki.x509.sign(leaf({}), { key: s.key }));
+  var control = await pki.path.validate([plainCert], { time: IN_WINDOW, trustAnchors: anchorFor(plainCert) });
+  check("CONTROL: the same leaf without a poison validates", control.valid === true);
+  var pc = pki.schema.x509.parse(poisoned);
+  var poisonedRes = await pki.path.validate([pc], { time: IN_WINDOW, trustAnchors: anchorFor(pc) });
+  check("a precertificate does not validate as a certificate", poisonedRes.valid === false);
+
+  // The pre-encoded array path is the second route into the same extension, and sec. 3.1 fixes the
+  // criticality there too: a non-critical poison is ignored by a standard client, so the
+  // precertificate would validate as a real certificate.
+  var poisonOid = pki.oid.byName("precertificatePoison");
+  var nonCritical = asn1.build.sequence([asn1.build.oid(poisonOid), asn1.build.octetString(asn1.build.nullValue())]);
+  var criticalDer = asn1.build.sequence([asn1.build.oid(poisonOid), asn1.build.boolean(true), asn1.build.octetString(asn1.build.nullValue())]);
+  check("a pre-encoded NON-critical poison -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf([nonCritical]), { key: s.key })) === "x509/bad-input");
+  check("CONTROL: a pre-encoded critical poison is accepted",
+    Buffer.isBuffer(await pki.x509.sign(leaf([criticalDer]), { key: s.key })));
+
+  // The SCT list the final certificate embeds (sec. 3.3), composed from pki.ct.
+  var logKey = await pki.key.generate({ name: "ECDSA", namedCurve: "P-256" });
+  var logPriv = await pki.key.export(logKey.privateKey);
+  var sct = await pki.ct.signSct({ entryType: 0, leafCert: plainCert.bytes || await pki.x509.sign(leaf({}), { key: s.key }) }, logPriv);
+  var withScts = await pki.x509.sign(leaf({ signedCertificateTimestampList: [sct] }), { key: s.key });
+  var sctExt = extOf(withScts, "signedCertificateTimestampList");
+  check("signedCertificateTimestampList is emitted from the spec", sctExt !== undefined);
+  check("the SCT extension is non-critical by default", sctExt !== undefined && !sctExt.critical);
+  check("the embedded list round-trips through pki.ct.parseSctList",
+    sctExt !== undefined && pki.ct.parseSctList(sctExt.value).scts.length === 1);
+  // No knob reaches a critical SCT list: RFC 6962 asks for none, and every client that does not
+  // recognize the OID refuses such a certificate, this toolkit's validator included.
+  check("there is no signedCertificateTimestampListCritical knob",
+    await codeOf(pki.x509.sign(leaf({ signedCertificateTimestampList: [sct], signedCertificateTimestampListCritical: true }), { key: s.key })) === "x509/bad-input");
+  var sctCert = pki.schema.x509.parse(withScts);
+  var sctRes = await pki.path.validate([sctCert], { time: IN_WINDOW, trustAnchors: anchorFor(sctCert) });
+  check("a certificate carrying an embedded SCT list still validates", sctRes.valid === true);
+
+  // Sec. 3.3: "At least one SCT MUST be included."
+  check("an empty SCT list -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ signedCertificateTimestampList: [] }), { key: s.key })) === "x509/bad-input");
+  // A fault in a spec this verb was handed is this verb's to report, not pki.ct's.
+  check("a malformed SCT raises x509/bad-input, not a ct/* code",
+    await codeOf(pki.x509.sign(leaf({ signedCertificateTimestampList: [{ version: 0 }] }), { key: s.key })) === "x509/bad-input");
+  check("a non-array SCT list -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ signedCertificateTimestampList: "scts" }), { key: s.key })) === "x509/bad-input");
+
+  // The poison names a precertificate and the SCT list names the certificate issued after it. Sec.
+  // 3.2 reconstructs one from the other by removing the SCT extension, so a certificate carrying
+  // both describes no stage of the exchange and its SCTs could never verify.
+  check("a poison and an SCT list together -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ precertificatePoison: true, signedCertificateTimestampList: [sct] }), { key: s.key })) === "x509/bad-input");
+  // The pre-encoded array reaches the same certificate, so it is held to the same rule. Each half
+  // alone is the control: the pair is refused for being a pair, not for either extension.
+  var poisonDer = asn1.build.sequence([asn1.build.oid(pki.oid.byName("precertificatePoison")), asn1.build.boolean(true), asn1.build.octetString(asn1.build.nullValue())]);
+  var sctDer = asn1.build.sequence([asn1.build.oid(pki.oid.byName("signedCertificateTimestampList")), asn1.build.octetString(pki.ct.encodeSctList([sct]))]);
+  check("CONTROL: a pre-encoded poison alone is accepted", Buffer.isBuffer(await pki.x509.sign(leaf([poisonDer]), { key: s.key })));
+  check("CONTROL: a pre-encoded SCT list alone is accepted", Buffer.isBuffer(await pki.x509.sign(leaf([sctDer]), { key: s.key })));
+  check("a pre-encoded poison and SCT list together -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf([poisonDer, sctDer]), { key: s.key })) === "x509/bad-input");
+
+  // The pre-encoded array is the other route into the same extension, and a malformed value there is
+  // read by the registered decoder. It answers in this verb's domain rather than pki.ct's.
+  var sctOid = pki.oid.byName("signedCertificateTimestampList");
+  var goodValue = pki.ct.encodeSctList([sct]);
+  check("CONTROL: a well-formed pre-encoded SCT list is accepted",
+    Buffer.isBuffer(await pki.x509.sign(leaf([asn1.build.sequence([asn1.build.oid(sctOid), asn1.build.octetString(goodValue)])]), { key: s.key })));
+  check("a malformed pre-encoded SCT list -> x509/bad-extension-value, not a ct/* code",
+    await codeOf(pki.x509.sign(leaf([asn1.build.sequence([asn1.build.oid(sctOid),
+      asn1.build.octetString(asn1.build.octetString(Buffer.from("00ff00ff", "hex")))])]), { key: s.key })) === "x509/bad-extension-value");
+
+  // The whole exchange, end to end: the extension this builder emits must be the one the RFC 6962
+  // verification path reads back. A CA issues the precertificate, the log signs an SCT over the entry
+  // reconstructed by removing the SCT extension (sec. 3.2), the CA issues the final certificate
+  // embedding it, and a client reconstructs the same entry and verifies the signature.
+  var ca = makeSigner("ed25519");
+  var caDer = await pki.x509.sign({
+    subject: "CN=ct-ca", subjectPublicKey: ca.spki, notBefore: NB, notAfter: NA,
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] },
+  }, { key: ca.key });
+  var caCert = pki.schema.x509.parse(caDer);
+  var base = { subject: "CN=leaf.example", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, serialNumber: "0102030405" };
+  var precert = await pki.x509.sign(Object.assign({}, base, { extensions: { precertificatePoison: true } }), { cert: caDer, key: ca.key });
+  check("a CA issues a poisoned precertificate under an issuing certificate",
+    pki.schema.x509.parse(precert).extensions.some(function (e) { return e.name === "precertificatePoison"; }));
+
+  var placeholder = await pki.ct.signSct({ entryType: 0, leafCert: caDer }, logPriv);
+  var draft = await pki.x509.sign(Object.assign({}, base, { extensions: { signedCertificateTimestampList: [placeholder] } }), { cert: caDer, key: ca.key });
+  var entry = pki.ct.x509CertEntry(pki.schema.x509.parse(draft), caCert);
+  var realSct = await pki.ct.signSct(entry, logPriv);
+  var finalCert = await pki.x509.sign(Object.assign({}, base, { extensions: { signedCertificateTimestampList: [realSct] } }), { cert: caDer, key: ca.key });
+  var entryAgain = pki.ct.x509CertEntry(pki.schema.x509.parse(finalCert), caCert);
+  check("the reconstructed entry does not depend on which SCTs are embedded (sec. 3.2)",
+    Buffer.from(entry.tbsCertificate).equals(Buffer.from(entryAgain.tbsCertificate)));
+  var logPub = await pki.key.export(logKey.publicKey);
+  var verdict = await pki.ct.verifySct(entryAgain, realSct, logPub);
+  check("the embedded SCT verifies against the entry reconstructed from the issued certificate",
+    verdict === true);
+}
+
 async function testPolicyMachinerySpec() {
   var s = makeSigner("ed25519");
   function ca(exts) {
@@ -1736,6 +1856,7 @@ async function main() {
   await testAccessAndDistributionSpec();
   await testPolicyMachinerySpec();
   await testQcStatementsSpec();
+  await testPrecertificateSpec();
   console.log("CHECKS " + helpers.getChecks());
 }
 
