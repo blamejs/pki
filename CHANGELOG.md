@@ -4,6 +4,15 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.20 — 2026-09-11
+
+Certificate policies carry their qualifiers, and the authority key identifier names the issuing certificate.
+
+### Added
+
+- extensions.certificatePolicies takes an entry object { oid, cps, userNotice } beside the registered name or dotted OID it already took. cps is the certification-practice-statement URI (RFC 5280 section 4.2.1.4 id-qt-cps), and userNotice takes { noticeRef, explicitText }, either or both, where noticeRef is { organization, noticeNumbers }. Every DisplayText is emitted as a UTF8String, the encoding section 4.2.1.4 names for a conforming CA and the one it forbids replacing with VisibleString or BMPString, and is held to its SIZE (1..200) bound counted the way the reader counts it. The qualifiers sequence is written only when a qualifier is named, since the reader refuses an empty one. It is accepted on the pki.csr.sign extensionRequest as well.
+- extensions.authorityKeyIdentifier takes an object { keyIdentifier, authorityCertIssuer, authorityCertSerialNumber } beside true and a BufferSource key id, so a certificate can name its issuing certificate by name and serial (RFC 5280 section 4.2.1.1). The issuer name and the serial are both present or both absent, the rule the reader already applied.
+
 ## v0.7.19 — 2026-09-11
 
 Certificate transparency can be issued, not only verified.

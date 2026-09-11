@@ -192,6 +192,39 @@ async function run() {
       /Policy Mappings/i.test(polT.stdout) && /Issuer Alternative Name/i.test(polT.stdout) &&
       /DNS:issuer\.interop\.example/.test(polT.stdout));
 
+    // RFC 5280 sec. 4.2.1.4 policy qualifiers and the sec. 4.2.1.1 authority key identifier in full.
+    // OpenSSL prints the CPS pointer, the explicit text, and the AKI's issuer name and serial, so it
+    // reads the qualifier structures rather than only naming the extension.
+    var pqKp = signing.makeSigner("ec-p256");
+    var pqCaKp = signing.makeSigner("ec-p256");
+    var pqCaPem = await pki.x509.sign(caSpec("pq.interop.ca", pqCaKp.spki), { key: pqCaKp.key }, { pem: true });
+    var pqCaDer = pki.schema.x509.pemDecode(pqCaPem, "CERTIFICATE");
+    var pqPem = await pki.x509.sign({
+      subject: [{ commonName: "pq.interop.example" }], subjectPublicKey: pqKp.spki, notBefore: NB, notAfter: NA,
+      extensions: {
+        keyUsage: ["digitalSignature"],
+        certificatePolicies: [{
+          oid: "1.3.6.1.4.1.99999.1",
+          cps: "https://cps.interop.example/cps.pdf",
+          userNotice: { noticeRef: { organization: "InteropCA", noticeNumbers: [1] }, explicitText: "Interop test policy." },
+        }],
+        authorityKeyIdentifier: {
+          keyIdentifier: true,
+          authorityCertIssuer: [{ dNSName: "ca.interop.example" }],
+          authorityCertSerialNumber: "0x0102030405",
+        },
+      },
+    }, { cert: pqCaDer, key: pqCaKp.key }, { pem: true });
+    var pqFile = path.join(dir, "pq.pem"); fs.writeFileSync(pqFile, pqPem);
+    var pqT = ctx.runOpenssl(["x509", "-in", pqFile, "-noout", "-text"], { allowNonZero: true });
+    check("openssl x509 -text parses the certificate carrying policy qualifiers", pqT.code === 0);
+    check("openssl renders the CPS pointer the toolkit encoded",
+      /CPS:\s*https:\/\/cps\.interop\.example\/cps\.pdf/i.test(pqT.stdout));
+    check("openssl renders the user notice explicit text and its notice reference",
+      /Interop test policy\./.test(pqT.stdout) && /InteropCA/.test(pqT.stdout));
+    check("openssl renders the authority key identifier issuer name and serial",
+      /DirName|DNS:ca\.interop\.example/i.test(pqT.stdout) && /serial:\s*01:02:03:04:05/i.test(pqT.stdout));
+
     // RFC 6962. OpenSSL names the poison and, for the SCT list, decodes the TLS structure itself
     // (log id, timestamp, signature), so it is an independent oracle for the encoding rather than
     // only for the extension's presence.
