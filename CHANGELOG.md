@@ -4,6 +4,17 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.17 — 2026-09-11
+
+The certificate-policy machinery can be issued from a plain spec.
+
+### Added
+
+- extensions.policyConstraints takes { requireExplicitPolicy, inhibitPolicyMapping } skip counts and extensions.inhibitAnyPolicy takes a bare skip count. RFC 5280 section 4.2.1.11 forbids an empty policy-constraints sequence, so naming neither field is refused, and both extensions are emitted critical, which sections 4.2.1.11 and 4.2.1.14 require. A skip count is held to the same bound the decoders read it back through, so a negative or non-integer value is refused with x509/bad-input or csr/bad-input.
+- extensions.policyMappings takes a list of { issuerDomainPolicy, subjectDomainPolicy }, each naming a registered policy or a dotted OID. A mapping to or from anyPolicy is refused, which RFC 5280 section 4.2.1.5 forbids. That section states a SHOULD for marking the extension critical, and pki.path.validate does not process it, so a critical one is a certificate this toolkit's own validator must reject; it is emitted non-critical unless policyMappingsCritical is set, the same shape certificatePolicies already uses.
+- extensions.issuerAltName takes the GeneralName forms subjectAltName takes, including a bare string classified into its form, and is emitted non-critical (RFC 5280 section 4.2.1.7).
+- All four are accepted on the pki.csr.sign extensionRequest object as well, so a request and an issued certificate are written the same way. OpenSSL reads each of them back in the release gates, including both policy-constraint skip counts.
+
 ## v0.7.16 — 2026-09-11
 
 Where to fetch the issuer and the CRL can be named in a plain spec.

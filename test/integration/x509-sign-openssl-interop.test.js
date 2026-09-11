@@ -138,6 +138,32 @@ async function run() {
       /Key Compromise/i.test(apT.stdout) && /AA Compromise/i.test(apT.stdout));
     check("openssl x509 -text renders the Freshest CRL under its own heading",
       /Freshest CRL/i.test(apT.stdout) && /URI:http:\/\/crl\.interop\.example\/delta\.crl/.test(apT.stdout));
+
+    // ---- (f) the policy machinery path validation acts on ----
+    // These carry skip counts and policy OIDs that decide how a chain is validated, so a renderer
+    // reading a different number than the toolkit encoded is the failure that matters.
+    var polKp = signing.makeSigner("ec-p256");
+    var polPem = await pki.x509.sign({
+      subject: [{ commonName: "Interop Policy CA" }], subjectPublicKey: polKp.spki, notBefore: NB, notAfter: NA,
+      extensions: {
+        basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "cRLSign"],
+        certificatePolicies: ["domain-validated"],
+        policyConstraints: { requireExplicitPolicy: 0, inhibitPolicyMapping: 3 },
+        inhibitAnyPolicy: 2,
+        policyMappings: [{ issuerDomainPolicy: "domain-validated", subjectDomainPolicy: "organization-validated" }],
+        issuerAltName: [{ dNSName: "issuer.interop.example" }],
+      },
+    }, { key: polKp.key }, { pem: true });
+    var polFile = path.join(dir, "policy.pem"); fs.writeFileSync(polFile, polPem);
+    var polT = ctx.runOpenssl(["x509", "-in", polFile, "-noout", "-text"], { allowNonZero: true });
+    check("openssl x509 -text renders Policy Constraints with both skip counts as encoded",
+      polT.code === 0 && /Policy Constraints/i.test(polT.stdout) &&
+      /Require Explicit Policy:\s*0/i.test(polT.stdout) && /Inhibit Policy Mapping:\s*3/i.test(polT.stdout));
+    check("openssl x509 -text renders Inhibit Any Policy with the encoded skip count",
+      /Inhibit Any Policy/i.test(polT.stdout) && /Inhibit Any Policy:\s*[\s\S]{0,40}2/i.test(polT.stdout));
+    check("openssl x509 -text renders Policy Mappings and the Issuer Alternative Name",
+      /Policy Mappings/i.test(polT.stdout) && /Issuer Alternative Name/i.test(polT.stdout) &&
+      /DNS:issuer\.interop\.example/.test(polT.stdout));
   } finally {
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
   }

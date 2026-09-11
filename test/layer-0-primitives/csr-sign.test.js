@@ -319,6 +319,21 @@ async function testRequestedCriticality() {
   check("a requested authorityInfoAccess is emitted from the object form", !!reqExt("authorityInfoAccess"));
   check("...non-critical, as RFC 5280 sec. 4.2.2.1 requires", reqExt("authorityInfoAccess").critical !== true);
   check("a requested cRLDistributionPoints is emitted from the object form", !!reqExt("cRLDistributionPoints"));
+  // The policy machinery reaches a request through the same encoders.
+  var polDer = await pki.csr.sign({ subject: "ca.example", subjectPublicKey: s.spki,
+    extensionRequest: { basicConstraints: { cA: true }, policyConstraints: { requireExplicitPolicy: 0 },
+      inhibitAnyPolicy: 1, issuerAltName: [{ dNSName: "issuer.example" }] } }, { key: s.key });
+  var polExts = pki.schema.csr.parse(polDer).attributes[0].extensions;
+  function polExt(n) { return polExts.filter(function (e) { return (e.name || e.oid) === n; })[0]; }
+  check("a requested policyConstraints is emitted critical", !!polExt("policyConstraints") && polExt("policyConstraints").critical === true);
+  check("a requested inhibitAnyPolicy is emitted critical", !!polExt("inhibitAnyPolicy") && polExt("inhibitAnyPolicy").critical === true);
+  check("a requested issuerAltName is emitted non-critical", !!polExt("issuerAltName") && polExt("issuerAltName").critical !== true);
+  check("a requested policyConstraints naming neither field -> csr/bad-input",
+    await codeOf(pki.csr.sign({ subject: "x", subjectPublicKey: s.spki,
+      extensionRequest: { policyConstraints: {} } }, { key: s.key })) === "csr/bad-input");
+  check("a requested policyMappings naming anyPolicy -> csr/bad-input",
+    await codeOf(pki.csr.sign({ subject: "x", subjectPublicKey: s.spki,
+      extensionRequest: { policyMappings: [{ issuerDomainPolicy: "anyPolicy", subjectDomainPolicy: "domain-validated" }] } }, { key: s.key })) === "csr/bad-input");
   check("a requested DistributionPoint carrying only reasons -> csr/bad-input",
     await codeOf(pki.csr.sign({ subject: "x", subjectPublicKey: s.spki,
       extensionRequest: { cRLDistributionPoints: [{ reasons: ["keyCompromise"] }] } }, { key: s.key })) === "csr/bad-input");
