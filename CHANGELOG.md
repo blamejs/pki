@@ -4,6 +4,18 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.21 — 2026-09-11
+
+Every certificate extension the toolkit reads, it can now also issue.
+
+### Added
+
+- extensions.msCertificateTemplate takes { templateID, templateMajorVersion, templateMinorVersion }, the versions optional and each a DWORD. A minor version requires a major one, because the reader takes the two positionally and a minor alone would be read as the major.
+- extensions.msEnrollCertType takes the legacy v1 template name, written as the BMPString its reader requires. A character outside the basic multilingual plane has no BMPString encoding and is refused rather than written as something else.
+- extensions.msCaVersion takes { caKeyIndex, certIndex }, each a WORD, or the composed DWORD directly, matching the two ways its reader surfaces the value.
+- extensions.msPreviousCertHash takes the 20-octet SHA-1 thumbprint of the previous CA certificate, and extensions.msApplicationPolicies takes the certificatePolicies spec, qualifiers included, since that is the syntax its reader applies.
+- All five are emitted non-critical. Neither pki.path.validate nor pki.lint.certificate processes them, so a critical instance is refused as an unrecognized critical extension by the toolkit's own readers; a caller who needs one supplies the Extension pre-encoded.
+
 ## v0.7.20 — 2026-09-11
 
 Certificate policies carry their qualifiers, and the authority key identifier names the issuing certificate.

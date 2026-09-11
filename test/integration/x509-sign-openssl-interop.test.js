@@ -192,6 +192,40 @@ async function run() {
       /Policy Mappings/i.test(polT.stdout) && /Issuer Alternative Name/i.test(polT.stdout) &&
       /DNS:issuer\.interop\.example/.test(polT.stdout));
 
+    // The Active Directory Certificate Services enrollment extensions. OpenSSL names the certificate
+    // template and prints the rest by OID, so it confirms the extensions parse and carry the bytes;
+    // the toolkit's own reader is the precise oracle for each value.
+    var msKp = signing.makeSigner("ec-p256");
+    var msHash = Buffer.alloc(20, 0xab);
+    var msPem = await pki.x509.sign({
+      subject: [{ commonName: "ms.interop.example" }], subjectPublicKey: msKp.spki, notBefore: NB, notAfter: NA,
+      extensions: {
+        keyUsage: ["digitalSignature"],
+        msCertificateTemplate: { templateID: "1.3.6.1.4.1.311.21.8.1.2", templateMajorVersion: 100, templateMinorVersion: 2 },
+        msEnrollCertType: "WebServer",
+        msCaVersion: { caKeyIndex: 3, certIndex: 7 },
+        msPreviousCertHash: msHash,
+        msApplicationPolicies: ["1.3.6.1.4.1.99999.1"],
+      },
+    }, { key: msKp.key }, { pem: true });
+    var msFile = path.join(dir, "ms.pem"); fs.writeFileSync(msFile, msPem);
+    var msT = ctx.runOpenssl(["x509", "-in", msFile, "-noout", "-text"], { allowNonZero: true });
+    check("openssl x509 -text parses the enterprise-CA certificate", msT.code === 0);
+    check("openssl names the Microsoft certificate template extension",
+      /Microsoft certificate template/i.test(msT.stdout));
+    check("openssl lists the remaining enrollment extensions by their OIDs",
+      msT.stdout.indexOf("1.3.6.1.4.1.311.20.2") >= 0 && msT.stdout.indexOf("1.3.6.1.4.1.311.21.1") >= 0 &&
+      msT.stdout.indexOf("1.3.6.1.4.1.311.21.2") >= 0);
+    var msBack = pki.schema.x509.parse(pki.schema.x509.pemDecode(msPem, "CERTIFICATE"));
+    function msExt(n) { return msBack.extensions.filter(function (e) { return (e.name || e.oid) === n; })[0]; }
+    check("the CA version round-trips as the DWORD its two indexes compose",
+      pki.asn1.read.integer(pki.asn1.decode(msExt("msCaVersion").value)) === BigInt((3 << 16) | 7));
+    check("the previous-certificate hash round-trips byte for byte",
+      Buffer.from(pki.asn1.read.octetString(pki.asn1.decode(msExt("msPreviousCertHash").value))).equals(msHash));
+    check("every enrollment extension is emitted non-critical",
+      ["msCertificateTemplate", "msEnrollCertType", "msCaVersion", "msPreviousCertHash", "msApplicationPolicies"]
+        .every(function (n) { var e = msExt(n); return !!e && !e.critical; }));
+
     // RFC 5280 sec. 4.2.1.4 policy qualifiers and the sec. 4.2.1.1 authority key identifier in full.
     // OpenSSL prints the CPS pointer, the explicit text, and the AKI's issuer name and serial, so it
     // reads the qualifier structures rather than only naming the extension.
