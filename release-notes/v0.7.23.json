@@ -2,7 +2,7 @@
   "version": "0.7.23",
   "date": "2026-09-11",
   "headline": "Subject information access, subject directory attributes and the OCSP no-check marker are read and written.",
-  "summary": "Three certificate extensions had an entry in the OID table and nothing else: the toolkit could neither decode nor issue them. An OCSP responder certificate needs the no-check marker, and a CA that publishes a repository needs subject information access. Each now ships with its reader and its writer together, so pki.schema.x509.parse surfaces it and pki.x509.sign emits it.",
+  "summary": "Three certificate extensions had an entry in the OID table and nothing else: the toolkit could neither decode nor issue them. An OCSP responder certificate needs the no-check marker, and a CA that publishes a repository needs subject information access. Each now ships with its reader and its writer together, so the shared certificate-extension decoders read it and pki.x509.sign emits it.",
   "sections": {
     "Added": [
       "extensions.subjectInfoAccess takes the same { accessMethod, accessLocation } list authorityInfoAccess takes, because RFC 5280 section 4.2.2.2 gives it section 4.2.2.1's syntax. The two access methods that section defines are the registered names id-ad-caRepository and id-ad-timeStamping; the latter is a different object identifier from the extended-key-usage timeStamping, and naming the wrong one is the mistake this spelling avoids.",
