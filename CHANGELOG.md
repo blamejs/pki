@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.22 — 2026-09-11
+
+A CRL can name its issuer's other identities.
+
+### Added
+
+- extensions.issuerAltName on pki.crl.sign takes the same GeneralName list the certificate extension takes, because RFC 5280 section 5.2.2 defines this extension's OID and syntax by reference to section 4.2.1.7. The same names given to pki.x509.sign and pki.crl.sign encode to identical bytes. Multiple name forms and multiple instances of one form are emitted as given, and the extension is non-critical, which section 5.2.2 says a conforming CRL issuer should do.
+
 ## v0.7.21 — 2026-09-11
 
 Every certificate extension the toolkit reads, it can now also issue.
