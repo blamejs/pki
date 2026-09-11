@@ -109,6 +109,35 @@ async function run() {
     var vOut = ctx.runOpenssl(["verify", "-CAfile", ncCaFile, outFile], { allowNonZero: true });
     check("openssl verify REJECTS a leaf outside it, so the constraint is enforced and not merely encoded",
       vOut.code !== 0);
+
+    // ---- (e) the access and distribution pointers an operator issues are read back by OpenSSL ----
+    // These say where to fetch the issuer and the CRL, so a renderer that cannot read them leaves a
+    // relying party with no route. OpenSSL names each field it understood.
+    var apKp = signing.makeSigner("ec-p256");
+    var apPem = await pki.x509.sign({
+      subject: [{ commonName: "pointers.interop.example" }], subjectPublicKey: apKp.spki, notBefore: NB, notAfter: NA,
+      extensions: {
+        keyUsage: ["digitalSignature"],
+        authorityInfoAccess: [
+          { accessMethod: "ocsp", accessLocation: "http://ocsp.interop.example" },
+          { accessMethod: "caIssuers", accessLocation: "http://ca.interop.example/ca.cer" },
+        ],
+        cRLDistributionPoints: [{ fullName: ["http://crl.interop.example/a.crl"], reasons: ["keyCompromise", "aACompromise"] }],
+        freshestCRL: ["http://crl.interop.example/delta.crl"],
+      },
+    }, { key: apKp.key }, { pem: true });
+    var apFile = path.join(dir, "pointers.pem"); fs.writeFileSync(apFile, apPem);
+    var apT = ctx.runOpenssl(["x509", "-in", apFile, "-noout", "-text"], { allowNonZero: true });
+    check("openssl x509 -text renders the toolkit-encoded Authority Information Access",
+      apT.code === 0 && /Authority Information Access/i.test(apT.stdout) &&
+      /OCSP - URI:http:\/\/ocsp\.interop\.example/.test(apT.stdout) &&
+      /CA Issuers - URI:http:\/\/ca\.interop\.example\/ca\.cer/.test(apT.stdout));
+    check("openssl x509 -text renders the CRL Distribution Points, its URI and its reason flags",
+      /X509v3 CRL Distribution Points/i.test(apT.stdout) &&
+      /URI:http:\/\/crl\.interop\.example\/a\.crl/.test(apT.stdout) &&
+      /Key Compromise/i.test(apT.stdout) && /AA Compromise/i.test(apT.stdout));
+    check("openssl x509 -text renders the Freshest CRL under its own heading",
+      /Freshest CRL/i.test(apT.stdout) && /URI:http:\/\/crl\.interop\.example\/delta\.crl/.test(apT.stdout));
   } finally {
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
   }
