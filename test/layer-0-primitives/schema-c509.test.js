@@ -621,7 +621,7 @@ async function run() {
     b.sequence([b.oid(O("subjectKeyIdentifier")), b.octetString(b.octetString(KID))]),
     b.sequence([b.oid(O("authorityKeyIdentifier")), b.octetString(b.sequence([b.contextPrimitive(0, KID)]))]),
     b.sequence([b.oid(O("extKeyUsage")), b.octetString(b.sequence([b.oid(O("serverAuth")), b.oid(O("clientAuth"))]))]),
-    b.sequence([b.oid(O("inhibitAnyPolicy")), b.octetString(b.integer(2n))]),
+    b.sequence([b.oid(O("inhibitAnyPolicy")), b.boolean(true), b.octetString(b.integer(2n))]),   // RFC 5280 sec. 4.2.1.14 requires critical
     b.sequence([b.oid(O("ocspNoCheck")), b.octetString(b.nullValue())]),
     b.sequence([b.oid(O("tlsFeature")), b.octetString(b.sequence([b.integer(5n), b.integer(17n)]))]),
   ];
@@ -1270,13 +1270,15 @@ async function run() {
   check("235. a policyMappings member int with no sec. 8.9 row -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(pmVal(CBb.array([CBb.int(5n), CBb.int(0n)])))); }) === "c509/bad-extensions");
 
   // 10-12. policyConstraints: requireExplicitPolicy only, inhibitPolicyMapping only, both -- the fixed-2 [uint/null, uint/null].
-  var pcRep = await certWithExts([pcExt(0, null)]);
+  // Hand-built: sec. 4.2.1.11 requires this extension critical and pki.x509.sign enforces that, but the
+  // codec must still encode the non-critical form it can meet in an existing certificate.
+  var pcRep = handCertExt(pcExt(0, null));
   var pcRepEnc = encCp(pcRep);
   check("236. policyConstraints requireExplicitPolicy only encodes under extID 28 to [0, null] + double-inverts", (function () { var p = extPair(pcRepEnc, 28); if (p == null || p.val.majorType !== 4) return false; var a = CB.decode(p.val.bytes).children; return a.length === 2 && Number(CB.read.int(a[0])) === 0 && a[1].majorType === 7 && a[1].ai === 22 && pki.schema.c509.parse(pcRepEnc).reconstructedDer.equals(pcRep); })());
-  var pcIpm = await certWithExts([pcExt(null, 3)]);
+  var pcIpm = handCertExt(pcExt(null, 3));
   var pcIpmEnc = encCp(pcIpm);
   check("237. policyConstraints inhibitPolicyMapping only encodes to [null, 3] + double-inverts", (function () { var p = extPair(pcIpmEnc, 28); if (p == null) return false; var a = CB.decode(p.val.bytes).children; return a[0].majorType === 7 && a[0].ai === 22 && Number(CB.read.int(a[1])) === 3 && pki.schema.c509.parse(pcIpmEnc).reconstructedDer.equals(pcIpm); })());
-  var pcBoth = await certWithExts([pcExt(2, 5)]);
+  var pcBoth = handCertExt(pcExt(2, 5));
   var pcBothEnc = encCp(pcBoth);
   check("238. policyConstraints with both fields encodes to [2, 5] + double-inverts", (function () { var p = extPair(pcBothEnc, 28); if (p == null) return false; var a = CB.decode(p.val.bytes).children; return Number(CB.read.int(a[0])) === 2 && Number(CB.read.int(a[1])) === 5 && pki.schema.c509.parse(pcBothEnc).reconstructedDer.equals(pcBoth); })());
 
@@ -1370,7 +1372,8 @@ async function run() {
   check("264. multiple subjectDirectoryAttributes attributes (int/utf8, int/printable, ~oid) stay a flat compact array + double-inverts", (function () { var p = extPair(sdaManyEnc, 24); if (p == null || p.val.majorType !== 4) return false; var a = CB.decode(p.val.bytes).children; return a.length === 6 && Number(CB.read.int(a[0])) === 10 && pki.schema.c509.parse(sdaManyEnc).reconstructedDer.equals(sdaMany); })());
 
   // 7. criticality sign (accept, do not reject the RFC 5280 sec. 4.2.1.8 MUST-non-critical generation rule).
-  var sdaCrit = await certWithExts([sdaExt([sdaAttr("title", [b.utf8("D")])], true)]);
+  // Hand-built: pki.x509.sign enforces that generation rule, so it will not mint this certificate.
+  var sdaCrit = handCertExt(sdaExt([sdaAttr("title", [b.utf8("D")])], true));
   var sdaCritEnc = encCp(sdaCrit);
   check("265. a critical subjectDirectoryAttributes carries extID -24 + reconstructs critical", Number(CB.read.int(extPair(sdaCritEnc, 24).id)) === -24 && pki.schema.x509.parse(pki.schema.c509.parse(sdaCritEnc).reconstructedDer).extensions.filter(function (e) { return e.name === "subjectDirectoryAttributes"; })[0].critical === true);
 

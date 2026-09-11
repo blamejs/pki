@@ -4,6 +4,18 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.13 — 2026-09-10
+
+The certificate signer refuses a pre-encoded extension whose criticality RFC 5280 fixes.
+
+### Changed
+
+- A call that supplied one of the nine fixed-criticality extensions with the wrong flag now throws where it previously produced a certificate or a request. Set the flag the clause requires: omit the critical BOOLEAN for the non-critical set, and encode it TRUE for the critical set. The extensions and extensionRequest object forms already emitted the correct flag and are unaffected, as are the CRL and attribute-certificate signers, which enforce the criticality their own profiles fix.
+
+### Fixed
+
+- pki.x509.sign and pki.csr.sign now refuse a pre-encoded extension carrying a criticality RFC 5280 does not permit, throwing x509/bad-input or csr/bad-input with the governing clause in the message. Nine extensions leave the issuer no choice. authorityKeyIdentifier (section 4.2.1.1), subjectKeyIdentifier (section 4.2.1.2), subjectDirectoryAttributes (section 4.2.1.8), freshestCRL (section 4.2.1.15), authorityInfoAccess (section 4.2.2.1) and subjectInfoAccess (section 4.2.2.2) must be non-critical. nameConstraints (section 4.2.1.10), policyConstraints (section 4.2.1.11) and inhibitAnyPolicy (section 4.2.1.14) must be critical. The check covers the pre-encoded array form on both verbs, which is the only way to supply these six extensions.
+
 ## v0.7.12 — 2026-09-10
 
 An issuer can draw a certificate serial number before signing with it.
