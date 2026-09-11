@@ -1141,6 +1141,14 @@ async function testAccessAndDistributionSpec() {
     await codeOf(pki.x509.sign(leaf({ authorityInfoAccess: [{ accessMethod: "notAMethod", accessLocation: "http://o.example" }] }), { key: s.key })) === "x509/bad-input");
   check("an AccessDescription with no accessLocation -> x509/bad-input",
     await codeOf(pki.x509.sign(leaf({ authorityInfoAccess: [{ accessMethod: "ocsp" }] }), { key: s.key })) === "x509/bad-input");
+  // A fault in the SPEC is this module's error, not the OID registry's. A caller that branches on
+  // the documented x509/* code would otherwise miss an omitted or non-string accessMethod entirely.
+  check("an omitted accessMethod -> x509/bad-input, not an OID-registry error",
+    await codeOf(pki.x509.sign(leaf({ authorityInfoAccess: [{ accessLocation: "http://o.example" }] }), { key: s.key })) === "x509/bad-input");
+  check("a non-string accessMethod -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ authorityInfoAccess: [{ accessMethod: 42, accessLocation: "http://o.example" }] }), { key: s.key })) === "x509/bad-input");
+  check("a null accessMethod -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ authorityInfoAccess: [{ accessMethod: null, accessLocation: "http://o.example" }] }), { key: s.key })) === "x509/bad-input");
 
   // ---- cRLDistributionPoints ----
   var crlDer = await pki.x509.sign(leaf({ cRLDistributionPoints: ["http://crl.example/a.crl"] }), { key: s.key });
@@ -1169,6 +1177,15 @@ async function testAccessAndDistributionSpec() {
   // distribution point would leave revocation undetermined rather than point at anything.
   check("a cRLIssuer naming no directoryName -> x509/bad-input",
     await codeOf(pki.x509.sign(leaf({ cRLDistributionPoints: [{ cRLIssuer: ["http://crl.example"] }] }), { key: s.key })) === "x509/bad-input");
+  // An EMPTY directoryName is a Name with no RDNs, which names nobody. pki.crl.sign refuses to issue
+  // a CRL under one (crl/bad-issuer), so a distribution point naming it could match no conforming
+  // CRL and leaves revocation undetermined exactly as a missing directoryName would.
+  check("a cRLIssuer whose only directoryName is empty -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ cRLDistributionPoints: [{ cRLIssuer: [{ directoryName: [] }] }] }), { key: s.key })) === "x509/bad-input");
+  check("a cRLIssuer whose directoryName cannot encode as a Name -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ cRLDistributionPoints: [{ cRLIssuer: [{ directoryName: 42 }] }] }), { key: s.key })) === "x509/bad-input");
+  check("a cRLIssuer pairing an empty directoryName with a real one is accepted",
+    !!extOf(await pki.x509.sign(leaf({ cRLDistributionPoints: [{ cRLIssuer: [{ directoryName: [{ commonName: "CRL Issuer" }] }] }] }), { key: s.key }), "cRLDistributionPoints"));
   check("a cRLIssuer mixing a URI with a directoryName is accepted",
     !!extOf(await pki.x509.sign(leaf({ cRLDistributionPoints: [{ fullName: ["http://c.example"],
       cRLIssuer: [{ uniformResourceIdentifier: "http://crl.example" }, { directoryName: [{ commonName: "CRL Issuer" }] }] }] }), { key: s.key }), "cRLDistributionPoints"));
