@@ -4,6 +4,17 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.23 — 2026-09-11
+
+Subject information access, subject directory attributes and the OCSP no-check marker are read and written.
+
+### Added
+
+- extensions.subjectInfoAccess takes the same { accessMethod, accessLocation } list authorityInfoAccess takes, because RFC 5280 section 4.2.2.2 gives it section 4.2.2.1's syntax. The two access methods that section defines are the registered names id-ad-caRepository and id-ad-timeStamping; the latter is a different object identifier from the extended-key-usage timeStamping, and naming the wrong one is the mistake this spelling avoids.
+- extensions.subjectDirectoryAttributes takes a list of { type, values } with each value as pre-encoded DER, which is the form its reader surfaces (RFC 5280 section 4.2.1.8). Both extensions are emitted non-critical, which those sections require of a conforming CA, and a pre-encoded instance marked critical is refused on both signers.
+- extensions.ocspNoCheck marks an OCSP responder certificate so a client does not ask about its own revocation (RFC 6960 section 4.2.2.2.1). The value is NULL, which that section requires, and the extension is emitted non-critical, which it says it should be.
+- pki.schema.x509.parse decodes all three, so they are named and structured in a parsed certificate rather than left opaque, and pki.path.validate and pki.lint.certificate see them by name. That brings the set of certificate extensions the toolkit reads and the set it can issue to the same twenty-six.
+
 ## v0.7.22 — 2026-09-11
 
 A CRL can name its issuer's other identities.

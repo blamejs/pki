@@ -766,12 +766,62 @@ function testAuthorityInfoAccess() {
   check("AIA: a non-SEQUENCE extension value -> typed reject", code(function () { dec(b.oid(caIssuers)); }) === "path/bad-extension-value");
 }
 
+// subjectInfoAccess (RFC 5280 sec. 4.2.2.2), subjectDirectoryAttributes (sec. 4.2.1.8) and
+// ocspNoCheck (RFC 6960 sec. 4.2.2.2.1). Each is decoded through the same OID-keyed table path
+// validation and pki.lint read, so the reader and the signer share one definition of the structure.
+function testSiaSdaNoCheck() {
+  var b = pki.asn1.build;
+  var NS = pkix.makeNS("path", pki.errors.PathError, oidReg);
+  var byOid = pkix.certExtensionDecoders(NS).byOid;
+  var sia = byOid[oidReg.byName("subjectInfoAccess")];
+  var sda = byOid[oidReg.byName("subjectDirectoryAttributes")];
+  var noCheck = byOid[oidReg.byName("ocspNoCheck")];
+  var caRepo = oidReg.byName("id-ad-caRepository"), ts = oidReg.byName("id-ad-timeStamping");
+  function uriGN(url) { return b.contextPrimitive(6, Buffer.from(url, "latin1")); }
+  function ad(method, gn) { return b.sequence([b.oid(method), gn]); }
+
+  // Sec. 4.2.2.2 gives SubjectInfoAccessSyntax the same AccessDescription syntax as sec. 4.2.2.1.
+  var s1 = sia(b.sequence([ad(caRepo, uriGN("https://ca.example/repo"))]));
+  check("SIA: a caRepository URI decodes to accessMethod + accessLocation{tag,value}",
+    s1.length === 1 && s1[0].accessMethod === caRepo && s1[0].accessLocation.tag === 6 && s1[0].accessLocation.value === "https://ca.example/repo");
+  // The two access methods sec. 4.2.2.2 defines are distinct, and id-ad-timeStamping is NOT the
+  // extended-key-usage timeStamping OID.
+  var s2 = sia(b.sequence([ad(caRepo, uriGN("https://a.example/r")), ad(ts, uriGN("https://t.example"))]));
+  check("SIA: caRepository and id-ad-timeStamping decode distinctly", s2.length === 2 && s2[0].accessMethod === caRepo && s2[1].accessMethod === ts);
+  check("SIA: id-ad-timeStamping is the id-ad OID, not the extended-key-usage one",
+    ts !== oidReg.byName("timeStamping"));
+  check("SIA: an empty SubjectInfoAccessSyntax -> typed reject (SIZE(1..MAX))",
+    code(function () { sia(b.sequence([])); }) === "path/bad-extension-value");
+  // The message names the structure that actually failed, not the sec. 4.2.2.1 one it shares code with.
+  check("SIA: the failure names SubjectInfoAccess, not AuthorityInfoAccess", (function () {
+    try { sia(b.sequence([])); return false; }
+    catch (e) { return /SubjectInfoAccess/.test(e.message) && !/AuthorityInfoAccess/.test(e.message); }
+  })());
+
+  // Sec. 4.2.1.8: SEQUENCE SIZE (1..MAX) OF Attribute.
+  var attr = b.sequence([b.oid("1.3.6.1.4.1.99999.1"), b.set([b.utf8("value")])]);
+  var d1 = sda(b.sequence([attr]));
+  check("SDA: one Attribute decodes to its type and values", d1.length === 1 && d1[0].type === "1.3.6.1.4.1.99999.1");
+  check("SDA: an empty SubjectDirectoryAttributes -> typed reject (SIZE(1..MAX))",
+    code(function () { sda(b.sequence([])); }) === "path/bad-extension-value");
+  check("SDA: a member that is not an Attribute SEQUENCE -> typed reject",
+    code(function () { sda(b.sequence([b.oid("1.2.3")])); }) === "path/bad-extension-value");
+
+  // RFC 6960 sec. 4.2.2.2.1: "The value of the extension SHALL be NULL."
+  check("ocspNoCheck: a NULL value decodes", noCheck(b.nullValue()) === null);
+  check("ocspNoCheck: a non-NULL value -> typed reject (the value SHALL be NULL)",
+    code(function () { noCheck(b.integer(1)); }) === "path/bad-extension-value");
+  check("ocspNoCheck: trailing bytes after the NULL -> typed reject",
+    code(function () { noCheck(Buffer.concat([b.nullValue(), b.nullValue()])); }) === "path/bad-extension-value");
+}
+
 function run() {
   testParseFields();
   testExtensions();
   testQcStatements();
   testMsCaExtensions();
   testAuthorityInfoAccess();
+  testSiaSdaNoCheck();
   testPem();
   testRejects();
   testShortTbsWithVersion();
