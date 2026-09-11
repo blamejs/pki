@@ -532,6 +532,44 @@ async function testFreshestAndAia() {
   check("empty authorityInfoAccess -> crl/bad-input", await codeOf(withExt({ authorityInfoAccess: [] })) === "crl/bad-input");
 }
 
+// ---- sec. 5.2.2 -- issuer alternative name on a CRL ----
+
+async function testCrlIssuerAltName() {
+  var s = makeSigner("ec-p256");
+  function withExt(e) { return pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: e }, issuerOf(s)); }
+  var names = [{ dNSName: "crl.issuer.example" }, { rfc822Name: "ca@issuer.example" }, { uniformResourceIdentifier: "https://issuer.example/ca" }];
+  var e = crlExt(pki.schema.crl.parse(await withExt({ issuerAltName: names })), "issuerAltName");
+  check("issuerAltName is emitted on a CRL (sec. 5.2.2)", !!e);
+  // "Conforming CRL issuers SHOULD mark the issuerAltName extension as non-critical."
+  check("issuerAltName is non-critical (sec. 5.2.2)", !!e && e.critical === false);
+  // "Multiple instances of a name form and multiple name forms may be included."
+  check("every name form given is emitted", !!e && asn1.decode(e.value).children.length === 3);
+  // The profile requires a cRLNumber and an authorityKeyIdentifier of any conforming CRL, so the
+  // lint check is run on one that carries them; otherwise it reports those and says nothing about
+  // the extension under test.
+  function conforming(e) {
+    return pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 1n, extensions: e }, issuerOf(s));
+  }
+  check("CONTROL: a conforming CRL without an issuerAltName has no lint errors",
+    pki.lint.crl(await conforming({ authorityKeyIdentifier: true })).findings.filter(function (f) { return f.severity === "error"; }).length === 0);
+  check("adding an issuerAltName keeps the CRL free of lint errors",
+    pki.lint.crl(await conforming({ authorityKeyIdentifier: true, issuerAltName: names })).findings.filter(function (f) { return f.severity === "error"; }).length === 0);
+  check("an empty issuerAltName -> crl/bad-input", await codeOf(withExt({ issuerAltName: [] })) === "crl/bad-input");
+  check("an issuerAltName that is not a list -> crl/bad-input", await codeOf(withExt({ issuerAltName: "crl.issuer.example" })) === "crl/bad-input");
+  check("an unsupported GeneralName form -> crl/bad-input", await codeOf(withExt({ issuerAltName: [{ x400Address: "x" }] })) === "crl/bad-input");
+
+  // Sec. 5.2.2: "The OID and syntax for this CRL extension are defined in Section 4.2.1.7", so the
+  // CRL and the certificate must encode the same names to the same bytes.
+  var cs = makeSigner("ec-p256");
+  var certDer = await pki.x509.sign({
+    subject: [{ commonName: "ian.example" }], subjectPublicKey: cs.spki, notBefore: TU, notAfter: NU,
+    extensions: { issuerAltName: names },
+  }, { key: cs.key });
+  var certIan = pki.schema.x509.parse(certDer).extensions.filter(function (x) { return (x.name || x.oid) === "issuerAltName"; })[0];
+  check("the CRL and the certificate encode issuerAltName to identical bytes",
+    Buffer.from(e.value).equals(Buffer.from(certIan.value)));
+}
+
 // ---- sec. 5.2.4 / 5.2.6 -- delta CRL indicator + freshestCRL conflict ----
 
 async function testDeltaAndFreshest() {
@@ -1043,6 +1081,7 @@ async function main() {
   await testSignerKeyFaults();
   await testIdpGates();
   await testFreshestAndAia();
+  await testCrlIssuerAltName();
   await testDeltaAndFreshest();
   await testDeltaRequiresCrlNumber();
   await testIssuerCertCrlSign();

@@ -51,7 +51,10 @@ async function run() {
         { serialNumber: 0x1234n, revocationDate: RD, reason: "keyCompromise", invalidityDate: new Date("2020-06-01T00:00:00Z") },
         { serialNumber: 0x5678n, revocationDate: RD, reason: "superseded" },
       ],
-      extensions: { authorityKeyIdentifier: true, issuingDistributionPoint: { onlyContainsUserCerts: true } },
+      extensions: {
+        authorityKeyIdentifier: true, issuingDistributionPoint: { onlyContainsUserCerts: true },
+        issuerAltName: [{ dNSName: "crl.issuer.example" }, { uniformResourceIdentifier: "https://issuer.example/ca" }],
+      },
     }, { cert: caCert, key: s.key });
 
     var dir = fs.mkdtempSync(path.join(os.tmpdir(), "pkijs-crlsign-" + alg + "-"));
@@ -66,6 +69,12 @@ async function run() {
       check("openssl crl -text lists the revoked serial 1234 for " + alg, /Serial Number:\s*1234/i.test(t.stdout));
       check("openssl crl -text shows the Key Compromise reason for " + alg, /Key Compromise/i.test(t.stdout));
       check("openssl crl -text renders the GeneralizedTime Invalidity Date for " + alg, /Invalidity Date/i.test(t.stdout));
+      // RFC 5280 sec. 5.2.2. Whether openssl prints a friendly name or the bare OID depends on the
+      // release, so either is accepted; what it decodes out of the GeneralNames is the real oracle.
+      check("openssl crl -text shows the issuer alternative name for " + alg,
+        /Issuer Alternative Name/i.test(t.stdout) || t.stdout.indexOf("2.5.29.18") >= 0);
+      check("openssl crl -text decodes both issuer alternative name forms for " + alg,
+        /DNS:crl\.issuer\.example/.test(t.stdout) && /URI:https:\/\/issuer\.example\/ca/.test(t.stdout));
 
       // ---- (b) openssl verifies the CRL signature against the issuing CA ----
       // `openssl crl -CAfile` prints "verify OK" / "verify failure" as its verdict; the EXIT CODE is unreliable

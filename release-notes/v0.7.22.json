@@ -1,0 +1,11 @@
+{
+  "version": "0.7.22",
+  "date": "2026-09-11",
+  "headline": "A CRL can name its issuer's other identities.",
+  "summary": "pki.lint.crl already graded the issuerAltName extension on a CRL and pki.crl.sign could not write one, so a CA that publishes a CRL under additional identities had to hand-encode the extension. It is now a spec field, which completes the set: every extension RFC 5280 section 5.2 defines, and every one section 5.3 defines for a revoked entry, is written from a plain spec.",
+  "sections": {
+    "Added": [
+      "extensions.issuerAltName on pki.crl.sign takes the same GeneralName list the certificate extension takes, because RFC 5280 section 5.2.2 defines this extension's OID and syntax by reference to section 4.2.1.7. The same names given to pki.x509.sign and pki.crl.sign encode to identical bytes. Multiple name forms and multiple instances of one form are emitted as given, and the extension is non-critical, which section 5.2.2 says a conforming CRL issuer should do."
+    ]
+  }
+}
