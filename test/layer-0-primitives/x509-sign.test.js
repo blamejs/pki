@@ -1351,6 +1351,15 @@ async function testPolicyQualifiersAndAkiSpec() {
     Buffer.isBuffer(await pki.x509.sign(leaf({ certificatePolicies: [{ oid: P, userNotice: { explicitText: new Array(201).join("x") } }] }), { key: s.key })));
   check("an explicitText carrying a control character -> x509/bad-input",
     await codeOf(pki.x509.sign(leaf({ certificatePolicies: [{ oid: P, userNotice: { explicitText: "a" + String.fromCharCode(0x07) + "b" } }] }), { key: s.key })) === "x509/bad-input");
+  // An unpaired surrogate has no UTF-8 encoding, and converting it anyway would put text in the
+  // certificate that the caller never wrote. The pair is the control: it is well-formed and survives.
+  check("an explicitText carrying an unpaired surrogate -> x509/bad-input, not an asn1 error",
+    await codeOf(pki.x509.sign(leaf({ certificatePolicies: [{ oid: P, userNotice: { explicitText: "a" + String.fromCharCode(0xD800) + "b" } }] }), { key: s.key })) === "x509/bad-input");
+  var astral = String.fromCharCode(0xD83D) + String.fromCharCode(0xDE00);
+  var astralDer = await pki.x509.sign(leaf({ certificatePolicies: [{ oid: P, userNotice: { explicitText: "a" + astral + "b" } }] }), { key: s.key });
+  check("CONTROL: a well-formed surrogate pair in an explicitText is accepted and round-trips",
+    asn1.read.string(asn1.decode(extOf(astralDer, "certificatePolicies").value)
+      .children[0].children[1].children[0].children[1].children[0]) === "a" + astral + "b");
   check("an empty noticeRef organization -> x509/bad-input",
     await codeOf(pki.x509.sign(leaf({ certificatePolicies: [{ oid: P, userNotice: { noticeRef: { organization: "", noticeNumbers: [1] } } }] }), { key: s.key })) === "x509/bad-input");
   check("a cps that is not a string -> x509/bad-input",
@@ -1390,6 +1399,19 @@ async function testPolicyQualifiersAndAkiSpec() {
     await codeOf(pki.x509.sign(leaf({ authorityKeyIdentifier: { keyIdentifier: true, authorityCertIssuer: [{ dNSName: "ca.example" }] } }), { cert: caDer, key: ca.key })) === "x509/bad-input");
   check("an authorityCertSerialNumber without an issuer -> x509/bad-input",
     await codeOf(pki.x509.sign(leaf({ authorityKeyIdentifier: { keyIdentifier: true, authorityCertSerialNumber: "0x01" } }), { cert: caDer, key: ca.key })) === "x509/bad-input");
+  // The pair identifies the certificate whose key signed this one, and the signer holds that
+  // certificate, so `true` takes the values from it rather than leaving the caller to restate them.
+  var derived = await pki.x509.sign(leaf({
+    authorityKeyIdentifier: { keyIdentifier: true, authorityCertIssuer: true, authorityCertSerialNumber: true },
+  }), { cert: caDer, key: ca.key });
+  var derivedAki = asn1.decode(pki.schema.x509.parse(derived).extensions
+    .filter(function (e) { return (e.name || e.oid) === "authorityKeyIdentifier"; })[0].value);
+  check("authorityCertIssuer and authorityCertSerialNumber derive from the issuing certificate",
+    derivedAki.children.length === 3 &&
+    derivedAki.children[2].content.toString("hex") === pki.schema.x509.parse(caDer).serialNumberHex);
+  check("the derived authority key identifier lints clean", findings(derived, "error").length === 0);
+  check("deriving them without an issuing certificate -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ authorityKeyIdentifier: { keyIdentifier: true, authorityCertIssuer: true, authorityCertSerialNumber: true } }), { key: s.key })) === "x509/bad-input");
   check("an unknown key on the authorityKeyIdentifier object -> x509/bad-input",
     await codeOf(pki.x509.sign(leaf({ authorityKeyIdentifier: { keyIdentifer: true } }), { cert: caDer, key: ca.key })) === "x509/bad-input");
   check("a non-positive authorityCertSerialNumber -> x509/bad-serial",

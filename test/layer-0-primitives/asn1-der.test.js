@@ -461,6 +461,21 @@ function testIa5SevenBit() {
   // 0x41) must be rejected on the INPUT, not slip past a post-conversion check.
   check("build.ia5 rejects a truncation-prone code point (U+0141)",
     code(function () { b.ia5(String.fromCharCode(0x141)); }) === "asn1/bad-ia5-string");
+  // An unpaired surrogate is not encodable UTF-8. Converting it anyway substitutes U+FFFD, so the
+  // value written would not be the value handed in, and the decoder refuses those same bytes with
+  // asn1/bad-utf8-string. build.utf8 answers the same way rather than silently changing the text.
+  check("build.utf8 rejects an unpaired high surrogate",
+    code(function () { b.utf8("a" + String.fromCharCode(0xD800) + "b"); }) === "asn1/bad-utf8-string");
+  check("build.utf8 rejects an unpaired low surrogate",
+    code(function () { b.utf8("a" + String.fromCharCode(0xDC00) + "b"); }) === "asn1/bad-utf8-string");
+  check("build.utf8 rejects a high surrogate followed by a non-surrogate",
+    code(function () { b.utf8(String.fromCharCode(0xD800) + "a"); }) === "asn1/bad-utf8-string");
+  check("build.utf8 accepts a WELL-FORMED surrogate pair and round-trips it",
+    (function () {
+      var astral = String.fromCharCode(0xD83D) + String.fromCharCode(0xDE00);
+      return pki.asn1.read.string(pki.asn1.decode(b.utf8("a" + astral + "b"))) === "a" + astral + "b";
+    })());
+  check("build.utf8 accepts plain text", code(function () { b.utf8("abc"); }) === "NO-THROW");
   // build.bmpString: UTF-16BE, tag 0x1e, no NULL terminator (the terminator is an App. B.1 password
   // artifact, not part of the ASN.1 value); an unpaired surrogate is rejected (the inverse of _decodeUtf16be).
   check("build.bmpString(\"Beavis\") is the exact 14-byte TLV",

@@ -208,11 +208,7 @@ async function run() {
           cps: "https://cps.interop.example/cps.pdf",
           userNotice: { noticeRef: { organization: "InteropCA", noticeNumbers: [1] }, explicitText: "Interop test policy." },
         }],
-        authorityKeyIdentifier: {
-          keyIdentifier: true,
-          authorityCertIssuer: [{ dNSName: "ca.interop.example" }],
-          authorityCertSerialNumber: "0x0102030405",
-        },
+        authorityKeyIdentifier: { keyIdentifier: true, authorityCertIssuer: true, authorityCertSerialNumber: true },
       },
     }, { cert: pqCaDer, key: pqCaKp.key }, { pem: true });
     var pqFile = path.join(dir, "pq.pem"); fs.writeFileSync(pqFile, pqPem);
@@ -222,8 +218,10 @@ async function run() {
       /CPS:\s*https:\/\/cps\.interop\.example\/cps\.pdf/i.test(pqT.stdout));
     check("openssl renders the user notice explicit text and its notice reference",
       /Interop test policy\./.test(pqT.stdout) && /InteropCA/.test(pqT.stdout));
-    check("openssl renders the authority key identifier issuer name and serial",
-      /DirName|DNS:ca\.interop\.example/i.test(pqT.stdout) && /serial:\s*01:02:03:04:05/i.test(pqT.stdout));
+    // The serial OpenSSL prints is the issuing certificate's own, which is what the pair identifies.
+    var pqCaSerial = pki.schema.x509.parse(pqCaDer).serialNumberHex.toUpperCase().replace(/(..)(?=.)/g, "$1:");
+    check("openssl renders the authority key identifier issuer name and the issuing certificate's serial",
+      /DirName:/i.test(pqT.stdout) && pqT.stdout.toUpperCase().indexOf(pqCaSerial) >= 0);
 
     // RFC 6962. OpenSSL names the poison and, for the SCT list, decodes the TLS structure itself
     // (log id, timestamp, signature), so it is an independent oracle for the encoding rather than
