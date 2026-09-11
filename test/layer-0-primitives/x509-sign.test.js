@@ -1103,6 +1103,161 @@ async function testRandomSerial() {
     pki.schema.x509.parse(der).serialNumber === chosen);
 }
 
+// ---- qualified-certificate statements, from a plain spec --------------------
+
+// RFC 3739 sec. 3.2.6 QCStatements, with the ETSI EN 319 412-5 statement set an eIDAS issuer needs.
+// The toolkit decodes ELEVEN statement types and could build none of them. Each type below is one
+// route, and the same rules are checked against every one: a known id encodes its own value syntax,
+// an unknown id is reachable only as pre-encoded DER, and every statement round-trips through the
+// decoder that reads it back.
+async function testQcStatementsSpec() {
+  var s = makeSigner("ed25519");
+  function leaf(qc, crit) {
+    var exts = { qcStatements: qc };
+    if (crit !== undefined) exts.qcStatementsCritical = crit;
+    return { subject: "qc.example", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: exts };
+  }
+  function qcOf(der) {
+    return pki.schema.x509.parse(der).extensions.filter(function (e) { return (e.name || e.oid) === "qcStatements"; })[0];
+  }
+  function noLintErrors(der) {
+    return pki.lint.certificate(der).findings.filter(function (f) { return f.severity === "error"; }).length === 0;
+  }
+
+  // Every decoded statement type, in one certificate, is the strongest single check that each route
+  // encodes what the reader expects: `extension-undecodable` is an error-severity lint rule, so a
+  // clean error set means every statement below decoded under its own syntax.
+  var all = [
+    { statementId: "qcCompliance" },
+    { statementId: "qcSSCD" },
+    { statementId: "qcType", info: { types: ["qctEsign", "qctWeb"] } },
+    { statementId: "qcIdentMethod", info: { methods: ["1.3.6.1.4.1.99999.3"] } },
+    { statementId: "qcRetentionPeriod", info: { years: 10 } },
+    { statementId: "qcLimitValue", info: { currency: "EUR", amount: 100000, exponent: 2 } },
+    { statementId: "qcCClegislation", info: { countries: ["DE", "FR"] } },
+    { statementId: "qcQSCDlegislation", info: { countries: ["ES"] } },
+    { statementId: "qcPDS", info: { locations: [{ url: "https://pds.example/en.pdf", language: "en" }] } },
+    { statementId: "qcsPkixQCSyntaxV2", info: { semanticsIdentifier: "1.3.6.1.4.1.99999.4" } },
+  ];
+  var allDer = await pki.x509.sign(leaf(all), { key: s.key });
+  var qc = qcOf(allDer);
+  check("qcStatements is issued from a plain spec", !!qc);
+  check("...and is emitted non-critical by default", qc && qc.critical !== true);
+  check("...carrying one QCStatement per entry", asn1.decode(qc.value).children.length === all.length);
+  check("...and every statement decodes under its own syntax", noLintErrors(allDer));
+
+  // A presence-only statement carries NO statementInfo, which is what distinguishes it on the wire.
+  var poNode = asn1.decode(qc.value).children[0];
+  check("a presence-only statement omits statementInfo entirely",
+    poNode.children.length === 1 && asn1.read.oid(poNode.children[0]) === pki.oid.byName("qcCompliance"));
+  // qcType carries a SEQUENCE OF OID, and a registered ETSI type name resolves.
+  var typeNode = asn1.decode(qc.value).children[2];
+  check("qcType encodes its value OIDs, resolving the registered ETSI names",
+    typeNode.children.length === 2 &&
+    asn1.read.oid(typeNode.children[1].children[0]) === pki.oid.byName("qctEsign") &&
+    asn1.read.oid(typeNode.children[1].children[1]) === pki.oid.byName("qctWeb"));
+
+  // The knob, measured rather than asserted: pki.path.validate does not process qcStatements, so a
+  // critical one is rejected and pki.lint grades it unknown-critical-extension. The default is the
+  // form that validates; the knob reaches the other.
+  var critDer = await pki.x509.sign(leaf([{ statementId: "qcCompliance" }], true), { key: s.key });
+  check("qcStatementsCritical emits the critical form", qcOf(critDer).critical === true);
+  check("...which the linter names unknown-critical, the reason it is not the default",
+    pki.lint.certificate(critDer).findings.some(function (f) { return f.id === "lint/rfc5280/unknown-critical-extension"; }));
+
+  // An unknown statement id is reachable, but only as pre-encoded DER, since its syntax is unknown.
+  var opaque = await pki.x509.sign(leaf([{ statementId: "1.3.6.1.4.1.99999.9", info: pki.asn1.build.nullValue() }]), { key: s.key });
+  check("an unknown statementId carries caller-supplied pre-encoded info", !!qcOf(opaque));
+  check("an unknown statementId with a typed info object -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf([{ statementId: "1.3.6.1.4.1.99999.9", info: { years: 3 } }]), { key: s.key })) === "x509/bad-input");
+  // The escape hatch is for ids whose syntax is unknown. A KNOWN id given pre-encoded bytes would
+  // slip past the rule its typed form is held to, and emit a statement the reader cannot decode.
+  check("a KNOWN statementId given pre-encoded info -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf([{ statementId: "qcCompliance", info: pki.asn1.build.nullValue() }]), { key: s.key })) === "x509/bad-input");
+  check("...including one whose typed form takes a value",
+    await codeOf(pki.x509.sign(leaf([{ statementId: "qcRetentionPeriod", info: pki.asn1.build.integer(3n) }]), { key: s.key })) === "x509/bad-input");
+
+  // SemanticsInformation is OPTIONAL: the decoder accepts a semantics statement with no
+  // statementInfo at all, so the builder must be able to express it.
+  var semBare = await pki.x509.sign(leaf([{ statementId: "qcsPkixQCSyntaxV2" }]), { key: s.key });
+  check("a semantics statement may omit statementInfo entirely", !!qcOf(semBare) && noLintErrors(semBare));
+  check("...emitting the statementId alone", asn1.decode(qcOf(semBare).value).children[0].children.length === 1);
+
+  // Refusals, checked against the shapes each route accepts.
+  check("an empty qcStatements -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf([]), { key: s.key })) === "x509/bad-input");
+  check("a statement with no statementId -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf([{ info: { years: 1 } }]), { key: s.key })) === "x509/bad-input");
+  check("a non-string statementId -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf([{ statementId: 42 }]), { key: s.key })) === "x509/bad-input");
+  check("info supplied to a presence-only statement -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf([{ statementId: "qcCompliance", info: { years: 1 } }]), { key: s.key })) === "x509/bad-input");
+  check("qcRetentionPeriod without years -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf([{ statementId: "qcRetentionPeriod", info: {} }]), { key: s.key })) === "x509/bad-input");
+  check("a negative qcRetentionPeriod -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf([{ statementId: "qcRetentionPeriod", info: { years: -1 } }]), { key: s.key })) === "x509/bad-input");
+  check("a qcCClegislation country that is not two letters -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf([{ statementId: "qcCClegislation", info: { countries: ["DEU"] } }]), { key: s.key })) === "x509/bad-input");
+  check("an empty qcCClegislation country list -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf([{ statementId: "qcCClegislation", info: { countries: [] } }]), { key: s.key })) === "x509/bad-input");
+  check("a qcPDS language that is not two letters -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf([{ statementId: "qcPDS", info: { locations: [{ url: "https://p.example", language: "eng" }] } }]), { key: s.key })) === "x509/bad-input");
+  // A PrintableString carries digits, spaces and punctuation, so the string type alone does not make
+  // a value an ISO code. Each of the three alphabetic-code fields is checked for letters.
+  check("a qcCClegislation country of digits -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf([{ statementId: "qcCClegislation", info: { countries: ["12"] } }]), { key: s.key })) === "x509/bad-input");
+  check("a qcQSCDlegislation country of punctuation -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf([{ statementId: "qcQSCDlegislation", info: { countries: ["+ "] } }]), { key: s.key })) === "x509/bad-input");
+  check("a qcLimitValue alphabetic currency that is not letters -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf([{ statementId: "qcLimitValue", info: { currency: "1+?", amount: 1, exponent: 0 } }]), { key: s.key })) === "x509/bad-input");
+  check("a qcPDS language that is not letters -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf([{ statementId: "qcPDS", info: { locations: [{ url: "https://p.example", language: "++" }] } }]), { key: s.key })) === "x509/bad-input");
+  check("a lowercase qcPDS language is accepted (ISO 639-1 is written lowercase)",
+    Buffer.isBuffer(await pki.x509.sign(leaf([{ statementId: "qcPDS", info: { locations: [{ url: "https://p.example", language: "en" }] } }]), { key: s.key })));
+  check("a lowercase qcCClegislation country is accepted",
+    Buffer.isBuffer(await pki.x509.sign(leaf([{ statementId: "qcCClegislation", info: { countries: ["de"] } }]), { key: s.key })));
+  // A value in a TYPED spec is this verb's to reject: a character the string type cannot carry must
+  // raise x509/bad-input rather than leaking the codec's own asn1/* domain.
+  check("a qcPDS url outside 7-bit ASCII -> x509/bad-input, not an asn1 error",
+    await codeOf(pki.x509.sign(leaf([{ statementId: "qcPDS", info: { locations: [{ url: "https://p.example/" + String.fromCharCode(0xE9), language: "en" }] } }]), { key: s.key })) === "x509/bad-input");
+  check("a qcPDS language a PrintableString cannot carry -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf([{ statementId: "qcPDS", info: { locations: [{ url: "https://p.example", language: "e_" }] } }]), { key: s.key })) === "x509/bad-input");
+  check("a qcCClegislation country a PrintableString cannot carry -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf([{ statementId: "qcCClegislation", info: { countries: ["d_"] } }]), { key: s.key })) === "x509/bad-input");
+  check("a qcPDS location missing its url -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf([{ statementId: "qcPDS", info: { locations: [{ language: "en" }] } }]), { key: s.key })) === "x509/bad-input");
+  check("a qcLimitValue alphabetic currency that is not three letters -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf([{ statementId: "qcLimitValue", info: { currency: "EURO", amount: 1, exponent: 0 } }]), { key: s.key })) === "x509/bad-input");
+  check("a qcLimitValue numeric currency outside 1..999 -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf([{ statementId: "qcLimitValue", info: { currency: 1000, amount: 1, exponent: 0 } }]), { key: s.key })) === "x509/bad-input");
+  check("a qcLimitValue missing amount -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf([{ statementId: "qcLimitValue", info: { currency: "EUR", exponent: 0 } }]), { key: s.key })) === "x509/bad-input");
+  // The amount and exponent are bounded the way the decoder reads them back, so the builder cannot
+  // emit a MonetaryValue this toolkit's own reader refuses.
+  check("a negative qcLimitValue amount -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf([{ statementId: "qcLimitValue", info: { currency: "EUR", amount: -1, exponent: 0 } }]), { key: s.key })) === "x509/bad-input");
+  check("a qcLimitValue amount past the decoder's ceiling -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf([{ statementId: "qcLimitValue", info: { currency: "EUR", amount: 9007199254740992n, exponent: 0 } }]), { key: s.key })) === "x509/bad-input");
+  check("a qcLimitValue exponent past the decoder's range -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf([{ statementId: "qcLimitValue", info: { currency: "EUR", amount: 1, exponent: 9007199254740992n } }]), { key: s.key })) === "x509/bad-input");
+  check("a negative qcLimitValue exponent is accepted, which the decoder permits",
+    !!qcOf(await pki.x509.sign(leaf([{ statementId: "qcLimitValue", info: { currency: "EUR", amount: 1000, exponent: -2 } }]), { key: s.key })));
+  check("a numeric qcLimitValue currency is accepted (ISO 4217 numeric)",
+    !!qcOf(await pki.x509.sign(leaf([{ statementId: "qcLimitValue", info: { currency: 978, amount: 5, exponent: 0 } }]), { key: s.key })));
+  check("an empty qcType list -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf([{ statementId: "qcType", info: { types: [] } }]), { key: s.key })) === "x509/bad-input");
+  check("a non-string qcType entry -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf([{ statementId: "qcType", info: { types: [42] } }]), { key: s.key })) === "x509/bad-input");
+
+  // The semantics statement carries an OPTIONAL identifier and OPTIONAL name-registration authorities.
+  var semDer = await pki.x509.sign(leaf([{ statementId: "qcsPkixQCSyntaxV2",
+    info: { semanticsIdentifier: "1.3.6.1.4.1.99999.4", nameRegistrationAuthorities: [{ dNSName: "ra.example" }] } }]), { key: s.key });
+  check("SemanticsInformation carries both its identifier and its authorities", noLintErrors(semDer) && !!qcOf(semDer));
+  // An info object that is PRESENT must say something; omitting info entirely is the other form.
+  check("SemanticsInformation given an empty info object -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf([{ statementId: "qcsPkixQCSyntaxV2", info: {} }]), { key: s.key })) === "x509/bad-input");
+}
+
 // ---- the certificate-policy machinery, from a plain spec --------------------
 
 // policyConstraints (RFC 5280 sec. 4.2.1.11), inhibitAnyPolicy (sec. 4.2.1.14) and policyMappings
@@ -1557,6 +1712,7 @@ async function main() {
   await testNameConstraintsSpec();
   await testAccessAndDistributionSpec();
   await testPolicyMachinerySpec();
+  await testQcStatementsSpec();
   console.log("CHECKS " + helpers.getChecks());
 }
 
