@@ -62,6 +62,20 @@ async function run() {
   var purposeBound = await pki.smime.verify(mp, { trustAnchors: [rsa.cert], requiredEku: ["serverAuth"] });
   check("6c. a purpose the signer does not carry is not reported trusted",
     purposeBound.trusted === false);
+  // An option decides whether a rule applies and then supplies the value the rule uses. Those are
+  // separate reads of one caller value, and an option reached through an accessor answers each read
+  // separately, so the anchors a verdict rests on need not be the anchors that turned the check on.
+  // Each option is taken once, so an accessor is invoked once however many passes read it.
+  var anchorReads = 0;
+  var probed = {};
+  Object.defineProperty(probed, "trustAnchors", {
+    enumerable: true, configurable: true,
+    get: function () { anchorReads++; return [rsa.cert]; },
+  });
+  var probedVerdict = await pki.smime.verify(mp, probed);
+  check("6d. an accessor-backed trustAnchors is read exactly once", anchorReads === 1);
+  check("6e. ...and the verdict still answers for the anchors it was given",
+    typeof probedVerdict.trusted === "boolean" && probedVerdict.valid === true);
 
   // ---- A2: application/pkcs7-mime (opaque) round-trip ----
   var op = await pki.smime.sign(MSG, signers, { form: "pkcs7-mime" });
