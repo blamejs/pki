@@ -1336,9 +1336,13 @@ async function testPrecertificateSpec() {
   check("the SCT extension is non-critical by default", sctExt !== undefined && !sctExt.critical);
   check("the embedded list round-trips through pki.ct.parseSctList",
     sctExt !== undefined && pki.ct.parseSctList(sctExt.value).scts.length === 1);
-  check("signedCertificateTimestampListCritical emits it critical",
-    extOf(await pki.x509.sign(leaf({ signedCertificateTimestampList: [sct], signedCertificateTimestampListCritical: true }), { key: s.key }),
-      "signedCertificateTimestampList").critical === true);
+  // No knob reaches a critical SCT list: RFC 6962 asks for none, and every client that does not
+  // recognize the OID refuses such a certificate, this toolkit's validator included.
+  check("there is no signedCertificateTimestampListCritical knob",
+    await codeOf(pki.x509.sign(leaf({ signedCertificateTimestampList: [sct], signedCertificateTimestampListCritical: true }), { key: s.key })) === "x509/bad-input");
+  var sctCert = pki.schema.x509.parse(withScts);
+  var sctRes = await pki.path.validate([sctCert], { time: IN_WINDOW, trustAnchors: anchorFor(sctCert) });
+  check("a certificate carrying an embedded SCT list still validates", sctRes.valid === true);
 
   // Sec. 3.3: "At least one SCT MUST be included."
   check("an empty SCT list -> x509/bad-input",
