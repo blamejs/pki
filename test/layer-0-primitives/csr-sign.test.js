@@ -310,6 +310,18 @@ async function testRequestedCriticality() {
   var ncReq = reqExts.filter(function (e) { return (e.name || e.oid) === "nameConstraints"; })[0];
   check("a requested nameConstraints is emitted from the object form", !!ncReq);
   check("...and is marked critical", ncReq && ncReq.critical === true);
+  // The same three extensions the certificate side gained reach a request through one encoder.
+  var accDer = await pki.csr.sign({ subject: "leaf.example", subjectPublicKey: s.spki,
+    extensionRequest: { authorityInfoAccess: [{ accessMethod: "ocsp", accessLocation: "http://ocsp.example" }],
+      cRLDistributionPoints: ["http://crl.example/a.crl"] } }, { key: s.key });
+  var accExts = pki.schema.csr.parse(accDer).attributes[0].extensions;
+  function reqExt(n) { return accExts.filter(function (e) { return (e.name || e.oid) === n; })[0]; }
+  check("a requested authorityInfoAccess is emitted from the object form", !!reqExt("authorityInfoAccess"));
+  check("...non-critical, as RFC 5280 sec. 4.2.2.1 requires", reqExt("authorityInfoAccess").critical !== true);
+  check("a requested cRLDistributionPoints is emitted from the object form", !!reqExt("cRLDistributionPoints"));
+  check("a requested DistributionPoint carrying only reasons -> csr/bad-input",
+    await codeOf(pki.csr.sign({ subject: "x", subjectPublicKey: s.spki,
+      extensionRequest: { cRLDistributionPoints: [{ reasons: ["keyCompromise"] }] } }, { key: s.key })) === "csr/bad-input");
   check("a requested nameConstraints naming neither direction -> csr/bad-input",
     await codeOf(pki.csr.sign({ subject: "x", subjectPublicKey: s.spki, extensionRequest: { nameConstraints: {} } }, { key: s.key })) === "csr/bad-input");
 }

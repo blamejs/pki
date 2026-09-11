@@ -1,0 +1,13 @@
+{
+  "version": "0.7.16",
+  "date": "2026-09-11",
+  "headline": "Where to fetch the issuer and the CRL can be named in a plain spec.",
+  "summary": "A certificate says where to reach the issuer and where to fetch the revocation list through authorityInfoAccess and cRLDistributionPoints. Both were reachable only as hand-encoded DER, so issuing an ordinary certificate with an OCSP URL meant assembling AccessDescription and DistributionPoint structures by hand. pki.x509.sign and pki.csr.sign now take all three of these extensions as plain objects.",
+  "sections": {
+    "Added": [
+      "extensions.authorityInfoAccess takes a list of { accessMethod, accessLocation } (RFC 5280 section 4.2.2.1). The method is a registered name such as \"ocsp\" or \"caIssuers\", or a dotted OID; the location is a GeneralName in either form the builder accepts, including a bare string classified into its form. An empty list, an unregistered method name, and an entry with no accessLocation are refused with x509/bad-input or csr/bad-input. The extension is emitted non-critical, which that clause requires.",
+      "extensions.cRLDistributionPoints takes a list of distribution points (RFC 5280 section 4.2.1.13), and extensions.freshestCRL takes the same shape, which section 4.2.1.15 gives it. An entry is either a GeneralName standing for a single fullName, so a list of URL strings is the short form, or { fullName, reasons, cRLIssuer } for the full one. reasons names ReasonFlags bits, whose numbering is not the CRLReason numbering pki.crl.sign takes: section 5.3.1 numbers privilegeWithdrawn 9 and aACompromise 10, while section 4.2.1.13 gives them bits 7 and 8. A distribution point naming only reasons is refused, which section 4.2.1.13 requires, as is an empty list or an unknown reason name. Both are emitted non-critical.",
+      "All three are accepted on the pki.csr.sign extensionRequest object as well, so a request and an issued certificate are written the same way."
+    ]
+  }
+}

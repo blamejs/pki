@@ -1103,6 +1103,133 @@ async function testRandomSerial() {
     pki.schema.x509.parse(der).serialNumber === chosen);
 }
 
+// ---- where to fetch the issuer and the CRL, from a plain spec ---------------
+
+// authorityInfoAccess (RFC 5280 sec. 4.2.2.1) names the OCSP responder and the issuer's own
+// certificate; cRLDistributionPoints (sec. 4.2.1.13) names the CRL. Both were reachable only as
+// hand-encoded DER. freshestCRL (sec. 4.2.1.15) uses the cRLDistributionPoints syntax, so it takes
+// the same shape.
+async function testAccessAndDistributionSpec() {
+  var s = makeSigner("ed25519");
+  function leaf(exts) {
+    return { subject: "leaf.example", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: exts };
+  }
+  function extOf(der, name) {
+    return pki.schema.x509.parse(der).extensions.filter(function (e) { return (e.name || e.oid) === name; })[0];
+  }
+
+  // ---- authorityInfoAccess ----
+  var aiaDer = await pki.x509.sign(leaf({ authorityInfoAccess: [
+    { accessMethod: "ocsp", accessLocation: { uniformResourceIdentifier: "http://ocsp.example" } },
+    { accessMethod: "caIssuers", accessLocation: "http://ca.example/ca.cer" },
+  ] }), { key: s.key });
+  var aia = extOf(aiaDer, "authorityInfoAccess");
+  check("authorityInfoAccess is issued from a plain spec", !!aia);
+  check("...and is emitted non-critical (RFC 5280 sec. 4.2.2.1)", aia && aia.critical !== true);
+  var aiaNode = asn1.decode(aia.value);
+  check("AuthorityInfoAccessSyntax is a SEQUENCE of two AccessDescriptions", aiaNode.children.length === 2);
+  check("the first accessMethod is the OCSP OID", asn1.read.oid(aiaNode.children[0].children[0]) === pki.oid.byName("ocsp"));
+  check("a bare-string accessLocation classifies as a URI [6]",
+    aiaNode.children[1].children[1].tagClass === "context" && aiaNode.children[1].children[1].tagNumber === 6);
+  check("the emitted certificate carries no error-severity lint finding",
+    pki.lint.certificate(aiaDer).findings.filter(function (f) { return f.severity === "error"; }).length === 0);
+  check("a dotted-OID accessMethod is accepted",
+    !!extOf(await pki.x509.sign(leaf({ authorityInfoAccess: [{ accessMethod: "1.3.6.1.5.5.7.48.1", accessLocation: "http://o.example" }] }), { key: s.key }), "authorityInfoAccess"));
+  check("an empty authorityInfoAccess -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ authorityInfoAccess: [] }), { key: s.key })) === "x509/bad-input");
+  check("an accessMethod that names no OID -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ authorityInfoAccess: [{ accessMethod: "notAMethod", accessLocation: "http://o.example" }] }), { key: s.key })) === "x509/bad-input");
+  check("an AccessDescription with no accessLocation -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ authorityInfoAccess: [{ accessMethod: "ocsp" }] }), { key: s.key })) === "x509/bad-input");
+  // A fault in the SPEC is this module's error, not the OID registry's. A caller that branches on
+  // the documented x509/* code would otherwise miss an omitted or non-string accessMethod entirely.
+  check("an omitted accessMethod -> x509/bad-input, not an OID-registry error",
+    await codeOf(pki.x509.sign(leaf({ authorityInfoAccess: [{ accessLocation: "http://o.example" }] }), { key: s.key })) === "x509/bad-input");
+  check("a non-string accessMethod -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ authorityInfoAccess: [{ accessMethod: 42, accessLocation: "http://o.example" }] }), { key: s.key })) === "x509/bad-input");
+  check("a null accessMethod -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ authorityInfoAccess: [{ accessMethod: null, accessLocation: "http://o.example" }] }), { key: s.key })) === "x509/bad-input");
+
+  // ---- cRLDistributionPoints ----
+  var crlDer = await pki.x509.sign(leaf({ cRLDistributionPoints: ["http://crl.example/a.crl"] }), { key: s.key });
+  var crl = extOf(crlDer, "cRLDistributionPoints");
+  check("cRLDistributionPoints takes a bare URL list", !!crl);
+  check("...and is emitted non-critical (RFC 5280 sec. 4.2.1.13)", crl && crl.critical !== true);
+  // DistributionPoint { [0] distributionPoint { [0] fullName { [6] uri } } }
+  var dp = asn1.decode(crl.value).children[0];
+  check("the shorthand builds one DistributionPoint carrying a fullName URI",
+    dp.children.length === 1 && dp.children[0].tagNumber === 0 &&
+    dp.children[0].children[0].tagNumber === 0 && dp.children[0].children[0].children[0].tagNumber === 6);
+  check("the URL survives as the fullName value",
+    dp.children[0].children[0].children[0].content.toString("ascii") === "http://crl.example/a.crl");
+
+  var fullDer = await pki.x509.sign(leaf({ cRLDistributionPoints: [
+    { fullName: ["http://crl.example/b.crl"], reasons: ["keyCompromise", "cACompromise"] },
+  ] }), { key: s.key });
+  var fullDp = asn1.decode(extOf(fullDer, "cRLDistributionPoints").value).children[0];
+  check("the object form carries distributionPoint [0] then reasons [1] in order",
+    fullDp.children.length === 2 && fullDp.children[0].tagNumber === 0 && fullDp.children[1].tagNumber === 1);
+  check("a cRLIssuer-only DistributionPoint is accepted (sec. 4.2.1.13 permits either)",
+    !!extOf(await pki.x509.sign(leaf({ cRLDistributionPoints: [{ cRLIssuer: [{ directoryName: [{ commonName: "CRL Issuer" }] }] }] }), { key: s.key }), "cRLDistributionPoints"));
+  // sec. 4.2.1.13: cRLIssuer "MUST be present and contain the Name of the CRL issuer". A Name is the
+  // X.501 Name, which a GeneralName can carry only as directoryName, and the path validator compares
+  // only directoryName entries. A cRLIssuer naming no directoryName matches no CRL issuer, so the
+  // distribution point would leave revocation undetermined rather than point at anything.
+  check("a cRLIssuer naming no directoryName -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ cRLDistributionPoints: [{ cRLIssuer: ["http://crl.example"] }] }), { key: s.key })) === "x509/bad-input");
+  // An EMPTY directoryName is a Name with no RDNs, which names nobody. pki.crl.sign refuses to issue
+  // a CRL under one (crl/bad-issuer), so a distribution point naming it could match no conforming
+  // CRL and leaves revocation undetermined exactly as a missing directoryName would.
+  check("a cRLIssuer whose only directoryName is empty -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ cRLDistributionPoints: [{ cRLIssuer: [{ directoryName: [] }] }] }), { key: s.key })) === "x509/bad-input");
+  check("a cRLIssuer whose directoryName cannot encode as a Name -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ cRLDistributionPoints: [{ cRLIssuer: [{ directoryName: 42 }] }] }), { key: s.key })) === "x509/bad-input");
+  check("a cRLIssuer pairing an empty directoryName with a real one is accepted",
+    !!extOf(await pki.x509.sign(leaf({ cRLDistributionPoints: [{ cRLIssuer: [{ directoryName: [{ commonName: "CRL Issuer" }] }] }] }), { key: s.key }), "cRLDistributionPoints"));
+  check("a cRLIssuer mixing a URI with a directoryName is accepted",
+    !!extOf(await pki.x509.sign(leaf({ cRLDistributionPoints: [{ fullName: ["http://c.example"],
+      cRLIssuer: [{ uniformResourceIdentifier: "http://crl.example" }, { directoryName: [{ commonName: "CRL Issuer" }] }] }] }), { key: s.key }), "cRLDistributionPoints"));
+  // "a DistributionPoint MUST NOT consist of only the reasons field".
+  check("a DistributionPoint carrying only reasons -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ cRLDistributionPoints: [{ reasons: ["keyCompromise"] }] }), { key: s.key })) === "x509/bad-input");
+  check("an empty cRLDistributionPoints -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ cRLDistributionPoints: [] }), { key: s.key })) === "x509/bad-input");
+  check("an unknown reason name -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ cRLDistributionPoints: [{ fullName: ["http://c.example"], reasons: ["notAReason"] }] }), { key: s.key })) === "x509/bad-input");
+  // ReasonFlags bits are NOT the CRLReason ENUMERATED values: sec. 5.3.1 numbers privilegeWithdrawn 9
+  // and aACompromise 10, while sec. 4.2.1.13 gives them bits 7 and 8. Encoding the enumerated value
+  // would name a different reason, so the bit positions are pinned here.
+  var pwDer = await pki.x509.sign(leaf({ cRLDistributionPoints: [
+    { fullName: ["http://c.example"], reasons: ["privilegeWithdrawn", "aACompromise"] },
+  ] }), { key: s.key });
+  var pwBits = asn1.read.bitStringImplicit(asn1.decode(extOf(pwDer, "cRLDistributionPoints").value).children[0].children[1], 1);
+  function bitSet(bs, bit) { return !!(bs.bytes[bit >> 3] & (0x80 >> (bit & 7))); }
+  check("privilegeWithdrawn is ReasonFlags bit 7, not the CRLReason value 9",
+    bitSet(pwBits, 7) && !bitSet(pwBits, 9));
+  check("aACompromise is ReasonFlags bit 8, not the CRLReason value 10", bitSet(pwBits, 8));
+  check("...and no other reason bit is set",
+    !bitSet(pwBits, 1) && !bitSet(pwBits, 2) && !bitSet(pwBits, 6));
+
+  // ---- freshestCRL shares the cRLDistributionPoints syntax (sec. 4.2.1.15) ----
+  var freshDer = await pki.x509.sign(leaf({ freshestCRL: ["http://crl.example/delta.crl"] }), { key: s.key });
+  var fresh = extOf(freshDer, "freshestCRL");
+  check("freshestCRL takes the same shape", !!fresh);
+  check("...and is emitted non-critical (RFC 5280 sec. 4.2.1.15)", fresh && fresh.critical !== true);
+  check("freshestCRL encodes the same DistributionPoint structure as cRLDistributionPoints",
+    asn1.decode(fresh.value).children[0].children[0].tagNumber === 0);
+
+  // All three together on one certificate still lint clean and round-trip.
+  var allDer = await pki.x509.sign(leaf({
+    authorityInfoAccess: [{ accessMethod: "ocsp", accessLocation: "http://ocsp.example" }],
+    cRLDistributionPoints: ["http://crl.example/a.crl"],
+    freshestCRL: ["http://crl.example/delta.crl"],
+  }), { key: s.key });
+  check("all three ride one certificate with no error-severity lint finding",
+    pki.lint.certificate(allDer).findings.filter(function (f) { return f.severity === "error"; }).length === 0);
+  check("...and all three parse back", !!extOf(allDer, "authorityInfoAccess") &&
+    !!extOf(allDer, "cRLDistributionPoints") && !!extOf(allDer, "freshestCRL"));
+}
+
 // ---- nameConstraints from a plain spec (RFC 5280 sec. 4.2.1.10) -------------
 
 // The extension that restricts what a sub-CA may issue. Reaching it meant hand-encoding
@@ -1306,6 +1433,7 @@ async function main() {
   await testRandomSerial();
   await testFixedCriticality();
   await testNameConstraintsSpec();
+  await testAccessAndDistributionSpec();
   console.log("CHECKS " + helpers.getChecks());
 }
 
