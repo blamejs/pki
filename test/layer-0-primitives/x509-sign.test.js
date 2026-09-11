@@ -1286,6 +1286,138 @@ async function testQcStatementsSpec() {
 // policyConstraints (RFC 5280 sec. 4.2.1.11), inhibitAnyPolicy (sec. 4.2.1.14) and policyMappings
 // (sec. 4.2.1.5) are what sec. 6.1 path validation acts on, and issuerAltName (sec. 4.2.1.7) is the
 // GeneralNames sibling of subjectAltName. All four were reachable only as hand-encoded DER.
+// RFC 5280 sec. 4.2.1.4 policy qualifiers and the sec. 4.2.1.1 authority key identifier in full. The
+// readers already decode both, so these vectors hold the builder to what pki.schema.x509.parse and
+// pki.lint.certificate read back.
+async function testPolicyQualifiersAndAkiSpec() {
+  var s = makeSigner("ed25519");
+  var P = "1.3.6.1.4.1.99999.1";
+  function leaf(exts) {
+    return { subject: "pq.example", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: exts };
+  }
+  function extOf(der, name) {
+    return pki.schema.x509.parse(der).extensions.filter(function (e) { return (e.name || e.oid) === name; })[0];
+  }
+  function findings(der, severity) {
+    return pki.lint.certificate(der).findings.filter(function (f) { return f.severity === severity; }).map(function (f) { return f.id; });
+  }
+  function qualifierOidsOf(der) {
+    var out = [];
+    asn1.decode(extOf(der, "certificatePolicies").value).children.forEach(function (pi) {
+      if (pi.children.length > 1) {
+        pi.children[1].children.forEach(function (pq) { out.push(asn1.read.oid(pq.children[0])); });
+      }
+    });
+    return out;
+  }
+
+  // A bare name or dotted OID is the shipped form and stays exactly as it was.
+  var bare = await pki.x509.sign(leaf({ certificatePolicies: [P] }), { key: s.key });
+  check("CONTROL: a bare policy OID still emits a policy with no qualifiers", qualifierOidsOf(bare).length === 0);
+  check("an entry object naming only its oid matches the bare form",
+    Buffer.from(extOf(await pki.x509.sign(leaf({ certificatePolicies: [{ oid: P }] }), { key: s.key }), "certificatePolicies").value)
+      .equals(Buffer.from(extOf(bare, "certificatePolicies").value)));
+
+  // A CPS pointer, which is what a public CA has to put in a certificate.
+  var withCps = await pki.x509.sign(leaf({ certificatePolicies: [{ oid: P, cps: "https://cps.example/cps.pdf" }] }), { key: s.key });
+  check("a cps qualifier is emitted under id-qt-cps", qualifierOidsOf(withCps)[0] === pki.oid.byName("cps"));
+  check("a certificate carrying a cps qualifier has no lint errors", findings(withCps, "error").length === 0);
+
+  var withNotice = await pki.x509.sign(leaf({ certificatePolicies: [{ oid: P, userNotice: { explicitText: "Issued under the test policy." } }] }), { key: s.key });
+  check("a userNotice qualifier is emitted under id-qt-unotice", qualifierOidsOf(withNotice)[0] === pki.oid.byName("unotice"));
+  check("a certificate carrying a userNotice has no lint errors", findings(withNotice, "error").length === 0);
+  check("the explicitText is emitted as a UTF8String, which sec. 4.2.1.4 says a conforming CA uses",
+    asn1.decode(extOf(withNotice, "certificatePolicies").value)
+      .children[0].children[1].children[0].children[1].children[0].tagNumber === 12);
+
+  var both = await pki.x509.sign(leaf({ certificatePolicies: [{ oid: P, cps: "https://cps.example", userNotice: { explicitText: "Notice" } }] }), { key: s.key });
+  check("both qualifiers are emitted, the cps pointer first",
+    qualifierOidsOf(both).length === 2 && qualifierOidsOf(both)[0] === pki.oid.byName("cps") && qualifierOidsOf(both)[1] === pki.oid.byName("unotice"));
+
+  var withRef = await pki.x509.sign(leaf({ certificatePolicies: [{ oid: P, userNotice: { noticeRef: { organization: "CertsRUs", noticeNumbers: [1, 2] }, explicitText: "See notice 1." } }] }), { key: s.key });
+  check("a noticeRef and an explicitText are emitted together", findings(withRef, "error").length === 0);
+  check("a userNotice naming neither field is accepted, as the reader accepts it",
+    Buffer.isBuffer(await pki.x509.sign(leaf({ certificatePolicies: [{ oid: P, userNotice: {} }] }), { key: s.key })));
+
+  // Sec. 4.2.1.4 fixes DisplayText at SIZE (1..200) and forbids a conforming CA from encoding
+  // explicitText as VisibleString or BMPString. The builder emits UTF8String, so the encoding rule
+  // holds by construction; the size is enforced, so the certificate this builder emits never trips
+  // the toolkit's own explicit-text-empty or explicit-text-too-long rows.
+  check("an empty explicitText -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ certificatePolicies: [{ oid: P, userNotice: { explicitText: "" } }] }), { key: s.key })) === "x509/bad-input");
+  check("an explicitText over 200 characters -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ certificatePolicies: [{ oid: P, userNotice: { explicitText: new Array(202).join("x") } }] }), { key: s.key })) === "x509/bad-input");
+  check("an explicitText of exactly 200 characters is accepted",
+    Buffer.isBuffer(await pki.x509.sign(leaf({ certificatePolicies: [{ oid: P, userNotice: { explicitText: new Array(201).join("x") } }] }), { key: s.key })));
+  check("an explicitText carrying a control character -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ certificatePolicies: [{ oid: P, userNotice: { explicitText: "a" + String.fromCharCode(0x07) + "b" } }] }), { key: s.key })) === "x509/bad-input");
+  // An unpaired surrogate has no UTF-8 encoding, and converting it anyway would put text in the
+  // certificate that the caller never wrote. The pair is the control: it is well-formed and survives.
+  check("an explicitText carrying an unpaired surrogate -> x509/bad-input, not an asn1 error",
+    await codeOf(pki.x509.sign(leaf({ certificatePolicies: [{ oid: P, userNotice: { explicitText: "a" + String.fromCharCode(0xD800) + "b" } }] }), { key: s.key })) === "x509/bad-input");
+  var astral = String.fromCharCode(0xD83D) + String.fromCharCode(0xDE00);
+  var astralDer = await pki.x509.sign(leaf({ certificatePolicies: [{ oid: P, userNotice: { explicitText: "a" + astral + "b" } }] }), { key: s.key });
+  check("CONTROL: a well-formed surrogate pair in an explicitText is accepted and round-trips",
+    asn1.read.string(asn1.decode(extOf(astralDer, "certificatePolicies").value)
+      .children[0].children[1].children[0].children[1].children[0]) === "a" + astral + "b");
+  check("an empty noticeRef organization -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ certificatePolicies: [{ oid: P, userNotice: { noticeRef: { organization: "", noticeNumbers: [1] } } }] }), { key: s.key })) === "x509/bad-input");
+  check("a cps that is not a string -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ certificatePolicies: [{ oid: P, cps: 42 }] }), { key: s.key })) === "x509/bad-input");
+  check("a cps outside 7-bit ASCII -> x509/bad-input, not an asn1 error",
+    await codeOf(pki.x509.sign(leaf({ certificatePolicies: [{ oid: P, cps: "https://cps.example/" + String.fromCharCode(0xE9) }] }), { key: s.key })) === "x509/bad-input");
+
+  // A misspelled field would otherwise be dropped, issuing a policy the caller did not write.
+  check("an unknown key on a policy entry -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ certificatePolicies: [{ oid: P, cpsUri: "https://x.example" }] }), { key: s.key })) === "x509/bad-input");
+  check("an unknown key on a userNotice -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ certificatePolicies: [{ oid: P, userNotice: { explicitTest: "typo" } }] }), { key: s.key })) === "x509/bad-input");
+  check("an unknown key on a noticeRef -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ certificatePolicies: [{ oid: P, userNotice: { noticeRef: { org: "x", noticeNumbers: [1] } } }] }), { key: s.key })) === "x509/bad-input");
+  check("a noticeRef missing its organization -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ certificatePolicies: [{ oid: P, userNotice: { noticeRef: { noticeNumbers: [1] } } }] }), { key: s.key })) === "x509/bad-input");
+
+  // Sec. 4.2.1.1: the authority key identifier carries an issuer name and serial beside the key id.
+  var ca = makeSigner("ec-p256");
+  var caDer = await pki.x509.sign({
+    subject: [{ commonName: "aki-ca" }], subjectPublicKey: ca.spki, notBefore: NB, notAfter: NA,
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: true },
+  }, { key: ca.key });
+  var full = await pki.x509.sign(leaf({
+    authorityKeyIdentifier: { keyIdentifier: true, authorityCertIssuer: [{ dNSName: "ca.example" }], authorityCertSerialNumber: "0x0102030405" },
+  }), { cert: caDer, key: ca.key });
+  var aki = pki.schema.x509.parse(full).extensions.filter(function (e) { return (e.name || e.oid) === "authorityKeyIdentifier"; })[0];
+  check("the authority key identifier carries all three fields",
+    aki !== undefined && aki.value !== undefined && asn1.decode(aki.value).children.length === 3);
+  check("a certificate carrying the full authority key identifier has no lint errors", findings(full, "error").length === 0);
+  check("CONTROL: authorityKeyIdentifier true still emits the key id alone",
+    asn1.decode(pki.schema.x509.parse(await pki.x509.sign(leaf({ authorityKeyIdentifier: true }), { cert: caDer, key: ca.key }))
+      .extensions.filter(function (e) { return (e.name || e.oid) === "authorityKeyIdentifier"; })[0].value).children.length === 1);
+  // The reader requires the issuer and serial to be both present or both absent, so the builder is
+  // held to the same rule: one structure drives both directions.
+  check("an authorityCertIssuer without a serial -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ authorityKeyIdentifier: { keyIdentifier: true, authorityCertIssuer: [{ dNSName: "ca.example" }] } }), { cert: caDer, key: ca.key })) === "x509/bad-input");
+  check("an authorityCertSerialNumber without an issuer -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ authorityKeyIdentifier: { keyIdentifier: true, authorityCertSerialNumber: "0x01" } }), { cert: caDer, key: ca.key })) === "x509/bad-input");
+  // The pair identifies the certificate whose key signed this one, and the signer holds that
+  // certificate, so `true` takes the values from it rather than leaving the caller to restate them.
+  var derived = await pki.x509.sign(leaf({
+    authorityKeyIdentifier: { keyIdentifier: true, authorityCertIssuer: true, authorityCertSerialNumber: true },
+  }), { cert: caDer, key: ca.key });
+  var derivedAki = asn1.decode(pki.schema.x509.parse(derived).extensions
+    .filter(function (e) { return (e.name || e.oid) === "authorityKeyIdentifier"; })[0].value);
+  check("authorityCertIssuer and authorityCertSerialNumber derive from the issuing certificate",
+    derivedAki.children.length === 3 &&
+    derivedAki.children[2].content.toString("hex") === pki.schema.x509.parse(caDer).serialNumberHex);
+  check("the derived authority key identifier lints clean", findings(derived, "error").length === 0);
+  check("deriving them without an issuing certificate -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ authorityKeyIdentifier: { keyIdentifier: true, authorityCertIssuer: true, authorityCertSerialNumber: true } }), { key: s.key })) === "x509/bad-input");
+  check("an unknown key on the authorityKeyIdentifier object -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ authorityKeyIdentifier: { keyIdentifer: true } }), { cert: caDer, key: ca.key })) === "x509/bad-input");
+  check("a non-positive authorityCertSerialNumber -> x509/bad-serial",
+    await codeOf(pki.x509.sign(leaf({ authorityKeyIdentifier: { keyIdentifier: true, authorityCertIssuer: [{ dNSName: "ca.example" }], authorityCertSerialNumber: 0 } }), { cert: caDer, key: ca.key })) === "x509/bad-serial");
+}
+
 // RFC 6962 certificate transparency: the poison that makes a precertificate unusable, and the SCT
 // list the final certificate embeds. Both drive pki.x509.sign and assert through the shipped
 // readers (pki.schema.x509.parse, pki.ct.parseSctList, pki.path.validate).
@@ -1857,6 +1989,7 @@ async function main() {
   await testPolicyMachinerySpec();
   await testQcStatementsSpec();
   await testPrecertificateSpec();
+  await testPolicyQualifiersAndAkiSpec();
   console.log("CHECKS " + helpers.getChecks());
 }
 
