@@ -161,6 +161,33 @@ async function run() {
       /Require Explicit Policy:\s*0/i.test(polT.stdout) && /Inhibit Policy Mapping:\s*3/i.test(polT.stdout));
     check("openssl x509 -text renders Inhibit Any Policy with the encoded skip count",
       /Inhibit Any Policy/i.test(polT.stdout) && /Inhibit Any Policy:\s*[\s\S]{0,40}2/i.test(polT.stdout));
+    // ---- (g) the qualified-certificate statements an eIDAS issuer emits ----
+    // OpenSSL names the qcStatements extension and renders the statement OIDs it carries, so a
+    // statement encoded under the wrong syntax shows up as an unparsed blob rather than a statement.
+    var qcKp = signing.makeSigner("ec-p256");
+    var qcPem = await pki.x509.sign({
+      subject: [{ commonName: "qc.interop.example" }], subjectPublicKey: qcKp.spki, notBefore: NB, notAfter: NA,
+      extensions: {
+        keyUsage: ["digitalSignature"],
+        qcStatements: [
+          { statementId: "qcCompliance" },
+          { statementId: "qcType", info: { types: ["qctEsign"] } },
+          { statementId: "qcRetentionPeriod", info: { years: 10 } },
+          { statementId: "qcPDS", info: { locations: [{ url: "https://pds.interop.example/en.pdf", language: "en" }] } },
+        ],
+      },
+    }, { key: qcKp.key }, { pem: true });
+    var qcFile = path.join(dir, "qc.pem"); fs.writeFileSync(qcFile, qcPem);
+    var qcT = ctx.runOpenssl(["x509", "-in", qcFile, "-noout", "-text"], { allowNonZero: true });
+    check("openssl x509 -text renders the qcStatements extension the toolkit encoded",
+      qcT.code === 0 && /qcStatements|Qualified/i.test(qcT.stdout));
+    // The toolkit's own reader is the precise oracle for the statement values.
+    var qcBack = pki.schema.x509.parse(pki.schema.x509.pemDecode(qcPem, "CERTIFICATE"));
+    var qcExt = qcBack.extensions.filter(function (e) { return (e.name || e.oid) === "qcStatements"; })[0];
+    check("every emitted statement decodes under its own syntax on the way back",
+      !!qcExt && pki.lint.certificate(pki.schema.x509.pemDecode(qcPem, "CERTIFICATE"))
+        .findings.filter(function (f) { return f.severity === "error"; }).length === 0);
+
     check("openssl x509 -text renders Policy Mappings and the Issuer Alternative Name",
       /Policy Mappings/i.test(polT.stdout) && /Issuer Alternative Name/i.test(polT.stdout) &&
       /DNS:issuer\.interop\.example/.test(polT.stdout));

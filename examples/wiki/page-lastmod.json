@@ -1,5 +1,5 @@
 {
-  "README.md": "2026-09-10",
+  "README.md": "2026-09-11",
   "examples/wiki/concepts.js": "2026-09-03",
   "examples/wiki/lib/assets.js": "2026-07-13",
   "examples/wiki/lib/auto-site-entries.js": "2026-07-04",
@@ -38,7 +38,7 @@
   "lib/crl-verify.js": "2026-09-01",
   "lib/crmf-sign.js": "2026-09-10",
   "lib/crmf-verify.js": "2026-09-01",
-  "lib/csr-sign.js": "2026-09-10",
+  "lib/csr-sign.js": "2026-09-11",
   "lib/csr-verify.js": "2026-09-01",
   "lib/ct.js": "2026-09-05",
   "lib/edwards-point.js": "2026-09-05",
@@ -123,6 +123,6 @@
   "lib/webauthn-mds.js": "2026-09-09",
   "lib/webauthn.js": "2026-09-10",
   "lib/webcrypto.js": "2026-09-05",
-  "lib/x509-sign.js": "2026-09-10",
+  "lib/x509-sign.js": "2026-09-11",
   "lib/x509.js": "2026-07-04"
 }
