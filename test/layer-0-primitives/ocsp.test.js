@@ -351,6 +351,15 @@ async function run() {
     anyEkuSwapped.responderAuthorized === false && anyEkuSwapped.status === "unknown");
   var noNocheck = await w.delegate({ nocheck: false });
   check("reject: delegate missing id-pkix-ocsp-nocheck -> unauthorized (RFC 6960 sec. 4.2.2.2.1)", (function (r) { return r.responderAuthorized === false && r.status === "unknown"; })(await verify(w, await signWith(noNocheck))));
+  // RFC 6960 sec. 4.2.2.2.1: "The value of the extension SHALL be NULL." The marker is what lets a
+  // client skip checking the responder's own revocation, so a malformed one is not a marker. The
+  // well-formed delegate above is the control: it authorizes.
+  var badNocheck = await w.delegate({ nocheck: false, extraExts: [b.sequence([b.oid(pki.oid.byName("ocspNoCheck")), b.octetString(b.integer(1))])] });
+  check("reject: delegate whose ocspNoCheck value is not NULL -> unauthorized (RFC 6960 sec. 4.2.2.2.1)",
+    (function (r) { return r.responderAuthorized === false && r.status === "unknown"; })(await verify(w, await signWith(badNocheck))));
+  var emptyNocheck = await w.delegate({ nocheck: false, extraExts: [b.sequence([b.oid(pki.oid.byName("ocspNoCheck")), b.octetString(Buffer.alloc(0))])] });
+  check("reject: delegate whose ocspNoCheck value is empty -> unauthorized",
+    (function (r) { return r.responderAuthorized === false && r.status === "unknown"; })(await verify(w, await signWith(emptyNocheck))));
   var expired = await w.delegate({ notAfter: new Date("2027-03-01Z") });   // valid window ends before T
   check("reject: expired delegate -> unauthorized", (await verify(w, await signWith(expired))).status === "unknown");
   var badKu = await w.delegate({ keyUsage: kuBits([2]) });   // keyEncipherment only, no digitalSignature

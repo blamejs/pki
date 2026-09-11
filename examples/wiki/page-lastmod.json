@@ -76,7 +76,7 @@
   "lib/merkle.js": "2026-09-05",
   "lib/mime.js": "2026-09-05",
   "lib/ocsp-request-verify.js": "2026-09-01",
-  "lib/ocsp-verify.js": "2026-09-05",
+  "lib/ocsp-verify.js": "2026-09-11",
   "lib/ocsp.js": "2026-09-10",
   "lib/oid.js": "2026-09-08",
   "lib/path-validate.js": "2026-09-10",

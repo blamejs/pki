@@ -15,6 +15,10 @@ Subject information access, subject directory attributes and the OCSP no-check m
 - extensions.ocspNoCheck marks an OCSP responder certificate so a client does not ask about its own revocation (RFC 6960 section 4.2.2.2.1). The value is NULL, which that section requires, and the extension is emitted non-critical, which it says it should be.
 - All three join the shared certificate-extension decoders, so pki.path.validate, pki.lint.certificate and pki.inspect read their structure by name instead of treating the value as opaque bytes: pki.inspect prints the access method and location, the attribute and its value, and the no-check marker, where it previously printed a hex dump. That brings the set of certificate extensions the toolkit decodes and the set it can issue to the same twenty-six.
 
+### Fixed
+
+- pki.ocsp.verify authorized a delegated responder whose ocspNoCheck extension carried something other than NULL. The extension is what lets a client stop asking whether the responder itself is revoked, and the delegation gate tested only that it was present, so a responder certificate carrying a malformed marker was accepted and could return a good verdict. The gate now decodes the extension, as it already did for the key usage and extended key usage beside it, and a responder whose marker is not the NULL RFC 6960 section 4.2.2.2.1 requires is unauthorized. A conforming responder certificate is unaffected.
+
 ## v0.7.22 — 2026-09-11
 
 A CRL can name its issuer's other identities.
