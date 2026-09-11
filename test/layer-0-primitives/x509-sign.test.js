@@ -1159,10 +1159,12 @@ async function testPolicyMachinerySpec() {
   ] }), { key: s.key });
   var pm = extOf(pmDer, "policyMappings");
   check("policyMappings is issued from a plain spec", !!pm);
-  // Sec. 4.2.1.5 states a SHOULD for critical, but pki.path.validate does not process policyMappings,
-  // so a critical one is a certificate this toolkit's own validator must reject and pki.lint grades
-  // `unknown-critical-extension`. The default is the usable form; the knob reaches the other, the way
-  // certificatePolicies already works.
+  // Sec. 4.2.1.5 states a SHOULD for critical. The validator PROCESSES policyMappings on an
+  // intermediate certificate (sec. 6.1.4 applies the mappings to the policy tree) and treats a
+  // critical one on the TARGET certificate as unprocessed, rejecting it, which is what pki.lint
+  // grades `unknown-critical-extension`. Since a spec does not say where the certificate will sit in
+  // a chain, the default is the form that validates in either position; the knob reaches the other,
+  // the way certificatePolicies already works.
   check("...and is emitted non-critical by default, which this toolkit can validate", pm && pm.critical !== true);
   var pmCritDer = await pki.x509.sign(ca({ policyMappings: [{ issuerDomainPolicy: "domain-validated", subjectDomainPolicy: "organization-validated" }], policyMappingsCritical: true }), { key: s.key });
   check("policyMappingsCritical reaches the sec. 4.2.1.5 SHOULD form", extOf(pmCritDer, "policyMappings").critical === true);
@@ -1195,6 +1197,11 @@ async function testPolicyMachinerySpec() {
     ianNode.children.length === 2 && ianNode.children[0].tagNumber === 2 && ianNode.children[1].tagNumber === 1);
   check("an empty issuerAltName -> x509/bad-input",
     await codeOf(pki.x509.sign(ca({ issuerAltName: [] }), { key: s.key })) === "x509/bad-input");
+  // A sparse array passes a bare length check and then faults inside the encoder, which would leave
+  // an untyped TypeError where this verb documents a typed CertificateError.
+  var sparseIan = []; sparseIan.length = 2;
+  check("a sparse issuerAltName -> x509/bad-input, not an untyped TypeError",
+    await codeOf(pki.x509.sign(ca({ issuerAltName: sparseIan }), { key: s.key })) === "x509/bad-input");
 
   // All four on one certificate still lint clean and parse back.
   var allDer = await pki.x509.sign(ca({
