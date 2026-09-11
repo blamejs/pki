@@ -301,6 +301,17 @@ async function testRequestedCriticality() {
     await codeOf(req([extOf("authorityInfoAccess", aiaVal, true)])) === "csr/bad-input");
   check("a requested non-critical authorityInfoAccess is accepted",
     Buffer.isBuffer(await req([extOf("authorityInfoAccess", aiaVal, false)])));
+
+  // The object form reaches nameConstraints too, and emits it critical as sec. 4.2.1.10 fixes it.
+  var ncDer = await pki.csr.sign({ subject: "sub.example", subjectPublicKey: s.spki,
+    extensionRequest: { basicConstraints: { cA: true }, nameConstraints: { permitted: [{ dNSName: ".example.com" }] } } },
+    { key: s.key });
+  var reqExts = pki.schema.csr.parse(ncDer).attributes[0].extensions;
+  var ncReq = reqExts.filter(function (e) { return (e.name || e.oid) === "nameConstraints"; })[0];
+  check("a requested nameConstraints is emitted from the object form", !!ncReq);
+  check("...and is marked critical", ncReq && ncReq.critical === true);
+  check("a requested nameConstraints naming neither direction -> csr/bad-input",
+    await codeOf(pki.csr.sign({ subject: "x", subjectPublicKey: s.spki, extensionRequest: { nameConstraints: {} } }, { key: s.key })) === "csr/bad-input");
 }
 
 async function main() {

@@ -4,6 +4,18 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.15 — 2026-09-11
+
+Name constraints can be issued from a plain spec.
+
+### Added
+
+- extensions.nameConstraints takes { permitted, excluded }, with at least one side present, on pki.x509.sign and on the pki.csr.sign extensionRequest object. Each entry names one GeneralName form: { dNSName: ".example.com" }, { rfc822Name: "example.com" }, { uniformResourceIdentifier: ".example.com" }, { directoryName: [{ commonName: "Sub" }] }, or { iPAddress: buf } where buf is an address followed by its mask, 8 octets for IPv4 and 32 for IPv6. A base names a namespace rather than a subject, so it may carry a leading dot and is held to the rule for a constraint base, the same rule pki.trust.anchor applies to the subtrees it seeds. A bare string is refused, because the name form decides which namespace is constrained. The extension is emitted critical, which RFC 5280 section 4.2.1.10 requires. A subtree naming neither direction, an empty list, or a base that describes no namespace is refused with x509/bad-input or csr/bad-input. The constraint a certificate carries is enforced by OpenSSL as well as by pki.path.validate, checked in the release gates.
+
+### Fixed
+
+- pki.x509.sign refuses a nameConstraints extension on a certificate that is not a CA. RFC 5280 section 4.2.1.10 states the extension is used only in a CA certificate, and pki.lint.certificate already graded such a certificate error as lint/rfc5280/name-constraints-not-ca; the signer emitted it anyway when the extension arrived as pre-encoded DER in the extensions array. A name constraint on an end-entity certificate restricts nothing, so a caller reading it as a restriction was reading one that no validator would apply. Supply it on a certificate whose basicConstraints sets cA true.
+
 ## v0.7.14 — 2026-09-11
 
 Every option a verify verb decides with is taken once.

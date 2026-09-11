@@ -75,6 +75,40 @@ async function run() {
     var badFile = path.join(dir, "bad-leaf.pem"); fs.writeFileSync(badFile, pki.schema.x509.pemEncode(badLeaf, "CERTIFICATE"));
     var vb = ctx.runOpenssl(["verify", "-CAfile", caFile, badFile], { allowNonZero: true });
     check("openssl verify REJECTS a toolkit leaf with a flipped signature byte", vb.code !== 0);
+
+    // ---- (d) nameConstraints the toolkit emits are ENFORCED by the independent implementation ----
+    // A constraint that only parses is not a constraint. OpenSSL applies RFC 5280 sec. 4.2.1.10 in
+    // `verify`, so a leaf inside the permitted subtree passes and one outside it is refused by the
+    // same CA file: the difference between the two is the extension the toolkit encoded.
+    var ncCa = signing.makeSigner("ec-p256");
+    var ncCaPem = await pki.x509.sign({
+      subject: [{ commonName: "Interop Constrained CA" }], subjectPublicKey: ncCa.spki, notBefore: NB, notAfter: NA,
+      extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "cRLSign"],
+        nameConstraints: { permitted: [{ dNSName: ".example.com" }] } },
+    }, { key: ncCa.key }, { pem: true });
+    var ncCaCert = pki.schema.x509.parse(pki.schema.x509.pemDecode(ncCaPem, "CERTIFICATE"));
+    var ncCaFile = path.join(dir, "nc-ca.pem"); fs.writeFileSync(ncCaFile, ncCaPem);
+    var ncT = ctx.runOpenssl(["x509", "-in", ncCaFile, "-noout", "-text"], { allowNonZero: true });
+    check("openssl x509 -text renders the toolkit-encoded X509v3 Name Constraints",
+      ncT.code === 0 && /Name Constraints/i.test(ncT.stdout) && /\.example\.com/.test(ncT.stdout));
+
+    async function ncLeaf(dns, file) {
+      var lk = signing.makeSigner("ed25519");
+      var pemLeaf = await pki.x509.sign({
+        subject: [{ commonName: dns }], subjectPublicKey: lk.spki, notBefore: NB, notAfter: NA,
+        extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ dNSName: dns }] },
+      }, { cert: ncCaCert, key: ncCa.key }, { pem: true });
+      var p = path.join(dir, file); fs.writeFileSync(p, pemLeaf);
+      return p;
+    }
+    var inFile = await ncLeaf("host.example.com", "nc-in.pem");
+    var outFile = await ncLeaf("host.other.example", "nc-out.pem");
+    var vIn = ctx.runOpenssl(["verify", "-CAfile", ncCaFile, inFile], { allowNonZero: true });
+    check("openssl verify accepts a leaf inside the toolkit-emitted permitted subtree",
+      vIn.code === 0 && /:\s*OK\s*$/.test(vIn.stdout.trim()));
+    var vOut = ctx.runOpenssl(["verify", "-CAfile", ncCaFile, outFile], { allowNonZero: true });
+    check("openssl verify REJECTS a leaf outside it, so the constraint is enforced and not merely encoded",
+      vOut.code !== 0);
   } finally {
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
   }
