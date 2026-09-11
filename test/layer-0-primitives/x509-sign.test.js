@@ -1063,6 +1063,46 @@ async function testDottedOidPurposes() {
   check("#119 an unknown certificate policy name still fails closed", await codeOf(pki.x509.sign(base({ certificatePolicies: ["notAPolicy"] }), { key: s.key })) === "x509/bad-input");
 }
 
+// pki.x509.randomSerial() hands a caller the same draw the builder makes when spec.serialNumber is
+// omitted, so an issuer that must log or store a serial BEFORE issuance does not re-implement it.
+// The draw is the RFC 5280 sec. 4.1.2.2 profile: positive, at most 20 octets.
+async function testRandomSerial() {
+  check("pki.x509.randomSerial is a function", typeof pki.x509.randomSerial === "function");
+  var s = pki.x509.randomSerial();
+  check("it returns a BigInt", typeof s === "bigint");
+  check("the serial is positive (sec. 4.1.2.2)", s > 0n);
+  check("the serial fits 20 octets",
+    asn1.decode(asn1.build.integer(s)).content.length <= 20);
+  // 20 CSPRNG octets: two draws colliding would mean the entropy is not there.
+  var seen = Object.create(null), draws = 200, dup = 0;
+  for (var i = 0; i < draws; i++) {
+    var k = pki.x509.randomSerial().toString(16);
+    if (seen[k]) dup++;
+    seen[k] = 1;
+  }
+  check("200 draws are distinct", dup === 0);
+  // The top byte is drawn, not clamped: no value may be twice as likely as the others, which is
+  // what setting a zero top byte to a fixed 0x01 would produce.
+  var top = Object.create(null), n = 40000;
+  for (var j = 0; j < n; j++) {
+    var b0 = Number(pki.x509.randomSerial() >> 152n) & 0xff;
+    top[b0] = (top[b0] || 0) + 1;
+  }
+  var counts = Object.keys(top).map(function (k) { return top[k]; });
+  var max = Math.max.apply(null, counts), min = Math.min.apply(null, counts);
+  check("no top-byte value is twice as likely as another", max < 2 * min);
+  check("the top byte never leaves the positive range", Object.keys(top).every(function (k) {
+    return Number(k) >= 1 && Number(k) <= 0x7f;
+  }));
+  // The value a caller logs is the value that gets signed.
+  var signer = await makeSigner("ed25519");
+  var chosen = pki.x509.randomSerial();
+  var der = await pki.x509.sign({ subject: "serial.example", subjectPublicKey: signer.spki, notBefore: NB, notAfter: NA, serialNumber: chosen },
+    { key: signer.key });
+  check("a certificate signed with the drawn serial carries exactly it",
+    pki.schema.x509.parse(der).serialNumber === chosen);
+}
+
 async function main() {
   await testRoundTrip();
   await testPemOutput();
@@ -1086,6 +1126,7 @@ async function main() {
   await testKeyMatchAndTimeAndSan();
   await testFailClosed();
   await testOpensslInterop();
+  await testRandomSerial();
   console.log("CHECKS " + helpers.getChecks());
 }
 

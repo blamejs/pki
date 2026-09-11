@@ -123,6 +123,6 @@
   "lib/webauthn-mds.js": "2026-09-09",
   "lib/webauthn.js": "2026-09-05",
   "lib/webcrypto.js": "2026-09-05",
-  "lib/x509-sign.js": "2026-09-05",
+  "lib/x509-sign.js": "2026-09-10",
   "lib/x509.js": "2026-07-04"
 }

@@ -1,0 +1,14 @@
+{
+  "version": "0.7.12",
+  "date": "2026-09-10",
+  "headline": "An issuer can draw a certificate serial number before signing with it.",
+  "summary": "pki.x509.sign draws a 20-octet random serial when the spec names none, but a caller who has to record a serial before the certificate exists had no way to obtain that value without signing first and reading it back, or re-implementing the draw. pki.x509.randomSerial() returns it.",
+  "sections": {
+    "Added": [
+      "pki.x509.randomSerial() returns a BigInt drawn from 20 octets of the platform CSPRNG, the same draw pki.x509.sign makes when spec.serialNumber is omitted. The value meets the RFC 5280 section 4.1.2.2 profile the signer enforces: positive, and at most 20 octets. Pass it back as spec.serialNumber and the certificate carries exactly that number, so a serial can be reserved or logged before issuance."
+    ],
+    "Changed": [
+      "The serial draw redraws when the leading octet comes out zero, instead of replacing it with 1. Every value the leading octet can take is now equally likely; previously 1 occurred about twice as often as any other value, because it absorbed the zero case. Serials already issued are unaffected, and the draw carries the same 20 octets it always did."
+    ]
+  }
+}

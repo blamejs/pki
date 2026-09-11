@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.7.11",
+  "packageVersion": "0.7.12",
   "surface": {
     "C": {
       "kind": "object",
@@ -3540,6 +3540,10 @@
     "x509": {
       "kind": "object",
       "members": {
+        "randomSerial": {
+          "kind": "function",
+          "arity": 0
+        },
         "sign": {
           "kind": "function",
           "arity": 3
@@ -3800,6 +3804,7 @@
     "pki.webcrypto.CryptoKey": "0.1.0",
     "pki.webcrypto.subtle": "0.1.0",
     "pki.webcrypto": "0.1.0",
-    "pki.x509.sign": "0.3.0"
+    "pki.x509.sign": "0.3.0",
+    "pki.x509.randomSerial": "0.7.12"
   }
 }
