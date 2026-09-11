@@ -1181,6 +1181,17 @@ async function testPolicyMachinerySpec() {
     await codeOf(pki.x509.sign(ca({ policyMappings: [{ issuerDomainPolicy: "anyPolicy", subjectDomainPolicy: "domain-validated" }] }), { key: s.key })) === "x509/bad-input");
   check("mapping TO anyPolicy -> x509/bad-input",
     await codeOf(pki.x509.sign(ca({ policyMappings: [{ issuerDomainPolicy: "domain-validated", subjectDomainPolicy: "anyPolicy" }] }), { key: s.key })) === "x509/bad-input");
+  // A non-string identifier reaches the OID registry before it is typed, so the registry's own
+  // oid/bad-input would surface where this verb documents x509/bad-input. #119 already fixed the
+  // lexically-dotted case; this is the same contract for every producer spec that names an OID.
+  check("a non-string issuerDomainPolicy -> x509/bad-input, not an OID-registry error",
+    await codeOf(pki.x509.sign(ca({ policyMappings: [{ issuerDomainPolicy: 42, subjectDomainPolicy: "domain-validated" }] }), { key: s.key })) === "x509/bad-input");
+  check("a non-string subjectDomainPolicy -> x509/bad-input",
+    await codeOf(pki.x509.sign(ca({ policyMappings: [{ issuerDomainPolicy: "domain-validated", subjectDomainPolicy: 42 }] }), { key: s.key })) === "x509/bad-input");
+  check("a non-string certificatePolicies entry -> x509/bad-input",
+    await codeOf(pki.x509.sign(ca({ certificatePolicies: [42] }), { key: s.key })) === "x509/bad-input");
+  check("a non-string extendedKeyUsage purpose -> x509/bad-input",
+    await codeOf(pki.x509.sign(ca({ extendedKeyUsage: [42] }), { key: s.key })) === "x509/bad-input");
   check("an empty policyMappings -> x509/bad-input",
     await codeOf(pki.x509.sign(ca({ policyMappings: [] }), { key: s.key })) === "x509/bad-input");
   check("a mapping missing one side -> x509/bad-input",

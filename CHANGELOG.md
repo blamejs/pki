@@ -15,6 +15,10 @@ The certificate-policy machinery can be issued from a plain spec.
 - extensions.issuerAltName takes the GeneralName forms subjectAltName takes, including a bare string classified into its form, and is emitted non-critical (RFC 5280 section 4.2.1.7).
 - All four are accepted on the pki.csr.sign extensionRequest object as well, so a request and an issued certificate are written the same way. OpenSSL reads each of them back in the release gates, including both policy-constraint skip counts.
 
+### Fixed
+
+- A spec that names an object identifier with a non-string value now raises the signer's own x509/bad-input or csr/bad-input rather than the OID registry's oid/bad-input. This reached certificatePolicies and extendedKeyUsage as well as the new policy mappings, so a caller branching on the documented signer code missed a malformed policy or key-purpose entry. A registered name and a dotted-decimal OID are unaffected, and the already-correct treatment of a lexically-dotted but out-of-range OID is unchanged.
+
 ## v0.7.16 — 2026-09-11
 
 Where to fetch the issuer and the CRL can be named in a plain spec.
