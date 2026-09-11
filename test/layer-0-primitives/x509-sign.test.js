@@ -1103,6 +1103,127 @@ async function testRandomSerial() {
     pki.schema.x509.parse(der).serialNumber === chosen);
 }
 
+// ---- nameConstraints from a plain spec (RFC 5280 sec. 4.2.1.10) -------------
+
+// The extension that restricts what a sub-CA may issue. Reaching it meant hand-encoding
+// GeneralSubtrees, where [0] and [1] are IMPLICIT and replace the SEQUENCE tag, and marking the
+// result critical. A base names a namespace, so each form is held to the rule for a constraint base
+// rather than the rule for a subject name: a base may carry a leading dot, and an iPAddress base is
+// an address followed by its mask.
+async function testNameConstraintsSpec() {
+  var s = makeSigner("ed25519");
+  function ca(nc) {
+    return { subject: "ca.example", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA,
+      extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], nameConstraints: nc } };
+  }
+  function ncOf(der) {
+    return pki.schema.x509.parse(der).extensions.filter(function (e) { return (e.name || e.oid) === "nameConstraints"; })[0];
+  }
+
+  var der = await pki.x509.sign(ca({ permitted: [{ dNSName: ".example.com" }] }), { key: s.key });
+  var ext = ncOf(der);
+  check("nameConstraints spec emits the extension", !!ext);
+  check("nameConstraints is emitted critical (RFC 5280 sec. 4.2.1.10)", ext.critical === true);
+  check("the emitted certificate carries no error-severity lint finding",
+    pki.lint.certificate(der).findings.filter(function (f) { return f.severity === "error"; }).length === 0);
+  // permittedSubtrees is [0] IMPLICIT, holding GeneralSubtree members directly.
+  var ncNode = asn1.decode(ext.value);
+  check("permittedSubtrees rides the IMPLICIT [0] tag, not a nested SEQUENCE",
+    ncNode.children[0].tagClass === "context" && ncNode.children[0].tagNumber === 0 &&
+    ncNode.children[0].children[0].tagNumber === asn1.TAGS.SEQUENCE);
+  // dNSName is IMPLICIT [2], so the IA5String content rides the context tag and a universal-string
+  // reader refuses it; the bytes are the base.
+  check("the base keeps its leading dot",
+    ncNode.children[0].children[0].children[0].content.toString("ascii") === ".example.com");
+
+  var bothDer = await pki.x509.sign(ca({ permitted: [{ dNSName: ".a.example" }], excluded: [{ dNSName: ".b.example" }] }), { key: s.key });
+  var bothNode = asn1.decode(ncOf(bothDer).value);
+  check("permitted and excluded ride [0] and [1] in order",
+    bothNode.children.length === 2 && bothNode.children[0].tagNumber === 0 && bothNode.children[1].tagNumber === 1);
+
+  // Every name form a constraint base can take.
+  check("an rfc822Name base is accepted",
+    !!ncOf(await pki.x509.sign(ca({ permitted: [{ rfc822Name: "example.com" }] }), { key: s.key })));
+  check("a uniformResourceIdentifier base is accepted",
+    !!ncOf(await pki.x509.sign(ca({ permitted: [{ uniformResourceIdentifier: ".example.com" }] }), { key: s.key })));
+  check("a directoryName base is accepted",
+    !!ncOf(await pki.x509.sign(ca({ permitted: [{ directoryName: [{ commonName: "Sub" }] }] }), { key: s.key })));
+  // A constraint iPAddress is the address followed by its mask: 8 octets for IPv4, 32 for IPv6.
+  check("an 8-octet iPAddress base (address and mask) is accepted",
+    !!ncOf(await pki.x509.sign(ca({ permitted: [{ iPAddress: Buffer.concat([Buffer.from([10, 0, 0, 0]), Buffer.from([255, 0, 0, 0])]) }] }), { key: s.key })));
+  check("a 4-octet iPAddress (a subject-name length, not a constraint) -> x509/bad-input",
+    await codeOf(pki.x509.sign(ca({ permitted: [{ iPAddress: Buffer.from([10, 0, 0, 1]) }] }), { key: s.key })) === "x509/bad-input");
+
+  // Refusals: a constraint that restricts nothing, and a base that names no namespace.
+  check("nameConstraints naming neither direction -> x509/bad-input",
+    await codeOf(pki.x509.sign(ca({}), { key: s.key })) === "x509/bad-input");
+  check("an empty permitted list -> x509/bad-input",
+    await codeOf(pki.x509.sign(ca({ permitted: [] }), { key: s.key })) === "x509/bad-input");
+  check("a base that is not a host name -> x509/bad-input",
+    await codeOf(pki.x509.sign(ca({ permitted: [{ dNSName: "-bad.example" }] }), { key: s.key })) === "x509/bad-input");
+  check("a bare string base is refused, since the name form decides what is constrained",
+    await codeOf(pki.x509.sign(ca({ permitted: ["example.com"] }), { key: s.key })) === "x509/bad-input");
+
+  // nameConstraints appears only in a CA certificate (RFC 5280 sec. 4.2.1.10). The rule is the
+  // certificate's, not the spec form's, so the pre-encoded array answers for it too.
+  check("nameConstraints on a non-CA certificate -> x509/bad-input",
+    await codeOf(pki.x509.sign({ subject: "leaf.example", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA,
+      extensions: { nameConstraints: { permitted: [{ dNSName: ".example.com" }] } } }, { key: s.key })) === "x509/bad-input");
+  var Bp = pki.asn1.build, oidP = pki.oid.byName;
+  var ncPre = Bp.sequence([Bp.oid(oidP("nameConstraints")), Bp.boolean(true), Bp.octetString(
+    Bp.sequence([Bp.contextConstructed(0, Bp.sequence([Bp.contextPrimitive(2, Buffer.from(".example.com", "ascii"))]))]))]);
+  var bcPre = Bp.sequence([Bp.oid(oidP("basicConstraints")), Bp.boolean(true), Bp.octetString(Bp.sequence([Bp.boolean(true)]))]);
+  check("a pre-encoded nameConstraints on a non-CA certificate -> x509/bad-input",
+    await codeOf(pki.x509.sign({ subject: "leaf.example", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA,
+      extensions: [ncPre] }, { key: s.key })) === "x509/bad-input");
+  check("a pre-encoded nameConstraints on a CA certificate is accepted",
+    Buffer.isBuffer(await pki.x509.sign({ subject: "ca.example", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA,
+      extensions: [bcPre, ncPre] }, { key: s.key })));
+
+  // The bytes are ENFORCEABLE, not merely parseable: a leaf outside the permitted subtree is
+  // rejected by the validator that reads them.
+  var root = makeSigner("ec-p256");
+  var rootDer = await pki.x509.sign({ subject: "Root", subjectPublicKey: root.spki, notBefore: NB, notAfter: NA,
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] } }, { key: root.key });
+  var caKey = makeSigner("ec-p256");
+  var caDer = await pki.x509.sign({ subject: "Constrained CA", subjectPublicKey: caKey.spki, notBefore: NB, notAfter: NA,
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], nameConstraints: { permitted: [{ dNSName: ".example.com" }] } } },
+    { cert: rootDer, key: root.key });
+  async function leafFor(dns) {
+    var lk = makeSigner("ec-p256");
+    return pki.x509.sign({ subject: [{ commonName: dns }], subjectPublicKey: lk.spki, notBefore: NB, notAfter: NA,
+      extensions: { subjectAltName: [{ dNSName: dns }] } },
+      { cert: caDer, key: caKey.key });
+  }
+  var anchor = anchorFor(pki.schema.x509.parse(rootDer));
+  var caCert = pki.schema.x509.parse(caDer);
+  // The chain runs anchor-first, the order RFC 5280 sec. 6.1 numbers certificates in.
+  async function chainFor(dns) { return [caCert, pki.schema.x509.parse(await leafFor(dns))]; }
+  var inside = await pki.path.validate(await chainFor("host.example.com"), { trustAnchors: anchor, time: IN_WINDOW });
+  check("a leaf inside the emitted permitted subtree validates", inside.valid === true);
+  var outside = await pki.path.validate(await chainFor("host.other.example"), { trustAnchors: anchor, time: IN_WINDOW });
+  check("a leaf outside it is rejected by the constraint the builder emitted", outside.valid === false);
+
+  // A second, structurally different base form: a mailbox namespace rather than a host one. A base
+  // the builder accepts but the comparison cannot read would be a constraint that does not
+  // constrain, so each form is driven through the validator rather than only through the encoder.
+  var mailCaKey = makeSigner("ec-p256");
+  var mailCa = pki.schema.x509.parse(await pki.x509.sign({ subject: "Mail CA", subjectPublicKey: mailCaKey.spki,
+    notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"],
+      nameConstraints: { permitted: [{ rfc822Name: "example.com" }] } } }, { cert: rootDer, key: root.key }));
+  async function mailChain(addr) {
+    var lk = makeSigner("ec-p256");
+    var leaf = await pki.x509.sign({ subject: [{ commonName: "mail leaf" }], subjectPublicKey: lk.spki,
+      notBefore: NB, notAfter: NA, extensions: { subjectAltName: [{ rfc822Name: addr }] } },
+      { cert: mailCa, key: mailCaKey.key });
+    return [mailCa, pki.schema.x509.parse(leaf)];
+  }
+  var mailIn = await pki.path.validate(await mailChain("user@example.com"), { trustAnchors: anchor, time: IN_WINDOW });
+  check("an rfc822Name base the builder emitted admits a mailbox inside it", mailIn.valid === true);
+  var mailOut = await pki.path.validate(await mailChain("user@other.example"), { trustAnchors: anchor, time: IN_WINDOW });
+  check("...and rejects one outside it, so the base is enforced rather than unreadable", mailOut.valid === false);
+}
+
 // ---- RFC 5280 sec. 4.2 fixed extension criticality --------------------------
 
 // Nine extensions leave the issuer no choice about criticality. A pre-encoded Extension carries
@@ -1184,6 +1305,7 @@ async function main() {
   await testOpensslInterop();
   await testRandomSerial();
   await testFixedCriticality();
+  await testNameConstraintsSpec();
   console.log("CHECKS " + helpers.getChecks());
 }
 

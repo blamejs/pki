@@ -580,6 +580,10 @@ async function run() {
     var sk = signing.makeSigner("ec-p256");
     return Buffer.from(await pki.x509.sign({ subject: [{ commonName: "ext-test" }], subjectPublicKey: sk.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"), extensions: extsArray }, { key: sk.key }));
   }
+  // nameConstraints appears only in a CA certificate (RFC 5280 sec. 4.2.1.10), so a fixture carrying
+  // one is a CA. The added basicConstraints rides its own extID and leaves the extID under test alone.
+  function caBc() { return b.sequence([b.oid(O("basicConstraints")), b.boolean(true), b.octetString(b.sequence([b.boolean(true)]))]); }
+  async function caCertWithExts(extsArray) { return certWithExts([caBc()].concat(extsArray)); }
   // Mint a certificate carrying an extension value THIS toolkit's x509 builder refuses to emit, which
   // is how such a certificate reaches us in the first place: from another implementation. The value is
   // signed under an unallocated OID so the builder passes it through opaquely, then the OID content
@@ -884,7 +888,7 @@ async function run() {
   check("149. an AKI issuer + serial (no keyId) is not a compact shape -> ~oid fallback + double-inverts", extPair(akiNoKidEnc, 7) == null && extOidIds(akiNoKidEnc).indexOf("551d23") >= 0 && pki.schema.c509.parse(akiNoKidEnc).reconstructedDer.equals(akiNoKid));
 
   // 8. nameConstraints (extID 26): permitted dNSName + excluded directoryName.
-  var ncNames = await certWithExts([b.sequence([b.oid(O("nameConstraints")), b.boolean(true), b.octetString(b.sequence([
+  var ncNames = await caCertWithExts([b.sequence([b.oid(O("nameConstraints")), b.boolean(true), b.octetString(b.sequence([
     b.contextConstructed(0, b.sequence([b.contextPrimitive(2, Buffer.from(".ex.com", "latin1"))])),
     b.contextConstructed(1, b.sequence([b.explicit(4, dirName("CA"))])),
   ]))])]);
@@ -892,15 +896,15 @@ async function run() {
   check("150. nameConstraints names -> [permitted, excluded] under extID 26 + double-inverts", (function () { var p = extPair(ncNamesEnc, 26); if (p == null) return false; var a = CB.decode(p.val.bytes).children; return a.length === 2 && Number(CB.read.int(a[0].children[0])) === 2 && Number(CB.read.int(a[1].children[0])) === 4 && pki.schema.c509.parse(ncNamesEnc).reconstructedDer.equals(ncNames); })());
 
   // 9. nameConstraints RFC 9549 iPAddress prefix form: v4 /24 (5-octet CBOR <-> 8-octet DER), v6 /64, non-prefix mask fallback.
-  var ncIp4 = await certWithExts([b.sequence([b.oid(O("nameConstraints")), b.boolean(true), b.octetString(b.sequence([b.contextConstructed(0, b.sequence([b.contextPrimitive(7, Buffer.from([192, 0, 2, 0, 255, 255, 255, 0]))]))]))])]);
+  var ncIp4 = await caCertWithExts([b.sequence([b.oid(O("nameConstraints")), b.boolean(true), b.octetString(b.sequence([b.contextConstructed(0, b.sequence([b.contextPrimitive(7, Buffer.from([192, 0, 2, 0, 255, 255, 255, 0]))]))]))])]);
   var ncIp4Enc = pki.schema.c509.encode(ncIp4, { issuerCurve: "P-256" });
   check("151. an NC iPAddress 192.0.2.0/24 encodes the subtree base as C0 00 02 00 18 + double-inverts", (function () { var perm = CB.decode(extPair(ncIp4Enc, 26).val.bytes).children[0].children; return perm[1].content.equals(Buffer.from("c000020018", "hex")) && pki.schema.c509.parse(ncIp4Enc).reconstructedDer.equals(ncIp4); })());
   var v6mask = Buffer.concat([Buffer.alloc(16), Buffer.from([0])]); for (var v6i = 0; v6i < 16; v6i++) v6mask[v6i] = 0x20;   // an IPv6 addr (0x20..) with a /64 mask
   var ncIp6base = Buffer.concat([Buffer.alloc(16), Buffer.alloc(16)]); for (var q = 0; q < 16; q++) ncIp6base[q] = 0x20; for (var q2 = 16; q2 < 24; q2++) ncIp6base[q2] = 0xff;
-  var ncIp6 = await certWithExts([b.sequence([b.oid(O("nameConstraints")), b.boolean(true), b.octetString(b.sequence([b.contextConstructed(0, b.sequence([b.contextPrimitive(7, ncIp6base)]))]))])]);
+  var ncIp6 = await caCertWithExts([b.sequence([b.oid(O("nameConstraints")), b.boolean(true), b.octetString(b.sequence([b.contextConstructed(0, b.sequence([b.contextPrimitive(7, ncIp6base)]))]))])]);
   var ncIp6Enc = pki.schema.c509.encode(ncIp6, { issuerCurve: "P-256" });
   check("152. an NC IPv6 /64 subtree base is 17 CBOR octets (last = 64) + double-inverts", (function () { var perm = CB.decode(extPair(ncIp6Enc, 26).val.bytes).children[0].children; return perm[1].content.length === 17 && perm[1].content[16] === 64 && pki.schema.c509.parse(ncIp6Enc).reconstructedDer.equals(ncIp6); })());
-  var ncBadMask = await certWithExts([b.sequence([b.oid(O("nameConstraints")), b.boolean(true), b.octetString(b.sequence([b.contextConstructed(0, b.sequence([b.contextPrimitive(7, Buffer.from([192, 0, 2, 0, 255, 0, 255, 0]))]))]))])]);
+  var ncBadMask = await caCertWithExts([b.sequence([b.oid(O("nameConstraints")), b.boolean(true), b.octetString(b.sequence([b.contextConstructed(0, b.sequence([b.contextPrimitive(7, Buffer.from([192, 0, 2, 0, 255, 0, 255, 0]))]))]))])]);
   var ncBadMaskEnc = pki.schema.c509.encode(ncBadMask, { issuerCurve: "P-256" });
   check("153. an NC iPAddress with a non-prefix mask (FF 00 FF 00) falls back to ~oid + double-inverts", extPair(ncBadMaskEnc, 26) == null && extOidIds(ncBadMaskEnc).indexOf("551d1e") >= 0 && pki.schema.c509.parse(ncBadMaskEnc).reconstructedDer.equals(ncBadMask));
 
@@ -941,7 +945,7 @@ async function run() {
   check("161. freshestCRL rides the same codec under extID 29 + double-inverts", extPair(freshCrlEnc, 29) != null && pki.schema.c509.parse(freshCrlEnc).reconstructedDer.equals(freshCrl));
 
   // 13. criticality: a critical general-name-bearing ext carries the NEGATIVE int extID and reconstructs critical.
-  var sanCrit = await certWithExts([b.sequence([b.oid(O("nameConstraints")), b.boolean(true), b.octetString(b.sequence([b.contextConstructed(0, b.sequence([b.contextPrimitive(2, Buffer.from(".c.io", "latin1"))]))]))])]);
+  var sanCrit = await caCertWithExts([b.sequence([b.oid(O("nameConstraints")), b.boolean(true), b.octetString(b.sequence([b.contextConstructed(0, b.sequence([b.contextPrimitive(2, Buffer.from(".c.io", "latin1"))]))]))])]);
   var sanCritEnc = pki.schema.c509.encode(sanCrit, { issuerCurve: "P-256" });
   check("162. a critical nameConstraints carries the negative extID -26 + reconstructs critical", Number(CB.read.int(extPair(sanCritEnc, 26).id)) === -26 && pki.schema.x509.parse(pki.schema.c509.parse(sanCritEnc).reconstructedDer).extensions.filter(function (e) { return e.name === "nameConstraints"; })[0].critical === true);
 
@@ -951,7 +955,7 @@ async function run() {
   check("164. a nameConstraints value that is not a 2-element array -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "82181a80" })); }) === "c509/bad-extensions");
 
   // 15. the aggregate byte-exact oracle: one cert bearing SAN + IAN + AKI-3tuple + nameConstraints + AIA + CRLDP double-inverts.
-  var aggregate = await certWithExts([
+  var aggregate = await caCertWithExts([
     sanExt([b.contextPrimitive(2, Buffer.from("a.ex", "latin1")), b.contextPrimitive(6, Buffer.from("https://b.ex", "latin1"))]),
     b.sequence([b.oid(O("issuerAltName")), b.octetString(b.sequence([b.contextPrimitive(1, Buffer.from("i@ex.com", "latin1"))]))]),
     b.sequence([b.oid(O("authorityKeyIdentifier")), b.octetString(b.sequence([b.contextPrimitive(0, KID), b.contextConstructed(1, b.explicit(4, dirName("CA"))), b.contextPrimitive(2, Buffer.from([0x2a]))]))]),
