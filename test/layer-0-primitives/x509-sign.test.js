@@ -1103,6 +1103,128 @@ async function testRandomSerial() {
     pki.schema.x509.parse(der).serialNumber === chosen);
 }
 
+// ---- the certificate-policy machinery, from a plain spec --------------------
+
+// policyConstraints (RFC 5280 sec. 4.2.1.11), inhibitAnyPolicy (sec. 4.2.1.14) and policyMappings
+// (sec. 4.2.1.5) are what sec. 6.1 path validation acts on, and issuerAltName (sec. 4.2.1.7) is the
+// GeneralNames sibling of subjectAltName. All four were reachable only as hand-encoded DER.
+async function testPolicyMachinerySpec() {
+  var s = makeSigner("ed25519");
+  function ca(exts) {
+    var base = { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] };
+    Object.keys(exts).forEach(function (k) { base[k] = exts[k]; });
+    return { subject: "ca.example", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: base };
+  }
+  function extOf(der, name) {
+    return pki.schema.x509.parse(der).extensions.filter(function (e) { return (e.name || e.oid) === name; })[0];
+  }
+  function noLintErrors(der) {
+    return pki.lint.certificate(der).findings.filter(function (f) { return f.severity === "error"; }).length === 0;
+  }
+
+  // ---- policyConstraints: [0] requireExplicitPolicy, [1] inhibitPolicyMapping, both IMPLICIT ----
+  var pcDer = await pki.x509.sign(ca({ policyConstraints: { requireExplicitPolicy: 0, inhibitPolicyMapping: 1 } }), { key: s.key });
+  var pc = extOf(pcDer, "policyConstraints");
+  check("policyConstraints is issued from a plain spec", !!pc);
+  check("...and is emitted critical (RFC 5280 sec. 4.2.1.11)", pc && pc.critical === true);
+  var pcNode = asn1.decode(pc.value);
+  check("its two fields ride IMPLICIT [0] then [1] in order",
+    pcNode.children.length === 2 && pcNode.children[0].tagNumber === 0 && pcNode.children[1].tagNumber === 1);
+  check("the skip counts survive", asn1.read.integerImplicit(pcNode.children[0], 0) === 0n &&
+    asn1.read.integerImplicit(pcNode.children[1], 1) === 1n);
+  check("policyConstraints carrying one field is accepted",
+    !!extOf(await pki.x509.sign(ca({ policyConstraints: { requireExplicitPolicy: 2 } }), { key: s.key }), "policyConstraints"));
+  check("the emitted certificate carries no error-severity lint finding", noLintErrors(pcDer));
+  // "Conforming CAs MUST NOT issue certificates where policy constraints is an empty sequence."
+  check("policyConstraints naming neither field -> x509/bad-input",
+    await codeOf(pki.x509.sign(ca({ policyConstraints: {} }), { key: s.key })) === "x509/bad-input");
+  check("a negative skip count -> x509/bad-input",
+    await codeOf(pki.x509.sign(ca({ policyConstraints: { requireExplicitPolicy: -1 } }), { key: s.key })) === "x509/bad-input");
+  check("a non-integer skip count -> x509/bad-input",
+    await codeOf(pki.x509.sign(ca({ policyConstraints: { requireExplicitPolicy: "soon" } }), { key: s.key })) === "x509/bad-input");
+
+  // ---- inhibitAnyPolicy: a bare INTEGER skipCerts ----
+  var iaDer = await pki.x509.sign(ca({ inhibitAnyPolicy: 0 }), { key: s.key });
+  var ia = extOf(iaDer, "inhibitAnyPolicy");
+  check("inhibitAnyPolicy takes a bare skip count", !!ia);
+  check("...and is emitted critical (RFC 5280 sec. 4.2.1.14)", ia && ia.critical === true);
+  check("the skip count survives as an INTEGER", asn1.read.integer(asn1.decode(ia.value)) === 0n);
+  check("inhibitAnyPolicy carries no error-severity lint finding", noLintErrors(iaDer));
+  check("a negative inhibitAnyPolicy -> x509/bad-input",
+    await codeOf(pki.x509.sign(ca({ inhibitAnyPolicy: -1 }), { key: s.key })) === "x509/bad-input");
+
+  // ---- policyMappings: SEQUENCE OF { issuerDomainPolicy, subjectDomainPolicy } ----
+  var pmDer = await pki.x509.sign(ca({ policyMappings: [
+    { issuerDomainPolicy: "domain-validated", subjectDomainPolicy: "organization-validated" },
+  ] }), { key: s.key });
+  var pm = extOf(pmDer, "policyMappings");
+  check("policyMappings is issued from a plain spec", !!pm);
+  // Sec. 4.2.1.5 states a SHOULD for critical. The validator PROCESSES policyMappings on an
+  // intermediate certificate (sec. 6.1.4 applies the mappings to the policy tree) and treats a
+  // critical one on the TARGET certificate as unprocessed, rejecting it, which is what pki.lint
+  // grades `unknown-critical-extension`. Since a spec does not say where the certificate will sit in
+  // a chain, the default is the form that validates in either position; the knob reaches the other,
+  // the way certificatePolicies already works.
+  check("...and is emitted non-critical by default, which this toolkit can validate", pm && pm.critical !== true);
+  var pmCritDer = await pki.x509.sign(ca({ policyMappings: [{ issuerDomainPolicy: "domain-validated", subjectDomainPolicy: "organization-validated" }], policyMappingsCritical: true }), { key: s.key });
+  check("policyMappingsCritical reaches the sec. 4.2.1.5 SHOULD form", extOf(pmCritDer, "policyMappings").critical === true);
+  check("...and the linter names that form unknown-critical, which is why it is not the default",
+    pki.lint.certificate(pmCritDer).findings.some(function (f) { return f.id === "lint/rfc5280/unknown-critical-extension"; }));
+  var pmPair = asn1.decode(pm.value).children[0];
+  check("a mapping is a SEQUENCE of two OIDs",
+    pmPair.children.length === 2 && asn1.read.oid(pmPair.children[0]) === pki.oid.byName("domain-validated") &&
+    asn1.read.oid(pmPair.children[1]) === pki.oid.byName("organization-validated"));
+  check("a dotted-OID mapping is accepted",
+    !!extOf(await pki.x509.sign(ca({ policyMappings: [{ issuerDomainPolicy: "1.3.6.1.4.1.99999.1", subjectDomainPolicy: "1.3.6.1.4.1.99999.2" }] }), { key: s.key }), "policyMappings"));
+  // "Policies MUST NOT be mapped either to or from the special value anyPolicy."
+  check("mapping FROM anyPolicy -> x509/bad-input",
+    await codeOf(pki.x509.sign(ca({ policyMappings: [{ issuerDomainPolicy: "anyPolicy", subjectDomainPolicy: "domain-validated" }] }), { key: s.key })) === "x509/bad-input");
+  check("mapping TO anyPolicy -> x509/bad-input",
+    await codeOf(pki.x509.sign(ca({ policyMappings: [{ issuerDomainPolicy: "domain-validated", subjectDomainPolicy: "anyPolicy" }] }), { key: s.key })) === "x509/bad-input");
+  // A non-string identifier reaches the OID registry before it is typed, so the registry's own
+  // oid/bad-input would surface where this verb documents x509/bad-input. #119 already fixed the
+  // lexically-dotted case; this is the same contract for every producer spec that names an OID.
+  check("a non-string issuerDomainPolicy -> x509/bad-input, not an OID-registry error",
+    await codeOf(pki.x509.sign(ca({ policyMappings: [{ issuerDomainPolicy: 42, subjectDomainPolicy: "domain-validated" }] }), { key: s.key })) === "x509/bad-input");
+  check("a non-string subjectDomainPolicy -> x509/bad-input",
+    await codeOf(pki.x509.sign(ca({ policyMappings: [{ issuerDomainPolicy: "domain-validated", subjectDomainPolicy: 42 }] }), { key: s.key })) === "x509/bad-input");
+  check("a non-string certificatePolicies entry -> x509/bad-input",
+    await codeOf(pki.x509.sign(ca({ certificatePolicies: [42] }), { key: s.key })) === "x509/bad-input");
+  check("a non-string extendedKeyUsage purpose -> x509/bad-input",
+    await codeOf(pki.x509.sign(ca({ extendedKeyUsage: [42] }), { key: s.key })) === "x509/bad-input");
+  check("an empty policyMappings -> x509/bad-input",
+    await codeOf(pki.x509.sign(ca({ policyMappings: [] }), { key: s.key })) === "x509/bad-input");
+  check("a mapping missing one side -> x509/bad-input",
+    await codeOf(pki.x509.sign(ca({ policyMappings: [{ issuerDomainPolicy: "domain-validated" }] }), { key: s.key })) === "x509/bad-input");
+
+  // ---- issuerAltName: GeneralNames, like subjectAltName ----
+  var ianDer = await pki.x509.sign({ subject: "leaf.example", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA,
+    extensions: { issuerAltName: [{ dNSName: "issuer.example" }, "ca@issuer.example"] } }, { key: s.key });
+  var ian = extOf(ianDer, "issuerAltName");
+  check("issuerAltName takes the GeneralName forms subjectAltName takes", !!ian);
+  check("...and is emitted non-critical (RFC 5280 sec. 4.2.1.7)", ian && ian.critical !== true);
+  var ianNode = asn1.decode(ian.value);
+  check("both names encode under their own tags, a bare string classifying as rfc822Name [1]",
+    ianNode.children.length === 2 && ianNode.children[0].tagNumber === 2 && ianNode.children[1].tagNumber === 1);
+  check("an empty issuerAltName -> x509/bad-input",
+    await codeOf(pki.x509.sign(ca({ issuerAltName: [] }), { key: s.key })) === "x509/bad-input");
+  // A sparse array passes a bare length check and then faults inside the encoder, which would leave
+  // an untyped TypeError where this verb documents a typed CertificateError.
+  var sparseIan = []; sparseIan.length = 2;
+  check("a sparse issuerAltName -> x509/bad-input, not an untyped TypeError",
+    await codeOf(pki.x509.sign(ca({ issuerAltName: sparseIan }), { key: s.key })) === "x509/bad-input");
+
+  // All four on one certificate still lint clean and parse back.
+  var allDer = await pki.x509.sign(ca({
+    policyConstraints: { requireExplicitPolicy: 0 }, inhibitAnyPolicy: 1,
+    policyMappings: [{ issuerDomainPolicy: "domain-validated", subjectDomainPolicy: "organization-validated" }],
+    issuerAltName: [{ dNSName: "issuer.example" }],
+  }), { key: s.key });
+  check("all four ride one certificate with no error-severity lint finding", noLintErrors(allDer));
+  check("...and all four parse back", !!extOf(allDer, "policyConstraints") && !!extOf(allDer, "inhibitAnyPolicy") &&
+    !!extOf(allDer, "policyMappings") && !!extOf(allDer, "issuerAltName"));
+}
+
 // ---- where to fetch the issuer and the CRL, from a plain spec ---------------
 
 // authorityInfoAccess (RFC 5280 sec. 4.2.2.1) names the OCSP responder and the issuer's own
@@ -1434,6 +1556,7 @@ async function main() {
   await testFixedCriticality();
   await testNameConstraintsSpec();
   await testAccessAndDistributionSpec();
+  await testPolicyMachinerySpec();
   console.log("CHECKS " + helpers.getChecks());
 }
 

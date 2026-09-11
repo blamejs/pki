@@ -1,5 +1,5 @@
 {
-  "README.md": "2026-09-11",
+  "README.md": "2026-09-10",
   "examples/wiki/concepts.js": "2026-09-03",
   "examples/wiki/lib/assets.js": "2026-07-13",
   "examples/wiki/lib/auto-site-entries.js": "2026-07-04",
@@ -123,6 +123,6 @@
   "lib/webauthn-mds.js": "2026-09-09",
   "lib/webauthn.js": "2026-09-10",
   "lib/webcrypto.js": "2026-09-05",
-  "lib/x509-sign.js": "2026-09-11",
+  "lib/x509-sign.js": "2026-09-10",
   "lib/x509.js": "2026-07-04"
 }
