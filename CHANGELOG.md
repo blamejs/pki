@@ -4,6 +4,20 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.32 — 2026-09-12
+
+The certificate and CRL signers issue the RFC 5280 key identifiers without being asked.
+
+### Changed
+
+- pki.x509.sign emits a subjectKeyIdentifier derived from the subject key by method (1) unless the extensions object names one, and an authorityKeyIdentifier whose keyIdentifier is the issuer certificate's SKI (or, without one, the issuer key's method (1) value) unless the certificate is self-signed, which RFC 5280 sec. 4.2.1.1 defines by the signature: the subject's own key signs it and the names agree. A spec with no extensions, or with an empty extensions object, therefore issues a v3 certificate carrying those two extensions where it issued a v1 certificate before. subjectKeyIdentifier: false omits the SKI on an end entity (sec. 4.2.1.2 states a SHOULD there) and is refused with x509/bad-input on a CA (a MUST); authorityKeyIdentifier: false is honored on a self-signed certificate (the section's one exception) and refused with x509/bad-input on any other. The pre-encoded array form of extensions is unchanged and emits exactly what it is given, so extensions: [] remains the way to a v1 certificate.
+- The authorityKeyIdentifier object form carries the keyIdentifier whether or not it is named: RFC 5280 sec. 4.2.1.1 requires the field, so { authorityCertIssuer, authorityCertSerialNumber } alone now yields all three fields, and keyIdentifier: false is honored on a self-signed certificate only. A keyIdentifier stated as bytes under an issuer given as a certificate that carries a subjectKeyIdentifier must equal that SKI (sec. 4.2.1.2) or the call is refused with x509/bad-input; under a name-and-key issuer it is taken as given.
+- pki.crl.sign emits an authorityKeyIdentifier on every CRL unless the extensions object names one, with the same keyIdentifier derivation; RFC 5280 sec. 5.2.1 places it on every CRL a conforming issuer signs with no exception, so authorityKeyIdentifier: false is refused with crl/bad-input, and a keyIdentifier stated as bytes under an issuer certificate that carries a subjectKeyIdentifier must equal it. A CRL spec with no extensions object is v2 with that extension; the pre-encoded array form is unchanged.
+
+### Fixed
+
+- Comparing two public keys of different algorithms (an EC key against an Ed25519 or ML-DSA key) no longer leaves a fault queued in the crypto library. node:crypto's KeyObject equality answers false for such a pair but queues an OpenSSL error that made the next private-key import in the process fail with ERR_OSSL_EVP_DIFFERENT_KEY_TYPES. The key-equality helper behind the CMP session's key-rollover checks, the CRMF template check, the CMC challenge-opening check and the certificate signer's self-signed test now decides the different-type case by the key type and never asks the runtime to compare across types.
+
 ## v0.7.31 — 2026-09-12
 
 HPKE encrypts to an ML-KEM public key.

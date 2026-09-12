@@ -173,10 +173,14 @@ async function testCompositeArm() {
 
 async function testVersionCoherence() {
   var s = makeSigner("ed25519");
-  // no extensions -> v1, and the [0] version tag is OMITTED (DER DEFAULT).
-  var v1 = await pki.x509.sign({ subject: "v1", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA }, { key: s.key });
+  // A spec naming no extensions still carries the subjectKeyIdentifier the signer emits by default,
+  // so it is v3; the one way to a v1 certificate is a self-signed end entity that opts out of it,
+  // and that certificate OMITS the [0] version tag (DER DEFAULT).
+  var v3d = await pki.x509.sign({ subject: "v3d", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA }, { key: s.key });
+  check("no extensions -> version 3 (the default subjectKeyIdentifier is present)", pki.schema.x509.parse(v3d).version === 3);
+  var v1 = await pki.x509.sign({ subject: "v1", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: { subjectKeyIdentifier: false } }, { key: s.key });
   var c1 = pki.schema.x509.parse(v1);
-  check("no extensions -> version 1", c1.version === 1);
+  check("a self-signed end entity opting out of the SKI -> version 1", c1.version === 1);
   // the raw tbs must have no context-[0] version wrapper as its first element (it is the serial INTEGER).
   var tbs = asn1.decode(v1).children[0];
   check("v1 omits the [0] version tag", !(tbs.children[0].tagClass === "context" && tbs.children[0].tagNumber === 0));
@@ -216,9 +220,10 @@ async function testValidityEncoding() {
     subject: "validity", subjectPublicKey: s.spki,
     notBefore: new Date("2048-06-01T00:00:00Z"), notAfter: new Date("2051-06-01T00:00:00Z"),
   }, { key: s.key });
-  // locate the validity SEQUENCE (v1: [serial, sigAlg, issuer, VALIDITY, subject, spki]).
+  // locate the validity SEQUENCE ([version], serial, sigAlg, issuer, VALIDITY, subject, spki, ...).
   var tbs = asn1.decode(der).children[0];
-  var val = tbs.children[3];   // v1 (no [0]): index 3 is validity
+  var hasVersion = tbs.children[0].tagClass === "context" && tbs.children[0].tagNumber === 0;
+  var val = tbs.children[hasVersion ? 4 : 3];
   check("notBefore <=2049 is UTCTime", val.children[0].tagClass === "universal" && val.children[0].tagNumber === 23);
   check("notAfter >=2050 is GeneralizedTime", val.children[1].tagClass === "universal" && val.children[1].tagNumber === 24);
   var c = pki.schema.x509.parse(der);
@@ -958,15 +963,17 @@ async function testSharedBuilderRejects() {
     await codeOf(sign({ extensions: [B.sequence([B.oid(pki.oid.byName("ocspNoCheck")), B.integer(1n)])] })) === "x509/bad-input");
   check("an extensions spec that is neither an object nor an array -> x509/bad-input",
     await codeOf(sign({ extensions: "basicConstraints" })) === "x509/bad-input");
-  // An EMPTY extensions spec is not an error at this entry: the certificate version derives from the
-  // field set, so `[]` / `{}` issue a v1 certificate with no extensions block. (The builder's
-  // "must carry at least one" rejects belong to the CSR extensionRequest path, covered in csr-sign.)
+  // An EMPTY extensions spec is not an error at this entry. The pre-encoded array form emits exactly
+  // what it is given, so `[]` issues a v1 certificate with no extensions block; the object form
+  // carries the default subjectKeyIdentifier, so `{}` issues a v3 certificate with that one
+  // extension. (The builder's "must carry at least one" rejects belong to the CSR extensionRequest
+  // path, covered in csr-sign.)
   var v1Empty = pki.schema.x509.parse(await sign({ extensions: [] }));
-  var v1EmptyObj = pki.schema.x509.parse(await sign({ extensions: {} }));
+  var v3EmptyObj = pki.schema.x509.parse(await sign({ extensions: {} }));
   check("an empty extensions array issues a v1 certificate with no extensions",
     v1Empty.version === 1 && (v1Empty.extensions || []).length === 0);
-  check("an empty extensions object does the same",
-    v1EmptyObj.version === 1 && (v1EmptyObj.extensions || []).length === 0);
+  check("an empty extensions object issues a v3 certificate carrying the default subjectKeyIdentifier",
+    v3EmptyObj.version === 3 && v3EmptyObj.extensions.length === 1 && v3EmptyObj.extensions[0].name === "subjectKeyIdentifier");
 
   // ---- issuer signing-key SPKI ----
   check("an issuer publicKey SPKI with no children -> x509/bad-spki",
@@ -1009,7 +1016,7 @@ async function testKeyMatchAndTimeAndSan() {
   // (Fix) a validity date before 1950 uses GeneralizedTime (UTCTime cannot represent pre-1950 years).
   var s = makeSigner("ed25519");
   var derPre = await pki.x509.sign({ subject: "pre1950", subjectPublicKey: s.spki, notBefore: new Date("1940-06-01T00:00:00Z"), notAfter: NA }, { key: s.key });
-  var valPre = asn1.decode(derPre).children[0].children[3];   // v1: validity at index 3
+  var valPre = asn1.decode(derPre).children[0].children[4];   // v3 ([0] version present): validity at index 4
   check("pre-1950 notBefore encodes as GeneralizedTime", valPre.children[0].tagClass === "universal" && valPre.children[0].tagNumber === 24);
   check("pre-1950 notBefore round-trips to 1940", pki.schema.x509.parse(derPre).validity.notBefore.getUTCFullYear() === 1940);
 
@@ -2167,7 +2174,143 @@ async function main() {
   await testPolicyQualifiersAndAkiSpec();
   await testMicrosoftEnrollmentSpec();
   await testSiaSdaNoCheckSpec();
+  await testKeyIdentifierDefaults();
   console.log("CHECKS " + helpers.getChecks());
+}
+
+// ---- the key identifiers a conforming CA MUST issue (RFC 5280 sec. 4.2.1.1 / 4.2.1.2) ------------
+
+async function testKeyIdentifierDefaults() {
+  function extNamed(c, name) { return c.extensions.filter(function (x) { return (x.name || x.oid) === name; })[0]; }
+  function keyIdOf(ext) { return asn1.read.octetString(asn1.decode(ext.value)); }
+  function akiKeyIdOf(ext) { return asn1.decode(ext.value).children[0].content; }
+  var crypto = require("crypto");
+  function method1(spkiDer) {
+    var bits = asn1.decode(spkiDer).children[1];
+    return crypto.createHash("sha1").update(bits.content.subarray(1)).digest();
+  }
+  var ca = makeSigner("ec-p256");
+  var caDer = await pki.x509.sign({
+    subject: "Default CA", subjectPublicKey: ca.spki, notBefore: NB, notAfter: NA,
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] },
+  }, { key: ca.key });
+  var caCert = pki.schema.x509.parse(caDer);
+  var caSki = extNamed(caCert, "subjectKeyIdentifier");
+  check("a CA certificate carries a subjectKeyIdentifier without asking for one", !!caSki && caSki.critical === false);
+  check("...derived by method (1): SHA-1 over the subjectPublicKey bits", keyIdOf(caSki).equals(method1(ca.spki)));
+  check("a self-signed certificate carries no authorityKeyIdentifier by default", !extNamed(caCert, "authorityKeyIdentifier"));
+  // A leaf that names no extensions at all: v3, SKI, and an AKI equal to the issuer's SKI.
+  var leaf = makeSigner("ed25519");
+  var leafDer = await pki.x509.sign({ subject: "leaf", subjectPublicKey: leaf.spki, notBefore: NB, notAfter: NA }, { cert: caCert, key: ca.key });
+  var leafCert = pki.schema.x509.parse(leafDer);
+  var leafAki = extNamed(leafCert, "authorityKeyIdentifier");
+  check("a CA-issued certificate with no extensions spec is v3 with an SKI", leafCert.version === 3 && !!extNamed(leafCert, "subjectKeyIdentifier"));
+  check("...and an authorityKeyIdentifier whose keyIdentifier is the issuer's SKI", !!leafAki && akiKeyIdOf(leafAki).equals(keyIdOf(caSki)));
+  check("...and the leaf validates to the CA", (await pki.path.validate([leafCert], { time: IN_WINDOW, trustAnchors: anchorFor(caCert) })).valid === true);
+  check("the lint reports neither ski-missing nor aki-missing on the default output",
+    !pki.lint.certificate(leafDer).findings.some(function (f) { return f.id === "lint/rfc5280/aki-missing" || f.id === "lint/rfc5280/ski-missing-ee"; }) &&
+    !pki.lint.certificate(caDer).findings.some(function (f) { return f.id === "lint/rfc5280/ski-missing"; }));
+  // An empty extensions object is the same as none.
+  var emptyDer = await pki.x509.sign({ subject: "empty", subjectPublicKey: leaf.spki, notBefore: NB, notAfter: NA, extensions: {} }, { cert: caCert, key: ca.key });
+  check("extensions: {} takes the same defaults", pki.schema.x509.parse(emptyDer).extensions.length === 2);
+  // The explicit issuer forms: self-signed by the RFC's own definition (the subject's key signs and the
+  // names agree) omits the AKI; self-ISSUED with another key (a key rollover certificate) carries it.
+  var selfExplicit = await pki.x509.sign({ subject: "Default CA", subjectPublicKey: ca.spki, notBefore: NB, notAfter: NA },
+    { name: "Default CA", publicKey: ca.spki, key: ca.key });
+  check("an explicit issuer equal to the subject in name and key is self-signed: no AKI", !extNamed(pki.schema.x509.parse(selfExplicit), "authorityKeyIdentifier"));
+  // Self-signed is decided on the KEY, not on its encoding: the same P-256 key given compressed on
+  // one side and uncompressed on the other is still the subject's own key.
+  var caJwk = crypto.createPublicKey({ key: ca.spki, format: "der", type: "spki" }).export({ format: "jwk" });
+  var cx = Buffer.from(caJwk.x, "base64url"), cy = Buffer.from(caJwk.y, "base64url");
+  var compressedSpki = asn1.build.sequence([asn1.build.sequence([asn1.build.oid(pki.oid.byName("ecPublicKey")), asn1.build.oid(pki.oid.byName("prime256v1"))]),
+    asn1.build.bitString(Buffer.concat([Buffer.from([2 + (cy[cy.length - 1] & 1)]), cx]), 0)]);
+  var mixedEnc = await pki.x509.sign({ subject: "Default CA", subjectPublicKey: ca.spki, notBefore: NB, notAfter: NA, extensions: { authorityKeyIdentifier: false } },
+    { name: "Default CA", publicKey: compressedSpki, key: ca.key });
+  check("the same key in another point encoding is still self-signed: the AKI opt-out is honored", !extNamed(pki.schema.x509.parse(mixedEnc), "authorityKeyIdentifier"));
+  var ca2 = makeSigner("ec-p256");
+  var rollover = await pki.x509.sign({ subject: "Default CA", subjectPublicKey: ca2.spki, notBefore: NB, notAfter: NA },
+    { name: "Default CA", publicKey: ca.spki, key: ca.key });
+  var rolloverAki = extNamed(pki.schema.x509.parse(rollover), "authorityKeyIdentifier");
+  check("a self-issued certificate under another key carries an AKI naming that key", !!rolloverAki && akiKeyIdOf(rolloverAki).equals(method1(ca.spki)));
+  // The self-signed test compares an issuer key of one TYPE with a subject key of another when the
+  // names agree (a cross-algorithm rollover). That comparison must leave no fault behind: the very
+  // next key import in the process, here the signing key of the same call, must still succeed.
+  var edSubject = makeSigner("ed25519");
+  check("a cross-algorithm self-issued rollover signs, and the next import is unaffected", Buffer.isBuffer(await pki.x509.sign(
+    { subject: "Default CA", subjectPublicKey: edSubject.spki, notBefore: NB, notAfter: NA }, { cert: caCert, key: ca.key })));
+  // The opt-outs honor exactly what the RFC leaves open.
+  var eeNoSki = await pki.x509.sign({ subject: "ee", subjectPublicKey: leaf.spki, notBefore: NB, notAfter: NA, extensions: { subjectKeyIdentifier: false } }, { cert: caCert, key: ca.key });
+  check("subjectKeyIdentifier: false on an end entity omits it (a SHOULD)", !extNamed(pki.schema.x509.parse(eeNoSki), "subjectKeyIdentifier"));
+  check("subjectKeyIdentifier: false on a CA -> x509/bad-input (sec. 4.2.1.2 MUST)", await codeOf(pki.x509.sign({
+    subject: "CA no SKI", subjectPublicKey: ca2.spki, notBefore: NB, notAfter: NA,
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: false },
+  }, { key: ca2.key })) === "x509/bad-input");
+  check("authorityKeyIdentifier: false on a CA-issued certificate -> x509/bad-input (sec. 4.2.1.1 MUST)", await codeOf(pki.x509.sign({
+    subject: "no aki", subjectPublicKey: leaf.spki, notBefore: NB, notAfter: NA, extensions: { authorityKeyIdentifier: false },
+  }, { cert: caCert, key: ca.key })) === "x509/bad-input");
+  var selfNoAki = await pki.x509.sign({ subject: "self", subjectPublicKey: ca2.spki, notBefore: NB, notAfter: NA, extensions: { authorityKeyIdentifier: false } }, { key: ca2.key });
+  check("authorityKeyIdentifier: false on a self-signed certificate is honored (the MAY)", !extNamed(pki.schema.x509.parse(selfNoAki), "authorityKeyIdentifier"));
+  var selfWithAki = await pki.x509.sign({ subject: "self", subjectPublicKey: ca2.spki, notBefore: NB, notAfter: NA, extensions: { authorityKeyIdentifier: true } }, { key: ca2.key });
+  check("authorityKeyIdentifier: true on a self-signed certificate still emits it", !!extNamed(pki.schema.x509.parse(selfWithAki), "authorityKeyIdentifier"));
+  // The pre-encoded array form emits exactly what it was given: the boundary of the defaults.
+  var b = asn1.build, O = pki.oid.byName;
+  var kuOnly = [b.sequence([b.oid(O("keyUsage")), b.boolean(true), b.octetString(b.bitString(Buffer.from([0x80]), 7))])];
+  var arrDer = await pki.x509.sign({ subject: "array", subjectPublicKey: leaf.spki, notBefore: NB, notAfter: NA, extensions: kuOnly }, { cert: caCert, key: ca.key });
+  check("the array form adds nothing: one extension in, one out", pki.schema.x509.parse(arrDer).extensions.length === 1);
+  // Sec. 4.2.1.2: the issuer certificate's SKI MUST be the value placed in the AKI keyIdentifier of
+  // what it issues, so an explicit keyIdentifier is held to the issuer certificate's SKI when there
+  // is one, and accepted as given when the issuer is a bare name and key (nothing to hold it to).
+  check("an explicit AKI keyIdentifier that differs from the issuer certificate's SKI -> x509/bad-input", await codeOf(pki.x509.sign({
+    subject: "aki-mismatch", subjectPublicKey: leaf.spki, notBefore: NB, notAfter: NA, extensions: { authorityKeyIdentifier: Buffer.alloc(20, 0x22) },
+  }, { cert: caCert, key: ca.key })) === "x509/bad-input");
+  check("an explicit AKI keyIdentifier equal to the issuer certificate's SKI signs", Buffer.isBuffer(await pki.x509.sign({
+    subject: "aki-equal", subjectPublicKey: leaf.spki, notBefore: NB, notAfter: NA, extensions: { authorityKeyIdentifier: keyIdOf(caSki) },
+  }, { cert: caCert, key: ca.key })));
+  var explicitAki = pki.schema.x509.parse(await pki.x509.sign({
+    subject: "aki-bare", subjectPublicKey: leaf.spki, notBefore: NB, notAfter: NA, extensions: { authorityKeyIdentifier: Buffer.alloc(20, 0x22) },
+  }, { name: "Default CA", publicKey: ca.spki, key: ca.key }));
+  check("...and is taken as given under a name-and-key issuer", akiKeyIdOf(extNamed(explicitAki, "authorityKeyIdentifier")).equals(Buffer.alloc(20, 0x22)));
+  // Sec. 4.2.1.1: the keyIdentifier field MUST be included, so the object form naming only the
+  // issuer and serial still carries it; declining it is refused except on a self-signed certificate.
+  var nameSerial = pki.schema.x509.parse(await pki.x509.sign({
+    subject: "aki-name-serial", subjectPublicKey: leaf.spki, notBefore: NB, notAfter: NA,
+    extensions: { authorityKeyIdentifier: { authorityCertIssuer: true, authorityCertSerialNumber: true } },
+  }, { cert: caCert, key: ca.key }));
+  var nsAki = asn1.decode(extNamed(nameSerial, "authorityKeyIdentifier").value);
+  check("the issuer-and-serial AKI form still carries the keyIdentifier [0]", nsAki.children.length === 3 && nsAki.children[0].tagNumber === 0 && nsAki.children[0].content.equals(keyIdOf(caSki)));
+  check("keyIdentifier: false on a CA-issued certificate -> x509/bad-input", await codeOf(pki.x509.sign({
+    subject: "aki-no-kid", subjectPublicKey: leaf.spki, notBefore: NB, notAfter: NA,
+    extensions: { authorityKeyIdentifier: { keyIdentifier: false, authorityCertIssuer: true, authorityCertSerialNumber: true } },
+  }, { cert: caCert, key: ca.key })) === "x509/bad-input");
+  var selfNameSerial = pki.schema.x509.parse(await pki.x509.sign({
+    subject: "self", subjectPublicKey: ca2.spki, notBefore: NB, notAfter: NA,
+    extensions: { authorityKeyIdentifier: { keyIdentifier: false, authorityCertIssuer: [{ directoryName: [{ commonName: "self" }] }], authorityCertSerialNumber: 5n } },
+  }, { key: ca2.key }));
+  check("keyIdentifier: false on a self-signed certificate is honored", asn1.decode(extNamed(selfNameSerial, "authorityKeyIdentifier").value).children[0].tagNumber === 1);
+  // An AKI keyIdentifier that is neither `true` nor bytes is refused, not coerced.
+  check("authorityKeyIdentifier: { keyIdentifier: <string> } -> x509/bad-input", await codeOf(pki.x509.sign({
+    subject: "aki", subjectPublicKey: leaf.spki, notBefore: NB, notAfter: NA, extensions: { authorityKeyIdentifier: { keyIdentifier: "abc" } },
+  }, { cert: caCert, key: ca.key })) === "x509/bad-input");
+  // The issuer's pathLenConstraint is read off the ISSUED certificate's pre-encoded array too: a
+  // subordinate CA in the array form under a pathLen-0 issuer is refused, and an array without a
+  // basicConstraints (an end entity) under the same issuer is not.
+  var pl0Der = await pki.x509.sign({
+    subject: "pathLen0 CA", subjectPublicKey: ca2.spki, notBefore: NB, notAfter: NA,
+    extensions: { basicConstraints: { cA: true, pathLen: 0 }, keyUsage: ["keyCertSign"] },
+  }, { key: ca2.key });
+  var pl0 = pki.schema.x509.parse(pl0Der);
+  var caArr = [
+    b.sequence([b.oid(O("keyUsage")), b.boolean(true), b.octetString(b.bitString(Buffer.from([0x04]), 2))]),
+    b.sequence([b.oid(O("basicConstraints")), b.boolean(true), b.octetString(b.sequence([b.boolean(true)]))]),
+  ];
+  var pl0Msg = await pki.x509.sign({
+    subject: "sub CA", subjectPublicKey: leaf.spki, notBefore: NB, notAfter: NA, extensions: caArr,
+  }, { cert: pl0, key: ca2.key }).then(function () { return ""; }, function (e) { return e.code + ": " + e.message; });
+  check("a pre-encoded subordinate CA under a pathLen-0 issuer -> x509/bad-input naming the path length",
+    pl0Msg.indexOf("x509/bad-input") === 0 && pl0Msg.indexOf("pathLenConstraint (0) forbids") > 0);
+  check("a pre-encoded end entity under the same issuer signs", Buffer.isBuffer(await pki.x509.sign({
+    subject: "ee under pl0", subjectPublicKey: leaf.spki, notBefore: NB, notAfter: NA, extensions: kuOnly,
+  }, { cert: pl0, key: ca2.key })));
 }
 
 main().then(function () { process.exit(0); }, function (e) { console.error(e && e.stack || e); process.exit(1); });

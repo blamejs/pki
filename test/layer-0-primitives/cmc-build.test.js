@@ -1176,6 +1176,17 @@ async function run() {
   { cert: s.cert, key: s.key });
   check("EP5. a proof value over 64 bytes is truncated to 64 for the MAC key",
     decryptedPopOf(longAnswer).thePOP.equals(nodeCrypto.createHmac("sha256", long64).update(popTagged).digest()));
+  // A challenge opened by a key of another TYPE than the key the request asks to certify proves
+  // nothing for that request, and deciding so must leave no fault behind in the crypto library: the
+  // signing key this same call imports next has to import cleanly.
+  var edRequester = signingHelper.makeSigner("ed25519", { cn: "pop-ed.example" });
+  var edCsr = await csrFor(edRequester);
+  var edTagged = b.contextConstructed(0, Buffer.concat([b.integer(11n), edCsr]));
+  var crossType = await pki.cmc.build({ requests: [{ tcr: edCsr }],
+    popChallenge: { challenge: await popChallengeFor(proof, { tagged: edTagged }), recipient: { key: popKey.key } } },
+  { cert: s.cert, key: s.key });
+  check("EP23. a challenge opened by a key of another type than the request's still yields a signed message",
+    Buffer.isBuffer(crossType) && !!decryptedPopOf(crossType));
   // The witness check is the client's abort condition, so a challenge whose witness does not match the
   // decrypted value is refused rather than answered.
   check("EP6. a challenge whose witness does not match the proof value is refused",
