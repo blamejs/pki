@@ -444,6 +444,36 @@ async function testCorrespondsTo(keyInternal) {
     (await keyInternal.correspondsTo(x942Pk8, x942Spki)) === true);
   check("correspondsTo answers false for a PKCS #3 DH private key against another key's X9.42 public value",
     (await keyInternal.correspondsTo(dhA.privateKey.export({ format: "der", type: "pkcs8" }), x942OtherSpki)) === false);
+  // The PKCS #3 form the X9.42 structure is brought to carries no q, j or validationParms, so those
+  // are read and held to the p and g beside them BEFORE they are dropped: a DomainParameters that
+  // omits the mandatory q, states an order p-1 is not a multiple of, or a cofactor that is not
+  // (p-1)/q, is a malformed key and refused, whatever value it carries. Proper validationParms pass.
+  var dhAPk8 = dhA.privateKey.export({ format: "der", type: "pkcs8" }), dhAValue = b.raw(dhSpki.children[1].bytes);
+  function x942With(params) { return b.sequence([b.sequence([b.oid(pki.oid.byName("dhpublicnumber")), b.sequence(params)]), dhAValue]); }
+  check("an X9.42 public key whose DomainParameters omit q -> key/bad-input, not a pair",
+    (await codeOf(keyInternal.correspondsTo(dhAPk8, x942With([b.integer(dhP), b.integer(dhG)])))) === "key/bad-input");
+  check("an X9.42 public key stating a subgroup order p-1 is not a multiple of -> key/bad-input",
+    (await codeOf(keyInternal.correspondsTo(dhAPk8, x942With([b.integer(dhP), b.integer(dhG), b.integer((dhP - 1n) / 2n + 2n)])))) === "key/bad-input");
+  check("an X9.42 public key whose cofactor is not (p-1)/q -> key/bad-input",
+    (await codeOf(keyInternal.correspondsTo(dhAPk8, x942With([b.integer(dhP), b.integer(dhG), b.integer((dhP - 1n) / 2n), b.integer(3n)])))) === "key/bad-input");
+  check("an X9.42 private key whose DomainParameters omit q -> key/bad-input",
+    (await codeOf(keyInternal.correspondsTo(b.sequence([b.raw(dhPk8.children[0].bytes), b.sequence([b.oid(pki.oid.byName("dhpublicnumber")), b.sequence([b.integer(dhP), b.integer(dhG)])]), b.raw(dhPk8.children[2].bytes)]), dhA.publicKey.export({ format: "der", type: "spki" })))) === "key/bad-input");
+  // The tests above multiply and reduce the parameters, so their operands are bounded before them: a
+  // modulus above the largest group the toolkit agrees over is refused on its size alone.
+  var hugeP = (1n << BigInt(8 * pki.constants.LIMITS.DH_MAX_MODULUS_BYTES)) + 1n;
+  var hugeErr = null;
+  try { await keyInternal.correspondsTo(dhAPk8, x942With([b.integer(hugeP), b.integer(2n), b.integer((hugeP - 1n) / 2n)])); } catch (e) { hugeErr = e; }
+  check("an X9.42 public key whose modulus exceeds the largest group the toolkit agrees over -> key/bad-input on its size",
+    hugeErr !== null && hugeErr.code === "key/bad-input" && /larger than any Diffie-Hellman group/.test(hugeErr.message));
+  // The bound is on magnitude, so a negative operand is refused on its sign before any multiply or
+  // modulo runs on it; and a validationParms counter is a count, so a negative one is malformed.
+  var hugeNeg = -(1n << 100000n);
+  check("an X9.42 public key stating a huge negative order and cofactor -> key/bad-input before the multiplication",
+    (await codeOf(keyInternal.correspondsTo(dhAPk8, x942With([b.integer(dhP), b.integer(dhG), b.integer(hugeNeg), b.integer(hugeNeg)])))) === "key/bad-input");
+  check("an X9.42 public key whose validationParms.pgenCounter is negative -> key/bad-input",
+    (await codeOf(keyInternal.correspondsTo(dhAPk8, x942With([b.integer(dhP), b.integer(dhG), b.integer((dhP - 1n) / 2n), b.sequence([b.bitString(Buffer.alloc(20, 7), 0), b.integer(-1n)])])))) === "key/bad-input");
+  check("CONTROL: an X9.42 public key with its cofactor 2 and validationParms pairs",
+    (await keyInternal.correspondsTo(dhAPk8, x942With([b.integer(dhP), b.integer(dhG), b.integer((dhP - 1n) / 2n), b.integer(2n), b.sequence([b.bitString(Buffer.alloc(20, 7), 0), b.integer(42n)])]))) === true);
   // A composite ML-KEM key is a toolkit-defined algorithm the runtime cannot read; the pair is proven
   // by an encapsulation to the public key decapsulated under the private key. Another composite
   // algorithm, or a classical key, is another family. A composite key whose RSA component carries

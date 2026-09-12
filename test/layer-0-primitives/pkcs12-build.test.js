@@ -442,6 +442,13 @@ async function testFailClosedInputs() {
   check("CONTROL: a PKCS #3 DH key with its RFC 3279 (X9.42) certificate builds", Buffer.isBuffer(await pki.pkcs12.build({ key: dhKp.privateKey.export({ format: "der", type: "pkcs8" }), cert: x942Cert }, { password: "1234" })));
   var dhOther = require("crypto").generateKeyPairSync("dh", { group: "modp14" });
   check("another PKCS #3 DH key under that X9.42 certificate -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ key: dhOther.privateKey.export({ format: "der", type: "pkcs8" }), cert: x942Cert }, { password: "1234" }))) === "pkcs12/bad-input");
+  // The X9.42 fields the PKCS #3 form cannot carry are read before they are dropped: a certificate
+  // whose DomainParameters omit the mandatory q is malformed, and the store is refused even though
+  // the key generates the value it carries.
+  var x942NoQ = pki.asn1.build.sequence([pki.asn1.build.sequence([pki.asn1.build.oid(pki.oid.byName("dhpublicnumber")), pki.asn1.build.sequence([pki.asn1.build.integer(dhP), pki.asn1.build.integer(dhG)])]), pki.asn1.build.raw(dhSpkiNode.children[1].bytes)]);
+  var x942NoQCert = await pki.x509.sign({ subject: "dh holder", subjectPublicKey: x942NoQ, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2030-01-01T00:00:00Z"), extensions: { keyUsage: ["keyAgreement"] } }, { name: "DH Issuer", publicKey: dhCa.spki, key: dhCa.key });
+  check("a DH key under an X9.42 certificate whose DomainParameters omit q -> pkcs12/bad-input (a malformed key, whatever value it carries)",
+    (await codeOf(pki.pkcs12.build({ key: dhKp.privateKey.export({ format: "der", type: "pkcs8" }), cert: x942NoQCert }, { password: "1234" }))) === "pkcs12/bad-input");
   // A composite ML-KEM key is a toolkit-defined algorithm the runtime cannot read: its public half
   // is derived from the private material and held to the certificate, so a valid pair still stores.
   var kat = require("../fixtures/composite-kem/kat.json");
