@@ -1450,6 +1450,16 @@ async function testPopoPrivKeyArms() {
     (await codeOf(pki.crmf.build({ certReqId: 47n, certTemplate: tpl(kemRsaSpki),
       pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: kemRsaHollowPk8,
         identifier: "device-42", recipients: [{ cert: recip.cert }], archive: true } }))) === "crmf/bad-popo");
+  // A composite key the toolkit cannot READ is bad input, as an unreadable classical key is; only a
+  // key it reads and cannot show to be the template's private half is the proof failing.
+  var kemRsaTruncPk8 = (function () {
+    var outer = pki.asn1.decode(Buffer.from(kemRsaCase.dk_pkcs8, "base64"));
+    return pki.asn1.build.sequence([pki.asn1.build.raw(outer.children[0].bytes), pki.asn1.build.raw(outer.children[1].bytes), pki.asn1.build.octetString(outer.children[2].content.subarray(0, 40))]);
+  }());
+  check("V7. an enclosed composite key whose component material cannot be read -> crmf/bad-input",
+    (await codeOf(pki.crmf.build({ certReqId: 48n, certTemplate: tpl(kemRsaSpki),
+      pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: kemRsaTruncPk8,
+        identifier: "device-42", recipients: [{ cert: recip.cert }], archive: true } }))) === "crmf/bad-input");
   check("V7. CONTROL: the template's own RSA key archives",
     (await codeOf(pki.crmf.build({ certReqId: 45n, certTemplate: tpl(rsaTpl.publicKey.export({ format: "der", type: "spki" })),
       pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: rsaTpl.privateKey.export({ format: "der", type: "pkcs8" }),

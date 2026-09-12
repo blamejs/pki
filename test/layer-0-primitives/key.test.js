@@ -586,6 +586,17 @@ async function testCorrespondsTo(keyInternal) {
   try { hollowVerdict = await keyInternal.correspondsTo(kemRHollow, katSpki(kemR)); } catch (e) { hollowVerdict = e.code; }
   check("correspondsTo never calls a composite pair from the RSA component's public copy (the probe decides, or reports it cannot)",
     hollowVerdict === false || hollowVerdict === "key/unsupported-algorithm");
+  // A composite key the KEM cannot READ (malformed component material) is bad input, the same
+  // verdict an unreadable classical key gets; a composite key it reads and cannot exercise together
+  // with the public key is the pair not deciding. The two are told apart, since callers classify
+  // them differently.
+  var kemRTrunc = b.sequence([b.raw(kemROuter.children[0].bytes), b.raw(kemROuter.children[1].bytes), b.octetString(kemRMaterial.subarray(0, 40))]);
+  check("correspondsTo reports a composite key whose component material cannot be read as key/bad-input",
+    (await codeOf(keyInternal.correspondsTo(kemRTrunc, katSpki(kemR)))) === "key/bad-input");
+  var kemRSpkiNode = pki.asn1.decode(katSpki(kemR));
+  var kemRSpkiTrunc = b.sequence([b.raw(kemRSpkiNode.children[0].bytes), b.bitString(Buffer.alloc(40, 1), 0)]);
+  check("correspondsTo reports a composite public key whose component material cannot be read as key/bad-input",
+    (await codeOf(keyInternal.correspondsTo(Buffer.from(kemR.dk_pkcs8, "base64"), kemRSpkiTrunc))) === "key/bad-input");
   check("CONTROL: the composite ML-KEM/RSA KAT pair corresponds",
     (await keyInternal.correspondsTo(Buffer.from(kemR.dk_pkcs8, "base64"), katSpki(kemR))) === true);
   // Every secret a probe makes is wiped once the verdict is decided, whether the pair matched or not:
