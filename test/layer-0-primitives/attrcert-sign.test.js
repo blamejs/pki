@@ -197,6 +197,8 @@ async function testValidity() {
   check("notAfterTime is GeneralizedTime", validity.children[1].tagNumber === asn1.TAGS.GENERALIZED_TIME);
   check("inverted validity window -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec({ notBeforeTime: NA, notAfterTime: NB }), aaOf(aa))) === "attrcert/bad-input");
   check("invalid notBeforeTime -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec({ notBeforeTime: new Date("nope") }), aaOf(aa))) === "attrcert/bad-input");
+  // A year DER cannot carry is refused in this verb's domain, not as an asn1/* error out of the codec.
+  check("year-10000 notAfterTime -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec({ notAfterTime: new Date("+010000-01-01T00:00:00Z") }), aaOf(aa))) === "attrcert/bad-input");
 }
 
 // ---- serialNumber edges -----------------------------------------------------

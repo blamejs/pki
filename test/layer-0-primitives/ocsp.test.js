@@ -957,6 +957,10 @@ async function run() {
     (await codeOfAsync(function () { return pki.ocsp.sign({ responderID: "byName", producedAt: FAR, responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: "good", thisUpdate: TU, nextUpdate: NU }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 }); })) === "ocsp/bad-input");
   check("a revocation time beyond year 9999 -> ocsp/bad-input",
     (await codeOfAsync(function () { return pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: { revoked: FAR }, thisUpdate: TU, nextUpdate: NU }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 }); })) === "ocsp/bad-input");
+  // The verify clock is compared, never written, so the same year is accepted there and the response
+  // is judged against it: its nextUpdate has long passed by then, which is the stale verdict.
+  var farClock = await pki.ocsp.verify(withBoth, { cert: w.targetCertDer, issuer: w.issuerCertDer, time: FAR });
+  check("a verify clock beyond year 9999 is compared, not refused: the stale response reads unknown", farClock.status === "unknown");
   check("a crlUrl outside 7-bit ASCII -> ocsp/bad-input, not an asn1 error",
     (await codeOfAsync(function () { return signSingle({ crlReferences: { crlUrl: "https://crl.example/" + String.fromCharCode(0xE9) } }); })) === "ocsp/bad-input");
   check("a negative crlNum -> ocsp/bad-input",

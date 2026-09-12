@@ -1418,6 +1418,12 @@ async function testCoreRejections() {
   check("a Date that reports an earlier moment than it holds cannot revive an expired leaf",
     res9c.valid === false && failCodes(res9c).indexOf("path/expired") !== -1);
 
+  // A clock DER could not carry is still a clock: `opts.time` is compared, never encoded, so a
+  // year-10000 instant is accepted at entry and the verdict is the ordinary expired one.
+  var res9d = await run([expired], { time: new Date("+010000-01-01T00:00:00Z"), trustAnchors: anchor });
+  check("a year-10000 opts.time yields an expired verdict, not a bad-input throw",
+    res9d.valid === false && failCodes(res9d).indexOf("path/expired") !== -1);
+
   // name-chaining break.
   var inter = await mkCert({ subject: "Inter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN])] });
   var orphan = await mkCert({ subject: "Orphan", issuer: "SomebodyElse", signWith: "ed25519i", subjectKeys: "ed25519leaf" });

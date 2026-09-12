@@ -645,6 +645,12 @@ async function testBadInput() {
   await rejects("signer key a bad type", function () { return pki.cms.sign(CONTENT, { cert: s.cert, key: 12345 }); }, "cms/bad-input");
   await rejects("an invalid signingTime Date", function () { return pki.cms.sign(CONTENT, s, { signingTime: new Date("not a date") }); }, "cms/bad-input");
   await rejects("a non-Date signingTime", function () { return pki.cms.sign(CONTENT, s, { signingTime: "2026-01-01" }); }, "cms/bad-input");
+  // A year DER cannot carry is refused in this verb's domain, not as an asn1/* error out of the codec,
+  // on each of the three routes a signingTime is written: buffered, streamed, and countersign.
+  var y10k = new Date("+010000-01-01T00:00:00Z");
+  await rejects("a year-10000 signingTime (buffered)", function () { return pki.cms.sign(CONTENT, s, { signingTime: y10k }); }, "cms/bad-input");
+  await rejects("a year-10000 signingTime (streamed)", function () { return pki.cms.sign(_chunksOf(CONTENT, 4), s, { detached: true, signingTime: y10k }); }, "cms/bad-input");
+  await rejects("a year-10000 signingTime (countersign)", async function () { return pki.cms.countersign(await pki.cms.sign(CONTENT, s), s, { signingTime: y10k }); }, "cms/bad-input");
   // A value that inherits from Date.prototype and holds no instant. `instanceof Date` says yes to
   // it, so a check keyed on that lets it through and the `getTime()` that follows throws a raw
   // TypeError from inside a verb whose every refusal is a typed one.

@@ -32,13 +32,24 @@ function run() {
   check("3. assertValid rejects a non-Date string", threw(function () { guard.assertValid("2026-01-01", E, "x/bad-time", "t"); }) === "x/bad-time");
   check("4. assertValid rejects a number", threw(function () { guard.assertValid(1735689600000, E, "x/bad-time", "t"); }) === "x/bad-time");
   check("5. assertValid rejects null and undefined", threw(function () { guard.assertValid(null, E, "x/bad-time", "t"); }) === "x/bad-time" && threw(function () { guard.assertValid(undefined, E, "x/bad-time", "t"); }) === "x/bad-time");
+  // ==== assertEncodable ====
   // A PKI time is written as a DER GeneralizedTime or UTCTime, whose year is four digits, so a Date
   // JavaScript can hold but DER cannot carry is refused HERE, in the caller's own domain, rather than
-  // reaching the codec and surfacing as an asn1/* error out of a typed spec.
-  check("5a. assertValid rejects a year above 9999 via the factory", threw(function () { guard.assertValid(new Date("+010000-01-01T00:00:00Z"), E, "x/bad-time", "t"); }) === "x/bad-time");
-  check("5b. assertValid rejects a negative year via the factory", threw(function () { guard.assertValid(new Date("-000001-01-01T00:00:00Z"), E, "x/bad-time", "t"); }) === "x/bad-time");
-  check("5c. assertValid accepts year 9999, the last DER can carry", guard.assertValid(new Date("9999-12-31T23:59:59Z"), E, "x/bad-time", "t") instanceof Date);
-  check("5d. assertValid accepts year 0, the first DER can carry", guard.assertValid(new Date("0000-01-01T00:00:00Z"), E, "x/bad-time", "t") instanceof Date);
+  // reaching the codec and surfacing as an asn1/* error out of a typed spec. The bound is an ENCODING
+  // rule: assertValid, which a verification clock passes through, keeps accepting such a Date.
+  var year10000 = new Date("+010000-01-01T00:00:00Z"), yearNeg = new Date("-000001-01-01T00:00:00Z");
+  check("5a. assertEncodable rejects a year above 9999 via the factory", threw(function () { guard.assertEncodable(year10000, E, "x/bad-time", "t"); }) === "x/bad-time");
+  check("5b. assertEncodable rejects a negative year via the factory", threw(function () { guard.assertEncodable(yearNeg, E, "x/bad-time", "t"); }) === "x/bad-time");
+  check("5c. assertEncodable accepts year 9999, the last DER can carry", guard.assertEncodable(new Date("9999-12-31T23:59:59Z"), E, "x/bad-time", "t") instanceof Date);
+  check("5d. assertEncodable accepts year 0, the first DER can carry", guard.assertEncodable(new Date("0000-01-01T00:00:00Z"), E, "x/bad-time", "t") instanceof Date);
+  check("5e. assertEncodable returns the same Date it accepted", guard.assertEncodable(valid, E, "x/bad", "t") === valid);
+  check("5f. assertEncodable still rejects an Invalid Date and a non-Date with the caller's code",
+        threw(function () { guard.assertEncodable(invalid, E, "x/bad-time", "t"); }) === "x/bad-time"
+        && threw(function () { guard.assertEncodable("2026-01-01", E, "x/bad-time", "t"); }) === "x/bad-time");
+  check("5g. assertEncodable names the year and the range in its message",
+        (function () { try { guard.assertEncodable(year10000, E, "x/bad-time", "t"); } catch (e) { return e.message; } return ""; })().indexOf("10000") >= 0);
+  check("5h. assertValid ACCEPTS a year above 9999 and a negative year (a comparison clock, not an encoding)",
+        guard.assertValid(year10000, E, "x/bad-time", "t") === year10000 && guard.assertValid(yearNeg, E, "x/bad-time", "t") === yearNeg);
 
   // ==== within -- containment is a BOOLEAN, malformed is a THROW ====
   var mid = new Date("2026-06-01T00:00:00Z");
