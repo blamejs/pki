@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.33 — 2026-09-12
+
+pki.x509.extension encodes one certificate extension from its plain value form.
+
+### Added
+
+- pki.x509.extension(name, value, opts) returns one Extension as DER. name is any extension name spec.extensions takes, or a dotted OID; value is the plain form spec.extensions takes for that name (the key-usage and purpose lists, the basicConstraints object, GeneralName lists, the policy, constraint, access and distribution-point objects, the qualified-certificate statements, the Active Directory enrollment values, true for the NULL-valued markers, and the explicit forms of the two key identifiers). For an unregistered dotted OID, value is the already-encoded extnValue as bytes and opts.critical is taken as stated. The criticality of a registered extension follows what pki.x509.sign emits for the object form: where RFC 5280 fixes it or the toolkit issues one form only, opts.critical may only restate that value and is otherwise refused with x509/bad-input; keyUsage, extendedKeyUsage, certificatePolicies, policyMappings, qcStatements and subjectAltName take opts.critical, and basicConstraints carries critical inside its value. subjectKeyIdentifier: true and authorityKeyIdentifier: true, which derive a value from the subject key or the issuer, are refused here and the message names spec.extensions; the authorityKeyIdentifier object form requires the key id bytes. Every registered extension encodes byte-identically through this verb and through spec.extensions.
+
 ## v0.7.32 — 2026-09-12
 
 The certificate and CRL signers issue the RFC 5280 key identifiers without being asked.

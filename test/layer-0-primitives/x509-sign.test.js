@@ -2175,7 +2175,138 @@ async function main() {
   await testMicrosoftEnrollmentSpec();
   await testSiaSdaNoCheckSpec();
   await testKeyIdentifierDefaults();
+  await testExtensionEncoder();
   console.log("CHECKS " + helpers.getChecks());
+}
+
+// ---- pki.x509.extension: one Extension DER for the pre-encoded array form -------------------------
+
+async function testExtensionEncoder() {
+  var s = makeSigner("ec-p256");
+  var b = asn1.build, O = pki.oid.byName;
+  function entryOf(c, name) {
+    var wanted = name === "extendedKeyUsage" ? pki.oid.byName("extKeyUsage") : (pki.oid.isDottedDecimal(name) ? name : pki.oid.byName(name));
+    return c.extensions.filter(function (x) { return x.oid === wanted; })[0];
+  }
+  function codeSync(fn) { try { fn(); return "NO-THROW"; } catch (e) { return e.code; } }
+  function msgSync(fn) { try { fn(); return ""; } catch (e) { return e.code + ": " + e.message; } }
+  var caCarrier = [pki.x509.extension("basicConstraints", { cA: true }), pki.x509.extension("keyUsage", ["keyCertSign"])];
+  var caCarrierObj = { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] };
+  var logKey = await pki.key.generate({ name: "ECDSA", namedCurve: "P-256" });
+  var sct = await pki.ct.signSct({ entryType: 0, leafCert: await pki.x509.sign({ subject: "sct", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA }, { key: s.key }) }, await pki.key.export(logKey.privateKey));
+  // Every registered name: the same plain value through the standalone encoder and through
+  // spec.extensions yields the same Extension (OID, criticality, value), so the two forms cannot
+  // drift. [name, value, opts for the standalone call, the object-form knob it corresponds to, CA carrier]
+  var rows = [
+    ["keyUsage", ["digitalSignature", "keyEncipherment"], undefined, {}],
+    ["keyUsage", ["digitalSignature"], { critical: false }, { keyUsageCritical: false }],
+    ["extendedKeyUsage", ["serverAuth", "clientAuth"], undefined, {}],
+    ["extendedKeyUsage", ["serverAuth"], { critical: true }, { extendedKeyUsageCritical: true }],
+    ["basicConstraints", { cA: false }, undefined, {}],
+    ["basicConstraints", { cA: true, pathLen: 0 }, undefined, { keyUsage: ["keyCertSign"] }, true],
+    ["subjectAltName", ["a.example", "b.example"], undefined, {}],
+    ["issuerAltName", [{ dNSName: "ca.example" }], undefined, {}],
+    ["certificatePolicies", ["anyPolicy"], undefined, {}],
+    ["certificatePolicies", [{ oid: "anyPolicy", cps: "https://ca.example/cps" }], { critical: true }, { certificatePoliciesCritical: true }],
+    ["nameConstraints", { permitted: [{ dNSName: "example.com" }] }, undefined, caCarrierObj, true],
+    ["policyConstraints", { requireExplicitPolicy: 0, inhibitPolicyMapping: 1 }, undefined, {}],
+    ["inhibitAnyPolicy", 2, undefined, {}],
+    ["policyMappings", [{ issuerDomainPolicy: "domain-validated", subjectDomainPolicy: "organization-validated" }], undefined, {}],
+    ["policyMappings", [{ issuerDomainPolicy: "domain-validated", subjectDomainPolicy: "organization-validated" }], { critical: true }, { policyMappingsCritical: true }],
+    ["authorityInfoAccess", [{ accessMethod: "ocsp", accessLocation: "http://ocsp.example" }], undefined, {}],
+    ["subjectInfoAccess", [{ accessMethod: "id-ad-caRepository", accessLocation: { uniformResourceIdentifier: "https://ca.example/repo" } }], undefined, {}],
+    ["cRLDistributionPoints", ["http://crl.example/a.crl"], undefined, {}],
+    ["freshestCRL", ["http://crl.example/delta.crl"], undefined, {}],
+    ["qcStatements", [{ statementId: "qcCompliance" }, { statementId: "qcRetentionPeriod", info: { years: 10 } }], undefined, {}],
+    ["qcStatements", [{ statementId: "qcSSCD" }], { critical: true }, { qcStatementsCritical: true }],
+    ["subjectDirectoryAttributes", [{ type: "1.3.6.1.4.1.99999.1", values: [b.utf8("DE")] }], undefined, {}],
+    ["msCertificateTemplate", { templateID: "1.3.6.1.4.1.311.21.8.1.2.3", templateMajorVersion: 100, templateMinorVersion: 2 }, undefined, {}],
+    ["msEnrollCertType", "WebServer", undefined, {}],
+    ["msCaVersion", { caKeyIndex: 3, certIndex: 7 }, undefined, {}],
+    ["msPreviousCertHash", Buffer.alloc(20, 0x5a), undefined, {}],
+    ["msApplicationPolicies", ["anyPolicy"], undefined, {}],
+    ["ocspNoCheck", true, undefined, {}],
+    ["precertificatePoison", true, undefined, {}],
+    ["signedCertificateTimestampList", [sct], undefined, {}],
+    ["subjectKeyIdentifier", Buffer.alloc(20, 0x11), undefined, {}],
+    ["authorityKeyIdentifier", { keyIdentifier: Buffer.alloc(20, 0x22), authorityCertIssuer: [{ directoryName: [{ commonName: "CA" }] }], authorityCertSerialNumber: 7n }, undefined, {}],
+  ];
+  var okRows = 0;
+  for (var i = 0; i < rows.length; i++) {
+    var name = rows[i][0], value = rows[i][1], opts = rows[i][2], knobs = rows[i][3], needsCa = rows[i][4] === true;
+    var standalone = pki.x509.extension(name, value, opts);
+    var objExts = Object.assign({}, knobs);
+    objExts[name] = value;
+    var viaObject = pki.schema.x509.parse(await pki.x509.sign({ subject: "ext", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: objExts }, { key: s.key }));
+    var arr = (needsCa ? caCarrier.filter(function (e) { return !standalone.equals(e); }) : []).concat([standalone]);
+    var arrExts = needsCa && name === "basicConstraints" ? [pki.x509.extension("keyUsage", ["keyCertSign"]), standalone] : arr;
+    var viaArray = pki.schema.x509.parse(await pki.x509.sign({ subject: "ext", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: arrExts }, { key: s.key }));
+    var a = entryOf(viaObject, name), z = entryOf(viaArray, name);
+    var same = !!a && !!z && a.oid === z.oid && a.critical === z.critical && Buffer.compare(a.value, z.value) === 0;
+    if (same) okRows++;
+    else console.log("  extension() mismatch on " + name + (opts ? " " + JSON.stringify(opts) : ""));
+  }
+  check("every registered extension encodes identically through pki.x509.extension and spec.extensions (" + rows.length + " rows)", okRows === rows.length);
+  // Criticality. Class A is fixed by RFC 5280, so an opts.critical that disagrees is refused; the
+  // toolkit's fixed postures refuse a knob too; Class C and the subject-dependent SAN take one.
+  var fixedRefusals = [
+    ["nameConstraints", { permitted: [{ dNSName: "example.com" }] }, false],
+    ["authorityInfoAccess", [{ accessMethod: "ocsp", accessLocation: "http://ocsp.example" }], true],
+    ["subjectKeyIdentifier", Buffer.alloc(20, 1), true],
+    ["freshestCRL", ["http://crl.example/d.crl"], true],
+    ["cRLDistributionPoints", ["http://crl.example/a.crl"], true],
+    ["issuerAltName", [{ dNSName: "ca.example" }], true],
+    ["msEnrollCertType", "WebServer", true],
+    ["signedCertificateTimestampList", [sct], true],
+    ["ocspNoCheck", true, true],
+    ["precertificatePoison", true, false],
+  ];
+  var refused = 0;
+  for (var j = 0; j < fixedRefusals.length; j++) {
+    var r = fixedRefusals[j];
+    if (codeSync(function () { pki.x509.extension(r[0], r[1], { critical: r[2] }); }) === "x509/bad-input") refused++;
+    else console.log("  criticality knob not refused on " + r[0]);
+  }
+  check("a critical knob on an extension whose criticality is fixed -> x509/bad-input (" + fixedRefusals.length + " names)", refused === fixedRefusals.length);
+  check("...and the fixed value itself is accepted as a stated opts.critical", codeSync(function () { pki.x509.extension("nameConstraints", { permitted: [{ dNSName: "example.com" }] }, { critical: true }); }) === "NO-THROW");
+  check("the refusal names the clause", msgSync(function () { pki.x509.extension("authorityInfoAccess", [{ accessMethod: "ocsp", accessLocation: "http://ocsp.example" }], { critical: true }); }).indexOf("RFC 5280 sec. 4.2.2.1") > 0);
+  var sanCrit = asn1.decode(pki.x509.extension("subjectAltName", ["a.example"], { critical: true }));
+  check("subjectAltName takes the knob (its criticality follows the subject the caller knows)", sanCrit.children.length === 3);
+  check("basicConstraints carries its criticality inside the value, so opts.critical is refused", codeSync(function () { pki.x509.extension("basicConstraints", { cA: false }, { critical: false }); }) === "x509/bad-input");
+  check("basicConstraints { cA: true, critical: false } -> x509/bad-input", codeSync(function () { pki.x509.extension("basicConstraints", { cA: true, critical: false }); }) === "x509/bad-input");
+  // The within-extension rule of sec. 4.2.1.9 holds here as well as at issuance: a path length
+  // without the cA assertion is not a valid extension on its own.
+  check("basicConstraints { cA: false, pathLen: 0 } -> x509/bad-input", codeSync(function () { pki.x509.extension("basicConstraints", { cA: false, pathLen: 0 }); }) === "x509/bad-input");
+  check("basicConstraints { pathLen: 0 } without cA -> x509/bad-input", codeSync(function () { pki.x509.extension("basicConstraints", { pathLen: 0 }); }) === "x509/bad-input");
+  // The two identifiers need what only the assembled spec holds, so the derive-from-context forms
+  // are refused here and the caller is pointed at spec.extensions.
+  check("subjectKeyIdentifier: true -> x509/bad-input naming spec.extensions", msgSync(function () { pki.x509.extension("subjectKeyIdentifier", true); }).indexOf("spec.extensions") > 0);
+  check("authorityKeyIdentifier: true -> x509/bad-input", codeSync(function () { pki.x509.extension("authorityKeyIdentifier", true); }) === "x509/bad-input");
+  check("authorityKeyIdentifier without a keyIdentifier -> x509/bad-input", codeSync(function () { pki.x509.extension("authorityKeyIdentifier", { authorityCertIssuer: [{ directoryName: [{ commonName: "CA" }] }], authorityCertSerialNumber: 7n }); }) === "x509/bad-input");
+  check("authorityKeyIdentifier with authorityCertIssuer: true -> x509/bad-input", codeSync(function () { pki.x509.extension("authorityKeyIdentifier", { keyIdentifier: Buffer.alloc(20, 2), authorityCertIssuer: true, authorityCertSerialNumber: true }); }) === "x509/bad-input");
+  // An unregistered extension: a dotted OID with the already-encoded extnValue, critical as stated.
+  var custom = pki.x509.extension("1.3.6.1.4.1.99999.7", b.utf8("hello"), { critical: true });
+  var customNode = asn1.decode(custom);
+  check("a dotted OID with pre-encoded bytes yields an Extension with that OID and criticality",
+    asn1.read.oid(customNode.children[0]) === "1.3.6.1.4.1.99999.7" && customNode.children.length === 3 && asn1.read.octetString(customNode.children[2]).equals(b.utf8("hello")));
+  var customCert = pki.schema.x509.parse(await pki.x509.sign({ subject: "custom", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: [pki.x509.extension("1.3.6.1.4.1.99999.7", b.utf8("hello"))] }, { key: s.key }));
+  check("...and the certificate signer accepts it through the array form", !!entryOf(customCert, "1.3.6.1.4.1.99999.7"));
+  check("a dotted OID with a plain-object value -> x509/bad-input", codeSync(function () { pki.x509.extension("1.3.6.1.4.1.99999.7", { a: 1 }); }) === "x509/bad-input");
+  check("a dotted OID of a registered extension takes that extension's plain form", asn1.decode(pki.x509.extension(O("keyUsage"), ["digitalSignature"])).children.length === 3);
+  check("a registered extension with pre-encoded bytes where it takes a plain form -> x509/bad-input naming the plain form", msgSync(function () { pki.x509.extension("keyUsage", Buffer.from([3, 2, 7, 128])); }).indexOf("takes the plain form") > 0);
+  // The name door.
+  check("an unknown name -> x509/bad-input", codeSync(function () { pki.x509.extension("notAnExtension", true); }) === "x509/bad-input");
+  check("a registered OID name that is not an extension -> x509/bad-input", codeSync(function () { pki.x509.extension("commonName", "x"); }) === "x509/bad-input");
+  check("a non-string name -> x509/bad-input", codeSync(function () { pki.x509.extension(42, true); }) === "x509/bad-input");
+  check("a criticality sibling is not an extension name", codeSync(function () { pki.x509.extension("keyUsageCritical", true); }) === "x509/bad-input");
+  check("a missing value -> x509/bad-input", codeSync(function () { pki.x509.extension("keyUsage"); }) === "x509/bad-input");
+  check("an unknown option -> x509/bad-input", codeSync(function () { pki.x509.extension("keyUsage", ["digitalSignature"], { critcal: true }); }) === "x509/bad-input");
+  check("opts.critical that is not a boolean -> x509/bad-input", codeSync(function () { pki.x509.extension("keyUsage", ["digitalSignature"], { critical: 1 }); }) === "x509/bad-input");
+  check("a flag extension given a value other than true -> x509/bad-input", codeSync(function () { pki.x509.extension("ocspNoCheck", 1); }) === "x509/bad-input");
+  check("a malformed value reaches the shared encoder's refusal", codeSync(function () { pki.x509.extension("keyUsage", ["notABit"]); }) === "x509/bad-input");
+  // The output is a fresh Buffer each call.
+  var e1 = pki.x509.extension("keyUsage", ["digitalSignature"]), e2 = pki.x509.extension("keyUsage", ["digitalSignature"]);
+  check("two calls return equal but distinct Buffers", e1.equals(e2) && e1 !== e2 && Buffer.isBuffer(e1));
 }
 
 // ---- the key identifiers a conforming CA MUST issue (RFC 5280 sec. 4.2.1.1 / 4.2.1.2) ------------
