@@ -4,6 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.25 — 2026-09-12
+
+An OCSP response can say how far back its status reaches and which CRL it came from.
+
+### Added
+
+- A per-certificate response given to pki.ocsp.sign takes singleExtensions as an object beside the array of pre-encoded DER it already took: archiveCutoff is the Date before which the responder no longer holds status (RFC 6960 section 4.4.4), and crlReferences is { crlUrl, crlNum, crlTime }, any subset of the three, naming the CRL the status was drawn from (section 4.4.2). A fault in either is reported as ocsp/bad-input.
+- pki.schema.ocsp.parseResponse decodes both onto the single response's extension entry, as archiveCutoff and crlReferences beside the raw value, the way it already decodes the nonce. A value that is not a GeneralizedTime, or a CrlID that is not the three-member SEQUENCE section 4.4.2 defines, is refused with ocsp/bad-archive-cutoff or ocsp/bad-crl-id rather than passed through.
+
+### Changed
+
+- A pre-encoded singleExtensions entry given to pki.ocsp.sign is now read with the parser's own singleExtensions reader before it is emitted, so a malformed archive cutoff or CRL reference is refused at the signer with the parser's code instead of being written into a response the toolkit itself cannot read. A well-formed entry is unaffected. An object passed where the array was expected was previously dropped without a word; it is now either taken as the object form or refused.
+
 ## v0.7.24 — 2026-09-12
 
 A certificate request can name every extension its subject owns.
