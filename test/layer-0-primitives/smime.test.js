@@ -98,6 +98,20 @@ async function run() {
   Object.defineProperty(lateCert, "cert", { enumerable: true, get: function () { lateReads++; return lateReads <= 1 ? null : kuEnc.cert; } });
   check("0l. a certificate that appears only on a second read is not signed under",
     (await codeOf(function () { return pki.smime.sign(MSG, [lateCert]); })) === "cms/bad-input" && lateReads === 1);
+  // The rule is about the certificate the message CARRIES. A key-only signer (RFC 8550 sec. 3
+  // lets a sender omit certificates where correspondents hold them by other means) carries none,
+  // so there is nothing here to hold to it; the reader applies sec. 4.4 to the certificate it
+  // supplies. The form stays accepted.
+  var withSki = signing.makeSigner("ec-p256", { ski: true });
+  var keyOnlyMsg = await pki.smime.sign(MSG, [{ key: withSki.key, spki: withSki.spki, keyIdentifier: require("crypto").createHash("sha1").update(withSki.spki).digest() }]);
+  var keyOnlyVerdict = await pki.smime.verify(keyOnlyMsg, { certs: [withSki.cert] });
+  check("0m. CONTROL: a key-only signer signs, and verifies under a certificate the reader supplies",
+    keyOnlyVerdict.valid === true);
+  // A sparse signer list is refused before any slot is visited, as pki.cms.sign refuses it.
+  var sparseErr = null;
+  try { await pki.smime.sign(MSG, new Array(100000000)); } catch (e) { sparseErr = e; }
+  check("0n. a sparse signer list is refused at its first missing slot, before traversal",
+    sparseErr !== null && sparseErr.code === "smime/bad-input" && /the signer list\[0\] is missing/.test(sparseErr.message));
   check("0f. the second of two signers is held to the same rule, named by position",
     /signer 2/.test(String((await (async function () { try { await pki.smime.sign(MSG, [{ cert: rsa.cert, key: rsa.key }, { cert: kuEnc.cert, key: kuEnc.key }]); return ""; } catch (e) { return e.message; } })()))));
 
