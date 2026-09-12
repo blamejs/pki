@@ -536,6 +536,34 @@ async function run() {
   check("10a. a legacy id-PasswordBasedMac protectionAlg -> cmp/unsupported-algorithm", (await pki.cmp.verify(pbmOid, { sharedSecret: "x" })).code === "cmp/unsupported-algorithm");
   var dhOid = substituteAlg(await buildSig(), b.sequence([b.oid(pki.oid.byName("dhBasedMac"))]));
   check("10b. a legacy id-DHBasedMac protectionAlg -> cmp/unsupported-algorithm", (await pki.cmp.verify(dhOid, { sharedSecret: "x" })).code === "cmp/unsupported-algorithm");
+  // RFC 9810 sec. 5.1.3 closes the list of protection cases, and RFC 9481 sec. 6.2 names the symmetric
+  // MAC identifiers a protectionAlg may carry. One of them names a MAC, so a message carrying one is a
+  // MAC-protected message this toolkit does not verify (a bare symmetric MAC keys the secret directly,
+  // with no derivation and no work factor), and the verdict says so; it is never a signature that
+  // failed to verify, whatever credential the caller supplied. The rule is stated once for the whole
+  // family: the SHA-2 HMACs, the SHA-1 HMAC outside the profile, the three AES-GMACs and both KMACs.
+  var SYMMETRIC_MACS = ["hmacWithSHA1", "hmacWithSHA224", "hmacWithSHA256", "hmacWithSHA384", "hmacWithSHA512",
+    "aes128-GMAC", "aes192-GMAC", "aes256-GMAC", "kmacWithSHAKE128", "kmacWithSHAKE256"];
+  check("10c. every RFC 9481 sec. 6.2 identifier is registered", SYMMETRIC_MACS.every(function (n) { return typeof pki.oid.byName(n) === "string"; }));
+  var sigMsg = await buildSig();
+  var symmetricVerdicts = [];
+  for (var si = 0; si < SYMMETRIC_MACS.length; si++) {
+    var symDer = substituteAlg(sigMsg, b.sequence([b.oid(pki.oid.byName(SYMMETRIC_MACS[si]))]));
+    symmetricVerdicts.push({ name: SYMMETRIC_MACS[si], none: await pki.cmp.verify(symDer, {}), cert: await pki.cmp.verify(symDer, { signerCert: s.cert }), secret: await pki.cmp.verify(symDer, { sharedSecret: "x" }) });
+  }
+  check("10d. a bare symmetric MAC protectionAlg -> { valid: false, protectionType: 'mac', code: cmp/unsupported-algorithm } with no credential, for every family member",
+    symmetricVerdicts.every(function (r) { return r.none.valid === false && r.none.protectionType === "mac" && r.none.code === "cmp/unsupported-algorithm"; }));
+  check("10e. the same verdict when a signer certificate is supplied: a MAC identifier never reaches the signature path",
+    symmetricVerdicts.every(function (r) { return r.cert.valid === false && r.cert.protectionType === "mac" && r.cert.code === "cmp/unsupported-algorithm"; }));
+  check("10f. the same verdict when a shared secret is supplied, as for the legacy identifiers in 10a and 10b",
+    symmetricVerdicts.every(function (r) { return r.secret.valid === false && r.secret.protectionType === "mac" && r.secret.code === "cmp/unsupported-algorithm"; }));
+  check("10g. the reason names the algorithm and the RFC 9481 section", symmetricVerdicts.every(function (r) { return typeof r.none.reason === "string" && r.none.reason.indexOf(r.name) !== -1 && /RFC 9481 sec\. 6\.2/.test(r.none.reason); }));
+  check("10h. the legacy identifiers keep their verdict shape under the rewritten table",
+    (function () { var v = symmetricVerdicts; return v.length === SYMMETRIC_MACS.length; })() && (await pki.cmp.verify(pbmOid, {})).protectionType === "mac" && (await pki.cmp.verify(dhOid, {})).protectionType === "mac");
+  // An OID no table knows is still the open-ended signature case (sec. 5.1.3.3 admits any digital
+  // signature AlgorithmIdentifier), and still fails closed there.
+  var unregistered = substituteAlg(sigMsg, b.sequence([b.oid("1.3.6.1.4.1.99999.1")]));
+  check("10i. an unregistered protectionAlg reaches the signature path and fails closed", (function (v) { return v.valid === false && v.protectionType === "signature"; })(await pki.cmp.verify(unregistered, { signerCert: s.cert })));
 
   // ===== 11. reject PBMAC1 keyLength-omitted / SHA-1 PRF (params surgery on a real MAC message) =====
   var SALT = Buffer.alloc(16, 9);
