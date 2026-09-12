@@ -50,6 +50,10 @@ async function testPemOutput() {
   check("an unknown option is refused rather than dropped",
     (await codeOf(pki.csr.sign({ subject: "PEM", subjectPublicKey: s.spki }, { key: s.key }, { pemm: true })))
       === "csr/bad-input");
+  // The `{ key }` wrapper reads one field, so a second one in it is a request that would never be carried out.
+  check("an unknown field beside key in the { key } wrapper is refused",
+    (await codeOf(pki.csr.sign({ subject: "PEM", subjectPublicKey: s.spki }, { key: s.key, pss: true })))
+      === "csr/bad-input");
   check("a name every object inherits is not a recognized option",
     (await codeOf(pki.csr.sign({ subject: "PEM", subjectPublicKey: s.spki }, { key: s.key }, { toString: 1 })))
       === "csr/bad-input");

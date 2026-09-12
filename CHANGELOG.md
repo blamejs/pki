@@ -4,6 +4,18 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.37 — 2026-09-12
+
+Every object a signer reads refuses a field it does not read, a signed OCSP request names its signer, and the requester nonce meets the RFC 9654 floor.
+
+### Changed
+
+- pki.ocsp.sign refuses an unknown field in responseData (accepted: responderID, responses, producedAt), in each response entry (cert, issuer, certID, hashAlgorithm, status, thisUpdate, nextUpdate, singleExtensions), in the responder ({ cert, key }) and in a revoked status ({ revoked, revocationReason }); pki.ocsp.buildRequest refuses one in a query entry ({ cert, issuer, singleRequestExtensions }) and in the signer ({ cert, key }). A signing option such as extendedRevoke given in responseData was silently ignored before; it is now refused with the message naming where it belongs.
+- pki.attrcert.sign refuses an unknown option (accepted: pem, pss, digestAlgorithm) and an unknown field in a role, clearance, securityCategory, group / chargingIdentity (IetfAttrSyntax) and its values, authenticationInfo / accessIdentity, target, aaControls, objectDigestInfo or baseCertificateID object. The CRL distribution points extension key is spelled cRLDistributionPoints, as pki.x509.sign spells it; the spelling crlDistributionPoints is refused with a message naming the key.
+- pki.csr.sign refuses an unknown field beside key in the { key } wrapper; pki.ct.signSct refuses an unknown option (accepted: timestamp, extensions, logId), and a log entry carrying a field its arm does not read (a leafCert on a precert_entry, an unknown name on either) is refused by signSct and verifySct alike; a CMS signed or unsigned attribute entry is { type, values } and nothing else.
+- pki.ocsp.buildRequest with a signer takes the signer certificate's subject as the requestorName when none is stated (RFC 6960 sec. 4.1.2: a requestor that signs SHALL specify its name), and pki.ocsp.verifyRequest holds the requestorName of a signed request to the subject of a certificate that verified the signature, compared as a distinguished name; the verdict reports it as requestorNamed and valid requires it. A requestorName given as a GeneralName form other than directoryName is not compared and never passes. The parsed request carries the requestorName's decoded value.
+- pki.ocsp.buildRequest refuses a caller nonce shorter than 32 octets (RFC 9654 sec. 2.1: an OCSP requester MUST use a minimum length of 32 octets); the responder side keeps the section's 1..128 octet bounds for the nonce it echoes.
+
 ## v0.7.36 — 2026-09-12
 
 The attribute-certificate signer holds its extensions and attributes to the RFC 5755 issuer rules, and emits the authority key identifier by default.

@@ -355,7 +355,7 @@ async function testRevocationIsAnswered() {
 
   // The caller established the status themselves. `noExt` carries no pointer either, and that is
   // deliberate: sec. 6 closes with "An AC verifier MAY use any source for AC revocation status
-  // information", so requiring a crlDistributionPoints or authorityInfoAccess pointer before
+  // information", so requiring a cRLDistributionPoints or authorityInfoAccess pointer before
   // accepting the caller's answer would refuse a verifier reading a directory, an out-of-band CRL,
   // or a local record. The verdict still separates the two answers -- see noRevAvail below.
   var r3 = await pki.attrcert.verify(noExt, trusted(aa), { time: WITHIN, revocationStatus: "notRevoked" });
@@ -435,7 +435,7 @@ async function testNoRevAvailAndAPointerAreExclusive() {
   check("the forged AC's own signature is genuine", r.signatureValid === true);
   check("an AC carrying both schemes is refused", r.verified === false);
   check("the refusal cites the section", /sec\. 6/.test(String(r.reason)));
-  check("the refusal names the pointer", /crlDistributionPoints/.test(String(r.reason)));
+  check("the refusal names the pointer", /cRLDistributionPoints/.test(String(r.reason)));
   // Refused whichever way the caller answers: the certificate itself is what is wrong.
   check("a caller-supplied notRevoked does not rescue it",
     (await pki.attrcert.verify(forged, trusted(aa), { time: WITHIN, revocationStatus: "notRevoked" })).verified === false);

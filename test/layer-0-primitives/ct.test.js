@@ -568,6 +568,12 @@ async function testSignSct() {
   check("113. signSct with a NaN timestamp -> ct/bad-input", (await vres(function () { return pki.ct.signSct(entry, ecPriv, { timestamp: NaN }); })) === "ct/bad-input");
   var pEntry = { entryType: 1, tbsCertificate: Buffer.alloc(40, 0x33), issuerKeyHash: Buffer.alloc(32, 0x44) };
   check("114. signSct over a precert entry -> verifySct round-trips", (await pki.ct.verifySct(pEntry, await pki.ct.signSct(pEntry, ecPriv), ecSpki)) === true);
+  // An unknown field in opts or in the entry is refused rather than dropped, so a misspelled
+  // timestamp cannot leave "now" in force with nothing reported.
+  check("114a. signSct opts with an unknown field -> ct/bad-input", (await vres(function () { return pki.ct.signSct(entry, ecPriv, { timestmp: 1700000000000 }); })) === "ct/bad-input");
+  check("114b. an x509_entry carrying an unknown field -> ct/bad-input", (await vres(function () { return pki.ct.signSct({ entryType: 0, leafCert: leaf, leafcert: leaf }, ecPriv); })) === "ct/bad-input");
+  check("114c. a precert_entry carrying a leafCert -> ct/bad-input (that field belongs to x509_entry)", (await vres(function () { return pki.ct.signSct({ entryType: 1, tbsCertificate: Buffer.alloc(40, 0x33), issuerKeyHash: Buffer.alloc(32, 0x44), leafCert: leaf }, ecPriv); })) === "ct/bad-input");
+  check("114d. verifySct refuses the same entry shape (one reader for both directions)", (await vres(function () { return pki.ct.verifySct({ entryType: 0, leafCert: leaf, leafcert: leaf }, sct, ecSpki); })) === "ct/bad-input");
   check("115. signSct accepts a PEM-string log key", (await pki.ct.verifySct(entry, await pki.ct.signSct(entry, ecPair.privateKey.export({ type: "pkcs8", format: "pem" })), ecSpki)) === true);
   check("116. signSct rejects a public-key SPKI (needs the private key) -> ct/bad-input", (await vres(function () { return pki.ct.signSct(entry, ecSpki); })) === "ct/bad-input");
   check("117. signSct rejects a public KeyObject -> ct/bad-input", (await vres(function () { return pki.ct.signSct(entry, ecPair.publicKey); })) === "ct/bad-input");

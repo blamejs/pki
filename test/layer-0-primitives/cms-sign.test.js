@@ -485,6 +485,10 @@ async function testSignedAttributes() {
   var er = await pki.cms.verify(withExtra);
   check("additional signed attribute -> still verifies", er.valid === true);
   check("additional signed attribute is present", pki.schema.cms.parse(withExtra).signerInfos[0].signedAttrs.length === 4);
+  // An attribute entry reads two fields; a third is a request that would never be carried out.
+  async function cmsCode(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code; } }
+  check("an additional signed attribute entry with an unknown field -> cms/bad-input", (await cmsCode(function () { return pki.cms.sign(CONTENT, makeSigner("ec-p256"), { additionalSignedAttributes: [{ type: "1.2.840.113549.1.9.16.2.4", values: [attrVal], critical: true }] }); })) === "cms/bad-input");
+  check("an unsigned attribute entry with an unknown field -> cms/bad-input", (await cmsCode(function () { return pki.cms.sign(CONTENT, makeSigner("ec-p256"), { unsignedAttributes: [{ type: "1.2.840.113549.1.9.16.2.4", value: attrVal }] }); })) === "cms/bad-input");
 
   // signing-time omitted on request.
   var noTime = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ec-p256"), { signingTime: false }));
