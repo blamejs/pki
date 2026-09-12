@@ -243,6 +243,7 @@ var CORRESPONDS_ALGS = [
   ["x25519", ["x25519"]], ["x448", ["x448"]],
   ["ml-dsa-65", ["ml-dsa-65"]], ["ml-kem-768", ["ml-kem-768"]],
   ["slh-dsa-sha2-128s", ["slh-dsa-sha2-128s"]],
+  ["dh (modp14)", ["dh", { group: "modp14" }]],
 ];
 
 async function testCorrespondsTo(keyInternal) {
@@ -403,13 +404,214 @@ async function testCorrespondsTo(keyInternal) {
   check("and input that is not a SubjectPublicKeyInfo",
     (await codeOf(keyInternal.correspondsTo(
       rsaPair.privateKey.export({ format: "der", type: "pkcs8" }), b.integer(1n)))) === "key/bad-input");
-  // A key type none of the three arms can drive says so, rather than answering either way about a
-  // pair it never exercised. Finite-field Diffie-Hellman signs nothing and is not one of the two
-  // key-agreement types this reaches.
-  var dh = nodeCrypto.generateKeyPairSync("dh", { group: "modp14" });
-  check("correspondsTo reports an algorithm it cannot exercise, rather than guessing",
-    (await codeOf(keyInternal.correspondsTo(dh.privateKey.export({ format: "der", type: "pkcs8" }),
-      dh.publicKey.export({ format: "der", type: "spki" })))) === "key/unsupported-algorithm");
+  // A pair the arms cannot exercise says so, rather than answering either way about a pair it never
+  // exercised: an RSA private key whose private components are unusable imports, then fails the
+  // signing probe, and the failure is reported, never read as "not a pair" from the public copy.
+  var rsaJwk = rsaPair.privateKey.export({ format: "jwk" });
+  var ones = Buffer.alloc(Buffer.from(rsaJwk.d, "base64url").length, 1).toString("base64url");
+  var hollowRsa = nodeCrypto.createPrivateKey({ key: { kty: "RSA", n: rsaJwk.n, e: rsaJwk.e, d: ones, p: rsaJwk.p, q: rsaJwk.q, dp: ones, dq: ones, qi: ones }, format: "jwk" });
+  check("correspondsTo reports a pair it cannot exercise, rather than guessing from the public copy",
+    (await codeOf(keyInternal.correspondsTo(hollowRsa.export({ format: "der", type: "pkcs8" }),
+      rsaPair.publicKey.export({ format: "der", type: "spki" })))) === "key/unsupported-algorithm");
+  // Finite-field Diffie-Hellman signs nothing and has no fixed group to draw an ephemeral from, but
+  // its PrivateKeyInfo carries the exponent alone, so the public value it generates is the proof.
+  var dhA = nodeCrypto.generateKeyPairSync("dh", { group: "modp14" }), dhB = nodeCrypto.generateKeyPairSync("dh", { group: "modp14" });
+  check("correspondsTo answers false for a DH private key against another DH public value of the same group",
+    (await keyInternal.correspondsTo(dhA.privateKey.export({ format: "der", type: "pkcs8" }), dhB.publicKey.export({ format: "der", type: "spki" }))) === false);
+  // The comparison is of KEYS, not encodings: a DHParameter carrying the optional privateValueLength
+  // (PKCS #3) beside the same p and g encodes the same public value.
+  var dhSpki = pki.asn1.decode(dhA.publicKey.export({ format: "der", type: "spki" }));
+  var dhAlg = dhSpki.children[0], dhParams = pki.asn1.decode(dhAlg.children[1].bytes);
+  var withLength = b.sequence([b.sequence([b.raw(dhAlg.children[0].bytes), b.sequence([b.raw(dhParams.children[0].bytes), b.raw(dhParams.children[1].bytes), b.integer(224n)])]), b.raw(dhSpki.children[1].bytes)]);
+  check("correspondsTo answers true for a DH pair whose public encoding adds privateValueLength",
+    (await keyInternal.correspondsTo(dhA.privateKey.export({ format: "der", type: "pkcs8" }), withLength)) === true);
+  // A certificate names a Diffie-Hellman key in the X9.42 form (RFC 3279 sec. 2.3.3: dhpublicnumber,
+  // DomainParameters { p, g, q }), while the runtime writes the PKCS #3 form: the two encodings carry
+  // one public value, so a PKCS #3 private key pairs with an X9.42 certificate key and an X9.42
+  // private key pairs with a PKCS #3 public one.
+  var dhP = pki.asn1.read.integer(dhParams.children[0]), dhG = pki.asn1.read.integer(dhParams.children[1]);
+  var x942Alg = b.sequence([b.oid(pki.oid.byName("dhpublicnumber")), b.sequence([b.integer(dhP), b.integer(dhG), b.integer((dhP - 1n) / 2n)])]);
+  var x942Spki = b.sequence([x942Alg, b.raw(dhSpki.children[1].bytes)]);
+  var dhPk8 = pki.asn1.decode(dhA.privateKey.export({ format: "der", type: "pkcs8" }));
+  var x942Pk8 = b.sequence([b.raw(dhPk8.children[0].bytes), x942Alg, b.raw(dhPk8.children[2].bytes)]);
+  var dhBSpki = pki.asn1.decode(dhB.publicKey.export({ format: "der", type: "spki" }));
+  var x942OtherSpki = b.sequence([x942Alg, b.raw(dhBSpki.children[1].bytes)]);
+  check("correspondsTo answers true for a PKCS #3 DH private key against the X9.42 form of its public value",
+    (await keyInternal.correspondsTo(dhA.privateKey.export({ format: "der", type: "pkcs8" }), x942Spki)) === true);
+  check("correspondsTo answers true for an X9.42 DH private key against the PKCS #3 form of its public value",
+    (await keyInternal.correspondsTo(x942Pk8, dhA.publicKey.export({ format: "der", type: "spki" }))) === true);
+  check("correspondsTo answers true for an X9.42 pair",
+    (await keyInternal.correspondsTo(x942Pk8, x942Spki)) === true);
+  check("correspondsTo answers false for a PKCS #3 DH private key against another key's X9.42 public value",
+    (await keyInternal.correspondsTo(dhA.privateKey.export({ format: "der", type: "pkcs8" }), x942OtherSpki)) === false);
+  // The PKCS #3 form the X9.42 structure is brought to carries no q, j or validationParms, so those
+  // are read and held to the p and g beside them BEFORE they are dropped: a DomainParameters that
+  // omits the mandatory q, states an order p-1 is not a multiple of, or a cofactor that is not
+  // (p-1)/q, is a malformed key and refused, whatever value it carries. Proper validationParms pass.
+  var dhAPk8 = dhA.privateKey.export({ format: "der", type: "pkcs8" }), dhAValue = b.raw(dhSpki.children[1].bytes);
+  function x942With(params) { return b.sequence([b.sequence([b.oid(pki.oid.byName("dhpublicnumber")), b.sequence(params)]), dhAValue]); }
+  check("an X9.42 public key whose DomainParameters omit q -> key/bad-input, not a pair",
+    (await codeOf(keyInternal.correspondsTo(dhAPk8, x942With([b.integer(dhP), b.integer(dhG)])))) === "key/bad-input");
+  check("an X9.42 public key stating a subgroup order p-1 is not a multiple of -> key/bad-input",
+    (await codeOf(keyInternal.correspondsTo(dhAPk8, x942With([b.integer(dhP), b.integer(dhG), b.integer((dhP - 1n) / 2n + 2n)])))) === "key/bad-input");
+  // q dividing p-1 is necessary and not sufficient: the stated order is held to g by exponentiation,
+  // affordable once the operands are bounded. For a safe-prime group g = 2 has order (p-1)/2, so a
+  // stated q = 2 divides p-1 and is not the order of g (g^2 = 4).
+  var qTwoErr = null;
+  try { await keyInternal.correspondsTo(dhAPk8, x942With([b.integer(dhP), b.integer(dhG), b.integer(2n)])); } catch (e) { qTwoErr = e; }
+  check("an X9.42 public key stating q = 2 beside g = 2 (divides p-1, not the order of g) -> key/bad-input naming the order",
+    qTwoErr !== null && qTwoErr.code === "key/bad-input" && /subgroup order its own p and g do not have/.test(qTwoErr.message));
+  // g^q = 1 proves the order of g DIVIDES q; q is the order only when q is prime, so a stated q
+  // that is a multiple of the order (p-1 beside a g of order (p-1)/2) is refused as not prime, and
+  // a composite modulus describes no group at all: both are the runtime's primality test on
+  // operands the cap already admitted.
+  var qCompositeErr = null;
+  try { await keyInternal.correspondsTo(dhAPk8, x942With([b.integer(dhP), b.integer(dhG), b.integer(dhP - 1n)])); } catch (e) { qCompositeErr = e; }
+  check("an X9.42 public key stating q = p-1 (g^q = 1, q not prime) -> key/bad-input naming the order as not prime",
+    qCompositeErr !== null && qCompositeErr.code === "key/bad-input" && /subgroup order that is not prime/.test(qCompositeErr.message));
+  var pCompositeErr = null;
+  try { await keyInternal.correspondsTo(dhAPk8, x942With([b.integer(15n), b.integer(4n), b.integer(2n)])); } catch (e) { pCompositeErr = e; }
+  check("an X9.42 public key whose modulus is composite (15, g = 4, q = 2, g^q = 1) -> key/bad-input naming the modulus",
+    pCompositeErr !== null && pCompositeErr.code === "key/bad-input" && /modulus is not prime/.test(pCompositeErr.message));
+  check("an X9.42 public key whose cofactor is not (p-1)/q -> key/bad-input",
+    (await codeOf(keyInternal.correspondsTo(dhAPk8, x942With([b.integer(dhP), b.integer(dhG), b.integer((dhP - 1n) / 2n), b.integer(3n)])))) === "key/bad-input");
+  check("an X9.42 private key whose DomainParameters omit q -> key/bad-input",
+    (await codeOf(keyInternal.correspondsTo(b.sequence([b.raw(dhPk8.children[0].bytes), b.sequence([b.oid(pki.oid.byName("dhpublicnumber")), b.sequence([b.integer(dhP), b.integer(dhG)])]), b.raw(dhPk8.children[2].bytes)]), dhA.publicKey.export({ format: "der", type: "spki" })))) === "key/bad-input");
+  // The tests above multiply and reduce the parameters, so their operands are bounded before them: a
+  // modulus above the largest group the toolkit agrees over is refused on its size alone.
+  var hugeP = (1n << BigInt(8 * pki.constants.LIMITS.DH_MAX_MODULUS_BYTES)) + 1n;
+  var hugeErr = null;
+  try { await keyInternal.correspondsTo(dhAPk8, x942With([b.integer(hugeP), b.integer(2n), b.integer((hugeP - 1n) / 2n)])); } catch (e) { hugeErr = e; }
+  check("an X9.42 public key whose modulus exceeds the largest group the toolkit agrees over -> key/bad-input on its size",
+    hugeErr !== null && hugeErr.code === "key/bad-input" && /larger than any Diffie-Hellman group/.test(hugeErr.message));
+  // The bound is on magnitude, so a negative operand is refused on its sign before any multiply or
+  // modulo runs on it; and a validationParms counter is a count, so a negative one is malformed.
+  var hugeNeg = -(1n << 100000n);
+  check("an X9.42 public key stating a huge negative order and cofactor -> key/bad-input before the multiplication",
+    (await codeOf(keyInternal.correspondsTo(dhAPk8, x942With([b.integer(dhP), b.integer(dhG), b.integer(hugeNeg), b.integer(hugeNeg)])))) === "key/bad-input");
+  check("an X9.42 public key whose validationParms.pgenCounter is negative -> key/bad-input",
+    (await codeOf(keyInternal.correspondsTo(dhAPk8, x942With([b.integer(dhP), b.integer(dhG), b.integer((dhP - 1n) / 2n), b.sequence([b.bitString(Buffer.alloc(20, 7), 0), b.integer(-1n)])])))) === "key/bad-input");
+  // The private exponent is held inside the group before the runtime raises g to it: a stated x of
+  // any width is a modular exponentiation of that width, and in a central key generation the key
+  // comes from the other side. The value g^x is the same for x and for x reduced, so the pair the
+  // wide exponent "matches" is built from the reduced one.
+  var wideX = (1n << 8192n) + 3n;
+  var wideY = keyInternal.modPow(dhG, wideX % (dhP - 1n), dhP);
+  var dhAlgNode = dhSpki.children[0];
+  var widePk8 = b.sequence([b.integer(0n), b.raw(dhAlgNode.bytes), b.octetString(b.integer(wideX))]);
+  var wideYSpki = b.sequence([b.raw(dhAlgNode.bytes), b.bitString(b.integer(wideY), 0)]);
+  check("a DH private key whose exponent is wider than its modulus -> key/bad-input, before the runtime exponentiates",
+    (await codeOf(keyInternal.correspondsTo(widePk8, wideYSpki))) === "key/bad-input");
+  // The cap is on the group, not on the encoding that names it: a PKCS #3 key of a group wider than
+  // any the toolkit agrees over (RFC 3526 modp18, 8192 bits) is refused on its size on either side,
+  // before the runtime raises anything to anything.
+  var wide = nodeCrypto.generateKeyPairSync("dh", { group: "modp18" });
+  var wideErr = null;
+  try { await keyInternal.correspondsTo(wide.privateKey.export({ format: "der", type: "pkcs8" }), wide.publicKey.export({ format: "der", type: "spki" })); } catch (e) { wideErr = e; }
+  check("a PKCS #3 DH pair of a group wider than the toolkit agrees over -> key/bad-input on its size",
+    wideErr !== null && wideErr.code === "key/bad-input" && /larger than any Diffie-Hellman group/.test(wideErr.message));
+  var wideMixErr = null;
+  try { await keyInternal.correspondsTo(dhAPk8, wide.publicKey.export({ format: "der", type: "spki" })); } catch (e) { wideMixErr = e; }
+  check("a PKCS #3 DH public key of a group wider than the toolkit agrees over -> key/bad-input on its size, whatever the private half",
+    wideMixErr !== null && wideMixErr.code === "key/bad-input" && /larger than any Diffie-Hellman group/.test(wideMixErr.message));
+  // Whether the two halves are one family is answered from their algorithm identifiers before
+  // either structure is validated: an RSA private key against a DH public key is not a pair, and
+  // nothing is proven prime to say so, whatever the DH structure states.
+  check("an RSA private key against a DH public key over a composite modulus -> false, with no structure validated",
+    (await keyInternal.correspondsTo(rsaPair.privateKey.export({ format: "der", type: "pkcs8" }), x942With([b.integer(15n), b.integer(4n), b.integer(2n)]))) === false);
+  check("a DH private key against an RSA public key -> false",
+    (await keyInternal.correspondsTo(dhAPk8, rsaPair.publicKey.export({ format: "der", type: "spki" }))) === false);
+  // The group is validated in the PKCS #3 form too, not only where the X9.42 form is rewritten
+  // into it: a pair over a composite modulus (p - 2 beside the modp14 g, the value recomputed in
+  // it) is refused on the modulus, and a generator outside (1, p-1) on the group.
+  var pComposite = dhP - 2n;
+  var xSmall = 123456789n;
+  var pkcs3Alg = function (p) { return b.sequence([b.oid(pki.oid.byName("dhKeyAgreement")), b.sequence([b.integer(p), b.integer(dhG)])]); };
+  var compositePk8 = b.sequence([b.integer(0n), pkcs3Alg(pComposite), b.octetString(b.integer(xSmall))]);
+  var compositeSpki = b.sequence([pkcs3Alg(pComposite), b.bitString(b.integer(keyInternal.modPow(dhG, xSmall, pComposite)), 0)]);
+  var pkcs3CompositeErr = null;
+  try { await keyInternal.correspondsTo(compositePk8, compositeSpki); } catch (e) { pkcs3CompositeErr = e; }
+  check("a PKCS #3 DH pair over a composite modulus -> key/bad-input naming the modulus",
+    pkcs3CompositeErr !== null && pkcs3CompositeErr.code === "key/bad-input" && /modulus is not prime/.test(pkcs3CompositeErr.message));
+  var badGAlg = b.sequence([b.oid(pki.oid.byName("dhKeyAgreement")), b.sequence([b.integer(dhP), b.integer(dhP - 1n)])]);
+  check("a PKCS #3 DH public key whose generator is p-1 -> key/bad-input on the group",
+    (await codeOf(keyInternal.correspondsTo(dhAPk8, b.sequence([badGAlg, b.raw(dhSpki.children[1].bytes)])))) === "key/bad-input");
+  // The PKCS #3 structure is read strictly in both halves: DHParameter is SEQUENCE { p, g,
+  // privateValueLength OPTIONAL } (PKCS #3 sec. 9), the optional length is a positive count no
+  // longer than the modulus, and a public value's BIT STRING is octet-aligned.
+  function pkcs3AlgWith(third) { return b.sequence([b.oid(pki.oid.byName("dhKeyAgreement")), b.sequence([b.integer(dhP), b.integer(dhG), third])]); }
+  check("a PKCS #3 DH public key whose privateValueLength is 0 -> key/bad-input",
+    (await codeOf(keyInternal.correspondsTo(dhAPk8, b.sequence([pkcs3AlgWith(b.integer(0n)), b.raw(dhSpki.children[1].bytes)])))) === "key/bad-input");
+  check("a PKCS #3 DH public key whose privateValueLength exceeds its modulus -> key/bad-input",
+    (await codeOf(keyInternal.correspondsTo(dhAPk8, b.sequence([pkcs3AlgWith(b.integer(2049n)), b.raw(dhSpki.children[1].bytes)])))) === "key/bad-input");
+  check("a PKCS #3 DH private key whose privateValueLength is 0 -> key/bad-input",
+    (await codeOf(keyInternal.correspondsTo(b.sequence([b.raw(dhPk8.children[0].bytes), pkcs3AlgWith(b.integer(0n)), b.raw(dhPk8.children[2].bytes)]), dhA.publicKey.export({ format: "der", type: "spki" })))) === "key/bad-input");
+  var yBytes = Buffer.from(pki.asn1.read.bitString(dhSpki.children[1]).bytes);
+  yBytes[yBytes.length - 1] &= 0xf8;   // three zero padding bits, so the encoding is DER with 3 unused bits
+  check("a PKCS #3 DH public key whose BIT STRING is not octet-aligned -> key/bad-input",
+    (await codeOf(keyInternal.correspondsTo(dhAPk8, b.sequence([b.raw(dhAlgNode.bytes), b.bitString(yBytes, 3)])))) === "key/bad-input");
+  // An X9.42 public value is held to the subgroup its own parameters state: -(g^x) has order 2q,
+  // sits inside (1, p-1), and is refused as outside the subgroup rather than answered false.
+  var yOut = dhP - keyInternal.modPow(dhG, xSmall, dhP);
+  var yOutErr = null;
+  try { await keyInternal.correspondsTo(b.sequence([b.integer(0n), x942Alg, b.octetString(b.integer(xSmall))]), b.sequence([x942Alg, b.bitString(b.integer(yOut), 0)])); } catch (e) { yOutErr = e; }
+  check("an X9.42 public value outside the stated subgroup -> key/bad-input naming the subgroup",
+    yOutErr !== null && yOutErr.code === "key/bad-input" && /not in the subgroup its own domain parameters state/.test(yOutErr.message));
+  check("a DH public value of 1 -> key/bad-input on the group (RFC 2875 sec. 3), not merely false",
+    (await codeOf(keyInternal.correspondsTo(dhAPk8, b.sequence([b.raw(dhAlgNode.bytes), b.bitString(b.integer(1n), 0)])))) === "key/bad-input");
+  check("a DH private key whose exponent is zero -> key/bad-input",
+    (await codeOf(keyInternal.correspondsTo(b.sequence([b.integer(0n), b.raw(dhAlgNode.bytes), b.octetString(b.integer(0n))]), dhA.publicKey.export({ format: "der", type: "spki" })))) === "key/bad-input");
+  check("CONTROL: an X9.42 public key with its cofactor 2 and validationParms pairs",
+    (await keyInternal.correspondsTo(dhAPk8, x942With([b.integer(dhP), b.integer(dhG), b.integer((dhP - 1n) / 2n), b.integer(2n), b.sequence([b.bitString(Buffer.alloc(20, 7), 0), b.integer(42n)])]))) === true);
+  // A composite ML-KEM key is a toolkit-defined algorithm the runtime cannot read; the pair is proven
+  // by an encapsulation to the public key decapsulated under the private key. Another composite
+  // algorithm, or a classical key, is another family. A composite key whose RSA component carries
+  // the public modulus beside unusable private components cannot be exercised, and says so.
+  var kat = require("../fixtures/composite-kem/kat.json");
+  function katCase(id) { return kat.tests.filter(function (t) { return t.tcId === id; })[0]; }
+  var kemX = katCase("id-MLKEM768-X25519-SHA3-256"), kemP = katCase("id-MLKEM768-ECDH-P256-SHA3-256"), kemR = katCase("id-MLKEM768-RSA2048-SHA3-256");
+  function katSpki(t) { return pki.schema.x509.parse(Buffer.from(t.x5c, "base64")).subjectPublicKeyInfo.bytes; }
+  check("correspondsTo answers true for a composite ML-KEM pair and false for another composite algorithm's key",
+    (await keyInternal.correspondsTo(Buffer.from(kemX.dk_pkcs8, "base64"), katSpki(kemX))) === true &&
+    (await keyInternal.correspondsTo(Buffer.from(kemX.dk_pkcs8, "base64"), katSpki(kemP))) === false);
+  check("correspondsTo answers false for a composite ML-KEM private key against a classical public key",
+    (await keyInternal.correspondsTo(Buffer.from(kemX.dk_pkcs8, "base64"), rsaPair.publicKey.export({ format: "der", type: "spki" }))) === false);
+  var kemROuter = pki.asn1.decode(Buffer.from(kemR.dk_pkcs8, "base64"));
+  var kemRMaterial = kemROuter.children[2].content;
+  var kemRJwk = nodeCrypto.createPrivateKey({ key: kemRMaterial.subarray(64), format: "der", type: "pkcs1" }).export({ format: "jwk" });
+  var kemROnes = Buffer.alloc(Buffer.from(kemRJwk.d, "base64url").length, 1).toString("base64url");
+  var kemRHollowPkcs1 = nodeCrypto.createPrivateKey({ key: { kty: "RSA", n: kemRJwk.n, e: kemRJwk.e, d: kemROnes, p: kemRJwk.p, q: kemRJwk.q, dp: kemROnes, dq: kemROnes, qi: kemROnes }, format: "jwk" }).export({ format: "der", type: "pkcs1" });
+  var kemRHollow = b.sequence([b.raw(kemROuter.children[0].bytes), b.raw(kemROuter.children[1].bytes), b.octetString(Buffer.concat([kemRMaterial.subarray(0, 64), kemRHollowPkcs1]))]);
+  var hollowVerdict;
+  try { hollowVerdict = await keyInternal.correspondsTo(kemRHollow, katSpki(kemR)); } catch (e) { hollowVerdict = e.code; }
+  check("correspondsTo never calls a composite pair from the RSA component's public copy (the probe decides, or reports it cannot)",
+    hollowVerdict === false || hollowVerdict === "key/unsupported-algorithm");
+  check("CONTROL: the composite ML-KEM/RSA KAT pair corresponds",
+    (await keyInternal.correspondsTo(Buffer.from(kemR.dk_pkcs8, "base64"), katSpki(kemR))) === true);
+  // Every secret a probe makes is wiped once the verdict is decided, whether the pair matched or not:
+  // the encapsulated and decapsulated ML-KEM secrets, and both sides of the X25519 agreement. The
+  // runtime verbs are wrapped to keep the buffers they returned, then read back after the call.
+  var made = [];
+  var realEncapsulate = nodeCrypto.encapsulate, realDecapsulate = nodeCrypto.decapsulate, realDiffieHellman = nodeCrypto.diffieHellman;
+  function keep(out) { if (out && out.sharedKey) made.push(out.sharedKey); else if (Buffer.isBuffer(out)) made.push(out); return out; }
+  nodeCrypto.encapsulate = function () { return keep(realEncapsulate.apply(nodeCrypto, arguments)); };
+  nodeCrypto.decapsulate = function () { return keep(realDecapsulate.apply(nodeCrypto, arguments)); };
+  nodeCrypto.diffieHellman = function () { return keep(realDiffieHellman.apply(nodeCrypto, arguments)); };
+  var allZero = function (list) { return list.length > 0 && list.every(function (buf) { return buf.every(function (x) { return x === 0; }); }); };
+  try {
+    var mlkem = nodeCrypto.generateKeyPairSync("ml-kem-768"), mlkemOther = nodeCrypto.generateKeyPairSync("ml-kem-768");
+    var x = nodeCrypto.generateKeyPairSync("x25519"), xOther = nodeCrypto.generateKeyPairSync("x25519");
+    var verdicts = [
+      await keyInternal.correspondsTo(mlkem.privateKey.export({ format: "der", type: "pkcs8" }), mlkem.publicKey.export({ format: "der", type: "spki" })),
+      await keyInternal.correspondsTo(mlkem.privateKey.export({ format: "der", type: "pkcs8" }), mlkemOther.publicKey.export({ format: "der", type: "spki" })),
+      await keyInternal.correspondsTo(x.privateKey.export({ format: "der", type: "pkcs8" }), x.publicKey.export({ format: "der", type: "spki" })),
+      await keyInternal.correspondsTo(x.privateKey.export({ format: "der", type: "pkcs8" }), xOther.publicKey.export({ format: "der", type: "spki" })),
+    ];
+    check("correspondsTo wipes every ML-KEM and X25519 probe secret after deciding, matched or not (" + made.length + " buffers)",
+      verdicts.join() === "true,false,true,false" && made.length === 8 && allZero(made));
+  } finally {
+    nodeCrypto.encapsulate = realEncapsulate; nodeCrypto.decapsulate = realDecapsulate; nodeCrypto.diffieHellman = realDiffieHellman;
+  }
 }
 
 // ---- import / generate / publicFromPrivate verbs ---------------------------

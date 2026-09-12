@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.7.39",
+  "packageVersion": "0.7.40",
   "surface": {
     "C": {
       "kind": "object",
@@ -183,6 +183,9 @@
               "kind": "number"
             },
             "PKCS12_MAX_BAG_DEPTH": {
+              "kind": "number"
+            },
+            "PKCS12_MAX_DH_PAIRS": {
               "kind": "number"
             },
             "PKCS12_MAX_ELEMENTS": {
@@ -1563,6 +1566,9 @@
               "kind": "number"
             },
             "PKCS12_MAX_BAG_DEPTH": {
+              "kind": "number"
+            },
+            "PKCS12_MAX_DH_PAIRS": {
               "kind": "number"
             },
             "PKCS12_MAX_ELEMENTS": {

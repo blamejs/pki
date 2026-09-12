@@ -524,9 +524,9 @@ async function centralKeyGeneration(pki, client, o) {
     notBefore: o.notBefore || NB, notAfter: o.notAfter || NA,
     extensions: { basicConstraints: { cA: true }, keyUsage: ["digitalSignature", "keyCertSign"],
       extendedKeyUsage: ["cmKGA"], subjectKeyIdentifier: true } }, issuer);
-  // `o.dh` delivers a finite-field Diffie-Hellman key: a well-formed OneAsymmetricKey whose type
-  // neither signs, nor is one of the two key-agreement types the pair check drives, nor encapsulates,
-  // so the two halves cannot be exercised together at all.
+  // `o.dh` delivers a finite-field Diffie-Hellman key: a well-formed OneAsymmetricKey that neither
+  // signs nor encapsulates; its PrivateKeyInfo carries the exponent alone, so the pair check proves
+  // it by the public value the exponent generates.
   var deliveredKp = o.dh ? nodeCrypto.generateKeyPairSync("dh", { group: "modp14" })
     : nodeCrypto.generateKeyPairSync(o.rsa ? "rsa" : "ec",
       o.rsa ? { modulusLength: 2048 } : { namedCurve: "P-256" });

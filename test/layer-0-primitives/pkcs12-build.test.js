@@ -384,6 +384,160 @@ async function testAttributes() {
 // (the public-key integrity round-trip surface lives in pkcs12-public-key.test.js)
 async function testFailClosedInputs() {
   var s = signer();
+  // The convenience form pairs ONE key with ONE certificate, and a localKeyId pairs a key bag with
+  // a certificate bag (PKCS #9 sec. 5.5.2), so each pair is held to being a key pair: a store
+  // whose key is not the private half of the certificate's public key is refused, not shipped.
+  var other = makeSigner("ec-p256");
+  check("shorthand { key, cert } with a key that is not the certificate's -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build({ key: other.key, cert: s.cert }, { password: "1234" }))) === "pkcs12/bad-input");
+  check("CONTROL: shorthand { key, cert } with the certificate's own key builds",
+    Buffer.isBuffer(await pki.pkcs12.build({ key: s.key, cert: s.cert }, { password: "1234" })));
+  var lkid = Buffer.from([0x0a, 0x0b]);
+  check("a keyBag and a certBag sharing a localKeyId whose key is not the certificate's -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert, localKeyId: lkid }] }, { bags: [{ type: "shroudedKey", key: other.key, encrypt: { password: "1234" }, localKeyId: lkid }] }] }, { password: "1234" }))) === "pkcs12/bad-input");
+  check("CONTROL: a keyBag and a certBag sharing a localKeyId as a key pair build",
+    Buffer.isBuffer(await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert, localKeyId: lkid }, { type: "key", key: s.key, localKeyId: lkid }] }] }, { password: "1234" })));
+  // The correspondence is proven with the private half: an EC PKCS#8 that carries the CERTIFICATE's
+  // public point beside another key's scalar exports the planted point, and only a signature under
+  // the scalar shows the pair is not one.
+  var ecCert = makeSigner("ec-p256");
+  var planted = (function () {
+    var b = pki.asn1.build;
+    var otherEc = require("crypto").generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+    var scalar = require("crypto").createPrivateKey({ key: otherEc.privateKey.export({ format: "der", type: "pkcs8" }), format: "der", type: "pkcs8" }).export({ format: "jwk" }).d;
+    var certPoint = pki.asn1.read.bitString(pki.asn1.decode(ecCert.spki).children[1]).bytes;
+    var ecPrivateKey = b.sequence([b.integer(1n), b.octetString(Buffer.from(scalar, "base64url")), b.explicit(1, b.bitString(certPoint, 0))]);
+    return b.sequence([b.integer(0n), b.sequence([b.oid(pki.oid.byName("ecPublicKey")), b.oid(pki.oid.byName("prime256v1"))]), b.octetString(ecPrivateKey)]);
+  })();
+  check("an EC key carrying the certificate's point beside another scalar -> pkcs12/bad-input (proven with the private half)",
+    (await codeOf(pki.pkcs12.build({ key: planted, cert: ecCert.cert }, { password: "1234" }))) === "pkcs12/bad-input");
+  check("a mismatched key in a NESTED safeContents bag sharing the localKeyId -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert, localKeyId: lkid }, { type: "safeContents", nested: [{ type: "key", key: other.key, localKeyId: lkid }] }] }] }, { password: "1234" }))) === "pkcs12/bad-input");
+  // An RSA key whose public components are the certificate's and whose private components are
+  // zero imports, then fails the signing probe; the failure is a refusal, never a fall back to
+  // comparing the public components it carries.
+  var rsaJwk = require("crypto").createPrivateKey({ key: s.key, format: "der", type: "pkcs8" }).export({ format: "jwk" });
+  var hollowD = Buffer.alloc(Buffer.from(rsaJwk.d, "base64url").length, 1).toString("base64url");
+  var hollowRsa = require("crypto").createPrivateKey({ key: { kty: "RSA", n: rsaJwk.n, e: rsaJwk.e, d: hollowD, p: rsaJwk.p, q: rsaJwk.q, dp: hollowD, dq: hollowD, qi: hollowD }, format: "jwk" }).export({ format: "der", type: "pkcs8" });
+  check("an RSA key carrying the certificate's modulus beside unusable private components -> pkcs12/bad-input (no fallback to the public copy)",
+    (await codeOf(pki.pkcs12.build({ key: hollowRsa, cert: s.cert }, { password: "1234" }))) === "pkcs12/bad-input");
+  // A huge sparse bags array is refused at the element cap before anything walks it.
+  var sparse = []; sparse[0xffffff] = { type: "cert", cert: s.cert };
+  check("a huge sparse bags array -> pkcs12/bad-input at the element cap, before any traversal",
+    (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: sparse }] }, { password: "1234" }))) === "pkcs12/bad-input");
+  // A finite-field Diffie-Hellman pair (RFC 2875 agreement keys) is proven by the public value its
+  // exponent generates, so a genuine pair still stores.
+  var dhKp = require("crypto").generateKeyPairSync("dh", { group: "modp14" });
+  var dhCa = makeSigner("ec-p256", { exts: [signing.keyUsageExt("keyEncipherment")] });   // a bare signer; the DH certificate is issued under an explicit name and key
+  var dhCert = await pki.x509.sign({ subject: "dh holder", subjectPublicKey: dhKp.publicKey.export({ format: "der", type: "spki" }), notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2030-01-01T00:00:00Z"), extensions: { keyUsage: ["keyAgreement"] } }, { name: "DH Issuer", publicKey: dhCa.spki, key: dhCa.key });
+  check("CONTROL: a finite-field DH key with its certificate builds", Buffer.isBuffer(await pki.pkcs12.build({ key: dhKp.privateKey.export({ format: "der", type: "pkcs8" }), cert: dhCert }, { password: "1234" })));
+  // A DH certificate names the key in the X9.42 form (RFC 3279 sec. 2.3.3, dhpublicnumber with the
+  // subgroup order q), which is not the PKCS #3 form the generated key is written in: one value in
+  // two encodings is one key pair.
+  var dhSpkiNode = pki.asn1.decode(dhKp.publicKey.export({ format: "der", type: "spki" }));
+  var dhParamsNode = pki.asn1.decode(dhSpkiNode.children[0].children[1].bytes);
+  var dhP = pki.asn1.read.integer(dhParamsNode.children[0]), dhG = pki.asn1.read.integer(dhParamsNode.children[1]);
+  var x942Spki = pki.asn1.build.sequence([pki.asn1.build.sequence([pki.asn1.build.oid(pki.oid.byName("dhpublicnumber")), pki.asn1.build.sequence([pki.asn1.build.integer(dhP), pki.asn1.build.integer(dhG), pki.asn1.build.integer((dhP - 1n) / 2n)])]), pki.asn1.build.raw(dhSpkiNode.children[1].bytes)]);
+  var x942Cert = await pki.x509.sign({ subject: "dh holder", subjectPublicKey: x942Spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2030-01-01T00:00:00Z"), extensions: { keyUsage: ["keyAgreement"] } }, { name: "DH Issuer", publicKey: dhCa.spki, key: dhCa.key });
+  check("CONTROL: a PKCS #3 DH key with its RFC 3279 (X9.42) certificate builds", Buffer.isBuffer(await pki.pkcs12.build({ key: dhKp.privateKey.export({ format: "der", type: "pkcs8" }), cert: x942Cert }, { password: "1234" })));
+  var dhOther = require("crypto").generateKeyPairSync("dh", { group: "modp14" });
+  check("another PKCS #3 DH key under that X9.42 certificate -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ key: dhOther.privateKey.export({ format: "der", type: "pkcs8" }), cert: x942Cert }, { password: "1234" }))) === "pkcs12/bad-input");
+  // The X9.42 fields the PKCS #3 form cannot carry are read before they are dropped: a certificate
+  // whose DomainParameters omit the mandatory q is malformed, and the store is refused even though
+  // the key generates the value it carries.
+  var x942NoQ = pki.asn1.build.sequence([pki.asn1.build.sequence([pki.asn1.build.oid(pki.oid.byName("dhpublicnumber")), pki.asn1.build.sequence([pki.asn1.build.integer(dhP), pki.asn1.build.integer(dhG)])]), pki.asn1.build.raw(dhSpkiNode.children[1].bytes)]);
+  var x942NoQCert = await pki.x509.sign({ subject: "dh holder", subjectPublicKey: x942NoQ, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2030-01-01T00:00:00Z"), extensions: { keyUsage: ["keyAgreement"] } }, { name: "DH Issuer", publicKey: dhCa.spki, key: dhCa.key });
+  // Proving a finite-field pair costs up to two primality proofs of the widest group the toolkit
+  // agrees over, each about a second, so the DH pairs one store may link are budgeted, and the
+  // budget is decided from the two halves' algorithm identifiers before any pair is probed. The
+  // ninth pair here is another key's, which the probe would refuse for a different reason; the
+  // budget speaks first.
+  var dhPk8 = dhKp.privateKey.export({ format: "der", type: "pkcs8" });
+  var dhBags = [];
+  for (var db = 0; db <= pki.constants.LIMITS.PKCS12_MAX_DH_PAIRS; db++) {
+    var id = Buffer.from([0xd0, db]);
+    dhBags.push({ type: "key", key: db === pki.constants.LIMITS.PKCS12_MAX_DH_PAIRS ? dhOther.privateKey.export({ format: "der", type: "pkcs8" }) : dhPk8, localKeyId: id }, { type: "cert", cert: dhCert, localKeyId: id });
+  }
+  var dhBudgetErr = null;
+  try { await pki.pkcs12.build({ safeContents: [{ bags: dhBags }] }, { password: "1234" }); } catch (e) { dhBudgetErr = e; }
+  check("more linked finite-field DH pairs than the store budget -> pkcs12/bad-input naming the budget, before any pair is probed",
+    dhBudgetErr !== null && dhBudgetErr.code === "pkcs12/bad-input" && /links more than [0-9]+ finite-field Diffie-Hellman pairs/.test(dhBudgetErr.message));
+  // A pair is finite-field when EITHER half is: RSA keys linked to DH certificates count too.
+  var dhCertBags = [];
+  for (var dc = 0; dc <= pki.constants.LIMITS.PKCS12_MAX_DH_PAIRS; dc++) {
+    var cid2 = Buffer.from([0xd1, dc]);
+    dhCertBags.push({ type: "key", key: s.key, localKeyId: cid2 }, { type: "cert", cert: dhCert, localKeyId: cid2 });
+  }
+  var dhCertBudgetErr = null;
+  try { await pki.pkcs12.build({ safeContents: [{ bags: dhCertBags }] }, { password: "1234" }); } catch (e) { dhCertBudgetErr = e; }
+  check("more RSA keys linked to DH certificates than the store budget -> pkcs12/bad-input naming the budget",
+    dhCertBudgetErr !== null && dhCertBudgetErr.code === "pkcs12/bad-input" && /links more than [0-9]+ finite-field Diffie-Hellman pairs/.test(dhCertBudgetErr.message));
+  // A group wider than any the toolkit agrees over is refused on its size in either encoding, before
+  // the runtime exponentiates in it once per linked certificate.
+  var wideDh = require("crypto").generateKeyPairSync("dh", { group: "modp18" });
+  var wideCert = await pki.x509.sign({ subject: "dh holder", subjectPublicKey: wideDh.publicKey.export({ format: "der", type: "spki" }), notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2030-01-01T00:00:00Z"), extensions: { keyUsage: ["keyAgreement"] } }, { name: "DH Issuer", publicKey: dhCa.spki, key: dhCa.key });
+  check("a PKCS #3 DH pair of a group wider than the toolkit agrees over -> pkcs12/bad-input on its size",
+    (await codeOf(pki.pkcs12.build({ key: wideDh.privateKey.export({ format: "der", type: "pkcs8" }), cert: wideCert }, { password: "1234" }))) === "pkcs12/bad-input");
+  check("a DH key under an X9.42 certificate whose DomainParameters omit q -> pkcs12/bad-input (a malformed key, whatever value it carries)",
+    (await codeOf(pki.pkcs12.build({ key: dhKp.privateKey.export({ format: "der", type: "pkcs8" }), cert: x942NoQCert }, { password: "1234" }))) === "pkcs12/bad-input");
+  // A composite ML-KEM key is a toolkit-defined algorithm the runtime cannot read: its public half
+  // is derived from the private material and held to the certificate, so a valid pair still stores.
+  var kat = require("../fixtures/composite-kem/kat.json");
+  var kemPair = kat.tests.filter(function (t) { return t.tcId === "id-MLKEM768-X25519-SHA3-256"; })[0];
+  var kemKey = Buffer.from(kemPair.dk_pkcs8, "base64"), kemCert = Buffer.from(kemPair.x5c, "base64");
+  check("CONTROL: a composite ML-KEM key with its certificate (Appendix G) builds", Buffer.isBuffer(await pki.pkcs12.build({ key: kemKey, cert: kemCert }, { password: "1234" })));
+  var kemOther = kat.tests.filter(function (t) { return t.tcId === "id-MLKEM768-ECDH-P256-SHA3-256"; })[0];
+  check("a composite ML-KEM key with ANOTHER composite certificate -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ key: Buffer.from(kemOther.dk_pkcs8, "base64"), cert: kemCert }, { password: "1234" }))) === "pkcs12/bad-input");
+  // The composite pair is proven by encapsulation, not by the public components the private key
+  // carries: a composite ML-KEM/RSA key with the certificate's modulus beside unusable RSA private
+  // components decapsulates to a different secret and is refused.
+  var kemRsa = kat.tests.filter(function (t) { return t.tcId === "id-MLKEM768-RSA2048-SHA3-256"; })[0];
+  var kemRsaHollow = (function () {
+    var b = pki.asn1.build, crypto = require("crypto");
+    var outer = pki.asn1.decode(Buffer.from(kemRsa.dk_pkcs8, "base64"));
+    var material = outer.children[2].content;                       // the ML-KEM seed (64 octets) followed by the RSAPrivateKey (PKCS #1)
+    var seed = material.subarray(0, 64), rsaPkcs1 = material.subarray(64);
+    var jwk = crypto.createPrivateKey({ key: rsaPkcs1, format: "der", type: "pkcs1" }).export({ format: "jwk" });
+    var one = Buffer.alloc(Buffer.from(jwk.d, "base64url").length, 1).toString("base64url");
+    var hollowPkcs1 = crypto.createPrivateKey({ key: { kty: "RSA", n: jwk.n, e: jwk.e, d: one, p: jwk.p, q: jwk.q, dp: one, dq: one, qi: one }, format: "jwk" }).export({ format: "der", type: "pkcs1" });
+    return b.sequence([b.raw(outer.children[0].bytes), b.raw(outer.children[1].bytes), b.octetString(Buffer.concat([seed, hollowPkcs1]))]);
+  })();
+  check("CONTROL: the composite ML-KEM/RSA KAT pair builds", Buffer.isBuffer(await pki.pkcs12.build({ key: Buffer.from(kemRsa.dk_pkcs8, "base64"), cert: Buffer.from(kemRsa.x5c, "base64") }, { password: "1234" })));
+  check("a composite ML-KEM/RSA key whose RSA component carries the certificate's modulus beside unusable private components -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build({ key: kemRsaHollow, cert: Buffer.from(kemRsa.x5c, "base64") }, { password: "1234" }))) === "pkcs12/bad-input");
+  check("CONTROL: a key bag and a cert bag with DIFFERENT localKeyIds are not a pair and build",
+    Buffer.isBuffer(await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert, localKeyId: lkid }, { type: "key", key: other.key, localKeyId: Buffer.from([0x0c]) }] }] }, { password: "1234" })));
+  // A localKeyId identifies ONE private key, so the pairing is a lookup and never a product: two key
+  // bags carrying the same id (even the same key twice) are refused before any pair is probed, and
+  // the message names the id. Several certificates under one key's id (a renewal beside the
+  // certificate it replaces) are each held to that one key.
+  var twoKeys = null;
+  try {
+    await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert, localKeyId: lkid }, { type: "key", key: s.key, localKeyId: lkid }] }, { bags: [{ type: "key", key: s.key, localKeyId: lkid }] }] }, { password: "1234" });
+  } catch (e) { twoKeys = e; }
+  check("two key bags carrying one localKeyId (across safes) -> pkcs12/bad-input naming the id",
+    twoKeys !== null && twoKeys.code === "pkcs12/bad-input" && /localKeyId 0a0b is carried by more than one key bag/.test(twoKeys.message));
+  check("CONTROL: two certificate bags under one key's localKeyId (a renewal) each pair with that key and build",
+    Buffer.isBuffer(await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert, localKeyId: lkid }, { type: "cert", cert: signing.minimalCert(s.spki, { serial: 0x78 }), localKeyId: lkid }, { type: "key", key: s.key, localKeyId: lkid }] }] }, { password: "1234" })));
+  check("two certificate bags under one localKeyId, one of them another key's -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert, localKeyId: lkid }, { type: "cert", cert: other.cert, localKeyId: lkid }, { type: "key", key: s.key, localKeyId: lkid }] }] }, { password: "1234" }))) === "pkcs12/bad-input");
+  // The work a store can ask for is bounded before any of it is done. The AuthenticatedSafe carries at
+  // most the element cap of safes, refused at entry rather than after every safe was encrypted and
+  // the re-parse refused the result; and the pairs a store links are capped before any pair is
+  // probed. Each bag below carries bytes no parser accepts, so the message says which check spoke.
+  var notACert = Buffer.from([0x30, 0x00]);
+  var manySafes = [];
+  for (var ms = 0; ms <= 1024; ms++) manySafes.push({ bags: [{ type: "cert", cert: notACert }] });
+  var safesErr = null;
+  try { await pki.pkcs12.build({ safeContents: manySafes }, { password: "1234" }); } catch (e) { safesErr = e; }
+  check("more safes than the AuthenticatedSafe element cap -> pkcs12/bad-input at entry, before any safe is built",
+    safesErr !== null && safesErr.code === "pkcs12/bad-input" && /AuthenticatedSafe exceeds the element cap 1024/.test(safesErr.message));
+  var manyCerts = [{ type: "key", key: s.key, localKeyId: lkid }];
+  for (var mc = 0; mc < 1023; mc++) manyCerts.push({ type: "cert", cert: notACert, localKeyId: lkid });
+  var pairsErr = null;
+  try { await pki.pkcs12.build({ safeContents: [{ bags: manyCerts }, { bags: [{ type: "cert", cert: notACert, localKeyId: lkid }, { type: "cert", cert: notACert, localKeyId: lkid }] }] }, { password: "1234" }); } catch (e) { pairsErr = e; }
+  check("more linked certificate bags than the element cap -> pkcs12/bad-input before any pair is probed",
+    pairsErr !== null && pairsErr.code === "pkcs12/bad-input" && /links more than 1024 certificate bags to keys/.test(pairsErr.message));
   check("#11 public-key integrity with no signer -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] }, { integrity: { mode: "public-key" }, password: "1234" }))) === "pkcs12/bad-input");
   // The integrity signers are authoring input for this store, so they answer to the same rule as
   // every other field written here. Every field beyond the identity has a default, so a misspelled
