@@ -425,6 +425,50 @@ async function testCorrespondsTo(keyInternal) {
   var withLength = b.sequence([b.sequence([b.raw(dhAlg.children[0].bytes), b.sequence([b.raw(dhParams.children[0].bytes), b.raw(dhParams.children[1].bytes), b.integer(224n)])]), b.raw(dhSpki.children[1].bytes)]);
   check("correspondsTo answers true for a DH pair whose public encoding adds privateValueLength",
     (await keyInternal.correspondsTo(dhA.privateKey.export({ format: "der", type: "pkcs8" }), withLength)) === true);
+  // A certificate names a Diffie-Hellman key in the X9.42 form (RFC 3279 sec. 2.3.3: dhpublicnumber,
+  // DomainParameters { p, g, q }), while the runtime writes the PKCS #3 form: the two encodings carry
+  // one public value, so a PKCS #3 private key pairs with an X9.42 certificate key and an X9.42
+  // private key pairs with a PKCS #3 public one.
+  var dhP = pki.asn1.read.integer(dhParams.children[0]), dhG = pki.asn1.read.integer(dhParams.children[1]);
+  var x942Alg = b.sequence([b.oid(pki.oid.byName("dhpublicnumber")), b.sequence([b.integer(dhP), b.integer(dhG), b.integer((dhP - 1n) / 2n)])]);
+  var x942Spki = b.sequence([x942Alg, b.raw(dhSpki.children[1].bytes)]);
+  var dhPk8 = pki.asn1.decode(dhA.privateKey.export({ format: "der", type: "pkcs8" }));
+  var x942Pk8 = b.sequence([b.raw(dhPk8.children[0].bytes), x942Alg, b.raw(dhPk8.children[2].bytes)]);
+  var dhBSpki = pki.asn1.decode(dhB.publicKey.export({ format: "der", type: "spki" }));
+  var x942OtherSpki = b.sequence([x942Alg, b.raw(dhBSpki.children[1].bytes)]);
+  check("correspondsTo answers true for a PKCS #3 DH private key against the X9.42 form of its public value",
+    (await keyInternal.correspondsTo(dhA.privateKey.export({ format: "der", type: "pkcs8" }), x942Spki)) === true);
+  check("correspondsTo answers true for an X9.42 DH private key against the PKCS #3 form of its public value",
+    (await keyInternal.correspondsTo(x942Pk8, dhA.publicKey.export({ format: "der", type: "spki" }))) === true);
+  check("correspondsTo answers true for an X9.42 pair",
+    (await keyInternal.correspondsTo(x942Pk8, x942Spki)) === true);
+  check("correspondsTo answers false for a PKCS #3 DH private key against another key's X9.42 public value",
+    (await keyInternal.correspondsTo(dhA.privateKey.export({ format: "der", type: "pkcs8" }), x942OtherSpki)) === false);
+  // A composite ML-KEM key is a toolkit-defined algorithm the runtime cannot read; the pair is proven
+  // by an encapsulation to the public key decapsulated under the private key. Another composite
+  // algorithm, or a classical key, is another family. A composite key whose RSA component carries
+  // the public modulus beside unusable private components cannot be exercised, and says so.
+  var kat = require("../fixtures/composite-kem/kat.json");
+  function katCase(id) { return kat.tests.filter(function (t) { return t.tcId === id; })[0]; }
+  var kemX = katCase("id-MLKEM768-X25519-SHA3-256"), kemP = katCase("id-MLKEM768-ECDH-P256-SHA3-256"), kemR = katCase("id-MLKEM768-RSA2048-SHA3-256");
+  function katSpki(t) { return pki.schema.x509.parse(Buffer.from(t.x5c, "base64")).subjectPublicKeyInfo.bytes; }
+  check("correspondsTo answers true for a composite ML-KEM pair and false for another composite algorithm's key",
+    (await keyInternal.correspondsTo(Buffer.from(kemX.dk_pkcs8, "base64"), katSpki(kemX))) === true &&
+    (await keyInternal.correspondsTo(Buffer.from(kemX.dk_pkcs8, "base64"), katSpki(kemP))) === false);
+  check("correspondsTo answers false for a composite ML-KEM private key against a classical public key",
+    (await keyInternal.correspondsTo(Buffer.from(kemX.dk_pkcs8, "base64"), rsaPair.publicKey.export({ format: "der", type: "spki" }))) === false);
+  var kemROuter = pki.asn1.decode(Buffer.from(kemR.dk_pkcs8, "base64"));
+  var kemRMaterial = kemROuter.children[2].content;
+  var kemRJwk = nodeCrypto.createPrivateKey({ key: kemRMaterial.subarray(64), format: "der", type: "pkcs1" }).export({ format: "jwk" });
+  var kemROnes = Buffer.alloc(Buffer.from(kemRJwk.d, "base64url").length, 1).toString("base64url");
+  var kemRHollowPkcs1 = nodeCrypto.createPrivateKey({ key: { kty: "RSA", n: kemRJwk.n, e: kemRJwk.e, d: kemROnes, p: kemRJwk.p, q: kemRJwk.q, dp: kemROnes, dq: kemROnes, qi: kemROnes }, format: "jwk" }).export({ format: "der", type: "pkcs1" });
+  var kemRHollow = b.sequence([b.raw(kemROuter.children[0].bytes), b.raw(kemROuter.children[1].bytes), b.octetString(Buffer.concat([kemRMaterial.subarray(0, 64), kemRHollowPkcs1]))]);
+  var hollowVerdict;
+  try { hollowVerdict = await keyInternal.correspondsTo(kemRHollow, katSpki(kemR)); } catch (e) { hollowVerdict = e.code; }
+  check("correspondsTo never calls a composite pair from the RSA component's public copy (the probe decides, or reports it cannot)",
+    hollowVerdict === false || hollowVerdict === "key/unsupported-algorithm");
+  check("CONTROL: the composite ML-KEM/RSA KAT pair corresponds",
+    (await keyInternal.correspondsTo(Buffer.from(kemR.dk_pkcs8, "base64"), katSpki(kemR))) === true);
 }
 
 // ---- import / generate / publicFromPrivate verbs ---------------------------

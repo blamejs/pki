@@ -431,6 +431,17 @@ async function testFailClosedInputs() {
   var dhCa = makeSigner("ec-p256", { exts: [signing.keyUsageExt("keyEncipherment")] });   // a bare signer; the DH certificate is issued under an explicit name and key
   var dhCert = await pki.x509.sign({ subject: "dh holder", subjectPublicKey: dhKp.publicKey.export({ format: "der", type: "spki" }), notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2030-01-01T00:00:00Z"), extensions: { keyUsage: ["keyAgreement"] } }, { name: "DH Issuer", publicKey: dhCa.spki, key: dhCa.key });
   check("CONTROL: a finite-field DH key with its certificate builds", Buffer.isBuffer(await pki.pkcs12.build({ key: dhKp.privateKey.export({ format: "der", type: "pkcs8" }), cert: dhCert }, { password: "1234" })));
+  // A DH certificate names the key in the X9.42 form (RFC 3279 sec. 2.3.3, dhpublicnumber with the
+  // subgroup order q), which is not the PKCS #3 form the generated key is written in: one value in
+  // two encodings is one key pair.
+  var dhSpkiNode = pki.asn1.decode(dhKp.publicKey.export({ format: "der", type: "spki" }));
+  var dhParamsNode = pki.asn1.decode(dhSpkiNode.children[0].children[1].bytes);
+  var dhP = pki.asn1.read.integer(dhParamsNode.children[0]), dhG = pki.asn1.read.integer(dhParamsNode.children[1]);
+  var x942Spki = pki.asn1.build.sequence([pki.asn1.build.sequence([pki.asn1.build.oid(pki.oid.byName("dhpublicnumber")), pki.asn1.build.sequence([pki.asn1.build.integer(dhP), pki.asn1.build.integer(dhG), pki.asn1.build.integer((dhP - 1n) / 2n)])]), pki.asn1.build.raw(dhSpkiNode.children[1].bytes)]);
+  var x942Cert = await pki.x509.sign({ subject: "dh holder", subjectPublicKey: x942Spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2030-01-01T00:00:00Z"), extensions: { keyUsage: ["keyAgreement"] } }, { name: "DH Issuer", publicKey: dhCa.spki, key: dhCa.key });
+  check("CONTROL: a PKCS #3 DH key with its RFC 3279 (X9.42) certificate builds", Buffer.isBuffer(await pki.pkcs12.build({ key: dhKp.privateKey.export({ format: "der", type: "pkcs8" }), cert: x942Cert }, { password: "1234" })));
+  var dhOther = require("crypto").generateKeyPairSync("dh", { group: "modp14" });
+  check("another PKCS #3 DH key under that X9.42 certificate -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ key: dhOther.privateKey.export({ format: "der", type: "pkcs8" }), cert: x942Cert }, { password: "1234" }))) === "pkcs12/bad-input");
   // A composite ML-KEM key is a toolkit-defined algorithm the runtime cannot read: its public half
   // is derived from the private material and held to the certificate, so a valid pair still stores.
   var kat = require("../fixtures/composite-kem/kat.json");
