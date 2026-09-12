@@ -64,7 +64,13 @@ async function run() {
       /crlUrl:\s*https:\/\/crl\.interop\.example\/ca\.crl/i.test(t.stdout) && /crlNum:\s*2A/i.test(t.stdout) && /May\s+1 12:00:00 2027 GMT/.test(t.stdout));
 
     // ---- (c) a flipped signature byte is REJECTED ----
-    var bad = Buffer.from(der); bad[bad.length - 1] ^= 0xff;
+    // The embedded responder certificate follows the signature in the DER, so the last byte of the
+    // response is inside that certificate. The byte flipped here is located inside the
+    // BasicOCSPResponse signature itself, so what OpenSSL rejects is the response signature.
+    var sigBytes = pki.schema.ocsp.parseResponse(der).basicResponse.signature;
+    var sigAt = der.indexOf(sigBytes);
+    check("the response signature was located inside the DER", sigAt > 0);
+    var bad = Buffer.from(der); bad[sigAt + sigBytes.length - 1] ^= 0xff;
     var badFile = path.join(dir, "bad.der"); fs.writeFileSync(badFile, bad);
     var vb = ctx.runOpenssl(["ocsp", "-respin", badFile, "-CAfile", caFile], { allowNonZero: true });
     check("openssl ocsp -CAfile REJECTS a response with a flipped signature byte", !/Response verify OK/i.test(vb.stdout + vb.stderr));

@@ -32,6 +32,13 @@ function run() {
   check("3. assertValid rejects a non-Date string", threw(function () { guard.assertValid("2026-01-01", E, "x/bad-time", "t"); }) === "x/bad-time");
   check("4. assertValid rejects a number", threw(function () { guard.assertValid(1735689600000, E, "x/bad-time", "t"); }) === "x/bad-time");
   check("5. assertValid rejects null and undefined", threw(function () { guard.assertValid(null, E, "x/bad-time", "t"); }) === "x/bad-time" && threw(function () { guard.assertValid(undefined, E, "x/bad-time", "t"); }) === "x/bad-time");
+  // A PKI time is written as a DER GeneralizedTime or UTCTime, whose year is four digits, so a Date
+  // JavaScript can hold but DER cannot carry is refused HERE, in the caller's own domain, rather than
+  // reaching the codec and surfacing as an asn1/* error out of a typed spec.
+  check("5a. assertValid rejects a year above 9999 via the factory", threw(function () { guard.assertValid(new Date("+010000-01-01T00:00:00Z"), E, "x/bad-time", "t"); }) === "x/bad-time");
+  check("5b. assertValid rejects a negative year via the factory", threw(function () { guard.assertValid(new Date("-000001-01-01T00:00:00Z"), E, "x/bad-time", "t"); }) === "x/bad-time");
+  check("5c. assertValid accepts year 9999, the last DER can carry", guard.assertValid(new Date("9999-12-31T23:59:59Z"), E, "x/bad-time", "t") instanceof Date);
+  check("5d. assertValid accepts year 0, the first DER can carry", guard.assertValid(new Date("0000-01-01T00:00:00Z"), E, "x/bad-time", "t") instanceof Date);
 
   // ==== within -- containment is a BOOLEAN, malformed is a THROW ====
   var mid = new Date("2026-06-01T00:00:00Z");

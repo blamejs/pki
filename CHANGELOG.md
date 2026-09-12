@@ -15,6 +15,7 @@ An OCSP response can say how far back its status reaches and which CRL it came f
 
 ### Changed
 
+- A Date whose year lies outside 0000 to 9999 is refused by every signing verb with that verb's own code (x509/bad-input, crl/bad-input, ocsp/bad-input and so on) instead of reaching the DER encoder and surfacing as asn1/bad-generalizedtime. A DER time carries a four-digit year, so such a Date never had an encoding; what changes is which error a caller receives. The rule lives in the shared Date guard, so it holds for every Date a signing verb takes: a certificate's validity, a CRL's update and revocation times, an OCSP response's producedAt, thisUpdate, revocation time, archive cutoff and CRL time, and the rest.
 - A pre-encoded singleExtensions entry given to pki.ocsp.sign is now read with the parser's own singleExtensions reader before it is emitted, so a malformed archive cutoff or CRL reference is refused at the signer with the parser's code instead of being written into a response the toolkit itself cannot read. A well-formed entry is unaffected. An object passed where the array was expected was previously dropped without a word; it is now either taken as the object form or refused.
 
 ## v0.7.24 — 2026-09-12

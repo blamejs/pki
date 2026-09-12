@@ -946,6 +946,17 @@ async function run() {
   // Faults in the typed spec are this verb's.
   check("an archiveCutoff that is not a Date -> ocsp/bad-input",
     (await codeOfAsync(function () { return signSingle({ archiveCutoff: "2020" }); })) === "ocsp/bad-input");
+  // A Date whose year DER cannot carry is this verb's fault to report, not the codec's, and the rule
+  // reaches every Date this verb takes rather than only the newest.
+  var FAR = new Date("+010000-01-01T00:00:00Z");
+  check("an archiveCutoff beyond year 9999 -> ocsp/bad-input, not an asn1 error",
+    (await codeOfAsync(function () { return signSingle({ archiveCutoff: FAR }); })) === "ocsp/bad-input");
+  check("a crlTime beyond year 9999 -> ocsp/bad-input",
+    (await codeOfAsync(function () { return signSingle({ crlReferences: { crlTime: FAR } }); })) === "ocsp/bad-input");
+  check("a producedAt beyond year 9999 -> ocsp/bad-input",
+    (await codeOfAsync(function () { return pki.ocsp.sign({ responderID: "byName", producedAt: FAR, responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: "good", thisUpdate: TU, nextUpdate: NU }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 }); })) === "ocsp/bad-input");
+  check("a revocation time beyond year 9999 -> ocsp/bad-input",
+    (await codeOfAsync(function () { return pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: { revoked: FAR }, thisUpdate: TU, nextUpdate: NU }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 }); })) === "ocsp/bad-input");
   check("a crlUrl outside 7-bit ASCII -> ocsp/bad-input, not an asn1 error",
     (await codeOfAsync(function () { return signSingle({ crlReferences: { crlUrl: "https://crl.example/" + String.fromCharCode(0xE9) } }); })) === "ocsp/bad-input");
   check("a negative crlNum -> ocsp/bad-input",
