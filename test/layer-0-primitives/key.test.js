@@ -473,6 +473,10 @@ async function testCorrespondsTo(keyInternal) {
   try { await keyInternal.correspondsTo(dhAPk8, x942With([b.integer(15n), b.integer(4n), b.integer(2n)])); } catch (e) { pCompositeErr = e; }
   check("an X9.42 public key whose modulus is composite (15, g = 4, q = 2, g^q = 1) -> key/bad-input naming the modulus",
     pCompositeErr !== null && pCompositeErr.code === "key/bad-input" && /modulus is not prime/.test(pCompositeErr.message));
+  check("an X9.42 public key whose DomainParameters carry p as an OCTET STRING -> key/bad-input, never the codec's own error",
+    (await codeOf(keyInternal.correspondsTo(dhAPk8, x942With([b.octetString(Buffer.alloc(4, 7)), b.integer(dhG), b.integer((dhP - 1n) / 2n)])))) === "key/bad-input");
+  check("an X9.42 private key whose DomainParameters carry p as an OCTET STRING -> key/bad-input",
+    (await codeOf(keyInternal.correspondsTo(b.sequence([b.raw(dhPk8.children[0].bytes), b.sequence([b.oid(pki.oid.byName("dhpublicnumber")), b.sequence([b.octetString(Buffer.alloc(4, 7)), b.integer(dhG), b.integer((dhP - 1n) / 2n)])]), b.raw(dhPk8.children[2].bytes)]), dhA.publicKey.export({ format: "der", type: "spki" })))) === "key/bad-input");
   check("an X9.42 public key whose cofactor is not (p-1)/q -> key/bad-input",
     (await codeOf(keyInternal.correspondsTo(dhAPk8, x942With([b.integer(dhP), b.integer(dhG), b.integer((dhP - 1n) / 2n), b.integer(3n)])))) === "key/bad-input");
   check("an X9.42 private key whose DomainParameters omit q -> key/bad-input",
@@ -576,6 +580,8 @@ async function testCorrespondsTo(keyInternal) {
     (await keyInternal.correspondsTo(Buffer.from(kemX.dk_pkcs8, "base64"), katSpki(kemP))) === false);
   check("correspondsTo answers false for a composite ML-KEM private key against a classical public key",
     (await keyInternal.correspondsTo(Buffer.from(kemX.dk_pkcs8, "base64"), rsaPair.publicKey.export({ format: "der", type: "spki" }))) === false);
+  check("correspondsTo answers false for a classical private key against a composite ML-KEM public key (the family question is symmetric)",
+    (await keyInternal.correspondsTo(rsaPair.privateKey.export({ format: "der", type: "pkcs8" }), katSpki(kemX))) === false);
   var kemROuter = pki.asn1.decode(Buffer.from(kemR.dk_pkcs8, "base64"));
   var kemRMaterial = kemROuter.children[2].content;
   var kemRJwk = nodeCrypto.createPrivateKey({ key: kemRMaterial.subarray(64), format: "der", type: "pkcs1" }).export({ format: "jwk" });

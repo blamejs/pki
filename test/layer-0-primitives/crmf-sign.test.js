@@ -1456,6 +1456,10 @@ async function testPopoPrivKeyArms() {
     var outer = pki.asn1.decode(Buffer.from(kemRsaCase.dk_pkcs8, "base64"));
     return pki.asn1.build.sequence([pki.asn1.build.raw(outer.children[0].bytes), pki.asn1.build.raw(outer.children[1].bytes), pki.asn1.build.octetString(outer.children[2].content.subarray(0, 40))]);
   }());
+  check("V7. a readable classical key enclosed under a composite ML-KEM template -> crmf/bad-popo (two keys that do not correspond)",
+    (await codeOf(pki.crmf.build({ certReqId: 49n, certTemplate: tpl(kemRsaSpki),
+      pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: rsaTpl.privateKey.export({ format: "der", type: "pkcs8" }),
+        identifier: "device-42", recipients: [{ cert: recip.cert }], archive: true } }))) === "crmf/bad-popo");
   check("V7. an enclosed composite key whose component material cannot be read -> crmf/bad-input",
     (await codeOf(pki.crmf.build({ certReqId: 48n, certTemplate: tpl(kemRsaSpki),
       pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: kemRsaTruncPk8,

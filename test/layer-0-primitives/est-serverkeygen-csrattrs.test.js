@@ -225,6 +225,12 @@ async function run() {
     (await codeOf(pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport(skReply("application/pkcs8", hollowRsa.toString("base64"), { certPart: certsOnly([certWithSpki(rsaCert.publicKey.export({ format: "der", type: "spki" }))]) })) }))) === "est/key-cert-mismatch");
   var r25 = await pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport(skReply("application/pkcs8", ecCert.privateKey.export({ format: "der", type: "pkcs8" }).toString("base64"), { certPart: certsOnly([certWithSpki(ecCertSpki)]) })) });
   check("SK-25. CONTROL: a genuine EC server key binds to its certificate", !!r25.privateKey && r25.certificates.length === 1);
+  // SK-26: a finite-field DH PrivateKeyInfo carries the exponent alone, so the public value derived
+  // from it is the proof, and this verb keeps that derivation at any width the runtime reads: a
+  // server key in a group wider than any the toolkit agrees over (RFC 3526 modp18) still binds.
+  var wideDh = nodeCrypto.generateKeyPairSync("dh", { group: "modp18" });
+  var r26 = await pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport(skReply("application/pkcs8", wideDh.privateKey.export({ format: "der", type: "pkcs8" }).toString("base64"), { certPart: certsOnly([certWithSpki(wideDh.publicKey.export({ format: "der", type: "spki" }))]) })) });
+  check("SK-26. CONTROL: a server DH key in a group wider than the toolkit agrees over still binds by derivation", !!r26.privateKey && r26.certificates.length === 1);
 
   // ===== csrattrs -- accept =====
   var tc1 = fakeTransport(csrattrsOK(b.sequence([b.oid(CHALLENGE_PW)])));
