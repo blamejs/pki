@@ -1,0 +1,12 @@
+{
+  "version": "0.7.39",
+  "date": "2026-09-12",
+  "headline": "An OCSP CertID's issuer hashes are held to the length of the digest they name.",
+  "summary": "RFC 6960 sec. 4.1.1 defines issuerNameHash and issuerKeyHash as the hashes of the issuer's name and key under the CertID's hashAlgorithm, so each is exactly that digest's length; the OCSP parser read a 19-octet SHA-1 hash, or 20-octet hashes under SHA-256, as a CertID, and such a CertID names no certificate. The parser now refuses them, in a request and in a response alike, for the digests this build knows. The digest lengths move to one table the timestamp signer and verifier also read.",
+  "sections": {
+    "Changed": [
+      "pki.schema.ocsp.parseRequest and parseResponse refuse a CertID whose issuerNameHash or issuerKeyHash is not the length of the digest its hashAlgorithm names (ocsp/bad-cert-id, RFC 6960 sec. 4.1.1), for SHA-1, SHA-256, SHA-384, SHA-512, SHA3-256 and SHA3-512; a CertID under a digest this build does not know is read as given. pki.ocsp.verify and pki.ocsp.verifyRequest, which parse first, report such a request or response as malformed instead of comparing a hash that could never match.",
+      "The digest output lengths live in pki.constants.NAMES.DIGEST_OCTETS, read by the OCSP parser and by pki.tsp.sign and pki.tsp.verify for the messageImprint length check they already made."
+    ]
+  }
+}

@@ -345,6 +345,20 @@ function testRejectTimeCertIdExt() {
   var certID3 = certID({ children: [algId(SHA1), b.octetString(Buffer.alloc(20, 1)), b.octetString(Buffer.alloc(20, 2))] });
   var req3 = ocspRequest({ tbs: tbsRequest({ requestList: [request({ certID: certID3 })] }) });
   check("31. CertID missing serialNumber rejected", parseReqCode(req3.der) === "ocsp/bad-cert-id");
+  // 31a. RFC 6960 sec. 4.1.1: issuerNameHash and issuerKeyHash are hashes under hashAlgorithm, so
+  // each is exactly that digest's length; a 19-octet "SHA-1" hash names no certificate.
+  var shortName = certID({ nameHash: b.octetString(Buffer.alloc(19, 1)) });
+  check("31a. CertID issuerNameHash of 19 octets under sha1 -> ocsp/bad-cert-id", parseReqCode(ocspRequest({ tbs: tbsRequest({ requestList: [request({ certID: shortName })] }) }).der) === "ocsp/bad-cert-id");
+  var shortKey = certID({ keyHash: b.octetString(Buffer.alloc(21, 2)) });
+  check("31b. CertID issuerKeyHash of 21 octets under sha1 -> ocsp/bad-cert-id", parseReqCode(ocspRequest({ tbs: tbsRequest({ requestList: [request({ certID: shortKey })] }) }).der) === "ocsp/bad-cert-id");
+  var sha256Short = certID({ hashOid: pki.oid.byName("sha256") });   // 20-octet hashes under a 32-octet digest
+  check("31c. CertID with sha256 and 20-octet hashes -> ocsp/bad-cert-id", parseReqCode(ocspRequest({ tbs: tbsRequest({ requestList: [request({ certID: sha256Short })] }) }).der) === "ocsp/bad-cert-id");
+  var sha256Ok = certID({ hashOid: pki.oid.byName("sha256"), nameHash: b.octetString(Buffer.alloc(32, 1)), keyHash: b.octetString(Buffer.alloc(32, 2)) });
+  check("31d. CONTROL: CertID with sha256 and 32-octet hashes parses", parseReqCode(ocspRequest({ tbs: tbsRequest({ requestList: [request({ certID: sha256Ok })] }) }).der) === "NO-THROW");
+  var unknownHash = certID({ hashOid: "1.3.6.1.4.1.99999.9", nameHash: b.octetString(Buffer.alloc(7, 1)), keyHash: b.octetString(Buffer.alloc(7, 2)) });
+  check("31e. a CertID under a digest this build does not know is read as given (its length is not judged)", parseReqCode(ocspRequest({ tbs: tbsRequest({ requestList: [request({ certID: unknownHash })] }) }).der) === "NO-THROW");
+  var respShort = basicResponse({ tbs: responseData({ responses: [singleResponse({ certID: shortName })] }) });
+  check("31f. the same rule holds a response's CertID -> ocsp/bad-cert-id", parseRespCode(basicOcspResponse(respShort)) === "ocsp/bad-cert-id");
   // 32. CertID.serialNumber non-minimal INTEGER -> leaf asn1/non-minimal-integer.
   var badSerial = Buffer.from([0x02, 0x02, 0x00, 0x01]); // redundant leading 0x00
   var certIDbadSerial = certID({ children: [algId(SHA1), b.octetString(Buffer.alloc(20, 1)), b.octetString(Buffer.alloc(20, 2)), badSerial] });

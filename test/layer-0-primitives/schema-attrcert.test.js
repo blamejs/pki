@@ -429,6 +429,30 @@ function testAttributeValueDecoders() {
   // opaque fallback -- an unknown attribute type never fails the parse
   var enc = parse(attrCert({ attributesNode: b.sequence([attribute("1.3.6.1.5.5.7.10.6", [b.octetString(Buffer.from([1]))])]) })).attributes[0];
   check("av unknown type -> opaque fallback (parse succeeds)", enc.decoded[0].opaque === true && Buffer.isBuffer(enc.decoded[0].bytes));
+
+  // Every refusal arm of the value decoders, each driven by the one malformed shape it names.
+  var uri = function (s) { return b.contextPrimitive(6, Buffer.from(s, "ascii")); };
+  check("av authenticationInfo: one child -> bad-authentication-info (SEQUENCE { service, ident, authInfo? })", /^attrcert\//.test(attrCode(AUTHINFO, b.sequence([uri("svc")]))));
+  check("av authenticationInfo: four children -> refused", /^attrcert\//.test(attrCode(AUTHINFO, b.sequence([uri("svc"), uri("id"), b.octetString(Buffer.from([1])), b.octetString(Buffer.from([2]))]))));
+  check("av authenticationInfo: authInfo not an OCTET STRING -> refused", /^attrcert\//.test(attrCode(AUTHINFO, b.sequence([uri("svc"), uri("id"), b.utf8("x")]))));
+  check("av group: an empty IetfAttrSyntax SEQUENCE -> bad-ietf-attr", attrCode(GROUP, b.sequence([])) === "attrcert/bad-ietf-attr");
+  check("av group: three fields -> bad-ietf-attr", attrCode(GROUP, b.sequence([b.contextConstructed(0, gnDirName("PA")), b.sequence([b.utf8("v")]), b.utf8("extra")])) === "attrcert/bad-ietf-attr");
+  check("av group: values before a trailing [0] -> bad-ietf-attr (a [0] must precede values)", attrCode(GROUP, b.sequence([b.sequence([b.utf8("v")]), b.contextConstructed(0, gnDirName("PA"))])) === "attrcert/bad-ietf-attr");
+  check("av role: a trailing field after roleName -> bad-role", attrCode(ROLE, b.sequence([b.explicit(1, uri("urn:r")), b.utf8("extra")])) === "attrcert/bad-role");
+  check("av clearance: classList not a BIT STRING -> bad-clearance", attrCode(CLEARANCE, b.sequence([b.oid("2.16.840.1.101.2.1"), b.octetString(Buffer.from([0x08]))])) === "attrcert/bad-clearance");
+  var clReserved = attrDecoded(CLEARANCE, b.sequence([b.oid("2.16.840.1.101.2.1"), b.bitString(Buffer.from([0x08, 0x80]), 7)]));
+  check("av clearance: a bit beyond topSecret is reported in reservedBits", Array.isArray(clReserved.classList.reservedBits) && clReserved.classList.reservedBits.indexOf(8) !== -1 && clReserved.classList.flags.secret === true);
+  check("av clearance: empty SEQUENCE -> bad-clearance", attrCode(CLEARANCE, b.sequence([])) === "attrcert/bad-clearance");
+  check("av clearance: four fields -> bad-clearance", attrCode(CLEARANCE, b.sequence([b.oid("2.16.840.1.101.2.1"), b.bitString(Buffer.from([0x08]), 3), b.set([]), b.utf8("x")])) === "attrcert/bad-clearance");
+  check("av clearance: policyId not an OID -> bad-clearance", attrCode(CLEARANCE, b.sequence([b.utf8("policy")])) === "attrcert/bad-clearance");
+  check("av clearance: empty securityCategories SET -> bad-clearance", attrCode(CLEARANCE, b.sequence([b.oid("2.16.840.1.101.2.1"), b.set([])])) === "attrcert/bad-clearance");
+  check("av clearance: fields out of order (SET before classList) -> bad-clearance", attrCode(CLEARANCE, b.sequence([b.oid("2.16.840.1.101.2.1"), b.set([b.sequence([b.contextPrimitive(0, Buffer.from([0x2a, 0x03])), b.explicit(1, b.utf8("v"))])]), b.bitString(Buffer.from([0x08]), 3)])) === "attrcert/bad-clearance");
+  var scOk = b.sequence([b.contextPrimitive(0, Buffer.from([0x2a, 0x03])), b.explicit(1, b.utf8("v"))]);
+  check("av clearance: CONTROL securityCategory { [0] type, [1] value } decodes", attrDecoded(CLEARANCE, b.sequence([b.oid("2.16.840.1.101.2.1"), b.set([scOk])])).securityCategories.length === 1);
+  check("av clearance: a SecurityCategory with one child -> bad-clearance", attrCode(CLEARANCE, b.sequence([b.oid("2.16.840.1.101.2.1"), b.set([b.sequence([b.contextPrimitive(0, Buffer.from([0x2a, 0x03]))])])])) === "attrcert/bad-clearance");
+  check("av clearance: a SecurityCategory type that is constructed -> bad-clearance", attrCode(CLEARANCE, b.sequence([b.oid("2.16.840.1.101.2.1"), b.set([b.sequence([b.contextConstructed(0, b.oid("1.2.3")), b.explicit(1, b.utf8("v"))])])])) === "attrcert/bad-clearance");
+  check("av clearance: a SecurityCategory type that is not an OID -> bad-clearance", attrCode(CLEARANCE, b.sequence([b.oid("2.16.840.1.101.2.1"), b.set([b.sequence([b.contextPrimitive(0, Buffer.from([0x80])), b.explicit(1, b.utf8("v"))])])])) === "attrcert/bad-clearance");
+  check("av clearance: a SecurityCategory value with two elements -> bad-clearance", attrCode(CLEARANCE, b.sequence([b.oid("2.16.840.1.101.2.1"), b.set([b.sequence([b.contextPrimitive(0, Buffer.from([0x2a, 0x03])), b.contextConstructed(1, Buffer.concat([b.utf8("v"), b.utf8("w")]))])])])) === "attrcert/bad-clearance");
 }
 
 // RFC 5755 sec. 4.3 AC-extension decoders, driven through attrcert.parse -> extensions[i].decoded.
@@ -477,6 +501,20 @@ function testAcExtensionDecoders() {
   var dp = extDecoded(CRLDP, b.sequence([b.sequence([b.contextConstructed(0, b.contextConstructed(0, uri("http://crl.example/a.crl")))])]));
   check("ext cRLDistributionPoints: the fullName decodes", dp.length === 1 && dp[0].distributionPoint.kind === "fullName" && dp[0].distributionPoint.names.length === 1);
   check("ext cRLDistributionPoints: reasons-only point -> typed attrcert/*", /^attrcert\//.test(extCode(CRLDP, b.sequence([b.sequence([b.contextPrimitive(1, Buffer.from([0x06, 0x40]))])])) || ""));
+
+  // Every refusal arm of the extension decoders, each driven by the one malformed shape it names.
+  var gn = function (s) { return b.contextPrimitive(2, Buffer.from(s, "ascii")); };
+  var issuerSerial = b.sequence([b.sequence([gn("ca.example")]), b.integer(7n)]);
+  check("ext targetInformation: an empty targetCert [2] -> bad-targets", extCode(TARGETINFO, b.sequence([b.sequence([b.contextConstructed(2, Buffer.alloc(0))])])) === "attrcert/bad-targets");
+  var tcFull = extDecoded(TARGETINFO, b.sequence([b.sequence([b.contextConstructed(2, Buffer.concat([issuerSerial, gn("t.example"), b.sequence([b.enumerated(0n), b.sequence([b.oid("2.16.840.1.101.3.4.2.1")]), b.bitString(Buffer.alloc(32, 1), 0)])]))])]));
+  check("ext targetInformation: a targetCert with targetName and certDigestInfo decodes all three", tcFull[0][0].kind === "targetCert" && tcFull[0][0].targetName !== null && tcFull[0][0].certDigestInfo !== null);
+  check("ext targetInformation: a targetCert with a trailing field -> bad-targets", extCode(TARGETINFO, b.sequence([b.sequence([b.contextConstructed(2, Buffer.concat([issuerSerial, b.utf8("extra")]))])])) === "attrcert/bad-targets");
+  check("ext targetInformation: a targetName [0] wrapping two GeneralNames -> bad-targets", extCode(TARGETINFO, b.sequence([b.sequence([b.contextConstructed(0, Buffer.concat([gn("a"), gn("b")]))])])) === "attrcert/bad-targets");
+  check("ext aaControls: permittedAttrs not a SEQUENCE -> bad-aa-controls", extCode(AACTRL, b.sequence([b.contextPrimitive(0, Buffer.from([1]))])) === "attrcert/bad-aa-controls");
+  check("ext aaControls: an AttrSpec element that is not an OID -> bad-aa-controls", extCode(AACTRL, b.sequence([b.contextConstructed(0, b.utf8("role"))])) === "attrcert/bad-aa-controls");
+  check("ext aaControls: an AttrSpec element that is a malformed OID -> bad-aa-controls", extCode(AACTRL, b.sequence([b.contextConstructed(0, Buffer.from([0x06, 0x01, 0x80]))])) === "attrcert/bad-aa-controls");
+  check("ext aaControls: five fields -> bad-aa-controls", extCode(AACTRL, b.sequence([b.integer(1), b.contextConstructed(0, b.oid("1.2.3")), b.contextConstructed(1, b.oid("1.2.4")), b.boolean(false), b.utf8("x")])) === "attrcert/bad-aa-controls");
+  check("ext aaControls: fields out of order (excludedAttrs before permittedAttrs) -> bad-aa-controls", extCode(AACTRL, b.sequence([b.contextConstructed(1, b.oid("1.2.4")), b.contextConstructed(0, b.oid("1.2.3"))])) === "attrcert/bad-aa-controls");
 
   // opaque fallback for an unknown extension OID
   check("ext unknown OID -> opaque fallback", parse(attrCert({ extensions: [ext("1.2.3.4.5", b.nullValue())] })).extensions[0].decoded.opaque === true);

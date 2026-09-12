@@ -807,7 +807,7 @@ function testDispatchAndCoercion() {
   var routedIr = pki.schema.parse(irMsg);
   check("a 2-child ir PKIMessage routes to cmp, not ocsp-request", routedIr.body && routedIr.body.arm === "ir");
   var ocspReq = b.sequence([b.sequence([b.sequence([b.sequence([
-    b.sequence([algId(SHA256), b.octetString(Buffer.from([1])), b.octetString(Buffer.from([2])), b.integer(5)])])])])]);
+    b.sequence([algId(SHA256), b.octetString(Buffer.alloc(32, 1)), b.octetString(Buffer.alloc(32, 2)), b.integer(5)])])])])]);   // the hashes are the digest's 32 octets (RFC 6960 sec. 4.1.1)
   check("a real OCSPRequest still routes to ocsp-request (cmp.matches false)", cmpMod.matches(pki.asn1.decode(ocspReq)) === false);
   var ocspRouted = pki.schema.parse(ocspReq);
   check("OCSPRequest routing intact", Array.isArray(ocspRouted.requestList));

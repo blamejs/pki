@@ -58,7 +58,7 @@
   "lib/guard-limits.js": "2026-09-02",
   "lib/guard-list.js": "2026-09-05",
   "lib/guard-name.js": "2026-09-12",
-  "lib/guard-parsed.js": "2026-09-07",
+  "lib/guard-parsed.js": "2026-09-12",
   "lib/guard-range.js": "2026-09-01",
   "lib/guard-secret.js": "2026-09-01",
   "lib/guard-text.js": "2026-09-02",
