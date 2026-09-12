@@ -4,6 +4,16 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.34 — 2026-09-12
+
+The OCSP signer refuses what its own lint grades an error.
+
+### Changed
+
+- A revoked response for a non-issued certificate (revocationReason certificateHold at 1970-01-01T00:00:00Z, RFC 6960 sec. 2.2, judged on the time as it is encoded, so any instant inside that first second counts) carries the extended revoked definition in responseExtensions whether or not opts.extendedRevoke names it, since sec. 4.4.8 requires it there; extendedRevoke: false on such a response is refused, and CRL references or any CRL entry extension on that SingleResponse, in the object form or pre-encoded, are refused as sec. 2.2 forbids them.
+- A pre-encoded singleExtension is held to where RFC 6960 places it after its value is read: the request-only extensions (acceptable responses sec. 4.4.3, service locator sec. 4.4.6, preferred signature algorithms sec. 4.4.7) and the two a response carries in responseExtensions alone (the extended revoked definition sec. 4.4.8, the RFC 9654 nonce) are refused in singleExtensions, and a CRL entry extension carried there (sec. 4.4.5) must have the criticality RFC 5280 sec. 5.3 fixes for it: reasonCode and invalidityDate non-critical, certificateIssuer critical. A private critical singleExtension is still signed; RFC 6960 places the rejection of an unrecognized critical extension on the relying party, and pki.lint.ocsp grades it.
+- The CRL entry-extension criticality table and the OCSP extension-placement table now live in the CRL and OCSP schema modules, and the CRL signer, the OCSP signer and the linter read them from there.
+
 ## v0.7.33 — 2026-09-12
 
 pki.x509.extension encodes one certificate extension from its plain value form.
