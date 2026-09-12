@@ -4,6 +4,15 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.30 — 2026-09-12
+
+The Sigstore bundle verifier decides with operations bound when the module loads.
+
+### Changed
+
+- pki.sigstore.verifyBundle, parseBundle and pae read Buffer.prototype.equals, Buffer.prototype.toString, Buffer.prototype.subarray and Buffer.prototype.indexOf, Buffer.from and Buffer.concat, String.prototype.split, slice, indexOf, charAt and charCodeAt, Array.prototype.map, forEach, filter and slice, Object.assign, Object.create and Object.freeze, String, Number, BigInt, Date, Date.parse, Number.isNaN and JSON.stringify as bound at module load. Replacing Buffer.prototype.equals, String.prototype.split or indexOf, Array.prototype.filter or forEach, or Date.parse after load changes nothing this module decides: a valid bundle still verifies and a Rekor entry whose signature is not the bundle's is still refused. A replacement of Buffer.prototype.toString or subarray, Array.prototype.map, BigInt, Buffer.from or Buffer.concat still reaches the certificate parser and the chain builder's neighbors, which read those live; that residual is theirs and is stated here rather than implied covered.
+- SECURITY.md names the key import and export verbs and the Sigstore bundle verifier among the surfaces that take what they decide with at load.
+
 ## v0.7.29 — 2026-09-12
 
 Every decision pki.key makes is taken with operations bound when the module loads.

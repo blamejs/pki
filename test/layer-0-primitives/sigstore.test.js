@@ -1787,6 +1787,51 @@ async function runMessageSignature(TM) {
   }
   function _isArrayLike(v) { return !!v && typeof v === "object" && typeof v.length === "number" && v.length > 0; }
 
+  // The operations the VERIFY path decides with are taken at load as well. Each replacement below
+  // would, read live, either break a valid bundle (an emptied split leaves no checkpoint lines, an
+  // emptied filter leaves no candidate root, a NaN parse leaves no validity window) or admit a
+  // tampered one (an equals answering yes binds any entry to any signature). The valid fixture must
+  // still verify and the tampered entry must still be refused with this module's own code. Only the
+  // operations this module reaches through its captures are listed: a replacement a neighbor module
+  // reads live (the buffer text and slice operations the certificate parser uses, the array map the
+  // chain builder's neighbors use) fails inside that neighbor and is that module's question.
+  var tamperedEntry = JSON.parse(JSON.stringify(BUNDLE));
+  (function () {
+    var t = tamperedEntry.verificationMaterial.tlogEntries[0];
+    var b = JSON.parse(Buffer.from(t.canonicalizedBody, "base64").toString("utf8"));
+    var sig = Buffer.from(b.spec.signatures[0].signature, "base64"); sig[5] ^= 1;
+    b.spec.signatures[0].signature = sig.toString("base64");
+    t.canonicalizedBody = Buffer.from(JSON.stringify(b)).toString("base64");
+  })();
+  var verifySwaps = [
+    ["Buffer.prototype.equals", Buffer.prototype, "equals", function () { return true; }],
+    ["String.prototype.split", String.prototype, "split", function () { return []; }],
+    ["String.prototype.indexOf", String.prototype, "indexOf", function () { return -1; }],
+    ["Array.prototype.filter", Array.prototype, "filter", function () { return []; }],
+    ["Array.prototype.forEach", Array.prototype, "forEach", function () {}],
+    ["Date.parse", Date, "parse", function () { return NaN; }],
+  ];
+  // The valid bundle is verified under an identity policy naming its own SAN and issuer, so the
+  // identity extraction (a prefix test on each extension OID) and the policy walk (a forEach over
+  // the fields asked for) decide something a replacement could move: with either read live, the
+  // policy fails to match and the verdict is identity-mismatch.
+  var baselineIdentity = (await pki.sigstore.verifyBundle(BUNDLE, TM)).identity;
+  var identityPolicy = { san: baselineIdentity.san.value, issuer: baselineIdentity.extensions.issuer };
+  var TM_ID = Object.assign({}, TM, { identity: identityPolicy });
+  for (var vs = 0; vs < verifySwaps.length; vs++) {
+    var vHolder = verifySwaps[vs][1], vName = verifySwaps[vs][2], vOriginal = vHolder[vName];
+    var validUnderSwap, tamperedUnderSwap;
+    try {
+      vHolder[vName] = verifySwaps[vs][3];
+      validUnderSwap = await codeOf(pki.sigstore.verifyBundle(BUNDLE, TM_ID).then(function (v) {
+        if (v.verified !== true || v.identityChecked.san !== true || v.identityChecked.issuer !== true) throw new Error("not verified under the identity policy");
+      }));
+      tamperedUnderSwap = await codeOf(pki.sigstore.verifyBundle(tamperedEntry, TM_ID));
+    } finally { vHolder[vName] = vOriginal; }
+    check("replacing " + verifySwaps[vs][0] + " after load neither breaks a valid bundle under an identity policy nor admits a tampered entry",
+      validUnderSwap === "NO-THROW" && tamperedUnderSwap === "sigstore/entry-mismatch");
+  }
+
   // A property named __proto__ is copied as a field of that name, never as a prototype. Assigning it
   // onto an ordinary object would run the inherited setter instead, which promotes whatever it holds
   // into the bundle's own fields: an object owning nothing but __proto__ would read as the bundle

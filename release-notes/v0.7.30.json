@@ -1,0 +1,12 @@
+{
+  "version": "0.7.30",
+  "date": "2026-09-12",
+  "headline": "The Sigstore bundle verifier decides with operations bound when the module loads.",
+  "summary": "pki.sigstore.verifyBundle binds a transparency-log entry to the bundle's signature and leaf, parses and checks a signed checkpoint, selects the Rekor key and Fulcio root a time falls under, and reads the certificate identity. Each of those read a global or a prototype method from the runtime at the moment it ran. The module now takes every such operation from the captures the rest of the toolkit uses, and the source gate that holds the other modules to that rule holds this one too.",
+  "sections": {
+    "Changed": [
+      "pki.sigstore.verifyBundle, parseBundle and pae read Buffer.prototype.equals, Buffer.prototype.toString, Buffer.prototype.subarray and Buffer.prototype.indexOf, Buffer.from and Buffer.concat, String.prototype.split, slice, indexOf, charAt and charCodeAt, Array.prototype.map, forEach, filter and slice, Object.assign, Object.create and Object.freeze, String, Number, BigInt, Date, Date.parse, Number.isNaN and JSON.stringify as bound at module load. Replacing Buffer.prototype.equals, String.prototype.split or indexOf, Array.prototype.filter or forEach, or Date.parse after load changes nothing this module decides: a valid bundle still verifies and a Rekor entry whose signature is not the bundle's is still refused. A replacement of Buffer.prototype.toString or subarray, Array.prototype.map, BigInt, Buffer.from or Buffer.concat still reaches the certificate parser and the chain builder's neighbors, which read those live; that residual is theirs and is stated here rather than implied covered.",
+      "SECURITY.md names the key import and export verbs and the Sigstore bundle verifier among the surfaces that take what they decide with at load."
+    ]
+  }
+}
