@@ -105,7 +105,7 @@ Certificate lifecycle management is a first-class goal of this toolkit rather th
 
 ## High-level builder API
 
-- **Safe-by-default builders** — *Targeted.* Ergonomic certificate, CSR, and CMS builders that accept strings and plain objects, with first-class PEM input and output and sensible extension helpers, so the natural path is the safe and correct one. Low-level ASN.1 structures remain available but are opt-in, and every public API member is public, so no legitimate use is blocked by visibility.
+- **Safe-by-default builders** — *Targeted.* Ergonomic certificate, CSR, and CMS builders that accept strings and plain objects, with first-class PEM input and output and sensible extension helpers, so the natural path is the safe and correct one. Low-level ASN.1 structures remain available but are opt-in, and every public API member is public, so no legitimate use is blocked by visibility. Shipped so far: every extension the decoders read has an object-form encoder, the RFC-fixed criticality is bound on both the object and the pre-encoded forms, and the certificate and CRL signers emit the RFC 5280 subject and authority key identifiers without being named, declining one only where the RFC allows the omission. Open: a build-time profile gate over the lint rules, and a public single-extension encoder for the pre-encoded form.
 
 ## Messaging
 

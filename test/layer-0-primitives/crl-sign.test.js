@@ -156,17 +156,57 @@ async function testEmptyListOmitsRevoked() {
   var s = makeSigner("ed25519");
   // schema-crl's REVOKED_LIST has min:1, so an emitted EMPTY SEQUENCE OF would throw crl/bad-revoked-certificates
   // here -- a clean parse proves the field was OMITTED entirely.
-  var c = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [] }, issuerOf(s)));
+  var c = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [], extensions: [] }, issuerOf(s)));
   check("empty revoked list parses (field omitted, no empty SEQUENCE)", c.revokedCertificates.length === 0);
-  check("no-extension CRL is v1", c.version === 1);
+  check("a CRL given the empty pre-encoded extension list is v1", c.version === 1);
+}
+
+// ---- sec. 5.2 / 5.2.1 -- the authorityKeyIdentifier every conforming CRL issuer MUST include ----
+
+async function testAkiDefault() {
+  var s = makeSigner("ec-p256");
+  var base = { subjectPublicKey: s.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2030-01-01T00:00:00Z") };
+  var ca = pki.schema.x509.parse(await pki.x509.sign(Object.assign({ subject: "AKI CA", extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "cRLSign"] } }, base), { key: s.key }));
+  var caSki = asn1.read.octetString(asn1.decode(ca.extensions.filter(function (e) { return e.oid === byName("subjectKeyIdentifier"); })[0].value));
+  // Under an issuer certificate: the keyIdentifier is the certificate's own SKI (sec. 4.2.1.2).
+  var crl = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 7n }, { cert: ca, key: s.key }));
+  var aki = crlExt(crl, "authorityKeyIdentifier");
+  check("a CRL carries an authorityKeyIdentifier without asking for one", !!aki && aki.critical === false);
+  check("...whose keyIdentifier is the issuer certificate's SKI", asn1.decode(aki.value).children[0].content.equals(caSki));
+  // Under a bare name and key: the keyIdentifier is method (1) over the issuer's public key.
+  var crypto = require("crypto");
+  var bits = asn1.decode(s.spki).children[1];
+  var method1 = crypto.createHash("sha1").update(bits.content.subarray(1)).digest();
+  var bare = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 8n }, issuerOf(s)));
+  check("under a name-and-key issuer the keyIdentifier is derived from the key", asn1.decode(crlExt(bare, "authorityKeyIdentifier").value).children[0].content.equals(method1));
+  check("the lint reports no aki-missing on the default output",
+    !pki.lint.crl(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 9n }, { cert: ca, key: s.key })).findings.some(function (f) { return f.id === "lint/rfc5280-crl/aki-missing"; }));
+  // An explicit value still wins, and there is no opt-out: the clause has no exception.
+  var explicit = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 1n, extensions: { authorityKeyIdentifier: Buffer.alloc(20, 7) } }, issuerOf(s)));
+  check("an explicit authorityKeyIdentifier keeps its value under a name-and-key issuer", asn1.decode(crlExt(explicit, "authorityKeyIdentifier").value).children[0].content.equals(Buffer.alloc(20, 7)));
+  // Under an issuer certificate carrying an SKI, a stated key id is held to it (sec. 5.2.1 names the
+  // CRL signer certificate's subject key identifier as the value).
+  check("an explicit authorityKeyIdentifier differing from the issuer certificate's SKI -> crl/bad-input",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 1n, extensions: { authorityKeyIdentifier: Buffer.alloc(20, 7) } }, { cert: ca, key: s.key })) === "crl/bad-input");
+  check("an explicit authorityKeyIdentifier equal to the issuer certificate's SKI signs",
+    Buffer.isBuffer(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 1n, extensions: { authorityKeyIdentifier: caSki } }, { cert: ca, key: s.key })));
+  check("authorityKeyIdentifier: false -> crl/bad-input (sec. 5.2.1 MUST, no exception)",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 1n, extensions: { authorityKeyIdentifier: false } }, issuerOf(s))) === "crl/bad-input");
+  // The pre-encoded array form is the explicit, low-level form and adds nothing.
+  var arr = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: [] }, issuerOf(s)));
+  check("the array form given nothing emits no extension", arr.crlExtensions.length === 0);
 }
 
 // ---- sec. 5.1.2.1 -- version derived from the extension set ----
 
 async function testVersionDerivation() {
   var s = makeSigner("ec-p256");
-  var v1 = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 5n, revocationDate: RD }] }, issuerOf(s)));
+  // The object form always carries the authorityKeyIdentifier the signer emits by default, so the
+  // only route to a v1 CRL is the pre-encoded array form given nothing.
+  var v1 = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 5n, revocationDate: RD }], extensions: [] }, issuerOf(s)));
   check("no extensions -> v1 (version omitted)", v1.version === 1);
+  var v2d = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 5n, revocationDate: RD }] }, issuerOf(s)));
+  check("no extensions spec -> v2 (the default authorityKeyIdentifier is present)", v2d.version === 2 && !!crlExt(v2d, "authorityKeyIdentifier"));
   var v2n = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 1n }, issuerOf(s)));
   check("a CRL extension -> v2", v2n.version === 2);
   var v2e = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 5n, revocationDate: RD, reason: "superseded" }] }, issuerOf(s)));
@@ -196,8 +236,9 @@ async function testReasonCodeRules() {
     await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 1n, revocationDate: RD, reason: 7 }] }, issuerOf(s))) === "crl/bad-reason-code");
   check("removeFromCRL(8) in a complete CRL -> crl/bad-reason-code",
     await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 1n, revocationDate: RD, reason: "removeFromCRL" }] }, issuerOf(s))) === "crl/bad-reason-code");
-  // unspecified(0) SHOULD be absent -> the builder OMITS it (no extension -> v1).
-  var u = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 1n, revocationDate: RD, reason: 0 }] }, issuerOf(s)));
+  // unspecified(0) SHOULD be absent -> the builder OMITS it (no entry extension; with no CRL extension
+  // either, through the array form, the CRL is v1).
+  var u = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 1n, revocationDate: RD, reason: 0 }], extensions: [] }, issuerOf(s)));
   check("unspecified(0) reason omitted -> entry has no extensions", u.revokedCertificates[0].crlEntryExtensions.length === 0);
   check("an unspecified(0)-only CRL is v1", u.version === 1);
   // A CRLReason arrives as a registry name or its number; anything else is rejected rather than coerced.
@@ -702,6 +743,11 @@ async function testPemAndIsRevoked() {
       try { pki.crl.isRevoked(der, 0xabcdn, { historicalMode: true }); return "NO-THROW"; }
       catch (e) { return e.code; }
     })() === "crl/bad-input");
+  check("historicalMode that is not a boolean is refused rather than read as truthy",
+    (function () {
+      try { pki.crl.isRevoked(der, 0xabcdn, { time: RD, historicalMode: "yes" }); return "NO-THROW"; }
+      catch (e) { return e.code; }
+    })() === "crl/bad-input");
   check("an unknown option is refused rather than read as no option",
     (function () {
       try { pki.crl.isRevoked(der, 0x9999n, { at: TU }); return "NO-THROW"; }
@@ -1096,6 +1142,7 @@ async function main() {
   await testPemAndIsRevoked();
   await testFailClosed();
   await testUnknownArgumentKeys();
+  await testAkiDefault();
   // Dense caller-array hardening: a sparse revoked array is a typed crl/bad-input, caught before the map
   // reaches the hole as a native concat error.
   var _dzcrl = makeSigner("ec-p256");
