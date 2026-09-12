@@ -4,6 +4,15 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.39 — 2026-09-12
+
+An OCSP CertID's issuer hashes are held to the length of the digest they name.
+
+### Changed
+
+- pki.schema.ocsp.parseRequest and parseResponse refuse a CertID whose issuerNameHash or issuerKeyHash is not the length of the digest its hashAlgorithm names (ocsp/bad-cert-id, RFC 6960 sec. 4.1.1), for SHA-1, SHA-256, SHA-384, SHA-512, SHA3-256 and SHA3-512; a CertID under a digest this build does not know is read as given. pki.ocsp.verify and pki.ocsp.verifyRequest, which parse first, report such a request or response as malformed instead of comparing a hash that could never match.
+- The digest output lengths live in pki.constants.NAMES.DIGEST_OCTETS, read by the OCSP parser and by pki.tsp.sign and pki.tsp.verify for the messageImprint length check they already made.
+
 ## v0.7.38 — 2026-09-12
 
 pki.lint.certificate grades six RFC 5280 rules its parser read past, and the parser surfaces the unique identifiers.
