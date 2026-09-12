@@ -1811,15 +1811,24 @@ async function runMessageSignature(TM) {
     ["Array.prototype.forEach", Array.prototype, "forEach", function () {}],
     ["Date.parse", Date, "parse", function () { return NaN; }],
   ];
+  // The valid bundle is verified under an identity policy naming its own SAN and issuer, so the
+  // identity extraction (a prefix test on each extension OID) and the policy walk (a forEach over
+  // the fields asked for) decide something a replacement could move: with either read live, the
+  // policy fails to match and the verdict is identity-mismatch.
+  var baselineIdentity = (await pki.sigstore.verifyBundle(BUNDLE, TM)).identity;
+  var identityPolicy = { san: baselineIdentity.san.value, issuer: baselineIdentity.extensions.issuer };
+  var TM_ID = Object.assign({}, TM, { identity: identityPolicy });
   for (var vs = 0; vs < verifySwaps.length; vs++) {
     var vHolder = verifySwaps[vs][1], vName = verifySwaps[vs][2], vOriginal = vHolder[vName];
     var validUnderSwap, tamperedUnderSwap;
     try {
       vHolder[vName] = verifySwaps[vs][3];
-      validUnderSwap = await codeOf(pki.sigstore.verifyBundle(BUNDLE, TM).then(function (v) { if (v.verified !== true) throw new Error("not verified"); }));
-      tamperedUnderSwap = await codeOf(pki.sigstore.verifyBundle(tamperedEntry, TM));
+      validUnderSwap = await codeOf(pki.sigstore.verifyBundle(BUNDLE, TM_ID).then(function (v) {
+        if (v.verified !== true || v.identityChecked.san !== true || v.identityChecked.issuer !== true) throw new Error("not verified under the identity policy");
+      }));
+      tamperedUnderSwap = await codeOf(pki.sigstore.verifyBundle(tamperedEntry, TM_ID));
     } finally { vHolder[vName] = vOriginal; }
-    check("replacing " + verifySwaps[vs][0] + " after load neither breaks a valid bundle nor admits a tampered entry",
+    check("replacing " + verifySwaps[vs][0] + " after load neither breaks a valid bundle under an identity policy nor admits a tampered entry",
       validUnderSwap === "NO-THROW" && tamperedUnderSwap === "sigstore/entry-mismatch");
   }
 
