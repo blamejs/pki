@@ -490,6 +490,18 @@ async function testCorrespondsTo(keyInternal) {
   var wideYSpki = b.sequence([b.raw(dhAlgNode.bytes), b.bitString(b.integer(wideY), 0)]);
   check("a DH private key whose exponent is wider than its modulus -> key/bad-input, before the runtime exponentiates",
     (await codeOf(keyInternal.correspondsTo(widePk8, wideYSpki))) === "key/bad-input");
+  // The cap is on the group, not on the encoding that names it: a PKCS #3 key of a group wider than
+  // any the toolkit agrees over (RFC 3526 modp18, 8192 bits) is refused on its size on either side,
+  // before the runtime raises anything to anything.
+  var wide = nodeCrypto.generateKeyPairSync("dh", { group: "modp18" });
+  var wideErr = null;
+  try { await keyInternal.correspondsTo(wide.privateKey.export({ format: "der", type: "pkcs8" }), wide.publicKey.export({ format: "der", type: "spki" })); } catch (e) { wideErr = e; }
+  check("a PKCS #3 DH pair of a group wider than the toolkit agrees over -> key/bad-input on its size",
+    wideErr !== null && wideErr.code === "key/bad-input" && /larger than any Diffie-Hellman group/.test(wideErr.message));
+  var wideMixErr = null;
+  try { await keyInternal.correspondsTo(dhAPk8, wide.publicKey.export({ format: "der", type: "spki" })); } catch (e) { wideMixErr = e; }
+  check("a PKCS #3 DH public key of a group wider than the toolkit agrees over -> key/bad-input on its size, whatever the private half",
+    wideMixErr !== null && wideMixErr.code === "key/bad-input" && /larger than any Diffie-Hellman group/.test(wideMixErr.message));
   check("a DH private key whose exponent is zero -> key/bad-input",
     (await codeOf(keyInternal.correspondsTo(b.sequence([b.integer(0n), b.raw(dhAlgNode.bytes), b.octetString(b.integer(0n))]), dhA.publicKey.export({ format: "der", type: "spki" })))) === "key/bad-input");
   check("CONTROL: an X9.42 public key with its cofactor 2 and validationParms pairs",

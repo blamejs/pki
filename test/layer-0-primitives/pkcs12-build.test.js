@@ -447,6 +447,12 @@ async function testFailClosedInputs() {
   // the key generates the value it carries.
   var x942NoQ = pki.asn1.build.sequence([pki.asn1.build.sequence([pki.asn1.build.oid(pki.oid.byName("dhpublicnumber")), pki.asn1.build.sequence([pki.asn1.build.integer(dhP), pki.asn1.build.integer(dhG)])]), pki.asn1.build.raw(dhSpkiNode.children[1].bytes)]);
   var x942NoQCert = await pki.x509.sign({ subject: "dh holder", subjectPublicKey: x942NoQ, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2030-01-01T00:00:00Z"), extensions: { keyUsage: ["keyAgreement"] } }, { name: "DH Issuer", publicKey: dhCa.spki, key: dhCa.key });
+  // A group wider than any the toolkit agrees over is refused on its size in either encoding, before
+  // the runtime exponentiates in it once per linked certificate.
+  var wideDh = require("crypto").generateKeyPairSync("dh", { group: "modp18" });
+  var wideCert = await pki.x509.sign({ subject: "dh holder", subjectPublicKey: wideDh.publicKey.export({ format: "der", type: "spki" }), notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2030-01-01T00:00:00Z"), extensions: { keyUsage: ["keyAgreement"] } }, { name: "DH Issuer", publicKey: dhCa.spki, key: dhCa.key });
+  check("a PKCS #3 DH pair of a group wider than the toolkit agrees over -> pkcs12/bad-input on its size",
+    (await codeOf(pki.pkcs12.build({ key: wideDh.privateKey.export({ format: "der", type: "pkcs8" }), cert: wideCert }, { password: "1234" }))) === "pkcs12/bad-input");
   check("a DH key under an X9.42 certificate whose DomainParameters omit q -> pkcs12/bad-input (a malformed key, whatever value it carries)",
     (await codeOf(pki.pkcs12.build({ key: dhKp.privateKey.export({ format: "der", type: "pkcs8" }), cert: x942NoQCert }, { password: "1234" }))) === "pkcs12/bad-input");
   // A composite ML-KEM key is a toolkit-defined algorithm the runtime cannot read: its public half
