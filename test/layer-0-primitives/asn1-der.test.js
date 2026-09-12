@@ -324,6 +324,11 @@ function testGeneralizedTimeYearPad() {
   check("build.generalizedTime refuses options that are not an object", code(function () { b.generalizedTime(new Date(0), "fractional"); }) === "asn1/bad-generalizedtime");
   check("build.generalizedTime refuses a fractional flag that is not a boolean", code(function () { b.generalizedTime(new Date(0), { fractional: 1 }); }) === "asn1/bad-generalizedtime");
   check("build.generalizedTime with null options is the default form", gtStr(new Date("2026-06-01T12:00:00.500Z"), null) === "20260601120000Z");
+  // The option is read once: an accessor answering true to the checks and false to the encoder
+  // cannot pass validation as one value and encode as another.
+  var reads = 0, flipping = {};
+  Object.defineProperty(flipping, "fractional", { enumerable: true, get: function () { reads++; return reads < 3; } });
+  check("build.generalizedTime reads fractional once and encodes what it validated", gtStr(new Date("2026-06-01T12:00:00.500Z"), flipping) === "20260601120000.5Z" && reads === 1);
 }
 
 function testSequenceSetMustBeConstructed() {
