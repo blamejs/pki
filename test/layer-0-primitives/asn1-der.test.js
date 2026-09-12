@@ -310,6 +310,20 @@ function testGeneralizedTimeYearPad() {
     var d = new Date(0); d.setUTCFullYear(10000, 0, 1); d.setUTCHours(0, 0, 0, 0);
     return code(function () { b.generalizedTime(d); }) === "asn1/bad-generalizedtime";
   })());
+  // The fractional form (RFC 3161 sec. 2.4.2, X.690 DER): milliseconds after a point, trailing
+  // zeros and an empty fraction omitted; the default form still truncates to the second.
+  function gtStr(date, opts) { return pki.asn1.decode(b.generalizedTime(date, opts)).content.toString("latin1"); }
+  check("build.generalizedTime fractional: 500 ms -> .5", gtStr(new Date("2026-06-01T12:00:00.500Z"), { fractional: true }) === "20260601120000.5Z");
+  check("build.generalizedTime fractional: 120 ms -> .12 (trailing zero omitted)", gtStr(new Date("2026-06-01T12:00:00.120Z"), { fractional: true }) === "20260601120000.12Z");
+  check("build.generalizedTime fractional: 1 ms -> .001", gtStr(new Date("2026-06-01T12:00:00.001Z"), { fractional: true }) === "20260601120000.001Z");
+  check("build.generalizedTime fractional: 0 ms -> no point", gtStr(new Date("2026-06-01T12:00:00.000Z"), { fractional: true }) === "20260601120000Z");
+  check("build.generalizedTime default form truncates 500 ms", gtStr(new Date("2026-06-01T12:00:00.500Z")) === "20260601120000Z");
+  check("a fractional GeneralizedTime reads back with its milliseconds under allowFractional",
+    pki.asn1.read.time(pki.asn1.decode(b.generalizedTime(new Date("2026-06-01T12:00:00.120Z"), { fractional: true })), { allowFractional: true }).getTime() === new Date("2026-06-01T12:00:00.120Z").getTime());
+  check("build.generalizedTime refuses an unknown option", code(function () { b.generalizedTime(new Date(0), { fraction: true }); }) === "asn1/bad-generalizedtime");
+  check("build.generalizedTime refuses options that are not an object", code(function () { b.generalizedTime(new Date(0), "fractional"); }) === "asn1/bad-generalizedtime");
+  check("build.generalizedTime refuses a fractional flag that is not a boolean", code(function () { b.generalizedTime(new Date(0), { fractional: 1 }); }) === "asn1/bad-generalizedtime");
+  check("build.generalizedTime with null options is the default form", gtStr(new Date("2026-06-01T12:00:00.500Z"), null) === "20260601120000Z");
 }
 
 function testSequenceSetMustBeConstructed() {

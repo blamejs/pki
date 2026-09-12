@@ -136,8 +136,13 @@ function makeCompositeSigner(arm, opts) {
 // also returns keyObject and spki for callers that need them, and handing the whole bag to a verb
 // that reads two of its fields is the shape the unknown-field doors exist to refuse -- a name
 // belonging on the OPTIONS, placed here instead, would otherwise be dropped in silence.
+// makeTsa(alg, opts) -- a TSA whose certificate satisfies RFC 3161 sec. 2.3: one critical
+// extendedKeyUsage naming id-kp-timeStamping alone, plus keyUsage digitalSignature.
 function makeTsa(alg, opts) {
-  var s = makeSigner(alg, opts);
+  var o = Object.assign({}, opts || {});
+  var eku = b.sequence([b.oid(O("extKeyUsage")), b.boolean(true), b.octetString(b.sequence([b.oid(O("timeStamping"))]))]);
+  o.exts = (o.exts || []).concat([keyUsageExt("digitalSignature"), eku]);
+  var s = makeSigner(alg, o);
   return { cert: s.cert, key: s.key };
 }
 
