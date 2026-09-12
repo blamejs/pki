@@ -162,6 +162,12 @@ var kemPrivatePkcs8Der = Buffer.from(kemVec.dk_pkcs8, "base64");
 var kemCiphertext = Buffer.from(kemVec.c, "base64");
 var kemRecipientSpkiDer = b.sequence([b.sequence([b.oid(pki.oid.byName(kemVec.tcId))]), b.bitString(Buffer.from(kemVec.ek, "base64"), 0)]);
 
+// pki.hpke fixtures: the ML-KEM-768 recipient of draft-ietf-hpke-pq-05 Appendix A.2 (an official
+// test vector, so its seed can be committed), so the seal / open examples run the real PQ path.
+var hpkePqVec = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "fixtures", "hpke", "draft-hpke-pq-05-vectors.json"), "utf8"))[1];
+var hpkeMlKemPkR = Buffer.from(hpkePqVec.pkRm, "hex");
+var hpkeMlKemSkR = { skm: Buffer.from(hpkePqVec.skRm, "hex") };
+
 // pki.est.simplereenroll fixture: a structural PKCS#10 whose subject + SPKI are byte-identical to
 // signFixtureSigner.cert and which carries no SAN, so reenrollGuard's RFC 7030 sec. 4.2.2 identity
 // check passes and the example reaches the (injected) transport.
@@ -226,6 +232,8 @@ function fixturesFor(tag) {
     bundle: sigstoreBundle, sigstoreTrust: sigstoreTrust,
     // pki.kem: a composite ML-KEM recipient so encapsulate / decapsulate run the real path.
     recipientSpkiDer: kemRecipientSpkiDer, privatePkcs8Der: kemPrivatePkcs8Der, ciphertext: kemCiphertext,
+    // pki.hpke: an ML-KEM-768 recipient so seal / open run the post-quantum KEM.
+    mlKemPkR: hpkeMlKemPkR, mlKemSkR: hpkeMlKemSkR,
     // pki.webauthn: a real packed attestation + its clientDataHash so the parse
     // and verify examples run the actual decode + attestation-statement verify.
     attestationObject: webauthnAttObj, clientDataHash: webauthnClientHash,

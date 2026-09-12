@@ -64,7 +64,7 @@
   "lib/guard-text.js": "2026-09-02",
   "lib/guard-time.js": "2026-09-12",
   "lib/guard-verdict.js": "2026-09-05",
-  "lib/hpke.js": "2026-09-06",
+  "lib/hpke.js": "2026-09-12",
   "lib/http-digest.js": "2026-09-06",
   "lib/http-retry-after.js": "2026-09-01",
   "lib/http-transport.js": "2026-09-06",
