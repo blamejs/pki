@@ -4,6 +4,20 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.36 — 2026-09-12
+
+The attribute-certificate signer holds its extensions and attributes to the RFC 5755 issuer rules, and emits the authority key identifier by default.
+
+### Added
+
+- pki.attrcert.sign takes crlDistributionPoints and authorityInfoAccess in the list forms pki.x509.sign takes, each emitted non-critical as RFC 5755 sec. 4.3.4 and 4.3.5 require, so the sec. 6 "pointer in AC" revocation scheme needs no pre-encoded Extension DER.
+- pki.schema.attrcert.parse decodes an attribute certificate's authorityKeyIdentifier, authorityInfoAccess and cRLDistributionPoints through the RFC 5280 readers, so a relying party running the "pointer in AC" scheme reads the distribution point and the OCSP location off the parse instead of off raw bytes.
+
+### Changed
+
+- pki.attrcert.sign emits the authorityKeyIdentifier without being named (RFC 5755 sec. 4.3.3: "this extension SHOULD be included in ACs"). Its keyIdentifier is the AA certificate's subjectKeyIdentifier when issuer.cert is given, else the RFC 5280 method (1) value of the AA key; a stated keyIdentifier that differs from the AA certificate's is refused; authorityKeyIdentifier: false omits it. The pre-encoded array form of extensions emits exactly what it is given.
+- pki.attrcert.sign refuses, with attrcert/bad-input and on both extension forms, what RFC 5755 forbids an issuer to produce: an auditIdentity that is not 1 to 20 octets (sec. 4.3.1); a targetInformation carrying more than one Targets element or a targetCert (sec. 4.3.2); an id-ad-ocsp accessLocation that is not a URI carrying an HTTP URL (sec. 4.3.4); a crlDistributionPoints that does not name exactly one distribution point as a fullName holding a single directoryName or an HTTP or LDAP URL, or whose cRLIssuer does not name the CRL issuer as a directoryName (sec. 4.3.5, RFC 5280 sec. 4.2.1.13); and a role whose roleName is not a uniformResourceIdentifier (sec. 4.4.5), on the object form and the pre-encoded Attribute form alike.
+
 ## v0.7.35 — 2026-09-12
 
 The timestamp signer refuses a TSA certificate its verifier would refuse, and keeps genTime's fraction of a second.

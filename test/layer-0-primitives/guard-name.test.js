@@ -168,6 +168,18 @@ function run() {
   testEmailEqual();
   testDpnCorresponds();
   testNotCallerReplaceable();
+  testUriSchemeIs();
+}
+
+// The scheme is compared without regard to ASCII case (RFC 3986 sec. 3.1) and must be followed by
+// a colon; a prefix match alone ("https" for "http") is not the scheme.
+function testUriSchemeIs() {
+  var is = name.uriSchemeIs;
+  check("uriSchemeIs: the scheme followed by a colon matches", is("http://a.example/", "http") === true);
+  check("uriSchemeIs: the scheme is case-folded", is("HTTP://a.example/", "http") === true);
+  check("uriSchemeIs: a longer scheme sharing the prefix does not match", is("https://a.example/", "http") === false);
+  check("uriSchemeIs: the scheme alone, with no colon, does not match", is("http", "http") === false);
+  check("uriSchemeIs: a non-string does not match, never a throw", is(null, "http") === false && is(7, "http") === false);
 }
 
 // RFC 5280 sec. 6.3.3(b)(2)(i) correspondence, whose comparison key sec. 5.2.5 pins to the
