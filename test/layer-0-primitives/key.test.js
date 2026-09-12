@@ -527,6 +527,45 @@ async function testOptionsAndUsages() {
   check("RSA-OAEP public import (encrypt usage)", oaepPub.type === "public");
   var oaepPriv = await pki.key.import(await pki.key.export(oaep.privateKey), { algorithm: { name: "RSA-OAEP", hash: "SHA-256" } });
   check("RSA-OAEP private import (decrypt usage)", oaepPriv.type === "private");
+
+  // ---- the decisions this module takes are bound at load, not read from the runtime per call ----
+  // Each intrinsic below is replaced on the live global AFTER the module loaded, with a version that
+  // would flip the decision, and the verb must decide as before: the capture was taken at load and
+  // the replacement never reaches it. Each is restored in a finally so a failure cannot leak.
+  var realIsArray = Array.isArray;
+  Array.isArray = function () { return true; };
+  try {
+    check("a replaced Array.isArray cannot admit a non-array usages", (await codeOf(pki.key.import(edSpki, { algorithm: { name: "Ed25519" }, usages: "sign" }))) === "key/bad-input");
+  } finally { Array.isArray = realIsArray; }
+  // A real encrypted key, so the only key/bad-input a bad maxIterations can draw is the option
+  // check's; the control decrypts the same bytes under a whole count.
+  var liveEnc = await pki.key.encrypt(await pki.key.export((await pki.key.generate("Ed25519")).privateKey), "pw", { iterations: 1000 });
+  check("CONTROL: the encrypted key decrypts under a whole maxIterations", Buffer.isBuffer(await pki.key.decrypt(liveEnc, "pw", { maxIterations: 2048 })));
+  var realFloor = Math.floor, realIsFinite = globalThis.isFinite;
+  Math.floor = function (x) { return x; };
+  globalThis.isFinite = function () { return true; };
+  try {
+    check("a replaced Math.floor cannot admit a fractional maxIterations", (await codeOf(pki.key.decrypt(liveEnc, "pw", { maxIterations: 1000.5 }))) === "key/bad-input");
+    check("a replaced isFinite cannot admit an infinite maxIterations", (await codeOf(pki.key.decrypt(liveEnc, "pw", { maxIterations: Infinity }))) === "key/bad-input");
+  } finally { Math.floor = realFloor; globalThis.isFinite = realIsFinite; }
+  var realUpper = String.prototype.toUpperCase;
+  String.prototype.toUpperCase = function () { return "X25519"; };
+  try {
+    var edUnderUpper = await pki.key.import(edSpki, { algorithm: { name: "Ed25519" } });
+    check("a replaced String.prototype.toUpperCase cannot turn an Ed25519 import into an agreement key", edUnderUpper.usages.indexOf("verify") !== -1 && edUnderUpper.usages.indexOf("deriveBits") === -1);
+  } finally { String.prototype.toUpperCase = realUpper; }
+  // The pair is generated BEFORE the pollution: Node's own key generation reads an inherited
+  // saltLength off its options and would bake the restriction into the key itself, which is a
+  // genuinely restricted pair and not the read under test.
+  var pssPair = nodeCrypto.generateKeyPairSync("rsa-pss", { modulusLength: 2048 });
+  var pssPk8Der = pssPair.privateKey.export({ format: "der", type: "pkcs8" }), pssSpkiDer = pssPair.publicKey.export({ format: "der", type: "spki" });
+  var realHasOwn = Object.prototype.hasOwnProperty;
+  Object.prototype.hasOwnProperty = function () { return true; };
+  Object.prototype.saltLength = 4096;
+  try {
+    check("a replaced hasOwnProperty cannot let an inherited saltLength restrict an unrestricted PSS pair",
+      (await require("../../lib/key.js").correspondsTo(pssPk8Der, pssSpkiDer)) === true);
+  } finally { Object.prototype.hasOwnProperty = realHasOwn; delete Object.prototype.saltLength; }
 }
 
 // ---- encrypt-input corners + crafted padding-oracle pair -------------------

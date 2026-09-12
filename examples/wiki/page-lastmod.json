@@ -71,7 +71,7 @@
   "lib/inspect.js": "2026-09-12",
   "lib/ip-utils.js": "2026-09-05",
   "lib/jose.js": "2026-09-11",
-  "lib/key.js": "2026-09-07",
+  "lib/key.js": "2026-09-12",
   "lib/lint.js": "2026-09-12",
   "lib/merkle.js": "2026-09-06",
   "lib/mime.js": "2026-09-06",

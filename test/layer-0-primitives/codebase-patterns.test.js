@@ -1982,7 +1982,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/cmc-build.js:<top>", "lib/cmc-verify.js:<top>", "lib/hpke.js:<top>",
         "lib/schema-attrcert.js:<top>", "lib/tls-cert-compress.js:<top>",
         "lib/schema-crl.js:<top>", "lib/schema-ocsp.js:<top>",
-        "lib/cmp-build.js:<top>", "lib/crmf-sign.js:<top>",
+        "lib/cmp-build.js:<top>", "lib/crmf-sign.js:<top>", "lib/key.js:<top>",
         "lib/ip-utils.js:<top>", "lib/guard-encoding.js:_alphabet",
       ],
       mode: "family-subset",
