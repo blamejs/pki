@@ -4,6 +4,15 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.24 — 2026-09-12
+
+A certificate request can name every extension its subject owns.
+
+### Added
+
+- The pki.csr.sign extensionRequest takes msCertificateTemplate, msEnrollCertType, msApplicationPolicies, subjectInfoAccess and subjectDirectoryAttributes, with the same spec shapes and the same rules pki.x509.sign applies, because one encoder serves both verbs: the same spec yields identical bytes and criticality in the request and in the certificate, and a fault is reported with a csr/* code.
+- A request naming an extension the issuing CA assigns as a spec key is refused by name rather than encoded and ignored: authorityKeyIdentifier names the CA's key, precertificatePoison and signedCertificateTimestampList are the CA's exchange with a log, msCaVersion and msPreviousCertHash are the CA's own, and ocspNoCheck is the CA's decision about a responder. The pre-encoded Extension array is unchanged: it carries whatever well-formed extension a caller assembles, as it always has.
+
 ## v0.7.23 — 2026-09-11
 
 Subject information access, subject directory attributes and the OCSP no-check marker are read and written.

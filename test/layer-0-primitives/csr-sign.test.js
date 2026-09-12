@@ -331,6 +331,60 @@ async function testRequestedCriticality() {
     await codeOf(pki.csr.sign({ subject: "x", subjectPublicKey: s.spki,
       extensionRequest: { qcStatements: [{ statementId: "1.3.6.1.4.1.99999.9", info: { years: 1 } }] } }, { key: s.key })) === "csr/bad-input");
 
+  // RFC 2985 sec. 5.4.2: the attribute carries "certificate extensions the requester wishes to be
+  // included". These five are the subject's own information, so a request can name them; each
+  // reaches the request through the encoder pki.x509.sign uses, so the two are written the same way.
+  var ownDer = await pki.csr.sign({ subject: "own.example", subjectPublicKey: s.spki, extensionRequest: {
+    msCertificateTemplate: { templateID: "1.3.6.1.4.1.311.21.8.1.2", templateMajorVersion: 100, templateMinorVersion: 2 },
+    msEnrollCertType: "WebServer",
+    msApplicationPolicies: ["1.3.6.1.4.1.99999.1"],
+    subjectInfoAccess: [{ accessMethod: "id-ad-caRepository", accessLocation: { uniformResourceIdentifier: "https://r.example" } }],
+    subjectDirectoryAttributes: [{ type: "1.3.6.1.4.1.99999.1", values: [asn1.build.utf8("DE")] }],
+  } }, { key: s.key });
+  var ownExts = pki.schema.csr.parse(ownDer).attributes[0].extensions;
+  function ownExt(n) { return ownExts.filter(function (e) { return (e.name || e.oid) === n; })[0]; }
+  ["msCertificateTemplate", "msEnrollCertType", "msApplicationPolicies", "subjectInfoAccess", "subjectDirectoryAttributes"].forEach(function (n) {
+    check("a requested " + n + " is emitted from the object form", !!ownExt(n));
+    check("...and is non-critical in the request", !!ownExt(n) && ownExt(n).critical !== true);
+  });
+  // The rules the certificate encoder applies reach the request unchanged.
+  check("a requested template with a minor version and no major -> csr/bad-input",
+    await codeOf(pki.csr.sign({ subject: "x", subjectPublicKey: s.spki,
+      extensionRequest: { msCertificateTemplate: { templateID: "1.3.6.1.4.1.311.21.8.1.2", templateMinorVersion: 2 } } }, { key: s.key })) === "csr/bad-input");
+  check("a requested enroll cert type outside the BMP -> csr/bad-input",
+    await codeOf(pki.csr.sign({ subject: "x", subjectPublicKey: s.spki,
+      extensionRequest: { msEnrollCertType: String.fromCharCode(0xD83D) + String.fromCharCode(0xDE00) } }, { key: s.key })) === "csr/bad-input");
+  check("a requested subjectInfoAccess with no entries -> csr/bad-input",
+    await codeOf(pki.csr.sign({ subject: "x", subjectPublicKey: s.spki, extensionRequest: { subjectInfoAccess: [] } }, { key: s.key })) === "csr/bad-input");
+  check("a requested attribute above the value ceiling -> csr/bad-input",
+    await codeOf(pki.csr.sign({ subject: "x", subjectPublicKey: s.spki,
+      extensionRequest: { subjectDirectoryAttributes: [{ type: "1.2.3", values: (function () { var a = []; for (var i = 0; i < 257; i++) { a.push(asn1.build.nullValue()); } return a; })() }] } }, { key: s.key })) === "csr/bad-input");
+  // One encoder serves both verbs, so the same spec yields the same bytes and criticality in the
+  // request and in the certificate.
+  var NBx = new Date("2026-01-01T00:00:00Z"), NAx = new Date("2030-01-01T00:00:00Z");
+  var ownSpec = {
+    msCertificateTemplate: { templateID: "1.3.6.1.4.1.311.21.8.1.2", templateMajorVersion: 100, templateMinorVersion: 2 },
+    msEnrollCertType: "WebServer", msApplicationPolicies: ["1.3.6.1.4.1.99999.1"],
+    subjectInfoAccess: [{ accessMethod: "id-ad-caRepository", accessLocation: { uniformResourceIdentifier: "https://r.example" } }],
+    subjectDirectoryAttributes: [{ type: "1.3.6.1.4.1.99999.1", values: [asn1.build.utf8("DE")] }],
+  };
+  var certExts = pki.schema.x509.parse(await pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NBx, notAfter: NAx, extensions: ownSpec }, { key: s.key })).extensions;
+  var reqExts2 = pki.schema.csr.parse(await pki.csr.sign({ subject: "x", subjectPublicKey: s.spki, extensionRequest: ownSpec }, { key: s.key })).attributes[0].extensions;
+  check("each of the five encodes to identical bytes and criticality on the request and the certificate",
+    Object.keys(ownSpec).every(function (n) {
+      var a = certExts.filter(function (e) { return (e.name || e.oid) === n; })[0];
+      var r = reqExts2.filter(function (e) { return (e.name || e.oid) === n; })[0];
+      return !!a && !!r && Buffer.from(a.value).equals(Buffer.from(r.value)) && a.critical === r.critical;
+    }));
+  // What the issuing CA assigns is not a request. Each is refused by name rather than encoded and
+  // ignored, so a caller learns which verb owns it.
+  var caOwned = { authorityKeyIdentifier: true, precertificatePoison: true, signedCertificateTimestampList: [], msCaVersion: 1, msPreviousCertHash: Buffer.alloc(20), ocspNoCheck: true };
+  for (var caKey in caOwned) {
+    var one = {}; one[caKey] = caOwned[caKey];
+    check("a requested " + caKey + " -> csr/bad-input (the issuing CA assigns it)",
+      await codeOf(pki.csr.sign({ subject: "x", subjectPublicKey: s.spki, extensionRequest: one }, { key: s.key })) === "csr/bad-input");
+  }
+
   // The policy machinery reaches a request through the same encoders.
   var polDer = await pki.csr.sign({ subject: "ca.example", subjectPublicKey: s.spki,
     extensionRequest: { basicConstraints: { cA: true }, policyConstraints: { requireExplicitPolicy: 0 },

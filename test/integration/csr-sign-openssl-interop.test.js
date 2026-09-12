@@ -39,6 +39,31 @@ async function run() {
     });
   }
 
+  // A request naming the subject-owned extensions that reach it through the certificate encoders.
+  // OpenSSL decodes the access description and the attribute value out of the request, and its
+  // proof-of-possession check still passes, so the attribute is well-formed where it sits.
+  var s3 = signing.makeSigner("ec-p256");
+  var ownPem = await pki.csr.sign({
+    subject: [{ commonName: "own.interop.example" }], subjectPublicKey: s3.spki,
+    extensionRequest: {
+      msCertificateTemplate: { templateID: "1.3.6.1.4.1.311.21.8.1.2", templateMajorVersion: 100, templateMinorVersion: 2 },
+      subjectInfoAccess: [{ accessMethod: "id-ad-caRepository", accessLocation: { uniformResourceIdentifier: "https://r.interop.example" } }],
+      subjectDirectoryAttributes: [{ type: "1.3.6.1.4.1.99999.1", values: [pki.asn1.build.utf8("DE")] }],
+    },
+  }, { key: s3.key }, { pem: true });
+  ctx.withTmp(Buffer.from(ownPem, "utf8"), "csr-own.pem", function (p) {
+    var t = ctx.runOpenssl(["req", "-in", p, "-noout", "-text"], { allowNonZero: true });
+    check("openssl req -text parses a request carrying the subject-owned extensions", t.code === 0);
+    // Names are release-dependent, so presence is by name or OID; the decoded VALUES are the oracle.
+    check("openssl shows the requested certificate template, named or by OID",
+      /Microsoft certificate template/i.test(t.stdout) || t.stdout.indexOf("1.3.6.1.4.1.311.21.7") >= 0);
+    check("openssl decodes the requested subject information access down to its location",
+      /CA Repository/i.test(t.stdout) && /URI:https:\/\/r\.interop\.example/.test(t.stdout));
+    check("openssl decodes the requested subject directory attribute value", /\bDE\b/.test(t.stdout));
+    var v = ctx.runOpenssl(["req", "-in", p, "-noout", "-verify"], { allowNonZero: true });
+    check("openssl req -verify still accepts the proof of possession with them present", v.code === 0);
+  });
+
   // A tampered proof-of-possession signature is rejected.
   var s2 = signing.makeSigner("ec-p256");
   var der = await pki.csr.sign({ subject: "tamper.example", subjectPublicKey: s2.spki }, { key: s2.key });
