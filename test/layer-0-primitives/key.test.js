@@ -243,6 +243,7 @@ var CORRESPONDS_ALGS = [
   ["x25519", ["x25519"]], ["x448", ["x448"]],
   ["ml-dsa-65", ["ml-dsa-65"]], ["ml-kem-768", ["ml-kem-768"]],
   ["slh-dsa-sha2-128s", ["slh-dsa-sha2-128s"]],
+  ["dh (modp14)", ["dh", { group: "modp14" }]],
 ];
 
 async function testCorrespondsTo(keyInternal) {
@@ -403,13 +404,27 @@ async function testCorrespondsTo(keyInternal) {
   check("and input that is not a SubjectPublicKeyInfo",
     (await codeOf(keyInternal.correspondsTo(
       rsaPair.privateKey.export({ format: "der", type: "pkcs8" }), b.integer(1n)))) === "key/bad-input");
-  // A key type none of the three arms can drive says so, rather than answering either way about a
-  // pair it never exercised. Finite-field Diffie-Hellman signs nothing and is not one of the two
-  // key-agreement types this reaches.
-  var dh = nodeCrypto.generateKeyPairSync("dh", { group: "modp14" });
-  check("correspondsTo reports an algorithm it cannot exercise, rather than guessing",
-    (await codeOf(keyInternal.correspondsTo(dh.privateKey.export({ format: "der", type: "pkcs8" }),
-      dh.publicKey.export({ format: "der", type: "spki" })))) === "key/unsupported-algorithm");
+  // A pair the arms cannot exercise says so, rather than answering either way about a pair it never
+  // exercised: an RSA private key whose private components are unusable imports, then fails the
+  // signing probe, and the failure is reported, never read as "not a pair" from the public copy.
+  var rsaJwk = rsaPair.privateKey.export({ format: "jwk" });
+  var ones = Buffer.alloc(Buffer.from(rsaJwk.d, "base64url").length, 1).toString("base64url");
+  var hollowRsa = nodeCrypto.createPrivateKey({ key: { kty: "RSA", n: rsaJwk.n, e: rsaJwk.e, d: ones, p: rsaJwk.p, q: rsaJwk.q, dp: ones, dq: ones, qi: ones }, format: "jwk" });
+  check("correspondsTo reports a pair it cannot exercise, rather than guessing from the public copy",
+    (await codeOf(keyInternal.correspondsTo(hollowRsa.export({ format: "der", type: "pkcs8" }),
+      rsaPair.publicKey.export({ format: "der", type: "spki" })))) === "key/unsupported-algorithm");
+  // Finite-field Diffie-Hellman signs nothing and has no fixed group to draw an ephemeral from, but
+  // its PrivateKeyInfo carries the exponent alone, so the public value it generates is the proof.
+  var dhA = nodeCrypto.generateKeyPairSync("dh", { group: "modp14" }), dhB = nodeCrypto.generateKeyPairSync("dh", { group: "modp14" });
+  check("correspondsTo answers false for a DH private key against another DH public value of the same group",
+    (await keyInternal.correspondsTo(dhA.privateKey.export({ format: "der", type: "pkcs8" }), dhB.publicKey.export({ format: "der", type: "spki" }))) === false);
+  // The comparison is of KEYS, not encodings: a DHParameter carrying the optional privateValueLength
+  // (PKCS #3) beside the same p and g encodes the same public value.
+  var dhSpki = pki.asn1.decode(dhA.publicKey.export({ format: "der", type: "spki" }));
+  var dhAlg = dhSpki.children[0], dhParams = pki.asn1.decode(dhAlg.children[1].bytes);
+  var withLength = b.sequence([b.sequence([b.raw(dhAlg.children[0].bytes), b.sequence([b.raw(dhParams.children[0].bytes), b.raw(dhParams.children[1].bytes), b.integer(224n)])]), b.raw(dhSpki.children[1].bytes)]);
+  check("correspondsTo answers true for a DH pair whose public encoding adds privateValueLength",
+    (await keyInternal.correspondsTo(dhA.privateKey.export({ format: "der", type: "pkcs8" }), withLength)) === true);
 }
 
 // ---- import / generate / publicFromPrivate verbs ---------------------------

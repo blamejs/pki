@@ -81,7 +81,7 @@
   "lib/oid.js": "2026-09-12",
   "lib/path-validate.js": "2026-09-10",
   "lib/pbes2.js": "2026-09-10",
-  "lib/pkcs12-build.js": "2026-09-10",
+  "lib/pkcs12-build.js": "2026-09-12",
   "lib/pki-build.js": "2026-09-12",
   "lib/rc2.js": "2026-09-01",
   "lib/rfc3339.js": "2026-09-04",

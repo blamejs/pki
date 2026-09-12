@@ -1001,11 +1001,17 @@ async function run() {
   check("51c6b. and the same container opens through the standalone verb, which surfaces both keys",
     (await pki.cmp.openKeyPackage(kgaTwoKeys.contentInfo,
       { key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [kgaTwoKeys.anchor] })).keys.length === 2);
-  // A key whose type the pair check cannot exercise leaves the grant unproven, so the enrollment is
-  // refused rather than confirmed on a binding that was never tested.
+  // A finite-field Diffie-Hellman key signs nothing and has no fixed group to draw an ephemeral
+  // from, but its PrivateKeyInfo carries the exponent alone (no public copy to plant), so the value
+  // the exponent generates proves the pair: a delivered DH key the certificate certifies is
+  // confirmed, and one certified under another DH certificate is refused.
   var kgaDh = await H.centralKeyGeneration(pki, CLIENT, { dh: true });
-  check("51c6c. a delivered key the two halves cannot be exercised on is refused, not assumed a pair",
+  check("51c6c. a delivered finite-field DH key the issued certificate certifies is confirmed",
     await codeOf(mk([H.ip(0, 0, kgaDh.deliveredCert, { privateKey: kgaDh.container }), H.pkiconf()],
+      { acceptCentralKeyGeneration: true }).session.enroll(H.irCentralRequest(pki))) === "NO-THROW");
+  var kgaDhOther = await H.centralKeyGeneration(pki, CLIENT, { dh: true });
+  check("51c6d. a delivered DH key under another DH key's certificate is refused, not assumed a pair",
+    await codeOf(mk([H.ip(0, 0, kgaDhOther.deliveredCert, { privateKey: kgaDh.container }), H.pkiconf()],
       { acceptCentralKeyGeneration: true }).session.enroll(H.irCentralRequest(pki))) === "cmp/bad-key-package");
   var kgaSwapped = await H.centralKeyGeneration(pki, CLIENT, { swapScalar: true });
   check("51c7. a delivered key whose stored public point is not the one its scalar generates is refused",

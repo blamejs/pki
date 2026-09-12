@@ -4,6 +4,15 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.40 — 2026-09-12
+
+A PKCS#12 store links a certificate only to its own key.
+
+### Changed
+
+- pki.pkcs12.build refuses, with pkcs12/bad-input, a { key, cert } pair whose key is not the private half of the certificate's public key, and a key bag and a certificate bag sharing a localKeyId (PKCS #9 sec. 5.5.2) whose key is not that certificate's, across every safe and nested safe of the store. The pair is proven with the private material (a signature, an agreement, or for a composite ML-KEM key an encapsulation to the certificate's key decapsulated under the private key), never by the public components a private key carries about itself. Bags with different or absent localKeyIds are not a pair and are unaffected; a key-only or certificate-only store is unaffected.
+- The toolkit proves a finite-field Diffie-Hellman key pair by the public value the exponent generates (a DH PrivateKeyInfo carries the exponent alone), so pki.pkcs12.build stores a DH key with its certificate and a CMP session confirms a centrally generated DH key the issued certificate certifies; a DH key under another key's certificate is refused as before.
+
 ## v0.7.39 — 2026-09-12
 
 An OCSP CertID's issuer hashes are held to the length of the digest they name.
