@@ -473,6 +473,10 @@ async function testCorrespondsTo(keyInternal) {
   try { await keyInternal.correspondsTo(dhAPk8, x942With([b.integer(15n), b.integer(4n), b.integer(2n)])); } catch (e) { pCompositeErr = e; }
   check("an X9.42 public key whose modulus is composite (15, g = 4, q = 2, g^q = 1) -> key/bad-input naming the modulus",
     pCompositeErr !== null && pCompositeErr.code === "key/bad-input" && /modulus is not prime/.test(pCompositeErr.message));
+  check("an X9.42 public key whose DomainParameters carry p as an OCTET STRING -> key/bad-input, never the codec's own error",
+    (await codeOf(keyInternal.correspondsTo(dhAPk8, x942With([b.octetString(Buffer.alloc(4, 7)), b.integer(dhG), b.integer((dhP - 1n) / 2n)])))) === "key/bad-input");
+  check("an X9.42 private key whose DomainParameters carry p as an OCTET STRING -> key/bad-input",
+    (await codeOf(keyInternal.correspondsTo(b.sequence([b.raw(dhPk8.children[0].bytes), b.sequence([b.oid(pki.oid.byName("dhpublicnumber")), b.sequence([b.octetString(Buffer.alloc(4, 7)), b.integer(dhG), b.integer((dhP - 1n) / 2n)])]), b.raw(dhPk8.children[2].bytes)]), dhA.publicKey.export({ format: "der", type: "spki" })))) === "key/bad-input");
   check("an X9.42 public key whose cofactor is not (p-1)/q -> key/bad-input",
     (await codeOf(keyInternal.correspondsTo(dhAPk8, x942With([b.integer(dhP), b.integer(dhG), b.integer((dhP - 1n) / 2n), b.integer(3n)])))) === "key/bad-input");
   check("an X9.42 private key whose DomainParameters omit q -> key/bad-input",
@@ -576,6 +580,8 @@ async function testCorrespondsTo(keyInternal) {
     (await keyInternal.correspondsTo(Buffer.from(kemX.dk_pkcs8, "base64"), katSpki(kemP))) === false);
   check("correspondsTo answers false for a composite ML-KEM private key against a classical public key",
     (await keyInternal.correspondsTo(Buffer.from(kemX.dk_pkcs8, "base64"), rsaPair.publicKey.export({ format: "der", type: "spki" }))) === false);
+  check("correspondsTo answers false for a classical private key against a composite ML-KEM public key (the family question is symmetric)",
+    (await keyInternal.correspondsTo(rsaPair.privateKey.export({ format: "der", type: "pkcs8" }), katSpki(kemX))) === false);
   var kemROuter = pki.asn1.decode(Buffer.from(kemR.dk_pkcs8, "base64"));
   var kemRMaterial = kemROuter.children[2].content;
   var kemRJwk = nodeCrypto.createPrivateKey({ key: kemRMaterial.subarray(64), format: "der", type: "pkcs1" }).export({ format: "jwk" });
@@ -586,6 +592,29 @@ async function testCorrespondsTo(keyInternal) {
   try { hollowVerdict = await keyInternal.correspondsTo(kemRHollow, katSpki(kemR)); } catch (e) { hollowVerdict = e.code; }
   check("correspondsTo never calls a composite pair from the RSA component's public copy (the probe decides, or reports it cannot)",
     hollowVerdict === false || hollowVerdict === "key/unsupported-algorithm");
+  // A composite key the KEM cannot READ (malformed component material) is bad input, the same
+  // verdict an unreadable classical key gets; a composite key it reads and cannot exercise together
+  // with the public key is the pair not deciding. The two are told apart, since callers classify
+  // them differently.
+  var kemRTrunc = b.sequence([b.raw(kemROuter.children[0].bytes), b.raw(kemROuter.children[1].bytes), b.octetString(kemRMaterial.subarray(0, 40))]);
+  check("correspondsTo reports a composite key whose component material cannot be read as key/bad-input",
+    (await codeOf(keyInternal.correspondsTo(kemRTrunc, katSpki(kemR)))) === "key/bad-input");
+  var kemRSpkiNode = pki.asn1.decode(katSpki(kemR));
+  var kemRSpkiTrunc = b.sequence([b.raw(kemRSpkiNode.children[0].bytes), b.bitString(Buffer.alloc(40, 1), 0)]);
+  check("correspondsTo reports a composite public key whose component material cannot be read as key/bad-input",
+    (await codeOf(keyInternal.correspondsTo(Buffer.from(kemR.dk_pkcs8, "base64"), kemRSpkiTrunc))) === "key/bad-input");
+  // The private half is read BEFORE any family shortcut answers: a private key that cannot be read
+  // is bad input whatever family the public half names, never "not a pair".
+  var rsaPk8Node = pki.asn1.decode(rsaPair.privateKey.export({ format: "der", type: "pkcs8" }));
+  var garbageRsa = b.sequence([b.raw(rsaPk8Node.children[0].bytes), b.raw(rsaPk8Node.children[1].bytes), b.octetString(Buffer.from([1, 2, 3]))]);
+  check("correspondsTo reports an unreadable classical private key as key/bad-input against a composite public key",
+    (await codeOf(keyInternal.correspondsTo(garbageRsa, katSpki(kemX)))) === "key/bad-input");
+  check("correspondsTo reports an unreadable classical private key as key/bad-input against a DH public key",
+    (await codeOf(keyInternal.correspondsTo(garbageRsa, dhA.publicKey.export({ format: "der", type: "spki" })))) === "key/bad-input");
+  check("correspondsTo reports an unreadable composite private key as key/bad-input against a classical public key",
+    (await codeOf(keyInternal.correspondsTo(kemRTrunc, rsaPair.publicKey.export({ format: "der", type: "spki" })))) === "key/bad-input");
+  check("correspondsTo reports an unreadable DH private key as key/bad-input against a classical public key",
+    (await codeOf(keyInternal.correspondsTo(b.sequence([b.raw(dhPk8.children[0].bytes), b.raw(dhPk8.children[1].bytes), b.octetString(Buffer.from([1, 2, 3]))]), rsaPair.publicKey.export({ format: "der", type: "spki" })))) === "key/bad-input");
   check("CONTROL: the composite ML-KEM/RSA KAT pair corresponds",
     (await keyInternal.correspondsTo(Buffer.from(kemR.dk_pkcs8, "base64"), katSpki(kemR))) === true);
   // Every secret a probe makes is wiped once the verdict is decided, whether the pair matched or not:

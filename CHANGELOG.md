@@ -4,6 +4,15 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.41 — 2026-09-12
+
+A delivered or archived private key is proven the private half of its certificate with the key itself.
+
+### Fixed
+
+- pki.est.serverkeygen proves a cleartext server-generated private key is the private half of the returned certificate it binds it to (a signature, an agreement, or an encapsulation the key completes), and refuses with est/key-cert-mismatch a key whose stated public half matches the certificate while its private material cannot use it. The selection of the certificate by public-key match and the ambiguity refusal are unchanged, and a finite-field Diffie-Hellman key, whose private structure carries the exponent alone, is still bound by the value it derives, at any width the runtime reads.
+- pki.crmf.build proves the key enclosed in an encryptedKey proof of possession is the private half of certTemplate.publicKey with the key itself, and refuses with crmf/bad-popo an RSA, EC, EdDSA, ML-DSA, ML-KEM or composite key that only states the template's public components; a key the toolkit cannot read stays crmf/bad-input. A finite-field Diffie-Hellman key, whose private structure carries the exponent alone, keeps the derived comparison at any width, so the archival path still accepts a key wider than any group the toolkit agrees over.
+
 ## v0.7.40 — 2026-09-12
 
 A PKCS#12 store links a certificate only to its own key.

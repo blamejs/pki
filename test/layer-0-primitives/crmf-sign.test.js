@@ -1405,6 +1405,74 @@ async function testPopoPrivKeyArms() {
   check("POP encryptedKey round-trips through the parser's own content-type check",
     encMsg.popo && encMsg.popo.type === "keyEncipherment" && encMsg.popo.method === "encryptedKey");
 
+  // The enclosed key is held to certTemplate.publicKey with the PRIVATE half, never by the public
+  // copy a private key carries about itself: an RSA key carrying the template's modulus beside
+  // unusable private components, or an EC key carrying the template's point beside another scalar,
+  // derives to the template's key and is not its private half.
+  var rsaTpl = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  var rsaTplJwk = rsaTpl.privateKey.export({ format: "jwk" });
+  var rsaOnes = Buffer.alloc(Buffer.from(rsaTplJwk.d, "base64url").length, 1).toString("base64url");
+  var hollowRsaPk8 = nodeCrypto.createPrivateKey({ key: { kty: "RSA", n: rsaTplJwk.n, e: rsaTplJwk.e, d: rsaOnes, p: rsaTplJwk.p, q: rsaTplJwk.q, dp: rsaOnes, dq: rsaOnes, qi: rsaOnes }, format: "jwk" }).export({ format: "der", type: "pkcs8" });
+  check("V7. an enclosed RSA key carrying the template's modulus beside unusable private components -> crmf/bad-popo",
+    (await codeOf(pki.crmf.build({ certReqId: 43n, certTemplate: tpl(rsaTpl.publicKey.export({ format: "der", type: "spki" })),
+      pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: hollowRsaPk8,
+        identifier: "device-42", recipients: [{ cert: recip.cert }], archive: true } }))) === "crmf/bad-popo");
+  var ecTpl = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" }), ecScalar = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var ecTplSpki = ecTpl.publicKey.export({ format: "der", type: "spki" });
+  var plantedEcPk8 = (function () {
+    var scalar = ecScalar.privateKey.export({ format: "jwk" }).d;
+    var point = pki.asn1.read.bitString(pki.asn1.decode(ecTplSpki).children[1]).bytes;
+    var ecPrivateKey = pki.asn1.build.sequence([pki.asn1.build.integer(1n), pki.asn1.build.octetString(Buffer.from(scalar, "base64url")), pki.asn1.build.explicit(1, pki.asn1.build.bitString(point, 0))]);
+    return pki.asn1.build.sequence([pki.asn1.build.integer(0n), pki.asn1.build.sequence([pki.asn1.build.oid(pki.oid.byName("ecPublicKey")), pki.asn1.build.oid(pki.oid.byName("prime256v1"))]), pki.asn1.build.octetString(ecPrivateKey)]);
+  }());
+  check("V7. an enclosed EC key carrying the template's point beside another scalar -> crmf/bad-popo",
+    (await codeOf(pki.crmf.build({ certReqId: 44n, certTemplate: tpl(ecTplSpki),
+      pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: plantedEcPk8,
+        identifier: "device-42", recipients: [{ cert: recip.cert }], archive: true } }))) === "crmf/bad-popo");
+  // A composite ML-KEM key is proven the same way through the toolkit's own KEM: the KAT pair
+  // archives, and a composite key whose RSA component only states the template's modulus does not.
+  var katC = require("../fixtures/composite-kem/kat.json");
+  var kemRsaCase = katC.tests.filter(function (t) { return t.tcId === "id-MLKEM768-RSA2048-SHA3-256"; })[0];
+  var kemRsaSpki = pki.schema.x509.parse(Buffer.from(kemRsaCase.x5c, "base64")).subjectPublicKeyInfo.bytes;
+  var kemRsaHollowPk8 = (function () {
+    var outer = pki.asn1.decode(Buffer.from(kemRsaCase.dk_pkcs8, "base64"));
+    var material = outer.children[2].content;
+    var jwk = nodeCrypto.createPrivateKey({ key: material.subarray(64), format: "der", type: "pkcs1" }).export({ format: "jwk" });
+    var one = Buffer.alloc(Buffer.from(jwk.d, "base64url").length, 1).toString("base64url");
+    var hollowPkcs1 = nodeCrypto.createPrivateKey({ key: { kty: "RSA", n: jwk.n, e: jwk.e, d: one, p: jwk.p, q: jwk.q, dp: one, dq: one, qi: one }, format: "jwk" }).export({ format: "der", type: "pkcs1" });
+    return pki.asn1.build.sequence([pki.asn1.build.raw(outer.children[0].bytes), pki.asn1.build.raw(outer.children[1].bytes), pki.asn1.build.octetString(Buffer.concat([material.subarray(0, 64), hollowPkcs1]))]);
+  }());
+  check("V7. CONTROL: a composite ML-KEM/RSA KAT key archives under its own template",
+    (await codeOf(pki.crmf.build({ certReqId: 46n, certTemplate: tpl(kemRsaSpki),
+      pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: Buffer.from(kemRsaCase.dk_pkcs8, "base64"),
+        identifier: "device-42", recipients: [{ cert: recip.cert }], archive: true } }))) === null);
+  check("V7. an enclosed composite key whose RSA component only states the template's modulus -> crmf/bad-popo",
+    (await codeOf(pki.crmf.build({ certReqId: 47n, certTemplate: tpl(kemRsaSpki),
+      pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: kemRsaHollowPk8,
+        identifier: "device-42", recipients: [{ cert: recip.cert }], archive: true } }))) === "crmf/bad-popo");
+  // A composite key the toolkit cannot READ is bad input, as an unreadable classical key is; only a
+  // key it reads and cannot show to be the template's private half is the proof failing.
+  var kemRsaTruncPk8 = (function () {
+    var outer = pki.asn1.decode(Buffer.from(kemRsaCase.dk_pkcs8, "base64"));
+    return pki.asn1.build.sequence([pki.asn1.build.raw(outer.children[0].bytes), pki.asn1.build.raw(outer.children[1].bytes), pki.asn1.build.octetString(outer.children[2].content.subarray(0, 40))]);
+  }());
+  check("V7. a readable classical key enclosed under a composite ML-KEM template -> crmf/bad-popo (two keys that do not correspond)",
+    (await codeOf(pki.crmf.build({ certReqId: 49n, certTemplate: tpl(kemRsaSpki),
+      pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: rsaTpl.privateKey.export({ format: "der", type: "pkcs8" }),
+        identifier: "device-42", recipients: [{ cert: recip.cert }], archive: true } }))) === "crmf/bad-popo");
+  var rsaTplNode = pki.asn1.decode(rsaTpl.privateKey.export({ format: "der", type: "pkcs8" }));
+  check("V7. an unreadable classical key enclosed under a composite template -> crmf/bad-input (read before the family answers)",
+    (await codeOf(pki.crmf.build({ certReqId: 50n, certTemplate: tpl(kemRsaSpki),
+      pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: pki.asn1.build.sequence([pki.asn1.build.raw(rsaTplNode.children[0].bytes), pki.asn1.build.raw(rsaTplNode.children[1].bytes), pki.asn1.build.octetString(Buffer.from([1, 2, 3]))]),
+        identifier: "device-42", recipients: [{ cert: recip.cert }], archive: true } }))) === "crmf/bad-input");
+  check("V7. an enclosed composite key whose component material cannot be read -> crmf/bad-input",
+    (await codeOf(pki.crmf.build({ certReqId: 48n, certTemplate: tpl(kemRsaSpki),
+      pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: kemRsaTruncPk8,
+        identifier: "device-42", recipients: [{ cert: recip.cert }], archive: true } }))) === "crmf/bad-input");
+  check("V7. CONTROL: the template's own RSA key archives",
+    (await codeOf(pki.crmf.build({ certReqId: 45n, certTemplate: tpl(rsaTpl.publicKey.export({ format: "der", type: "spki" })),
+      pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: rsaTpl.privateKey.export({ format: "der", type: "pkcs8" }),
+        identifier: "device-42", recipients: [{ cert: recip.cert }], archive: true } }))) === null);
   // The encryptedKey arm sends a private key to be archived and agrees nothing, so the group floors
   // the agreement needs do not apply to it. A legacy 1024-bit Diffie-Hellman key is exactly what
   // archival exists for, and the same key is still refused for a proof that agrees a secret.
