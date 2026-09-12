@@ -983,6 +983,73 @@ async function run() {
   check("CONTROL: a well-formed pre-encoded archiveCutoff is accepted and read back",
     srExt(await signSingle([goodCutoffExt]), "ocspArchiveCutoff").archiveCutoff.getTime() === cutoff.getTime());
 
+  // ---- the signer refuses what pki.lint.ocsp grades an error (RFC 6960 sec. 2.2, 4.4.5..4.4.8; RFC 9654 sec. 2.1) ----
+  function ext(name, critical, valueDer) { var k = [b.oid(O(name))]; if (critical) k.push(b.boolean(true)); k.push(b.octetString(valueDer)); return b.sequence(k); }
+  function lintErrors(der) { return pki.lint.ocsp(der).findings.filter(function (f) { return f.severity === "error"; }).map(function (f) { return f.id; }); }
+  var nonIssued = { revoked: new Date(0), revocationReason: "certificateHold" };
+  function signResp(r, opts) {
+    return pki.ocsp.sign({ responderID: "byName", responses: [Object.assign({ cert: w.targetCertDer, issuer: w.issuerCertDer, thisUpdate: TU, nextUpdate: NU }, r)] },
+      { cert: w.responderCertDer, key: w.responderKeyPkcs8 }, opts);
+  }
+  // Sec. 2.2 / 4.4.8: a "revoked" response for a non-issued certificate MUST carry the extended
+  // revoked definition in responseExtensions. The signer emits it for that shape whether or not
+  // opts.extendedRevoke asked for it; declining it is refused.
+  var niDer = await signResp({ status: nonIssued });
+  var niResp = pki.schema.ocsp.parseResponse(niDer).basicResponse;
+  check("a non-issued response carries the extended-revoke response extension without being asked",
+    (niResp.responseExtensions || []).some(function (e) { return e.oid === O("ocspExtendedRevoke"); }));
+  check("...and the lint grades it clean", lintErrors(niDer).length === 0);
+  check("extendedRevoke: false on a non-issued response -> ocsp/bad-input", (await codeOfAsync(function () { return signResp({ status: nonIssued }, { extendedRevoke: false }); })) === "ocsp/bad-input");
+  check("extendedRevoke: false on an ordinary response is honored", Buffer.isBuffer(await signResp({ status: "good" }, { extendedRevoke: false })));
+  // The revocation time takes every form the encoder takes, so the shape is read off the same value.
+  var niString = pki.schema.ocsp.parseResponse(await signResp({ status: { revoked: "1970-01-01T00:00:00Z", revocationReason: "certificateHold" } })).basicResponse;
+  check("the non-issued shape is recognized with the revocation time given as a string", (niString.responseExtensions || []).some(function (e) { return e.oid === O("ocspExtendedRevoke"); }));
+  var niNumber = pki.schema.ocsp.parseResponse(await signResp({ status: { revoked: 0, revocationReason: 6 } })).basicResponse;
+  check("...and as a number, with the reason as a number", (niNumber.responseExtensions || []).some(function (e) { return e.oid === O("ocspExtendedRevoke"); }));
+  check("a certificateHold at a string time other than 1970 is an ordinary revocation", Buffer.isBuffer(await signResp({ status: { revoked: "2026-06-01T00:00:00Z", revocationReason: "certificateHold" }, singleExtensions: { crlReferences: { crlUrl: "https://crl.example/a.crl" } } })));
+  // The shape is decided on the ENCODED time: GeneralizedTime carries whole seconds, so a revocation
+  // time inside the first second of 1970 reaches the relying party as the non-issued shape.
+  var niMillis = pki.schema.ocsp.parseResponse(await signResp({ status: { revoked: new Date(999), revocationReason: "certificateHold" } })).basicResponse;
+  check("a certificateHold at 1970-01-01T00:00:00.999Z is the non-issued shape on the wire and carries extended-revoke", (niMillis.responseExtensions || []).some(function (e) { return e.oid === O("ocspExtendedRevoke"); }));
+  check("...and refuses crlReferences", (await codeOfAsync(function () { return signResp({ status: { revoked: new Date(1), revocationReason: "certificateHold" }, singleExtensions: { crlReferences: { crlUrl: "https://crl.example/a.crl" } } }); })) === "ocsp/bad-input");
+  check("a certificateHold one second later is an ordinary revocation", !(pki.schema.ocsp.parseResponse(await signResp({ status: { revoked: new Date(1000), revocationReason: "certificateHold" } })).basicResponse.responseExtensions || []).some(function (e) { return e.oid === O("ocspExtendedRevoke"); }));
+  // Sec. 2.2: the non-issued SingleResponse MUST NOT carry CRL references or any CRL entry extension.
+  check("a non-issued response with crlReferences -> ocsp/bad-input", (await codeOfAsync(function () { return signResp({ status: nonIssued, singleExtensions: { crlReferences: { crlUrl: "https://crl.example/a.crl" } } }); })) === "ocsp/bad-input");
+  check("a non-issued response with a pre-encoded reasonCode -> ocsp/bad-input", (await codeOfAsync(function () { return signResp({ status: nonIssued, singleExtensions: [ext("reasonCode", false, b.enumerated(6n))] }); })) === "ocsp/bad-input");
+  check("a non-issued response with a pre-encoded CrlID -> ocsp/bad-input", (await codeOfAsync(function () { return signResp({ status: nonIssued, singleExtensions: [ext("ocspCrl", false, b.sequence([b.explicit(0, b.ia5("https://crl.example/a.crl"))]))] }); })) === "ocsp/bad-input");
+  check("CONTROL: a non-issued response with archiveCutoff signs (sec. 2.2 names only CRL references and entry extensions)",
+    lintErrors(await signResp({ status: nonIssued, singleExtensions: { archiveCutoff: cutoff } })).length === 0);
+  check("CONTROL: a certificateHold at another time is an ordinary revocation and takes crlReferences",
+    Buffer.isBuffer(await signResp({ status: { revoked: TU, revocationReason: "certificateHold" }, singleExtensions: { crlReferences: { crlUrl: "https://crl.example/a.crl" } } })));
+  // Pre-encoded singleExtensions: the criticality the CRL entry extensions carry (RFC 5280 sec.
+  // 5.3.1 / 5.3.2 / 5.3.3), and the extensions that belong elsewhere (sec. 4.4.8 responseExtensions
+  // only; RFC 9654 sec. 2.1 responseExtensions; sec. 4.4.3 / 4.4.6 / 4.4.7 requests only).
+  check("a pre-encoded critical reasonCode -> ocsp/bad-input", (await codeOfAsync(function () { return signResp({ status: { revoked: TU }, singleExtensions: [ext("reasonCode", true, b.enumerated(1n))] }); })) === "ocsp/bad-input");
+  check("a pre-encoded critical invalidityDate -> ocsp/bad-input", (await codeOfAsync(function () { return signResp({ status: { revoked: TU }, singleExtensions: [ext("invalidityDate", true, b.generalizedTime(TU))] }); })) === "ocsp/bad-input");
+  var ciValue = b.sequence([b.contextConstructed(4, b.sequence([b.set([b.sequence([b.oid(O("commonName")), b.utf8("Issuer")])])]))]);
+  check("a pre-encoded non-critical certificateIssuer -> ocsp/bad-input", (await codeOfAsync(function () { return signResp({ status: { revoked: TU }, singleExtensions: [ext("certificateIssuer", false, ciValue)] }); })) === "ocsp/bad-input");
+  // A CRL entry extension carried here is read with the CRL parser's own reader before it is emitted
+  // (sec. 4.4.5), and reasonCode removeFromCRL(8) belongs only to a delta CRL (RFC 5280 sec. 5.3.1).
+  check("a pre-encoded reasonCode whose value is NULL -> ocsp/bad-input", (await codeOfAsync(function () { return signResp({ status: { revoked: TU }, singleExtensions: [ext("reasonCode", false, b.nullValue())] }); })) === "ocsp/bad-input");
+  check("a pre-encoded invalidityDate whose value is NULL -> ocsp/bad-input", (await codeOfAsync(function () { return signResp({ status: { revoked: TU }, singleExtensions: [ext("invalidityDate", false, b.nullValue())] }); })) === "ocsp/bad-input");
+  check("a pre-encoded certificateIssuer whose value is NULL -> ocsp/bad-input", (await codeOfAsync(function () { return signResp({ status: { revoked: TU }, singleExtensions: [ext("certificateIssuer", true, b.nullValue())] }); })) === "ocsp/bad-input");
+  check("a pre-encoded reasonCode removeFromCRL(8) -> ocsp/bad-input", (await codeOfAsync(function () { return signResp({ status: { revoked: TU }, singleExtensions: [ext("reasonCode", false, b.enumerated(8n))] }); })) === "ocsp/bad-input");
+  check("a pre-encoded reasonCode with an undefined value -> ocsp/bad-input", (await codeOfAsync(function () { return signResp({ status: { revoked: TU }, singleExtensions: [ext("reasonCode", false, b.enumerated(7n))] }); })) === "ocsp/bad-input");
+  check("CONTROL: a pre-encoded invalidityDate that reads signs", lintErrors(await signResp({ status: { revoked: TU }, singleExtensions: [ext("invalidityDate", false, b.generalizedTime(TU))] })).length === 0);
+  check("CONTROL: a pre-encoded non-critical reasonCode and a critical certificateIssuer sign and lint clean",
+    lintErrors(await signResp({ status: { revoked: TU }, singleExtensions: [ext("reasonCode", false, b.enumerated(1n)), ext("certificateIssuer", true, ciValue)] })).length === 0);
+  check("extendedRevoke in singleExtensions -> ocsp/bad-input", (await codeOfAsync(function () { return signResp({ status: "good", singleExtensions: [ext("ocspExtendedRevoke", false, b.nullValue())] }); })) === "ocsp/bad-input");
+  check("a nonce in singleExtensions -> ocsp/bad-input", (await codeOfAsync(function () { return signResp({ status: "good", singleExtensions: [ext("ocspNonce", false, b.octetString(Buffer.alloc(16, 1)))] }); })) === "ocsp/bad-input");
+  var requestOnly = [["ocspServiceLocator", b.sequence([b.sequence([])])], ["ocspResponse", b.sequence([b.oid(O("ocspBasic"))])], ["ocspPrefSigAlgs", b.sequence([b.sequence([b.sequence([b.oid(O("ecdsaWithSHA256"))])])])]];
+  var refusedRequestOnly = 0;
+  for (var ro = 0; ro < requestOnly.length; ro++) {
+    if ((await codeOfAsync(function () { return signResp({ status: "good", singleExtensions: [ext(requestOnly[ro][0], false, requestOnly[ro][1])] }); })) === "ocsp/bad-input") refusedRequestOnly++;
+    else console.log("  request-only extension not refused: " + requestOnly[ro][0]);
+  }
+  check("the three request-only extensions are refused in singleExtensions", refusedRequestOnly === 3);
+  var refusalMsg = await signResp({ status: "good", singleExtensions: [ext("ocspServiceLocator", false, b.sequence([b.sequence([])]))] }).then(function () { return ""; }, function (e) { return e.message; });
+  check("...naming the clause", refusalMsg.indexOf("RFC 6960 4.4.6") > 0 || refusalMsg.indexOf("sec. 4.4.6") > 0);
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
