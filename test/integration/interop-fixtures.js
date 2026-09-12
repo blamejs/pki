@@ -478,7 +478,7 @@ module.exports = {
     {
       desc: "a timestamp token we create verifies its CMS signature under `openssl cms -verify`",
       run: async function (ctx) {
-        var signer = require("../helpers/signing").makeSigner("ec-p256");
+        var signer = require("../helpers/signing").makeTsa("ec-p256");
         var certPath = ctx.tmpFile(ctx.pki.schema.x509.pemEncode(signer.cert, "CERTIFICATE"), "cert.pem");
         var imprint = { hashAlgorithm: "sha256", hashedMessage: require("node:crypto").createHash("sha256").update("timestamped document").digest() };
         var token = ctx.tmpFile(await ctx.pki.tsp.sign(imprint, { cert: signer.cert, key: signer.key }, { policy: "1.3.6.1.4.1.1", serialNumber: 1, nonce: 42 }), "token.der");

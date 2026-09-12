@@ -4,6 +4,20 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.35 — 2026-09-12
+
+The timestamp signer refuses a TSA certificate its verifier would refuse, and keeps genTime's fraction of a second.
+
+### Changed
+
+- pki.tsp.sign refuses a TSA certificate that does not satisfy RFC 3161 sec. 2.3: exactly one extendedKeyUsage extension, marked critical, naming id-kp-timeStamping alone, and a keyUsage that, when present, allows signing. The refusal carries the code pki.tsp.verify answers for the same certificate (tsp/bad-eku, tsp/eku-not-critical, tsp/eku-not-exclusive, tsp/bad-key-usage), so a TSA operator learns at signing time what a relying party would say.
+- genTime keeps the Date's milliseconds as the sec. 2.4.2 fraction of a second, in the X.690 DER form (a point followed by the digits, trailing zeros omitted, no fraction for a whole second), which pki.schema.tsp.parseToken already read; a whole-second genTime encodes as before. pki.asn1.build.generalizedTime takes { fractional: true } for this form.
+- accuracy given as an object naming none of seconds, millis, micros is refused with tsp/bad-input: sec. 2.4.2 reads an absent field as zero, so an empty Accuracy asserted a zero deviation; omit the option to make no claim.
+
+### Fixed
+
+- pki.asn1.build.generalizedTime, pki.asn1.build.utcTime and pki.asn1.read.time read a Date's fields through the Date.prototype accessors captured when the module loaded. A getter overridden on the Date instance, or a Date.prototype method replaced after load, no longer changes the encoded time or the Date the reader returns.
+
 ## v0.7.34 — 2026-09-12
 
 The OCSP signer refuses what its own lint grades an error.

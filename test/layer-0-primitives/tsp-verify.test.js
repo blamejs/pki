@@ -172,8 +172,21 @@ function makeTsa(ext, opts) {
 }
 
 var GENTIME = new Date("2027-01-01T00:00:00Z");
+// The verifier is tested on tokens minted RAW (a TSTInfo built here, signed through pki.cms.sign
+// with the ESSCertIDv2 binding), so a TSA certificate pki.tsp.sign refuses under RFC 3161
+// sec. 2.3 still yields the token these vectors need the verifier to judge for itself.
 function signToken(tsa, extra) {
-  return pki.tsp.sign(imprint("sha256"), { cert: tsa.cert, key: tsa.key }, Object.assign({ policy: "1.2.3.4.1", serialNumber: 7, genTime: GENTIME }, extra || {}));
+  var o = Object.assign({ policy: "1.2.3.4.1", serialNumber: 7, genTime: GENTIME }, extra || {});
+  var im = imprint("sha256");
+  var fields = [b.integer(1n), b.oid(o.policy),
+    b.sequence([b.sequence([b.oid(pki.oid.byName("sha256"))]), b.octetString(im.hashedMessage)]),
+    b.integer(BigInt(o.serialNumber)), b.generalizedTime(o.genTime)];
+  if (o.nonce != null) fields.push(b.integer(BigInt(o.nonce)));
+  var tstInfo = b.sequence(fields);
+  var certHash = crypto.createHash("sha256").update(tsa.cert).digest();
+  var signingCertV2 = b.sequence([b.sequence([b.sequence([b.octetString(certHash)])])]);
+  return pki.cms.sign(tstInfo, { cert: tsa.cert, key: tsa.key },
+    { eContentType: "tSTInfo", additionalSignedAttributes: [{ type: "signingCertificateV2", values: [signingCertV2] }] });
 }
 
 // ---- accept with anchor, accept without anchor, precomputed imprint ----

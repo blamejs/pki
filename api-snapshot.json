@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.7.34",
+  "packageVersion": "0.7.35",
   "surface": {
     "C": {
       "kind": "object",
@@ -957,7 +957,7 @@
             },
             "generalizedTime": {
               "kind": "function",
-              "arity": 1
+              "arity": 2
             },
             "ia5": {
               "kind": "function",

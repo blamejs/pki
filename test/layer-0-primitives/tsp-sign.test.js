@@ -32,6 +32,44 @@ async function rejects(label, fn, code) {
   check(label + " code=" + code, e && e.code === code);
 }
 
+// ---- RFC 3161 sec. 2.3: the signer refuses a TSA certificate the verifier would refuse ----
+async function testTsaCertificateProfile() {
+  var b = pki.asn1.build, O = pki.oid.byName;
+  function tsaWith(exts) { var s = signing.makeSigner("ec-p256", { exts: exts }); return { cert: s.cert, key: s.key }; }
+  function eku(purposes, critical) {
+    var k = [b.oid(O("extKeyUsage"))]; if (critical) k.push(b.boolean(true));
+    k.push(b.octetString(b.sequence(purposes.map(function (p) { return b.oid(O(p)); }))));
+    return b.sequence(k);
+  }
+  var ku = signing.keyUsageExt("digitalSignature");
+  var opts = { policy: "1.2.3", serialNumber: 1 };
+  // The refusals carry the verifier's own codes, so a TSA operator sees at signing time exactly
+  // what a relying party would answer.
+  await rejects("a TSA certificate without an extendedKeyUsage", function () { return pki.tsp.sign(imprint("sha256"), tsaWith([ku]), opts); }, "tsp/bad-eku");
+  await rejects("a TSA certificate whose extendedKeyUsage is not critical", function () { return pki.tsp.sign(imprint("sha256"), tsaWith([ku, eku(["timeStamping"], false)]), opts); }, "tsp/eku-not-critical");
+  await rejects("a TSA certificate whose extendedKeyUsage names a second purpose", function () { return pki.tsp.sign(imprint("sha256"), tsaWith([ku, eku(["timeStamping", "serverAuth"], true)]), opts); }, "tsp/eku-not-exclusive");
+  await rejects("a TSA certificate whose keyUsage lacks digitalSignature", function () { return pki.tsp.sign(imprint("sha256"), tsaWith([signing.keyUsageExt("keyEncipherment"), eku(["timeStamping"], true)]), opts); }, "tsp/bad-key-usage");
+  check("CONTROL: a conforming TSA certificate signs", Buffer.isBuffer(await pki.tsp.sign(imprint("sha256"), tsaWith([ku, eku(["timeStamping"], true)]), opts)));
+  check("CONTROL: a conforming TSA certificate without a keyUsage extension signs", Buffer.isBuffer(await pki.tsp.sign(imprint("sha256"), tsaWith([eku(["timeStamping"], true)]), opts)));
+  // An accuracy naming no field asserts a zero deviation the caller never stated.
+  await rejects("an empty accuracy object", function () { return pki.tsp.sign(imprint("sha256"), makeTsa("ec-p256"), { policy: "1.2.3", serialNumber: 1, accuracy: {} }); }, "tsp/bad-input");
+}
+
+// ---- RFC 3161 sec. 2.4.2: genTime keeps the fraction of a second the parser reads back ----
+async function testGenTimeFraction() {
+  var tsa = makeTsa("ec-p256");
+  async function genTimeOf(date) {
+    var token = await pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 1, genTime: date });
+    return pki.schema.tsp.parseToken(token).tstInfo.genTime;
+  }
+  check("genTime with 500 ms round-trips with its milliseconds", (await genTimeOf(new Date("2026-06-01T12:00:00.500Z"))).getTime() === new Date("2026-06-01T12:00:00.500Z").getTime());
+  check("genTime with 120 ms round-trips (trailing zero omitted on the wire)", (await genTimeOf(new Date("2026-06-01T12:00:00.120Z"))).getTime() === new Date("2026-06-01T12:00:00.120Z").getTime());
+  check("genTime with 1 ms round-trips", (await genTimeOf(new Date("2026-06-01T12:00:00.001Z"))).getTime() === new Date("2026-06-01T12:00:00.001Z").getTime());
+  check("a whole-second genTime is emitted without a fraction", (await genTimeOf(new Date("2026-06-01T12:00:00.000Z"))).getTime() === new Date("2026-06-01T12:00:00.000Z").getTime());
+  var token = await pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 1, genTime: new Date("2026-06-01T12:00:00.250Z") });
+  check("...and the fractional token still verifies", (await pki.tsp.verify(token, DATA, {})).valid === true);
+}
+
 // ---- round-trip: a full-featured token verifies and decodes ----
 async function testRoundTrip() {
   var tsa = makeTsa("ec-p256");
@@ -286,6 +324,8 @@ async function run() {
   await testBadInput();
   await testRequestExtensions();
   await testUnknownSignKeys();
+  await testTsaCertificateProfile();
+  await testGenTimeFraction();
 }
 
 module.exports = { run: run };
