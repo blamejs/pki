@@ -203,6 +203,28 @@ async function run() {
   // SK-22: a structurally-parseable PKCS#8 whose public half cannot be derived (a garbage inner key) is not
   // bindable -> fail closed rather than resolve an unbindable credential (the derivation-failure branch).
   check("SK-22. a cleartext key whose public half cannot be derived is rejected", (await codeOf(pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport(skReply("application/pkcs8", pkcs8.toString("base64"))) }))) === "est/key-cert-mismatch");
+  // SK-23/24: the binding is proven with the PRIVATE half, never by the public copy a private key
+  // carries about itself. A server may return an EC key whose structure carries the certificate's
+  // point beside another scalar, or an RSA key carrying the certificate's modulus beside unusable
+  // private components; both derive to the certificate's key and neither can use it.
+  var ecCert = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" }), ecOther = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var ecCertSpki = ecCert.publicKey.export({ format: "der", type: "spki" });
+  var plantedEc = (function () {
+    var scalar = ecOther.privateKey.export({ format: "jwk" }).d;
+    var point = pki.asn1.read.bitString(pki.asn1.decode(ecCertSpki).children[1]).bytes;
+    var ecPrivateKey = b.sequence([b.integer(1n), b.octetString(Buffer.from(scalar, "base64url")), b.explicit(1, b.bitString(point, 0))]);
+    return b.sequence([b.integer(0n), b.sequence([b.oid(pki.oid.byName("ecPublicKey")), b.oid(pki.oid.byName("prime256v1"))]), b.octetString(ecPrivateKey)]);
+  }());
+  check("SK-23. a server key carrying the certificate's EC point beside another scalar is rejected (proven with the private half)",
+    (await codeOf(pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport(skReply("application/pkcs8", plantedEc.toString("base64"), { certPart: certsOnly([certWithSpki(ecCertSpki)]) })) }))) === "est/key-cert-mismatch");
+  var rsaCert = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  var rsaJwk = rsaCert.privateKey.export({ format: "jwk" });
+  var ones = Buffer.alloc(Buffer.from(rsaJwk.d, "base64url").length, 1).toString("base64url");
+  var hollowRsa = nodeCrypto.createPrivateKey({ key: { kty: "RSA", n: rsaJwk.n, e: rsaJwk.e, d: ones, p: rsaJwk.p, q: rsaJwk.q, dp: ones, dq: ones, qi: ones }, format: "jwk" }).export({ format: "der", type: "pkcs8" });
+  check("SK-24. a server RSA key carrying the certificate's modulus beside unusable private components is rejected",
+    (await codeOf(pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport(skReply("application/pkcs8", hollowRsa.toString("base64"), { certPart: certsOnly([certWithSpki(rsaCert.publicKey.export({ format: "der", type: "spki" }))]) })) }))) === "est/key-cert-mismatch");
+  var r25 = await pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport(skReply("application/pkcs8", ecCert.privateKey.export({ format: "der", type: "pkcs8" }).toString("base64"), { certPart: certsOnly([certWithSpki(ecCertSpki)]) })) });
+  check("SK-25. CONTROL: a genuine EC server key binds to its certificate", !!r25.privateKey && r25.certificates.length === 1);
 
   // ===== csrattrs -- accept =====
   var tc1 = fakeTransport(csrattrsOK(b.sequence([b.oid(CHALLENGE_PW)])));
