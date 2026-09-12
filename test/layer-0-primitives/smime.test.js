@@ -162,6 +162,25 @@ async function run() {
   withSym[symKey] = "kept";
   check("0v. own Symbol-keyed and constructor-named fields sign as before",
     (await codeOf(function () { return pki.smime.sign(MSG, [withSym]); })) === "NO-THROW");
+  // The prototype walk is bounded: a proxy that names itself as its own prototype is refused,
+  // and so is a chain deeper than any descriptor has.
+  var cyclic = new Proxy({ cert: fit.cert, key: fit.key }, { getPrototypeOf: function () { return cyclic; } });
+  check("0w. a descriptor whose prototype chain is cyclic -> smime/bad-input",
+    (await codeOf(function () { return pki.smime.sign(MSG, [cyclic]); })) === "smime/bad-input");
+  var deep = { cert: fit.cert, key: fit.key };
+  for (var dd = 0; dd < 64; dd++) deep = Object.create(deep);
+  check("0x. a descriptor whose prototype chain is deeper than any descriptor has -> smime/bad-input",
+    (await codeOf(function () { return pki.smime.sign(MSG, [deep]); })) === "smime/bad-input");
+  // A descriptor carries a handful of fields; one answering thousands is refused before they are
+  // read, and a proxy on the LIST whose traps throw is this verb's own error too.
+  var manyNames = [];
+  for (var mn = 0; mn < 100000; mn++) manyNames.push("f" + mn);
+  var wide = new Proxy({ cert: fit.cert, key: fit.key }, { ownKeys: function () { return ["cert", "key"].concat(manyNames); }, getOwnPropertyDescriptor: function (t, k) { return { value: t[k], enumerable: true, configurable: true, writable: true }; } });
+  check("0y. a descriptor answering more fields than any descriptor carries -> smime/bad-input",
+    (await codeOf(function () { return pki.smime.sign(MSG, [wide]); })) === "smime/bad-input");
+  var listProxy = new Proxy([{ cert: fit.cert, key: fit.key }], { get: function (t, k) { if (k === "0") throw new Error("list boom"); return t[k]; } });
+  check("0z. a signer list whose trap throws -> smime/bad-input, not the trap's own error",
+    (await codeOf(function () { return pki.smime.sign(MSG, listProxy); })) === "smime/bad-input");
   check("0f. the second of two signers is held to the same rule, named by position",
     /signer 2/.test(String((await (async function () { try { await pki.smime.sign(MSG, [{ cert: rsa.cert, key: rsa.key }, { cert: kuEnc.cert, key: kuEnc.key }]); return ""; } catch (e) { return e.message; } })()))));
 
