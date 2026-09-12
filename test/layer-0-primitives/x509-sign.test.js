@@ -2292,6 +2292,22 @@ async function testExtensionEncoder() {
   var customCert = pki.schema.x509.parse(await pki.x509.sign({ subject: "custom", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: [pki.x509.extension("1.3.6.1.4.1.99999.7", b.utf8("hello"))] }, { key: s.key }));
   check("...and the certificate signer accepts it through the array form", !!entryOf(customCert, "1.3.6.1.4.1.99999.7"));
   check("a dotted OID with a plain-object value -> x509/bad-input", codeSync(function () { pki.x509.extension("1.3.6.1.4.1.99999.7", { a: 1 }); }) === "x509/bad-input");
+  // extnValue is the DER encoding of one ASN.1 value (RFC 5280 sec. 4.1): bytes that are not exactly
+  // one DER TLV are refused here, and the same bytes hand-built into an Extension are refused by
+  // every signer's pre-encoded array form.
+  check("a dotted OID with bytes that are not DER -> x509/bad-input", codeSync(function () { pki.x509.extension("1.3.6.1.4.1.99999.7", Buffer.from([0xff])); }) === "x509/bad-input");
+  check("a dotted OID with a DER value followed by trailing bytes -> x509/bad-input", codeSync(function () { pki.x509.extension("1.3.6.1.4.1.99999.7", Buffer.concat([b.utf8("x"), Buffer.from([0])])); }) === "x509/bad-input");
+  var garbageExt = b.sequence([b.oid("1.3.6.1.4.1.99999.7"), b.octetString(Buffer.from([0xff]))]);
+  check("a hand-built Extension whose extnValue is not DER -> x509/bad-input at the certificate signer",
+    await codeOf(pki.x509.sign({ subject: "g", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: [garbageExt] }, { key: s.key })) === "x509/bad-input");
+  check("...and at the CSR signer", await codeOf(pki.csr.sign({ subject: "g", subjectPublicKey: s.spki, extensionRequest: [garbageExt] }, { key: s.key })) === "csr/bad-input");
+  check("CONTROL: a hand-built Extension whose extnValue is one DER value signs at the CSR signer",
+    Buffer.isBuffer(await pki.csr.sign({ subject: "g", subjectPublicKey: s.spki, extensionRequest: [b.sequence([b.oid("1.3.6.1.4.1.99999.7"), b.octetString(b.nullValue())])] }, { key: s.key })));
+  check("...and at the CRL signer", await codeOf(pki.crl.sign({ thisUpdate: NB, nextUpdate: NA, crlNumber: 1n, extensions: [garbageExt] }, { name: "g", publicKey: s.spki, key: s.key })) === "crl/bad-input");
+  // A dotted string that is not a canonical OID is this verb's refusal, not the OID codec's.
+  check("a dotted string with a first arc over 2 -> x509/bad-input", codeSync(function () { pki.x509.extension("3.1", b.nullValue()); }) === "x509/bad-input");
+  check("a dotted string with a second arc over 39 under arc 1 -> x509/bad-input", codeSync(function () { pki.x509.extension("1.40.1", b.nullValue()); }) === "x509/bad-input");
+  check("a dotted string with a leading-zero arc -> x509/bad-input", codeSync(function () { pki.x509.extension("2.5.29.015", b.nullValue()); }) === "x509/bad-input");
   check("a dotted OID of a registered extension takes that extension's plain form", asn1.decode(pki.x509.extension(O("keyUsage"), ["digitalSignature"])).children.length === 3);
   check("a registered extension with pre-encoded bytes where it takes a plain form -> x509/bad-input naming the plain form", msgSync(function () { pki.x509.extension("keyUsage", Buffer.from([3, 2, 7, 128])); }).indexOf("takes the plain form") > 0);
   // The name door.
