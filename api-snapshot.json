@@ -185,6 +185,9 @@
             "PKCS12_MAX_BAG_DEPTH": {
               "kind": "number"
             },
+            "PKCS12_MAX_DH_PAIRS": {
+              "kind": "number"
+            },
             "PKCS12_MAX_ELEMENTS": {
               "kind": "number"
             },
@@ -1563,6 +1566,9 @@
               "kind": "number"
             },
             "PKCS12_MAX_BAG_DEPTH": {
+              "kind": "number"
+            },
+            "PKCS12_MAX_DH_PAIRS": {
               "kind": "number"
             },
             "PKCS12_MAX_ELEMENTS": {
