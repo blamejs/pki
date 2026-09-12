@@ -469,6 +469,30 @@ async function testCorrespondsTo(keyInternal) {
     hollowVerdict === false || hollowVerdict === "key/unsupported-algorithm");
   check("CONTROL: the composite ML-KEM/RSA KAT pair corresponds",
     (await keyInternal.correspondsTo(Buffer.from(kemR.dk_pkcs8, "base64"), katSpki(kemR))) === true);
+  // Every secret a probe makes is wiped once the verdict is decided, whether the pair matched or not:
+  // the encapsulated and decapsulated ML-KEM secrets, and both sides of the X25519 agreement. The
+  // runtime verbs are wrapped to keep the buffers they returned, then read back after the call.
+  var made = [];
+  var realEncapsulate = nodeCrypto.encapsulate, realDecapsulate = nodeCrypto.decapsulate, realDiffieHellman = nodeCrypto.diffieHellman;
+  function keep(out) { if (out && out.sharedKey) made.push(out.sharedKey); else if (Buffer.isBuffer(out)) made.push(out); return out; }
+  nodeCrypto.encapsulate = function () { return keep(realEncapsulate.apply(nodeCrypto, arguments)); };
+  nodeCrypto.decapsulate = function () { return keep(realDecapsulate.apply(nodeCrypto, arguments)); };
+  nodeCrypto.diffieHellman = function () { return keep(realDiffieHellman.apply(nodeCrypto, arguments)); };
+  var allZero = function (list) { return list.length > 0 && list.every(function (buf) { return buf.every(function (x) { return x === 0; }); }); };
+  try {
+    var mlkem = nodeCrypto.generateKeyPairSync("ml-kem-768"), mlkemOther = nodeCrypto.generateKeyPairSync("ml-kem-768");
+    var x = nodeCrypto.generateKeyPairSync("x25519"), xOther = nodeCrypto.generateKeyPairSync("x25519");
+    var verdicts = [
+      await keyInternal.correspondsTo(mlkem.privateKey.export({ format: "der", type: "pkcs8" }), mlkem.publicKey.export({ format: "der", type: "spki" })),
+      await keyInternal.correspondsTo(mlkem.privateKey.export({ format: "der", type: "pkcs8" }), mlkemOther.publicKey.export({ format: "der", type: "spki" })),
+      await keyInternal.correspondsTo(x.privateKey.export({ format: "der", type: "pkcs8" }), x.publicKey.export({ format: "der", type: "spki" })),
+      await keyInternal.correspondsTo(x.privateKey.export({ format: "der", type: "pkcs8" }), xOther.publicKey.export({ format: "der", type: "spki" })),
+    ];
+    check("correspondsTo wipes every ML-KEM and X25519 probe secret after deciding, matched or not (" + made.length + " buffers)",
+      verdicts.join() === "true,false,true,false" && made.length === 8 && allZero(made));
+  } finally {
+    nodeCrypto.encapsulate = realEncapsulate; nodeCrypto.decapsulate = realDecapsulate; nodeCrypto.diffieHellman = realDiffieHellman;
+  }
 }
 
 // ---- import / generate / publicFromPrivate verbs ---------------------------
