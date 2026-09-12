@@ -135,6 +135,33 @@ async function run() {
     (await codeOf(function () { return pki.smime.sign(MSG, [new PrivateSigner(kuEnc.cert, kuEnc.key)]); })) === "smime/bad-signer-certificate");
   check("0r. a descriptor whose own-keys trap throws -> smime/bad-input, not the trap's own error",
     (await codeOf(function () { return pki.smime.sign(MSG, [new Proxy({ cert: fit.cert, key: fit.key }, { ownKeys: function () { throw new Error("ownKeys boom"); } })]); })) === "smime/bad-input");
+  // A function carrying cert and key is a descriptor pki.cms.sign reads like any other, so it is
+  // read and held to the rule like any other.
+  var callable = function () {};
+  callable.cert = kuEnc.cert; callable.key = kuEnc.key;
+  check("0s. a callable descriptor is held to the rule",
+    (await codeOf(function () { return pki.smime.sign(MSG, [callable]); })) === "smime/bad-signer-certificate");
+  var callableFit = function () {};
+  callableFit.cert = fit.cert; callableFit.key = fit.key;
+  check("0t. CONTROL: a callable descriptor with a fit certificate signs",
+    (await codeOf(function () { return pki.smime.sign(MSG, [callableFit]); })) === "NO-THROW");
+  // A primitive is not a descriptor, whatever a built-in prototype has been made to carry: it is
+  // refused here rather than read through boxing.
+  var primErr = null;
+  try {
+    Object.defineProperty(String.prototype, "cert", { configurable: true, get: function () { return kuEnc.cert; } });
+    Object.defineProperty(String.prototype, "key", { configurable: true, get: function () { return kuEnc.key; } });
+    try { await pki.smime.sign(MSG, ["signer"]); } catch (e) { primErr = e; }
+  } finally { delete String.prototype.cert; delete String.prototype.key; }
+  check("0u. a primitive descriptor is refused as bad input, never read through a polluted built-in prototype",
+    primErr !== null && primErr.code === "smime/bad-input");
+  // A descriptor's own Symbol-keyed and constructor-named fields travel with it, as the CMS layer
+  // read them from the caller's object.
+  var symKey = Symbol("note");
+  var withSym = { cert: fit.cert, key: fit.key, constructor: "mine" };
+  withSym[symKey] = "kept";
+  check("0v. own Symbol-keyed and constructor-named fields sign as before",
+    (await codeOf(function () { return pki.smime.sign(MSG, [withSym]); })) === "NO-THROW");
   check("0f. the second of two signers is held to the same rule, named by position",
     /signer 2/.test(String((await (async function () { try { await pki.smime.sign(MSG, [{ cert: rsa.cert, key: rsa.key }, { cert: kuEnc.cert, key: kuEnc.key }]); return ""; } catch (e) { return e.message; } })()))));
 
