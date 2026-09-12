@@ -18,6 +18,10 @@ An OCSP response can say how far back its status reaches and which CRL it came f
 - The signing verb that would write a Date whose year lies outside 0000 to 9999 refuses it with that verb's own code (x509/bad-input, crl/bad-input, ocsp/bad-input and so on) instead of letting it reach the DER encoder and surface as asn1/bad-generalizedtime. A DER time carries a four-digit year, so such a Date never had an encoding; what changes is which error a caller receives. The check covers every Date a signing verb writes: a certificate's or a CRMF template's validity, a CRL's update, revocation and invalidity times, an OCSP response's producedAt, thisUpdate, revocation time, archive cutoff and CRL time, a CMS signingTime, a timestamp's genTime, an attribute certificate's validity, and a CMP message time. A Date a verifying verb only compares against, such as the time option of pki.path.validate, pki.crl.isRevoked or pki.cms.verify, is accepted as before.
 - A pre-encoded singleExtensions entry given to pki.ocsp.sign is now read with the parser's own singleExtensions reader before it is emitted, so a malformed archive cutoff or CRL reference is refused at the signer with the parser's code instead of being written into a response the toolkit itself cannot read. A well-formed entry is unaffected. An object passed where the array was expected was previously dropped without a word; it is now either taken as the object form or refused.
 
+### Fixed
+
+- The pkijs.com sitemap dates every page on the UTC calendar the release is dated on. A page whose source was last committed in the evening west of Greenwich was dated a day earlier than the release that shipped it, and the following release could then move that date backward.
+
 ## v0.7.24 — 2026-09-12
 
 A certificate request can name every extension its subject owns.

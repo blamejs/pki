@@ -26,13 +26,23 @@
 // and saying so is a statement about a change that really happened. That is the whole distinction
 // from stamping build time: build time claimed all 46 pages changed on every deploy, true of none of
 // them; this claims a date only for files git or the working tree says did change.
+//
+// Every date is a UTC calendar day: a commit's from its committer timestamp, a modified file's from
+// the clock now, and the release itself is dated the same way. A commit made in the evening west
+// of Greenwich falls on one day by its committer offset and on the next by UTC; reading the offset
+// day put a file committed at 17:43 -07:00 beside one modified an hour later on "the next day",
+// and the cut that then committed the first file dated it backward.
+//
+// Usage: node scripts/gen-wiki-lastmod.js [repository root]   (defaults to this repository)
 
 var cp = require("node:child_process");
 var fs = require("node:fs");
 var path = require("node:path");
 
-var ROOT = path.resolve(__dirname, "..");
+var ROOT = process.argv[2] ? path.resolve(process.argv[2]) : path.resolve(__dirname, "..");
 var OUT = path.join(ROOT, "examples", "wiki", "page-lastmod.json");
+
+function utcDay(epochSeconds) { return new Date(Number(epochSeconds) * 1000).toISOString().slice(0, 10); }
 // The whole-history walk grows with the repository, so it gets the larger ceiling; the working-tree
 // status is bounded by the size of one cut. Both are far above what either has ever produced -- they
 // exist so a future repository does not truncate silently, which would drop dates rather than fail.
@@ -42,13 +52,13 @@ var MAX_STATUS = 64 * 1024 * 1024;
 // One `git log` walk over the whole history, newest first, recording the first (therefore most
 // recent) date seen for each path. Per-file `git log -1` would be one process per page.
 function collect() {
-  var out = cp.execFileSync("git", ["log", "--format=%x00%cI", "--name-only", "--no-renames"], {
+  var out = cp.execFileSync("git", ["log", "--format=%x00%ct", "--name-only", "--no-renames"], {
     cwd: ROOT, encoding: "utf8", maxBuffer: MAX_HISTORY,
   });
   var dates = {};
   var current = null;
   out.split("\n").forEach(function (line) {
-    if (line.charCodeAt(0) === 0) { current = line.slice(1).trim().slice(0, 10); return; }
+    if (line.charCodeAt(0) === 0) { current = utcDay(line.slice(1).trim()); return; }
     var file = line.trim();
     if (!file || !current) return;
     if (!Object.prototype.hasOwnProperty.call(dates, file)) dates[file] = current;
@@ -78,8 +88,8 @@ function dirtyPaths() {
 function main() {
   var all = collect();
   // A modified file's most recent change is the one sitting in the working tree, not the one in
-  // history. `git log` cannot see it, so it is applied here.
-  var today = new Date().toISOString().slice(0, 10);
+  // history. `git log` cannot see it, so it is applied here, on the same UTC calendar.
+  var today = utcDay(Date.now() / 1000);
   var dirty = dirtyPaths();
   Object.keys(dirty).forEach(function (f) { all[f] = today; });
   // Only the paths a page's content depends on: the toolkit's modules (whose @module and @primitive
