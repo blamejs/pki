@@ -175,6 +175,41 @@ function run() {
       var r = pki.lint.certificate(makeCert({ exts: [nonCritical] }));
       return !has(r, "lint/rfc5280/extension-criticality") && !has(r, "lint/rfc5280/unknown-critical-extension");
     }));
+  // ---- RFC 5280 rules the parser reads past that no rule graded: each fires on the shape and is silent on the control ----
+  var pmAny = ext("policyMappings", true, b.sequence([b.sequence([b.oid(oid.byName("anyPolicy")), b.oid("1.2.3.4")])]));
+  var pmAnySubject = ext("policyMappings", true, b.sequence([b.sequence([b.oid("1.2.3.5"), b.oid(oid.byName("anyPolicy"))])]));
+  var pmOk = ext("policyMappings", true, b.sequence([b.sequence([b.oid("1.2.3.5"), b.oid("1.2.3.4")])]));
+  var caExts = [ext("basicConstraints", true, b.sequence([b.boolean(true)])), ext("keyUsage", true, b.bitString(Buffer.from([0x04]), 2))];
+  check("a policy mapping from anyPolicy -> policy-mapping-any-policy (error, RFC 5280 4.2.1.5 MUST NOT)", sevOf(pki.lint.certificate(makeCert({ exts: caExts.concat([pmAny]) })), "lint/rfc5280/policy-mapping-any-policy") === "error");
+  check("a policy mapping to anyPolicy -> policy-mapping-any-policy", has(pki.lint.certificate(makeCert({ exts: caExts.concat([pmAnySubject]) })), "lint/rfc5280/policy-mapping-any-policy"));
+  check("CONTROL: a mapping between two ordinary policies draws no policy-mapping-any-policy", !has(pki.lint.certificate(makeCert({ exts: caExts.concat([pmOk]) })), "lint/rfc5280/policy-mapping-any-policy"));
+  // 4.1.2.8: "CAs conforming to this profile MUST NOT generate certificates with unique identifiers".
+  var kidsUid = tbsKids();
+  kidsUid.splice(7, 0, b.contextPrimitive(1, Buffer.from([0x00, 0xab])));   // issuerUniqueID [1] IMPLICIT BIT STRING, before extensions [3]
+  var withUid = assemble(kidsUid);
+  check("the parser surfaces issuerUniqueID / subjectUniqueID", (function () { var p = pki.schema.x509.parse(withUid); return p.issuerUniqueID !== null && p.issuerUniqueID.bytes.length === 1 && p.subjectUniqueID === null; })());
+  check("CONTROL: a certificate without unique identifiers parses them as null", (function () { var p = pki.schema.x509.parse(REAL); return p.issuerUniqueID === null && p.subjectUniqueID === null; })());
+  check("an issuerUniqueID -> unique-identifier-present (error, RFC 5280 4.1.2.8 MUST NOT)", sevOf(pki.lint.certificate(withUid), "lint/rfc5280/unique-identifier-present") === "error");
+  check("CONTROL: no unique identifier draws no unique-identifier-present", !has(pki.lint.certificate(REAL), "lint/rfc5280/unique-identifier-present"));
+  // 4.2.1.6: with a non-empty subject the SAN SHOULD be non-critical; 4.2.1.12: an EKU carrying
+  // anyExtendedKeyUsage SHOULD NOT be critical; 4.2.1.4: noticeRef SHOULD NOT be used.
+  check("a critical SAN beside a non-empty subject -> san-critical-with-subject (warn, RFC 5280 4.2.1.6)", sevOf(pki.lint.certificate(makeCert({ exts: [san([dnsName("a.example")], true)] })), "lint/rfc5280/san-critical-with-subject") === "warn");
+  check("CONTROL: a non-critical SAN beside a non-empty subject draws no san-critical-with-subject", !has(pki.lint.certificate(makeCert({ exts: [san([dnsName("a.example")], false)] })), "lint/rfc5280/san-critical-with-subject"));
+  check("CONTROL: a critical SAN beside an EMPTY subject is the 4.1.2.6 shape, not this one", !has(pki.lint.certificate(makeCert({ subject: b.sequence([]), exts: [san([dnsName("a.example")], true)] })), "lint/rfc5280/san-critical-with-subject"));
+  var ekuAnyCritical = ext("extKeyUsage", true, b.sequence([b.oid(oid.byName("serverAuth")), b.oid(oid.byName("anyExtendedKeyUsage"))]));
+  check("a critical EKU carrying anyExtendedKeyUsage -> eku-critical-with-any-purpose (warn, RFC 5280 4.2.1.12)", sevOf(pki.lint.certificate(makeCert({ exts: [ekuAnyCritical] })), "lint/rfc5280/eku-critical-with-any-purpose") === "warn");
+  check("CONTROL: a critical EKU without anyExtendedKeyUsage draws no eku-critical-with-any-purpose", !has(pki.lint.certificate(makeCert({ exts: [ext("extKeyUsage", true, b.sequence([b.oid(oid.byName("serverAuth"))]))] })), "lint/rfc5280/eku-critical-with-any-purpose"));
+  check("CONTROL: a non-critical EKU with anyExtendedKeyUsage draws no eku-critical-with-any-purpose", !has(pki.lint.certificate(makeCert({ exts: [ext("extKeyUsage", false, b.sequence([b.oid(oid.byName("anyExtendedKeyUsage"))]))] })), "lint/rfc5280/eku-critical-with-any-purpose"));
+  var noticeRef = ext("certificatePolicies", false, b.sequence([b.sequence([b.oid("1.2.3.4"), b.sequence([b.sequence([b.oid(oid.byName("unotice")), b.sequence([b.sequence([b.ia5("Example Org"), b.sequence([b.integer(1n)])])])])])])]));
+  var explicitOnly = ext("certificatePolicies", false, b.sequence([b.sequence([b.oid("1.2.3.4"), b.sequence([b.sequence([b.oid(oid.byName("unotice")), b.sequence([b.utf8("Read the CPS")])])])])]));
+  check("a userNotice with a noticeRef -> notice-ref-used (warn, RFC 5280 4.2.1.4 SHOULD NOT)", sevOf(pki.lint.certificate(makeCert({ exts: [noticeRef] })), "lint/rfc5280/notice-ref-used") === "warn");
+  check("CONTROL: a userNotice with explicitText alone draws no notice-ref-used", !has(pki.lint.certificate(makeCert({ exts: [explicitOnly] })), "lint/rfc5280/notice-ref-used"));
+  // 4.2.1.13 and 4.2.1.7: the CRL distribution points and issuer alternative name extensions SHOULD be non-critical.
+  var crldpCritical = ext("cRLDistributionPoints", true, b.sequence([b.sequence([b.contextConstructed(0, b.contextConstructed(0, b.contextPrimitive(6, Buffer.from("http://x/a.crl", "ascii"))))])]));
+  check("a critical cRLDistributionPoints -> recommended-criticality (warn, RFC 5280 4.2.1.13)", (function () { var f = pki.lint.certificate(makeCert({ exts: [crldpCritical] })).findings.filter(function (x) { return x.id === "lint/rfc5280/recommended-criticality"; })[0]; return !!f && f.severity === "warn" && f.context.extension === "cRLDistributionPoints" && /4\.2\.1\.13/.test(f.context.citation); })());
+  var ianCritical = ext("issuerAltName", true, b.sequence([dnsName("ca.example")]));
+  check("a critical issuerAltName -> recommended-criticality citing 4.2.1.7", (function () { var f = pki.lint.certificate(makeCert({ exts: [ianCritical] })).findings.filter(function (x) { return x.id === "lint/rfc5280/recommended-criticality"; })[0]; return !!f && /4\.2\.1\.7/.test(f.context.citation); })());
+  check("CONTROL: the two marked non-critical draw no recommended-criticality", !has(pki.lint.certificate(makeCert({ exts: [ext("cRLDistributionPoints", false, asn1.read.octetString(asn1.decode(crldpCritical).children[2])), ext("issuerAltName", false, b.sequence([dnsName("ca.example")]))] })), "lint/rfc5280/recommended-criticality"));
   // The row is keyed by OID, never by display name: a registry override that gives the AKI OID
   // another extension's name changes what the parser labels it, and the finding still carries the
   // AKI clause rather than throwing out of a lookup by the wrong name.

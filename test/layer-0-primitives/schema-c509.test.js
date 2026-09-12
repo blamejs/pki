@@ -580,6 +580,21 @@ async function run() {
     var sk = signing.makeSigner("ec-p256");
     return Buffer.from(await pki.x509.sign({ subject: [{ commonName: "ext-test" }], subjectPublicKey: sk.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"), extensions: extsArray }, { key: sk.key }));
   }
+  // An extension the signer refuses to produce (a policy mapping to or from anyPolicy, RFC 5280
+  // sec. 4.2.1.5) is written as the bytes a decoder would receive: the signer's own certificate with
+  // its extensions field replaced, signed again under the same key. The parser accepts it, so the
+  // compact codec must carry it.
+  async function certWithExtsAsReceived(extsArray) {
+    var sk = signing.makeSigner("ec-p256");
+    var der = Buffer.from(await pki.x509.sign({ subject: [{ commonName: "ext-test" }], subjectPublicKey: sk.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"), extensions: [] }, { key: sk.key }));
+    var top = pki.asn1.decode(der);
+    var kids = top.children[0].children.filter(function (c) { return !(c.tagClass === "context" && c.tagNumber === 3); }).map(function (c) { return b.raw(c.bytes); });
+    if (!(top.children[0].children[0].tagClass === "context" && top.children[0].children[0].tagNumber === 0)) kids.unshift(b.explicit(0, b.integer(2n)));   // a certificate without extensions is issued v1; extensions need v3
+    kids.push(b.explicit(3, b.sequence(extsArray)));
+    var tbs = b.sequence(kids);
+    var sig = require("crypto").sign("sha256", tbs, { key: require("crypto").createPrivateKey({ key: sk.key, format: "der", type: "pkcs8" }), dsaEncoding: "der" });
+    return b.sequence([tbs, b.raw(top.children[1].bytes), b.bitString(sig, 0)]);
+  }
   // nameConstraints appears only in a CA certificate (RFC 5280 sec. 4.2.1.10), so a fixture carrying
   // one is a CA. The added basicConstraints rides its own extID and leaves the extID under test alone.
   function caBc() { return b.sequence([b.oid(O("basicConstraints")), b.boolean(true), b.octetString(b.sequence([b.boolean(true)]))]); }
@@ -1244,18 +1259,19 @@ async function run() {
   check("226. policyMappings encodes under extID 27, registered->int, unregistered->~oid + double-inverts", (function () { var p = extPair(pmMultiEnc, 27); if (p == null || p.val.majorType !== 4) return false; var a = CB.decode(p.val.bytes).children; return a.length === 4 && Number(CB.read.int(a[0])) === 1 && Number(CB.read.int(a[1])) === 2 && a[2].majorType === 2 && a[3].majorType === 2 && pki.schema.c509.parse(pmMultiEnc).reconstructedDer.equals(pmMulti); })());
 
   // 2. anyPolicy in a mapping is ACCEPTED: RFC 5280 sec. 4.2.1.5 "MUST NOT map to/from anyPolicy" is a generation
-  //    rule the toolkit's own DER decoder does not reject, so the reconstruct accepts exactly what the decoder accepts.
-  var pmAny = await certWithExts([pmExt([mapping(O("anyPolicy"), O("domain-validated"))])]);
+  //    rule (pki.x509.sign refuses it on both forms) that the toolkit's own DER decoder does not reject, so the
+  //    reconstruct accepts exactly what the decoder accepts; the fixture is written as received bytes.
+  var pmAny = await certWithExtsAsReceived([pmExt([mapping(O("anyPolicy"), O("domain-validated"))])]);
   var pmAnyEnc = encCp(pmAny);
   check("227. anyPolicy in a policyMapping is accepted (a generation MUST-NOT the verifier does not reject) + double-inverts", (function () { var p = extPair(pmAnyEnc, 27); if (p == null) return false; var a = CB.decode(p.val.bytes).children; return Number(CB.read.int(a[0])) === 0 && Number(CB.read.int(a[1])) === 1 && pki.schema.c509.parse(pmAnyEnc).reconstructedDer.equals(pmAny); })());
 
   // 3. double-inversion at scale: int/int, int/~oid, ~oid/~oid mappings on one cert stay a compact even-length array.
-  var pmScale = await certWithExts([pmExt([mapping(O("domain-validated"), O("organization-validated")), mapping(O("anyPolicy"), "1.3.6.1.4.1.99999.3"), mapping("1.3.6.1.4.1.99999.4", "1.3.6.1.4.1.99999.5")])]);
+  var pmScale = await certWithExtsAsReceived([pmExt([mapping(O("domain-validated"), O("organization-validated")), mapping(O("anyPolicy"), "1.3.6.1.4.1.99999.3"), mapping("1.3.6.1.4.1.99999.4", "1.3.6.1.4.1.99999.5")])]);
   var pmScaleEnc = encCp(pmScale);
   check("228. three mappings (int/int, int/~oid, ~oid/~oid) stay a compact even-length array + double-inverts", (function () { var p = extPair(pmScaleEnc, 27); if (p == null || p.val.majorType !== 4) return false; return CB.decode(p.val.bytes).children.length === 6 && pki.schema.c509.parse(pmScaleEnc).reconstructedDer.equals(pmScale); })());
 
   // 4. criticality sign.
-  var pmCrit = await certWithExts([pmExt([mapping(O("anyPolicy"), O("domain-validated"))], true)]);
+  var pmCrit = await certWithExtsAsReceived([pmExt([mapping(O("anyPolicy"), O("domain-validated"))], true)]);
   var pmCritEnc = encCp(pmCrit);
   check("229. a critical policyMappings carries extID -27 + reconstructs critical", Number(CB.read.int(extPair(pmCritEnc, 27).id)) === -27 && pki.schema.x509.parse(pki.schema.c509.parse(pmCritEnc).reconstructedDer).extensions.filter(function (e) { return e.name === "policyMappings"; })[0].critical === true);
 
