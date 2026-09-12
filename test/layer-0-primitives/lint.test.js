@@ -124,6 +124,14 @@ function run() {
   // ---- RFC 5280 per-rule positives (each drives pki.lint.certificate, asserts id+severity) ----
   check("negative serial -> serial-not-positive (error)",
     sevOf(pki.lint.certificate(makeCert({ serial: b.integer(-1n) })), "lint/rfc5280/serial-not-positive") === "error");
+  // The signature field carrying no signature at all: the strict parser admits an empty BIT STRING,
+  // so the profile grades it, and a real signature draws nothing.
+  check("an empty signature BIT STRING -> signature-empty (error)", (function () {
+    var c = asn1.decode(REAL);
+    var unsigned = b.sequence([c.children[0].bytes, c.children[1].bytes, b.bitString(Buffer.alloc(0), 0)]);
+    return sevOf(pki.lint.certificate(unsigned), "lint/rfc5280/signature-empty") === "error"
+      && !has(pki.lint.certificate(REAL), "lint/rfc5280/signature-empty");
+  })());
   check("21-octet serial -> serial-too-long (error)",
     has(pki.lint.certificate(makeCert({ serial: SERIAL_21 })), "lint/rfc5280/serial-too-long"));
   check("notBefore > notAfter -> validity-inverted (error)",
@@ -707,7 +715,7 @@ function testCrlProfile() {
     var exts = o.exts === undefined ? [crlNumber(1), akiKeyId()] : o.exts;
     if (exts !== null) kids.push(b.explicit(0, b.sequence(exts)));
     // outerAlg lets the two AlgorithmIdentifiers differ, which section 5.1.1.2 forbids.
-    return b.sequence([b.sequence(kids), o.outerAlg || ALG, SIG]);
+    return b.sequence([b.sequence(kids), o.outerAlg || ALG, o.sig || SIG]);
   }
   function entry(serial, entryExts) {
     var kids = [b.integer(BigInt(serial)), utc("2026-01-15T00:00:00Z")];
@@ -741,6 +749,8 @@ function testCrlProfile() {
 
   check("a CRL with no nextUpdate -> next-update-missing",
     hasId(pki.lint.crl(makeCrl({ noNextUpdate: true })), "lint/rfc5280-crl/next-update-missing"));
+  check("a CRL whose signature BIT STRING is empty -> signature-empty (error)",
+    sevOf(pki.lint.crl(makeCrl({ sig: b.bitString(Buffer.alloc(0), 0) })), "lint/rfc5280-crl/signature-empty") === "error");
   check("a CRL whose thisUpdate follows its nextUpdate -> update-times-inverted",
     hasId(pki.lint.crl(makeCrl({ thisUpdate: "2026-03-01T00:00:00Z" })), "lint/rfc5280-crl/update-times-inverted"));
 

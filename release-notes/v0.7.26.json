@@ -1,0 +1,18 @@
+{
+  "version": "0.7.26",
+  "date": "2026-09-12",
+  "headline": "An OCSP response can be linted against RFC 6960, and against the RFC 5019 lightweight profile on request.",
+  "summary": "pki.lint graded certificates and CRLs and not the third structure a CA publishes. pki.lint.ocsp reads a response the way pki.lint.crl reads a list: it returns the same LintReport, never throws on the data path, and grades every RFC 6960 rule the strict parser leaves reachable, each finding citing its clause at the strength the clause states.",
+  "sections": {
+    "Added": [
+      "pki.lint.ocsp(pem | der | parsed, opts) lints an OCSP response under the rfc6960 profile: a SingleResponse whose thisUpdate follows its nextUpdate, a producedAt earlier than a thisUpdate it certifies, a certs field that is present and empty, the extended revoked definition (its criticality, its NULL value, and that it belongs in responseExtensions), the fixed shape RFC 6960 section 2.2 gives a revoked answer for a non-issued certificate (certificateHold at January 1, 1970) and what that answer must and must not carry, the list each extension belongs in (the nonce, the archive cutoff, the CRL references, and the three extensions defined for requests only), an archive cutoff later than producedAt, the criticality and value syntax of the CRL entry extensions section 4.4.5 lets a SingleResponse carry, an unrecognized critical extension on either list, the revocation reasons unspecified and removeFromCRL, and two SingleResponses answering for one CertID. Each finding names the SingleResponse it is about.",
+      "The rfc5019 profile holds a response to the lightweight rules (nextUpdate always present, one SingleResponse, no responseExtensions, a byKey ResponderID). Nothing in a response says which profile its responder follows, so these rows run when profile: \"rfc5019\" is selected and count as not applicable in the default run.",
+      "pki.schema.ocsp.parseResponse reports certsPresent beside certs, so a reader can tell a response that carried an empty certs field from one that omitted it.",
+      "A lint-ocsp fuzz target drives the never-throw promise with hostile bytes on the ingestion boundary, spliced into a real response, and as the value of every extension the profile decodes.",
+      "All three lint verbs report a signature field that carries no signature (lint/rfc5280/signature-empty, lint/rfc5280-crl/signature-empty, lint/rfc6960/signature-empty). An empty BIT STRING is well-formed DER, so the strict parsers admit it and the profiles grade it."
+    ],
+    "Changed": [
+      "The three lint verbs refuse each other's profile names with a message naming the verb that takes the profile, and pki.lint.profiles() and pki.lint.rules() enumerate the two OCSP profiles beside the certificate and CRL ones."
+    ]
+  }
+}
