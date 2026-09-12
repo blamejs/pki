@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.7.30",
+  "packageVersion": "0.7.31",
   "surface": {
     "C": {
       "kind": "object",
@@ -2502,6 +2502,9 @@
                 "HKDF_SHA256": {
                   "kind": "number"
                 },
+                "HKDF_SHA384": {
+                  "kind": "number"
+                },
                 "HKDF_SHA512": {
                   "kind": "number"
                 }
@@ -2520,6 +2523,15 @@
                   "kind": "number"
                 },
                 "DHKEM_X448_HKDF_SHA512": {
+                  "kind": "number"
+                },
+                "ML_KEM_1024": {
+                  "kind": "number"
+                },
+                "ML_KEM_512": {
+                  "kind": "number"
+                },
+                "ML_KEM_768": {
                   "kind": "number"
                 }
               }

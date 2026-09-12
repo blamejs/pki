@@ -4,6 +4,23 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.31 — 2026-09-12
+
+HPKE encrypts to an ML-KEM public key.
+
+### Added
+
+- pki.hpke.suites.KEM.ML_KEM_512, ML_KEM_768 and ML_KEM_1024 (0x0040, 0x0041, 0x0042). The HPKE binding is FIPS 203 encapsulation and decapsulation with the 32-byte ML-KEM shared secret as the HPKE shared secret and the 64-byte seed as the private key. setupS and seal take the recipient's encapsulation key as raw bytes, as { pkm }, or as a node:crypto KeyObject; setupR and open take { skm } holding the seed, with pkm optional, or a KeyObject. The base and psk modes and every KDF and AEAD apply; the auth and auth-psk modes, which the ML-KEM KEMs do not define (draft-ietf-hpke-pq sec. 7.2), are refused with hpke/auth-unsupported at both ends. An encapsulation key that fails the FIPS 203 sec. 7.2 check (length or a coefficient at or above q) is refused at import, and an encapsulated key of the wrong length is refused before decapsulation, each as hpke/bad-key. The recipient side of the draft's A.1, A.2 and A.3 vectors (ML-KEM-512 and -768 with HKDF-SHA256, ML-KEM-1024 with HKDF-SHA384) is a full known answer: the vector's encapsulated key decapsulated under its seed, all ten decryptions and all five exports. The sender side is proven by round trip: node:crypto takes no encapsulation randomness, so a fixed ephemeral (opts.eph) is refused on an ML-KEM suite with hpke/bad-input rather than ignored.
+- pki.hpke.suites.KDF.HKDF_SHA384 (0x0002), for any KEM. The draft-ietf-hpke-pq A.3 vector proves it in the key schedule. DHKEM(P-384) stays unoffered: no known-answer vector pairs it with an HKDF key schedule.
+
+### Changed
+
+- A serialized HPKE private key, { skm, pkm } on setupR, open, opts.eph and opts.senderKey, passes one door for every suite. skm must be a Buffer of exactly the suite's private-key length, an EC scalar additionally in [1, n-1]; the public key is derived from it; and pkm, now optional, must equal that derivation when given. Before this a DHKEM recipient given { skm } alone escaped as a raw TypeError, and a pkm of the wrong length or of another key was fed into the KEM context unchecked, producing a context that could open nothing. A node:crypto KeyObject is checked against the suite's curve or ML-KEM parameter set, and a public KeyObject where a private one is due is refused rather than tried; each refusal is hpke/bad-key naming what was checked.
+- opts.senderKey on setupS and opts.senderPublicKey on setupR are refused with hpke/bad-input in the base and psk modes, where they were previously left unused: a caller who supplied one without mode auth or auth-psk was not authenticating the exchange. A value of undefined or null is still absent. opts.eph is { skm, pkm } or absent (undefined or null); another value, such as 0 or an empty string, is refused with hpke/bad-input instead of being read as absent.
+- pki.hpke.setupS and setupR read each option once, at entry, into a snapshot. mode was read at the default and again at the use, so an option supplied through an accessor could answer auth to the first read and base to the second and get an unauthenticated setup; senderKey was read at its presence check and again at import.
+- The HKDF expand step wipes every block it computed when a later block's HMAC fails, as it already did on the succeeding path. A private KeyObject handed where a public key is due (the recipient key on setupS and seal, senderPublicKey on setupR) now has its public half taken before export, so no JWK carrying the private scalar is produced.
+- The fuzz target for the HPKE recipient path decapsulates under an ML-KEM-768 seed as well as an X25519 key, and selects HKDF-SHA384 among the KDFs.
+
 ## v0.7.30 — 2026-09-12
 
 The Sigstore bundle verifier decides with operations bound when the module loads.

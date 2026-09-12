@@ -132,8 +132,10 @@ security-only patches after the next major releases.
   compared, so `checked.challenge`, `checked.origin` and `checked.type` could
   report a comparison against a value the caller never supplied. Both take each
   named option once, at entry, before any of it is examined, as do the `pki.smime`
-  verbs. `pki.webauthn.verify` and `pki.webauthn.verifyAssertion` already copied
-  their inputs.
+  verbs and the `pki.hpke` setup verbs (whose `mode` was read at the default and
+  again at the use, so an accessor answering auth then base got a base setup).
+  `pki.webauthn.verify` and `pki.webauthn.verifyAssertion` already copied their
+  inputs.
 - **Decompression bombs (CWE-409).** Every decompression in the toolkit runs
   through one bounded primitive, so the defense cannot be picked up by one caller
   and missed by the next. The output is capped at the decompressor itself (Node's
@@ -386,6 +388,17 @@ security-only patches after the next major releases.
   unambiguous: a string that could be read as more than one form, or as none, is
   refused with a typed `bad-input` rather than guessed into a name the caller did
   not intend, and the explicit object form is always the escape.
+- **HPKE keys are bound to the suite they are used under.** `pki.hpke` accepts a
+  serialized private key as `{ skm, pkm }` for every KEM through one door: `skm`
+  must be exactly the suite's private-key length (an EC scalar additionally in
+  `[1, n-1]`, an ML-KEM private key the 64-byte seed), the public key is derived
+  from it, and a supplied `pkm` must equal that derivation or the call is refused
+  with `hpke/bad-key`. A `node:crypto` KeyObject is checked to be of the suite's
+  curve or ML-KEM parameter set, and a public KeyObject where a private one is due
+  is refused rather than tried. An ML-KEM encapsulation key is held to the FIPS 203
+  sec. 7.2 check at import (length and modulus), an encapsulated key to the
+  sec. 7.3 length check before decapsulation, and the auth modes, which the ML-KEM
+  KEMs do not define, are refused with `hpke/auth-unsupported` at both ends.
 - **WebCrypto import algorithm confusion and raw cipher faults.**
   `pki.webcrypto` derives an imported asymmetric key's type from the key material
   rather than the caller's claim, so an RSA key imported under an Ed25519,
