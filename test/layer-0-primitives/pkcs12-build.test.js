@@ -483,6 +483,23 @@ async function testFailClosedInputs() {
     Buffer.isBuffer(await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert, localKeyId: lkid }, { type: "cert", cert: signing.minimalCert(s.spki, { serial: 0x78 }), localKeyId: lkid }, { type: "key", key: s.key, localKeyId: lkid }] }] }, { password: "1234" })));
   check("two certificate bags under one localKeyId, one of them another key's -> pkcs12/bad-input",
     (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert, localKeyId: lkid }, { type: "cert", cert: other.cert, localKeyId: lkid }, { type: "key", key: s.key, localKeyId: lkid }] }] }, { password: "1234" }))) === "pkcs12/bad-input");
+  // The work a store can ask for is bounded before any of it is done. The AuthenticatedSafe carries at
+  // most the element cap of safes, refused at entry rather than after every safe was encrypted and
+  // the re-parse refused the result; and the pairs a store links are capped before any pair is
+  // probed. Each bag below carries bytes no parser accepts, so the message says which check spoke.
+  var notACert = Buffer.from([0x30, 0x00]);
+  var manySafes = [];
+  for (var ms = 0; ms <= 1024; ms++) manySafes.push({ bags: [{ type: "cert", cert: notACert }] });
+  var safesErr = null;
+  try { await pki.pkcs12.build({ safeContents: manySafes }, { password: "1234" }); } catch (e) { safesErr = e; }
+  check("more safes than the AuthenticatedSafe element cap -> pkcs12/bad-input at entry, before any safe is built",
+    safesErr !== null && safesErr.code === "pkcs12/bad-input" && /AuthenticatedSafe exceeds the element cap 1024/.test(safesErr.message));
+  var manyCerts = [{ type: "key", key: s.key, localKeyId: lkid }];
+  for (var mc = 0; mc < 1023; mc++) manyCerts.push({ type: "cert", cert: notACert, localKeyId: lkid });
+  var pairsErr = null;
+  try { await pki.pkcs12.build({ safeContents: [{ bags: manyCerts }, { bags: [{ type: "cert", cert: notACert, localKeyId: lkid }, { type: "cert", cert: notACert, localKeyId: lkid }] }] }, { password: "1234" }); } catch (e) { pairsErr = e; }
+  check("more linked certificate bags than the element cap -> pkcs12/bad-input before any pair is probed",
+    pairsErr !== null && pairsErr.code === "pkcs12/bad-input" && /links more than 1024 certificate bags to keys/.test(pairsErr.message));
   check("#11 public-key integrity with no signer -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] }, { integrity: { mode: "public-key" }, password: "1234" }))) === "pkcs12/bad-input");
   // The integrity signers are authoring input for this store, so they answer to the same rule as
   // every other field written here. Every field beyond the identity has a default, so a misspelled
