@@ -597,6 +597,23 @@ async function run() {
   var vrMail = await pki.ocsp.verifyRequest(mailNameReq);
   check("VR20. an rfc822Name requestorName -> valid:false, requestorNamed:false, signatureValid stays true", vrMail.valid === false && vrMail.requestorNamed === false && vrMail.signatureValid === true && /directoryName/.test(String(vrMail.reason)));
   check("VR21. the verdict reports requestorNamed:true on the conforming request", vrOk.requestorNamed === true);
+  // A certificate with an empty subject names its holder in a critical subjectAltName (RFC 5280
+  // sec. 4.1.2.6). An empty Name names nobody, so it is not a requestorName the builder derives
+  // nor one the responder accepts.
+  var nsKp = require("crypto").generateKeyPairSync("ed25519");
+  var nsKey = nsKp.privateKey.export({ format: "der", type: "pkcs8" });
+  var nsCert = await pki.x509.sign({ subject: [], subjectPublicKey: nsKp.publicKey.export({ format: "der", type: "spki" }), notBefore: TU, notAfter: NU, extensions: { subjectAltName: [{ dNSName: "requestor.example" }] } }, { cert: w.issuerCertDer, key: w.issuerKeyPkcs8 });
+  check("VR22. a signer certificate with an empty subject and no stated requestorName -> ocsp/bad-input", (await codeOfAsync(function () { return pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer }, { signer: { cert: nsCert, key: nsKey } }); })) === "ocsp/bad-input");
+  var emptyNameTbs = (function () {
+    var r = pki.asn1.decode(okReqDer);
+    return b.sequence(r.children[0].children.map(function (c) {
+      return (c.tagClass === "context" && c.tagNumber === 1) ? b.explicit(1, b.contextConstructed(4, b.sequence([]))) : b.raw(c.bytes);
+    }));
+  })();
+  var emptyNameSig = require("crypto").sign(null, emptyNameTbs, nsKp.privateKey);
+  var emptyNameReq = b.sequence([emptyNameTbs, b.explicit(0, b.sequence([b.sequence([b.oid(O("Ed25519"))]), b.bitString(emptyNameSig, 0), b.explicit(0, b.sequence([b.raw(nsCert)]))]))]);
+  var vrEmpty = await pki.ocsp.verifyRequest(emptyNameReq);
+  check("VR23. an empty directoryName requestorName under an empty-subject signer -> valid:false, requestorNamed:false", vrEmpty.valid === false && vrEmpty.requestorNamed === false && vrEmpty.signatureValid === true && /nobody/.test(String(vrEmpty.reason)));
   // VR17: the request bytes are snapshotted at the door, so a caller mutating the buffer across the
   // async signature check cannot make verification read bytes other than those parsed and reported.
   var reqBuf = Buffer.from(await mkSignedReq(w.targetCertDer));
