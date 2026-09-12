@@ -1,0 +1,12 @@
+{
+  "version": "0.7.24",
+  "date": "2026-09-12",
+  "headline": "A certificate request can name every extension its subject owns.",
+  "summary": "pki.x509.sign learned eleven extensions over the last releases that pki.csr.sign could not request, so a client enrolling under an enterprise CA could not name its certificate template in the request. RFC 2985 section 5.4.2 has the extensionRequest attribute carry the extensions the requester wishes to be included, and five of the eleven are the subject's own information. Those five are now requestable; the six the issuing CA assigns are refused by name so a caller learns which verb owns them.",
+  "sections": {
+    "Added": [
+      "The pki.csr.sign extensionRequest takes msCertificateTemplate, msEnrollCertType, msApplicationPolicies, subjectInfoAccess and subjectDirectoryAttributes, with the same spec shapes and the same rules pki.x509.sign applies, because one encoder serves both verbs: the same spec yields identical bytes and criticality in the request and in the certificate, and a fault is reported with a csr/* code.",
+      "A request naming an extension the issuing CA assigns as a spec key is refused by name rather than encoded and ignored: authorityKeyIdentifier names the CA's key, precertificatePoison and signedCertificateTimestampList are the CA's exchange with a log, msCaVersion and msPreviousCertHash are the CA's own, and ocspNoCheck is the CA's decision about a responder. The pre-encoded Extension array is unchanged: it carries whatever well-formed extension a caller assembles, as it always has."
+    ]
+  }
+}
