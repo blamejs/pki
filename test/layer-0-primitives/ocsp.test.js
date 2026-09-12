@@ -1028,6 +1028,14 @@ async function run() {
   check("a pre-encoded critical invalidityDate -> ocsp/bad-input", (await codeOfAsync(function () { return signResp({ status: { revoked: TU }, singleExtensions: [ext("invalidityDate", true, b.generalizedTime(TU))] }); })) === "ocsp/bad-input");
   var ciValue = b.sequence([b.contextConstructed(4, b.sequence([b.set([b.sequence([b.oid(O("commonName")), b.utf8("Issuer")])])]))]);
   check("a pre-encoded non-critical certificateIssuer -> ocsp/bad-input", (await codeOfAsync(function () { return signResp({ status: { revoked: TU }, singleExtensions: [ext("certificateIssuer", false, ciValue)] }); })) === "ocsp/bad-input");
+  // A CRL entry extension carried here is read with the CRL parser's own reader before it is emitted
+  // (sec. 4.4.5), and reasonCode removeFromCRL(8) belongs only to a delta CRL (RFC 5280 sec. 5.3.1).
+  check("a pre-encoded reasonCode whose value is NULL -> ocsp/bad-input", (await codeOfAsync(function () { return signResp({ status: { revoked: TU }, singleExtensions: [ext("reasonCode", false, b.nullValue())] }); })) === "ocsp/bad-input");
+  check("a pre-encoded invalidityDate whose value is NULL -> ocsp/bad-input", (await codeOfAsync(function () { return signResp({ status: { revoked: TU }, singleExtensions: [ext("invalidityDate", false, b.nullValue())] }); })) === "ocsp/bad-input");
+  check("a pre-encoded certificateIssuer whose value is NULL -> ocsp/bad-input", (await codeOfAsync(function () { return signResp({ status: { revoked: TU }, singleExtensions: [ext("certificateIssuer", true, b.nullValue())] }); })) === "ocsp/bad-input");
+  check("a pre-encoded reasonCode removeFromCRL(8) -> ocsp/bad-input", (await codeOfAsync(function () { return signResp({ status: { revoked: TU }, singleExtensions: [ext("reasonCode", false, b.enumerated(8n))] }); })) === "ocsp/bad-input");
+  check("a pre-encoded reasonCode with an undefined value -> ocsp/bad-input", (await codeOfAsync(function () { return signResp({ status: { revoked: TU }, singleExtensions: [ext("reasonCode", false, b.enumerated(7n))] }); })) === "ocsp/bad-input");
+  check("CONTROL: a pre-encoded invalidityDate that reads signs", lintErrors(await signResp({ status: { revoked: TU }, singleExtensions: [ext("invalidityDate", false, b.generalizedTime(TU))] })).length === 0);
   check("CONTROL: a pre-encoded non-critical reasonCode and a critical certificateIssuer sign and lint clean",
     lintErrors(await signResp({ status: { revoked: TU }, singleExtensions: [ext("reasonCode", false, b.enumerated(1n)), ext("certificateIssuer", true, ciValue)] })).length === 0);
   check("extendedRevoke in singleExtensions -> ocsp/bad-input", (await codeOfAsync(function () { return signResp({ status: "good", singleExtensions: [ext("ocspExtendedRevoke", false, b.nullValue())] }); })) === "ocsp/bad-input");
