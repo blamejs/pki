@@ -189,6 +189,23 @@ async function run() {
     (await codeOf(function () { return pki.smime.sign(MSG, [{ cert: "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n", key: fit.key }]); })) === "smime/bad-input");
   check("0ac. a DER certificate that does not decode -> smime/bad-input",
     (await codeOf(function () { return pki.smime.sign(MSG, [{ cert: Buffer.from([0x30, 0x03, 0x02, 0x01]), key: fit.key }]); })) === "smime/bad-input");
+  // A proxy, on the list or on a descriptor, is refused before anything trusts what its traps
+  // answer, as the toolkit's guarded snapshots refuse it; the refusal reads nothing through it.
+  var lengthReads = 0;
+  var hugeList = new Proxy([], { get: function (t, k) { if (k === "length") { lengthReads++; return 100000000; } return { cert: fit.cert, key: fit.key }; }, has: function () { return true; }, getOwnPropertyDescriptor: function () { return { value: { cert: fit.cert, key: fit.key }, enumerable: true, configurable: true, writable: true }; } });
+  check("0ad. an array proxy reporting a hundred million signers is refused without reading its length",
+    (await codeOf(function () { return pki.smime.sign(MSG, hugeList); })) === "smime/bad-input" && lengthReads === 0);
+  // A class descriptor's inherited methods are not signer fields: they are neither copied nor
+  // charged against the field cap.
+  var RichSigner = (function () {
+    function RichSigner(cert, key) { this.cert = cert; this.key = key; }
+    for (var m = 0; m < 80; m++) RichSigner.prototype["method" + m] = function () { return m; };
+    return RichSigner;
+  }());
+  check("0ae. a class descriptor with eighty inherited methods signs; methods are not fields",
+    (await codeOf(function () { return pki.smime.sign(MSG, [new RichSigner(fit.cert, fit.key)]); })) === "NO-THROW");
+  check("0af. a descriptor inheriting from a proxy is refused, as pki.cms.sign refuses it",
+    (await codeOf(function () { return pki.smime.sign(MSG, [Object.create(new Proxy({ cert: fit.cert, key: fit.key }, {}))]); })) === "smime/bad-input");
   check("0f. the second of two signers is held to the same rule, named by position",
     /signer 2/.test(String((await (async function () { try { await pki.smime.sign(MSG, [{ cert: rsa.cert, key: rsa.key }, { cert: kuEnc.cert, key: kuEnc.key }]); return ""; } catch (e) { return e.message; } })()))));
 
