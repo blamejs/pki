@@ -1427,6 +1427,27 @@ async function testPopoPrivKeyArms() {
     (await codeOf(pki.crmf.build({ certReqId: 40n, certTemplate: tpl(legacyX942),
       pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: legacyPk8,
         identifier: "device-42", recipients: [{ cert: recip.cert }], archive: true } }))) === null);
+  // The archival arm bounds the key's size no more than it proves its group: a key above the largest
+  // group the toolkit AGREES over (RFC 3526 modp18, 8192 bits) still archives, since the tests this
+  // arm runs on the parameters cost a multiplication and a modulo whatever the width.
+  var wideDh = nodeCrypto.generateKeyPairSync("dh", { group: "modp18" });
+  var wideSpki = wideDh.publicKey.export({ format: "der", type: "spki" });
+  var wideX942 = (function () {
+    var n = pki.asn1.decode(wideSpki);
+    var prm = pki.asn1.decode(n.children[0].children[1].bytes);
+    var p = pki.asn1.read.integer(prm.children[0]);
+    return pki.asn1.build.sequence([
+      pki.asn1.build.sequence([pki.asn1.build.oid("1.2.840.10046.2.1"),
+        pki.asn1.build.raw(pki.asn1.build.sequence([
+          pki.asn1.build.integer(p), pki.asn1.build.integer(pki.asn1.read.integer(prm.children[1])),
+          pki.asn1.build.integer((p - 1n) / 2n)]))]),
+      pki.asn1.build.raw(n.children[1].bytes),
+    ]);
+  }());
+  check("V7. an X9.42 key wider than any group the toolkit agrees over still archives through encryptedKey",
+    (await codeOf(pki.crmf.build({ certReqId: 41n, certTemplate: tpl(wideX942),
+      pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: wideDh.privateKey.export({ format: "der", type: "pkcs8" }),
+        identifier: "device-42", recipients: [{ cert: recip.cert }], archive: true } }))) === null);
   // The encryptedKey arm carries the caller's template too, so a PKCS#3 one is read in its own
   // right rather than passed through unexamined because it needed no conversion.
   var encMisaligned = pki.asn1.build.sequence([

@@ -454,6 +454,13 @@ async function testCorrespondsTo(keyInternal) {
     (await codeOf(keyInternal.correspondsTo(dhAPk8, x942With([b.integer(dhP), b.integer(dhG)])))) === "key/bad-input");
   check("an X9.42 public key stating a subgroup order p-1 is not a multiple of -> key/bad-input",
     (await codeOf(keyInternal.correspondsTo(dhAPk8, x942With([b.integer(dhP), b.integer(dhG), b.integer((dhP - 1n) / 2n + 2n)])))) === "key/bad-input");
+  // q dividing p-1 is necessary and not sufficient: the stated order is held to g by exponentiation,
+  // affordable once the operands are bounded. For a safe-prime group g = 2 has order (p-1)/2, so a
+  // stated q = 2 divides p-1 and is not the order of g (g^2 = 4).
+  var qTwoErr = null;
+  try { await keyInternal.correspondsTo(dhAPk8, x942With([b.integer(dhP), b.integer(dhG), b.integer(2n)])); } catch (e) { qTwoErr = e; }
+  check("an X9.42 public key stating q = 2 beside g = 2 (divides p-1, not the order of g) -> key/bad-input naming the order",
+    qTwoErr !== null && qTwoErr.code === "key/bad-input" && /subgroup order its own p and g do not have/.test(qTwoErr.message));
   check("an X9.42 public key whose cofactor is not (p-1)/q -> key/bad-input",
     (await codeOf(keyInternal.correspondsTo(dhAPk8, x942With([b.integer(dhP), b.integer(dhG), b.integer((dhP - 1n) / 2n), b.integer(3n)])))) === "key/bad-input");
   check("an X9.42 private key whose DomainParameters omit q -> key/bad-input",
@@ -472,6 +479,19 @@ async function testCorrespondsTo(keyInternal) {
     (await codeOf(keyInternal.correspondsTo(dhAPk8, x942With([b.integer(dhP), b.integer(dhG), b.integer(hugeNeg), b.integer(hugeNeg)])))) === "key/bad-input");
   check("an X9.42 public key whose validationParms.pgenCounter is negative -> key/bad-input",
     (await codeOf(keyInternal.correspondsTo(dhAPk8, x942With([b.integer(dhP), b.integer(dhG), b.integer((dhP - 1n) / 2n), b.sequence([b.bitString(Buffer.alloc(20, 7), 0), b.integer(-1n)])])))) === "key/bad-input");
+  // The private exponent is held inside the group before the runtime raises g to it: a stated x of
+  // any width is a modular exponentiation of that width, and in a central key generation the key
+  // comes from the other side. The value g^x is the same for x and for x reduced, so the pair the
+  // wide exponent "matches" is built from the reduced one.
+  var wideX = (1n << 8192n) + 3n;
+  var wideY = keyInternal.modPow(dhG, wideX % (dhP - 1n), dhP);
+  var dhAlgNode = dhSpki.children[0];
+  var widePk8 = b.sequence([b.integer(0n), b.raw(dhAlgNode.bytes), b.octetString(b.integer(wideX))]);
+  var wideYSpki = b.sequence([b.raw(dhAlgNode.bytes), b.bitString(b.integer(wideY), 0)]);
+  check("a DH private key whose exponent is wider than its modulus -> key/bad-input, before the runtime exponentiates",
+    (await codeOf(keyInternal.correspondsTo(widePk8, wideYSpki))) === "key/bad-input");
+  check("a DH private key whose exponent is zero -> key/bad-input",
+    (await codeOf(keyInternal.correspondsTo(b.sequence([b.integer(0n), b.raw(dhAlgNode.bytes), b.octetString(b.integer(0n))]), dhA.publicKey.export({ format: "der", type: "spki" })))) === "key/bad-input");
   check("CONTROL: an X9.42 public key with its cofactor 2 and validationParms pairs",
     (await keyInternal.correspondsTo(dhAPk8, x942With([b.integer(dhP), b.integer(dhG), b.integer((dhP - 1n) / 2n), b.integer(2n), b.sequence([b.bitString(Buffer.alloc(20, 7), 0), b.integer(42n)])]))) === true);
   // A composite ML-KEM key is a toolkit-defined algorithm the runtime cannot read; the pair is proven
