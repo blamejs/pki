@@ -449,18 +449,29 @@ async function testFailClosedInputs() {
   var x942NoQCert = await pki.x509.sign({ subject: "dh holder", subjectPublicKey: x942NoQ, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2030-01-01T00:00:00Z"), extensions: { keyUsage: ["keyAgreement"] } }, { name: "DH Issuer", publicKey: dhCa.spki, key: dhCa.key });
   // Proving a finite-field pair costs up to two primality proofs of the widest group the toolkit
   // agrees over, each about a second, so the DH pairs one store may link are budgeted, and the
-  // budget is decided before any pair is probed: the certificate bags here are unparsable, so the
-  // message says which check spoke.
+  // budget is decided from the two halves' algorithm identifiers before any pair is probed. The
+  // ninth pair here is another key's, which the probe would refuse for a different reason; the
+  // budget speaks first.
   var dhPk8 = dhKp.privateKey.export({ format: "der", type: "pkcs8" });
   var dhBags = [];
   for (var db = 0; db <= pki.constants.LIMITS.PKCS12_MAX_DH_PAIRS; db++) {
     var id = Buffer.from([0xd0, db]);
-    dhBags.push({ type: "key", key: dhPk8, localKeyId: id }, { type: "cert", cert: Buffer.from([0x30, 0x00]), localKeyId: id });
+    dhBags.push({ type: "key", key: db === pki.constants.LIMITS.PKCS12_MAX_DH_PAIRS ? dhOther.privateKey.export({ format: "der", type: "pkcs8" }) : dhPk8, localKeyId: id }, { type: "cert", cert: dhCert, localKeyId: id });
   }
   var dhBudgetErr = null;
   try { await pki.pkcs12.build({ safeContents: [{ bags: dhBags }] }, { password: "1234" }); } catch (e) { dhBudgetErr = e; }
-  check("more linked finite-field DH pairs than the store budget -> pkcs12/bad-input before any pair is probed",
+  check("more linked finite-field DH pairs than the store budget -> pkcs12/bad-input naming the budget, before any pair is probed",
     dhBudgetErr !== null && dhBudgetErr.code === "pkcs12/bad-input" && /links more than [0-9]+ finite-field Diffie-Hellman pairs/.test(dhBudgetErr.message));
+  // A pair is finite-field when EITHER half is: RSA keys linked to DH certificates count too.
+  var dhCertBags = [];
+  for (var dc = 0; dc <= pki.constants.LIMITS.PKCS12_MAX_DH_PAIRS; dc++) {
+    var cid2 = Buffer.from([0xd1, dc]);
+    dhCertBags.push({ type: "key", key: s.key, localKeyId: cid2 }, { type: "cert", cert: dhCert, localKeyId: cid2 });
+  }
+  var dhCertBudgetErr = null;
+  try { await pki.pkcs12.build({ safeContents: [{ bags: dhCertBags }] }, { password: "1234" }); } catch (e) { dhCertBudgetErr = e; }
+  check("more RSA keys linked to DH certificates than the store budget -> pkcs12/bad-input naming the budget",
+    dhCertBudgetErr !== null && dhCertBudgetErr.code === "pkcs12/bad-input" && /links more than [0-9]+ finite-field Diffie-Hellman pairs/.test(dhCertBudgetErr.message));
   // A group wider than any the toolkit agrees over is refused on its size in either encoding, before
   // the runtime exponentiates in it once per linked certificate.
   var wideDh = require("crypto").generateKeyPairSync("dh", { group: "modp18" });

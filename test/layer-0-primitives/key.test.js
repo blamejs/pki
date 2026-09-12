@@ -514,6 +514,13 @@ async function testCorrespondsTo(keyInternal) {
   try { await keyInternal.correspondsTo(dhAPk8, wide.publicKey.export({ format: "der", type: "spki" })); } catch (e) { wideMixErr = e; }
   check("a PKCS #3 DH public key of a group wider than the toolkit agrees over -> key/bad-input on its size, whatever the private half",
     wideMixErr !== null && wideMixErr.code === "key/bad-input" && /larger than any Diffie-Hellman group/.test(wideMixErr.message));
+  // Whether the two halves are one family is answered from their algorithm identifiers before
+  // either structure is validated: an RSA private key against a DH public key is not a pair, and
+  // nothing is proven prime to say so, whatever the DH structure states.
+  check("an RSA private key against a DH public key over a composite modulus -> false, with no structure validated",
+    (await keyInternal.correspondsTo(rsaPair.privateKey.export({ format: "der", type: "pkcs8" }), x942With([b.integer(15n), b.integer(4n), b.integer(2n)]))) === false);
+  check("a DH private key against an RSA public key -> false",
+    (await keyInternal.correspondsTo(dhAPk8, rsaPair.publicKey.export({ format: "der", type: "spki" }))) === false);
   // The group is validated in the PKCS #3 form too, not only where the X9.42 form is rewritten
   // into it: a pair over a composite modulus (p - 2 beside the modp14 g, the value recomputed in
   // it) is refused on the modulus, and a generator outside (1, p-1) on the group.
