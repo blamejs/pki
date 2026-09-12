@@ -175,6 +175,20 @@ function run() {
       var r = pki.lint.certificate(makeCert({ exts: [nonCritical] }));
       return !has(r, "lint/rfc5280/extension-criticality") && !has(r, "lint/rfc5280/unknown-critical-extension");
     }));
+  // The row is keyed by OID, never by display name: a registry override that gives the AKI OID
+  // another extension's name changes what the parser labels it, and the finding still carries the
+  // AKI clause rather than throwing out of a lookup by the wrong name.
+  check("a re-registered display name does not move or break the criticality finding", (function () {
+    var akiOid = oid.byName("authorityKeyIdentifier");
+    pki.oid.register(akiOid, "basicConstraints");
+    try {
+      var r = pki.lint.certificate(makeCert({ exts: [nonCriticalSix[0][1]] }));
+      var f = r.findings.filter(function (x) { return x.id === "lint/rfc5280/extension-criticality"; })[0];
+      return !!f && /4\.2\.1\.1/.test(f.context.citation) && f.context.oid === akiOid;
+    } finally {
+      pki.oid.register(akiOid, "authorityKeyIdentifier");
+    }
+  })());
   check("a must-be-critical extension left non-critical keeps its own row and does not draw extension-criticality",
     (function () {
       var r = pki.lint.certificate(makeCert({ exts: [nameConstraints(false)] }));
