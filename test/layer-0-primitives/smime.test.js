@@ -38,6 +38,69 @@ async function run() {
   var rsa = signing.makeSigner("rsa"), signers = [{ cert: rsa.cert, key: rsa.key }];
   var MSG = Buffer.from("Hello S/MIME\nsecond line\n");
 
+  // ---- A0: the signer certificate is fit to sign mail ----
+  // A receiving agent MUST NOT accept a signature under a certificate whose keyUsage extension
+  // asserts neither digitalSignature nor nonRepudiation (RFC 8550 sec. 4.4.2), and MUST check an
+  // extendedKeyUsage extension carries emailProtection or anyExtendedKeyUsage (sec. 4.4.4), so a
+  // message signed under such a certificate is refused by every conforming reader: the signer
+  // refuses to produce it. An absent extension is presumed to permit signing, as sec. 4.4.2 has it.
+  var ab = pki.asn1.build, aO = pki.oid.byName;
+  function ekuExt(names) { return ab.sequence([ab.oid(aO("extKeyUsage")), ab.octetString(ab.sequence(names.map(function (n) { return ab.oid(aO(n)); })))]); }
+  var kuEnc = signing.makeSigner("ec-p256", { exts: [signing.keyUsageExt("keyEncipherment")] });
+  var fitErr = null;
+  try { await pki.smime.sign(MSG, [{ cert: kuEnc.cert, key: kuEnc.key }]); } catch (e) { fitErr = e; }
+  check("0a. a signer certificate whose keyUsage asserts neither digitalSignature nor nonRepudiation -> smime/bad-signer-certificate naming the clause",
+    fitErr !== null && fitErr.code === "smime/bad-signer-certificate" && /RFC 8550 sec\. 4\.4\.2/.test(fitErr.message));
+  var ekuServer = signing.makeSigner("ec-p256", { exts: [ekuExt(["serverAuth"])] });
+  var ekuErr = null;
+  try { await pki.smime.sign(MSG, [{ cert: ekuServer.cert, key: ekuServer.key }], { form: "pkcs7-mime" }); } catch (e) { ekuErr = e; }
+  check("0b. a signer certificate whose extendedKeyUsage carries neither emailProtection nor anyExtendedKeyUsage -> smime/bad-signer-certificate, on either form",
+    ekuErr !== null && ekuErr.code === "smime/bad-signer-certificate" && /RFC 8550 sec\. 4\.4\.4/.test(ekuErr.message));
+  var kuNr = signing.makeSigner("ec-p256", { exts: [signing.keyUsageExt("nonRepudiation")] });
+  check("0c. CONTROL: a keyUsage of nonRepudiation alone signs", (await codeOf(function () { return pki.smime.sign(MSG, [{ cert: kuNr.cert, key: kuNr.key }]); })) === "NO-THROW");
+  var ekuAny = signing.makeSigner("ec-p256", { exts: [ekuExt(["serverAuth", "anyExtendedKeyUsage"])] });
+  check("0d. CONTROL: an extendedKeyUsage carrying anyExtendedKeyUsage beside another purpose signs", (await codeOf(function () { return pki.smime.sign(MSG, [{ cert: ekuAny.cert, key: ekuAny.key }]); })) === "NO-THROW");
+  var fit = signing.makeSigner("ec-p256", { exts: [signing.keyUsageExt("digitalSignature"), ekuExt(["emailProtection"])] });
+  check("0e. CONTROL: digitalSignature + emailProtection signs", (await codeOf(function () { return pki.smime.sign(MSG, [{ cert: fit.cert, key: fit.key }]); })) === "NO-THROW");
+  check("0g. a single descriptor, the list of one pki.cms.sign accepts, is held to the rule too",
+    (await codeOf(function () { return pki.smime.sign(MSG, { cert: kuEnc.cert, key: kuEnc.key }); })) === "smime/bad-signer-certificate");
+  // The descriptor is read once: a `cert` accessor that answers a fit certificate to this check
+  // and an unfit one to the signing beneath signs under the one this verb checked.
+  var certReads = 0;
+  var shifty = Object.create(null);
+  Object.defineProperty(shifty, "cert", { enumerable: true, get: function () { certReads++; return certReads <= 1 ? fit.cert : kuEnc.cert; } });
+  shifty.key = fit.key;
+  var shiftyMsg = await pki.smime.sign(MSG, [shifty]);
+  var shiftyVerdict = await pki.smime.verify(shiftyMsg);
+  check("0h. the certificate this verb checked is the certificate the message carries; the accessor was read once",
+    certReads === 1 && shiftyVerdict.valid === true && shiftyVerdict.signers[0].cert.equals(fit.cert));
+  // A descriptor whose fields are inherited signs through pki.cms.sign, so it signs here too, and
+  // is held to the same rule.
+  var inherited = Object.create({ cert: fit.cert, key: fit.key });
+  check("0i. a descriptor with inherited fields signs, as it does through pki.cms.sign",
+    (await codeOf(function () { return pki.smime.sign(MSG, [inherited]); })) === "NO-THROW");
+  check("0j. and is held to the rule through the same inheritance",
+    (await codeOf(function () { return pki.smime.sign(MSG, [Object.create({ cert: kuEnc.cert, key: kuEnc.key })]); })) === "smime/bad-signer-certificate");
+  // The checked bytes are this verb's own copy: a later descriptor's accessor that rewrites the
+  // first signer's buffer after its check changes nothing about what is signed.
+  var firstBuf = Buffer.from(fit.cert);
+  var second = Object.create(null);
+  second.key = fit.key;
+  Object.defineProperty(second, "cert", { enumerable: true, get: function () { kuEnc.cert.copy(firstBuf, 0, 0, Math.min(kuEnc.cert.length, firstBuf.length)); return fit.cert; } });
+  var rewritten = await pki.smime.sign(MSG, [{ cert: firstBuf, key: fit.key }, second]);
+  var rewrittenVerdict = await pki.smime.verify(rewritten);
+  check("0k. a buffer rewritten by a later signer's accessor after its check is not what the message carries",
+    rewrittenVerdict.valid === true && rewrittenVerdict.signers.every(function (sg) { return sg.cert.equals(fit.cert); }));
+  // An accessor that answers no certificate to this check and one to the signing beneath signs
+  // with what this verb read: nothing, which pki.cms.sign refuses as a signer without a certificate.
+  var lateCert = Object.create(null), lateReads = 0;
+  lateCert.key = kuEnc.key;
+  Object.defineProperty(lateCert, "cert", { enumerable: true, get: function () { lateReads++; return lateReads <= 1 ? null : kuEnc.cert; } });
+  check("0l. a certificate that appears only on a second read is not signed under",
+    (await codeOf(function () { return pki.smime.sign(MSG, [lateCert]); })) === "cms/bad-input" && lateReads === 1);
+  check("0f. the second of two signers is held to the same rule, named by position",
+    /signer 2/.test(String((await (async function () { try { await pki.smime.sign(MSG, [{ cert: rsa.cert, key: rsa.key }, { cert: kuEnc.cert, key: kuEnc.key }]); return ""; } catch (e) { return e.message; } })()))));
+
   // ---- A1: multipart/signed round-trip ----
   var mp = await pki.smime.sign(MSG, signers, { form: "multipart" });
   check("1. multipart/signed emits a multipart/signed Content-Type", /^Content-Type: multipart\/signed;/.test(mp.toString()));
@@ -56,7 +119,7 @@ async function run() {
     smimeAnchored.valid === true && typeof smimeAnchored.trusted === "boolean");
   // Trusted FOR THIS PURPOSE. A chain alone does not make a signer right for email -- a certificate
   // restricted to serverAuth chains to its root perfectly well and is still the wrong key to have
-  // signed a message -- so this verb asks for emailProtection (RFC 8551 sec. 4.4.4). The signer here
+  // signed a message -- so this verb asks for emailProtection (RFC 8550 sec. 4.4.4). The signer here
   // carries no emailProtection EKU, so the purpose-neutral answer and the S/MIME one differ, which
   // is what makes this vector discriminate rather than echo the chain result.
   var purposeBound = await pki.smime.verify(mp, { trustAnchors: [rsa.cert], requiredEku: ["serverAuth"] });

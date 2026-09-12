@@ -1,0 +1,14 @@
+{
+  "version": "0.7.42",
+  "date": "2026-09-12",
+  "headline": "An S/MIME message is signed only under a certificate a receiving agent accepts a mail signature from.",
+  "summary": "pki.smime.sign signed under any certificate the CMS layer could sign with, including one whose keyUsage extension asserts neither digitalSignature nor nonRepudiation and one whose extendedKeyUsage extension carries neither emailProtection nor anyExtendedKeyUsage. RFC 8550 requires a receiving agent to refuse the first and to check for the second, so every conforming reader, pki.smime.verify included, reported such a message untrusted. The signer now refuses to produce it.",
+  "sections": {
+    "Changed": [
+      "pki.smime.sign refuses, with smime/bad-signer-certificate, a signer certificate whose keyUsage extension asserts neither digitalSignature nor nonRepudiation (RFC 8550 sec. 4.4.2) or whose extendedKeyUsage extension carries neither emailProtection nor anyExtendedKeyUsage (sec. 4.4.4), naming the signer by position. A certificate that carries neither extension signs, as a reader presumes both key usage bits and any purpose for it."
+    ],
+    "Fixed": [
+      "The emailProtection requirement pki.smime.verify applies to a trusted signer is cited to RFC 8550 sec. 4.4.4, the certificate-handling specification, in the README and the reference; it was cited to RFC 8551."
+    ]
+  }
+}
