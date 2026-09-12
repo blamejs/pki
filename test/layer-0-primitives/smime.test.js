@@ -181,6 +181,14 @@ async function run() {
   var listProxy = new Proxy([{ cert: fit.cert, key: fit.key }], { get: function (t, k) { if (k === "0") throw new Error("list boom"); return t[k]; } });
   check("0z. a signer list whose trap throws -> smime/bad-input, not the trap's own error",
     (await codeOf(function () { return pki.smime.sign(MSG, listProxy); })) === "smime/bad-input");
+  // A certificate that cannot be read, PEM or DER, is smime/bad-input: the S/MIME input contract,
+  // never the PEM codec's own codes.
+  check("0aa. a PEM certificate with no block -> smime/bad-input",
+    (await codeOf(function () { return pki.smime.sign(MSG, [{ cert: "not a certificate", key: fit.key }]); })) === "smime/bad-input");
+  check("0ab. a PEM certificate under the wrong label -> smime/bad-input",
+    (await codeOf(function () { return pki.smime.sign(MSG, [{ cert: "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n", key: fit.key }]); })) === "smime/bad-input");
+  check("0ac. a DER certificate that does not decode -> smime/bad-input",
+    (await codeOf(function () { return pki.smime.sign(MSG, [{ cert: Buffer.from([0x30, 0x03, 0x02, 0x01]), key: fit.key }]); })) === "smime/bad-input");
   check("0f. the second of two signers is held to the same rule, named by position",
     /signer 2/.test(String((await (async function () { try { await pki.smime.sign(MSG, [{ cert: rsa.cert, key: rsa.key }, { cert: kuEnc.cert, key: kuEnc.key }]); return ""; } catch (e) { return e.message; } })()))));
 
