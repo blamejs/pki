@@ -13,6 +13,7 @@
 
 var nodeCrypto = require("node:crypto");
 var fakeTransport = require("./fake-transport").fakeTransport;
+var reprotect = require("./cmp-reprotect").reprotect;
 
 var PKIXCMP = "application/pkixcmp";
 // The CA trust chain, built once by init(): a self-signed CA ANCHOR (cA + keyCertSign) and a CMP-signer cert
@@ -218,7 +219,8 @@ function fakeCa(pki, legs, cfg) {
     if (leg.emptySanSigner) header.sender = { directoryName: [{ commonName: leg.emptySanSigner === "b" ? "san-ca-b" : "san-ca-a" }] };   // an EMPTY-subject signer's sender IS its SAN (RFC 9483 sec. 3.1)
     if (leg.generalInfo) header.generalInfo = leg.generalInfo;
     if (leg.senderKid) header.senderKID = leg.senderKid;   // the response names its signer by SKI -- cmp.verify resolves it by senderKID, not extraCerts position
-    if (leg.noSenderNonce) delete header.senderNonce;   // a response that omits its senderNonce (breaks the chain for a follow-up leg)
+    // leg.noSenderNonce: a response that omits its senderNonce (breaks the chain for a follow-up leg). pki.cmp.build
+    // fills one it was not given, so the built message is re-protected below with the field dropped.
     // MAC (PBMAC1) responses when cfg.macSecret is set; otherwise sign under the CMP-signer key (its cert,
     // issued by the CA anchor, is carried in extraCerts so the session chains it to trustAnchors:[caCert]).
     // leg.rotateSigner signs with the SECOND signer (a clustered CA rotating its protection cert mid-transaction);
@@ -236,6 +238,10 @@ function fakeCa(pki, legs, cfg) {
     var buildProt = cfg.macSecret ? { mac: { secret: cfg.macSecret } } : sigProt;
     var protectOpts = leg.protect === false ? { key: sigKey, cert: sigCert } : buildProt;
     return Promise.resolve(pki.cmp.build({ header: header, body: leg.body }, protectOpts)).then(function (der) {
+      if (!leg.noSenderNonce) return der;
+      if (cfg.macSecret) throw new Error("noSenderNonce is supported on signed legs only");
+      return reprotect(der, { senderNonce: null }, protectOpts);
+    }).then(function (der) {
       if (leg.protect === false) {
         // strip the protection [0] + extraCerts [1] envelope children -> an unprotected SEQUENCE { header, body }
         der = _unprotect(pki, der);

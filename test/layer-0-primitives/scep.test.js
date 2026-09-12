@@ -279,6 +279,15 @@ async function testBuildValidatesCsr() {
   var badPop = Buffer.from(F.csr);
   badPop[badPop.length - 4] ^= 0x40;   // flip a signature byte: structure intact, proof-of-possession broken
   check("PKCS#10 with a broken proof-of-possession refused", (await codeOf(pki.scep.build({ messageType: "PKCSReq", messageData: badPop, recipient: F.caCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-popo");
+  // A transactionId is a PrintableString (RFC 8894 sec. 3.2.1.1); one carrying a character outside
+  // that set is this verb's bad input, named as such, never the codec's own complaint.
+  var tidErr = null;
+  try { await pki.scep.build({ messageType: "PKCSReq", messageData: F.csr, recipient: F.caCert, signer: F.signer, transactionId: "txn_1" }); } catch (e) { tidErr = e; }
+  check("a transactionId outside the PrintableString set -> scep/bad-input naming the clause",
+    tidErr !== null && tidErr.code === "scep/bad-input" && /PrintableString/.test(tidErr.message) && /RFC 8894 sec\. 3\.2\.1\.1/.test(tidErr.message));
+  var rnErr = null;
+  try { await pki.scep.build({ messageType: "CertRep", pkiStatus: "PENDING", recipientNonce: nodeCrypto.randomBytes(16), transactionId: "txn@1", signer: { cert: F.caCert, key: F.caKey } }); } catch (e) { rnErr = e; }
+  check("the same on a CertRep's transactionId", rnErr !== null && rnErr.code === "scep/bad-input" && /PrintableString/.test(rnErr.message));
 }
 
 async function testCertRepRequiresRecipientNonce() {
