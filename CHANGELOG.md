@@ -4,6 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.28 — 2026-09-12
+
+pki.cmp.verify names a MAC algorithm it does not compute as what it is, not as a failed signature.
+
+### Added
+
+- pki.oid resolves the RFC 9481 section 6.2 identifiers aes128-GMAC, aes192-GMAC, aes256-GMAC, kmacWithSHAKE128 and kmacWithSHAKE256.
+
+### Changed
+
+- pki.cmp.verify classifies the protectionAlg before checking it. A protectionAlg naming id-PasswordBasedMac, id-DHBasedMac, or one of the bare symmetric MACs of RFC 9481 section 6.2 (hmacWithSHA1 through hmacWithSHA512, aes128/192/256-GMAC, KMACWithSHAKE128/256) returns { valid: false, protectionType: "mac", code: "cmp/unsupported-algorithm" } with a reason naming the algorithm and its section, whatever credential the caller supplied. A symmetric MAC applied without a key derivation keys the shared secret directly, with no work factor, so one captured message is an offline oracle against a low-entropy secret; PBMAC1 exists to close that, and this verifier computes PBMAC1, KEM-based MAC and signature protection only. An identifier no table knows still reaches the signature path, which section 5.1.3.3 leaves open-ended, and still fails closed there.
+- The message pki.cmp.build raises for a mac.algorithm other than pbmac1 states the profile decision (RFC 9481 section 6.1.2) rather than calling the alternative deferred.
+
 ## v0.7.27 — 2026-09-12
 
 pki lint detects a certificate, a CRL or an OCSP response and runs the matching profile.
