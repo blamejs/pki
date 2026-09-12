@@ -9,7 +9,7 @@
  *   pki oid <dotted|name>                resolve an OID <-> name
  *   pki parse <cert>                      parse an X.509 certificate to JSON
  *   pki inspect <cert>                    render a certificate as text (openssl x509 -text style)
- *   pki lint <cert> [--profile P]         lint a certificate; exit non-zero on an error finding
+ *   pki lint <file> [--profile P]         lint a certificate, CRL or OCSP response; exit non-zero on an error finding
  *              [--severity S] [--json]
  *   pki convert <file> --to der|pem       transcode a DER/PEM file between the two encodings
  *              [--label LABEL]
@@ -135,15 +135,31 @@ function cmdInspect(file) {
 
 function pad(s, n) { while (s.length < n) s += " "; return s; }
 
-// pki lint <cert> -- lint against pki.lint's profiles. Prints one line per finding and
-// exits non-zero when any error/fatal finding is present (0 when the worst is advisory).
+// The lint verb for each structure `pki lint` detects. A file holding anything else (a request, a
+// CMS message, a key) has no lint profile and is refused by the name the detector gives it.
+var LINT_VERB_FOR = { "x509": "certificate", "crl": "crl", "ocsp-response": "ocsp" };
+
+// pki lint <file> -- detect whether the file holds a certificate, a CRL or an OCSP response and
+// lint it against that structure's profiles. Prints one line per finding and exits non-zero
+// when any error/fatal finding is present (0 when the worst is advisory).
 function cmdLint(args) {
   var file = args._[0];
-  if (!file) fail("usage: pki lint <cert> [--profile <name>] [--severity <floor>] [--json]");
+  if (!file) fail("usage: pki lint <cert|crl|ocsp-response> [--profile <name>] [--severity <floor>] [--json]");
+  var input = readForLib(file);
+  // Bytes no detector recognizes (garbage, or a structure outside the detector's set) fall
+  // through to the certificate verb, whose never-throw data path reports them as a fatal
+  // lint/unparseable finding; a structure the detector DOES name but no profile covers is a
+  // config-time refusal naming it, so a request is not silently linted as a certificate.
+  var verb = "certificate", format;
+  try { format = pki.schema.detectFormat(input); } catch (_e) { format = null; }
+  if (format !== null) {
+    verb = LINT_VERB_FOR[format];
+    if (verb === undefined) return fail(file + ": holds a " + format + " structure, and pki lint covers a certificate, CRL, or OCSP response");
+  }
   var report;
   // Config-time misuse (unknown profile / bad severity) throws a typed LintError; the data
   // path never throws (malformed bytes become a fatal lint/unparseable finding).
-  try { report = pki.lint.certificate(readForLib(file), { profile: args.profile, severity: args.severity }); }
+  try { report = pki.lint[verb](input, { profile: args.profile, severity: args.severity }); }
   catch (e) { return fail(e.code + ": " + e.message); }
   if (args.json) {
     process.stdout.write(JSON.stringify(report, null, 2) + "\n");
