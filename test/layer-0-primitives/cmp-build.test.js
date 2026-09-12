@@ -430,6 +430,26 @@ async function run() {
   check("21n. a non-string messageTime -> cmp/bad-input", await codeOf(pki.cmp.build({ header: Object.assign({ messageTime: "now" }, HDR), body: irMsg.body }, SIG)) === "cmp/bad-input");
   check("21n2. an Invalid Date messageTime -> cmp/bad-input", await codeOf(pki.cmp.build({ header: Object.assign({ messageTime: new Date("nope") }, HDR), body: irMsg.body }, SIG)) === "cmp/bad-input");
   check("21n3. an Invalid Date confirmWaitTime -> cmp/bad-info-value", await codeOf(pki.cmp.build({ header: Object.assign({ generalInfo: [{ infoType: "confirmWaitTime", infoValue: new Date("nope") }] }, HDR), body: irMsg.body }, SIG)) === "cmp/bad-info-value");
+  // ---- 21o: the transaction fields a receiver requires are filled when omitted ----
+  // RFC 9483 sec. 3.5 has a receiver refuse a message without a transactionID or with a senderNonce
+  // under 128 bits, and RFC 9810 sec. 5.1.1 recommends 128 random bits for each, so a message built
+  // without them carries fresh 16-byte values and verifies; explicit values travel verbatim; an
+  // explicit senderNonce shorter than 128 bits is refused rather than sent to be refused.
+  var bare = await pki.cmp.build({ header: { sender: { directoryName: [{ commonName: "Test Signer" }] }, recipient: HDR.recipient }, body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: s.spki }, s.key) } }, SIG);
+  var bareHdr = pki.schema.cmp.parse(bare).header;
+  check("21o1. a header built without transactionID and senderNonce carries fresh 16-byte values",
+    Buffer.isBuffer(bareHdr.transactionID) && bareHdr.transactionID.length === 16 && Buffer.isBuffer(bareHdr.senderNonce) && bareHdr.senderNonce.length === 16);
+  var bare2Hdr = pki.schema.cmp.parse(await pki.cmp.build({ header: { sender: HDR.sender, recipient: HDR.recipient }, body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: s.spki }, s.key) } }, SIG)).header;
+  check("21o2. the filled values are fresh per message", !bare2Hdr.transactionID.equals(bareHdr.transactionID) && !bare2Hdr.senderNonce.equals(bareHdr.senderNonce));
+  check("21o3. the built message verifies on receipt", (await pki.cmp.verify(bare, { signerCert: s.cert })).valid === true);
+  var explicitHdr = pki.schema.cmp.parse(await pki.cmp.build({ header: Object.assign({}, HDR, { senderNonce: Buffer.alloc(16, 3) }), body: irMsg.body }, SIG)).header;
+  check("21o4. CONTROL: explicit transactionID and senderNonce travel verbatim", explicitHdr.transactionID.equals(Buffer.alloc(16, 7)) && explicitHdr.senderNonce.equals(Buffer.alloc(16, 3)));
+  var shortErr = null;
+  try { await pki.cmp.build({ header: Object.assign({}, HDR, { senderNonce: Buffer.alloc(8, 5) }), body: irMsg.body }, SIG); } catch (e) { shortErr = e; }
+  check("21o5. an explicit senderNonce under 128 bits -> cmp/bad-input naming the clause",
+    shortErr !== null && shortErr.code === "cmp/bad-input" && /RFC 9483 sec\. 3\.5/.test(shortErr.message));
+  var macHdr = pki.schema.cmp.parse(await pki.cmp.build({ header: { sender: HDR.sender, recipient: HDR.recipient }, body: irMsg.body }, { mac: { secret: "s3cret" } })).header;
+  check("21o6. the same defaults under MAC protection", Buffer.isBuffer(macHdr.transactionID) && macHdr.transactionID.length === 16 && Buffer.isBuffer(macHdr.senderNonce) && macHdr.senderNonce.length === 16);
   // A year DER cannot carry is refused in this verb's domain, not as an asn1/* error out of the codec.
   check("21n4. a year-10000 messageTime -> cmp/bad-input", await codeOf(pki.cmp.build({ header: Object.assign({ messageTime: new Date("+010000-01-01T00:00:00Z") }, HDR), body: irMsg.body }, SIG)) === "cmp/bad-input");
   check("21n5. a year-10000 confirmWaitTime -> cmp/bad-info-value", await codeOf(pki.cmp.build({ header: Object.assign({ generalInfo: [{ infoType: "confirmWaitTime", infoValue: new Date("+010000-01-01T00:00:00Z") }] }, HDR), body: irMsg.body }, SIG)) === "cmp/bad-info-value");

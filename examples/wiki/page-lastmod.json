@@ -85,7 +85,7 @@
   "lib/pki-build.js": "2026-09-12",
   "lib/rc2.js": "2026-09-01",
   "lib/rfc3339.js": "2026-09-04",
-  "lib/scep.js": "2026-09-06",
+  "lib/scep.js": "2026-09-12",
   "lib/schema-all.js": "2026-09-06",
   "lib/schema-attrcert.js": "2026-09-12",
   "lib/schema-c509.js": "2026-09-06",

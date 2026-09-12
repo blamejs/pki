@@ -21,6 +21,7 @@ var asn1 = pki.asn1;
 var b = asn1.build;
 var nodeCrypto = require("node:crypto");
 var derSurgery = require("../helpers/der-surgery");
+var reprotect = require("../helpers/cmp-reprotect").reprotect;
 var constants = require("../../lib/constants");
 
 async function codeOf(promise) {
@@ -118,12 +119,16 @@ async function run() {
   check("2b1. a protection-valid cmp1999(1) message is refused -> cmp/unsupported-version (RFC 9483 sec. 3.5)", v1.valid === false && v1.code === "cmp/unsupported-version");
   check("2b2. a cmp2000(2) message is accepted (the lower bound is 2, not a blanket reject)", (await pki.cmp.verify(await buildSig({ pvno: 2 }), { signerCert: s.cert })).valid === true);
   // senderNonce MUST be present and MUST contain at least 128 bits (16 octets). failInfo: badSenderNonce.
-  check("2b3. a message with no senderNonce is refused -> cmp/bad-sender-nonce (RFC 9483 sec. 3.5)", (await pki.cmp.verify(await buildSig({ senderNonce: null }), { signerCert: s.cert })).code === "cmp/bad-sender-nonce");
-  check("2b4. a senderNonce shorter than 128 bits is refused -> cmp/bad-sender-nonce", (await pki.cmp.verify(await buildSig({ senderNonce: Buffer.alloc(8, 5) }), { signerCert: s.cert })).code === "cmp/bad-sender-nonce");
+  // pki.cmp.build no longer produces these headers (it fills the fields and refuses a short nonce), so
+  // the messages are re-protected by hand from a conforming one.
+  var conforming = await buildSig();
+  check("2b3. a message with no senderNonce is refused -> cmp/bad-sender-nonce (RFC 9483 sec. 3.5)", (await pki.cmp.verify(await reprotect(conforming, { senderNonce: null }, SIG), { signerCert: s.cert })).code === "cmp/bad-sender-nonce");
+  check("2b4. a senderNonce shorter than 128 bits is refused -> cmp/bad-sender-nonce", (await pki.cmp.verify(await reprotect(conforming, { senderNonce: Buffer.alloc(8, 5) }, SIG), { signerCert: s.cert })).code === "cmp/bad-sender-nonce");
   // transactionID MUST be present. failInfo: badDataFormat.
-  check("2b6. a message with no transactionID is refused -> cmp/bad-transaction-id (RFC 9483 sec. 3.5)", (await pki.cmp.verify(await buildSig({ transactionID: null }), { signerCert: s.cert })).code === "cmp/bad-transaction-id");
+  check("2b6. a message with no transactionID is refused -> cmp/bad-transaction-id (RFC 9483 sec. 3.5)", (await pki.cmp.verify(await reprotect(conforming, { transactionID: null }, SIG), { signerCert: s.cert })).code === "cmp/bad-transaction-id");
   // The same header checks apply to a PBMAC1 message (uniform across protection flavors).
-  check("2b5. the senderNonce check applies to a PBMAC1 message too -> cmp/bad-sender-nonce", (await pki.cmp.verify(await buildMac("hunter2", null, { senderNonce: null }), { sharedSecret: "hunter2" })).code === "cmp/bad-sender-nonce");
+  var macConforming = await buildMac("hunter2");
+  check("2b5. the senderNonce check applies to a PBMAC1 message too -> cmp/bad-sender-nonce", (await pki.cmp.verify(await reprotect(macConforming, { senderNonce: null }, { mac: { secret: "hunter2", salt: Buffer.alloc(16, 9), iterationCount: 2048 } }), { sharedSecret: "hunter2" })).code === "cmp/bad-sender-nonce");
 
   // ===== 3. GREEN oracle cross-check: an independent PBKDF2+HMAC over the reconstructed ProtectedPart =====
   var mm = parse(macDer);
@@ -1859,8 +1864,9 @@ async function run() {
     (await pki.cmp.verify(kemNamedTx, { kem: { sharedSecret: kemEncap.ss, transactionID: KEM_TXID } })).valid === true &&
     (await pki.cmp.verify(kemNamedTx, { kem: { sharedSecret: kemEncap.ss } })).valid === false);
   // A header rule violation is reported on the KEM path too, not only on the other two.
-  var kemShortNonce = await pki.cmp.build({ header: Object.assign({}, kemHdr, { senderNonce: Buffer.alloc(8, 1) }), body: IRBODY },
+  var kemConforming = await pki.cmp.build({ header: kemHdr, body: IRBODY },
     { kem: { key: kemKey.key, ciphertext: kemEncap.ct, kemAlgorithm: kemEncap.algorithm } });
+  var kemShortNonce = await reprotect(kemConforming, { senderNonce: Buffer.alloc(8, 1) }, { kem: { sharedSecret: kemEncap.ss, transactionID: kemHdr.transactionID } });
   var kemSn = await pki.cmp.verify(kemShortNonce, { kem: { sharedSecret: kemEncap.ss } });
   check("24w. the receiving-side header rules apply to a KEM-protected message",
     kemSn.valid === false && kemSn.code === "cmp/bad-sender-nonce");
@@ -1971,9 +1977,15 @@ async function run() {
   check("24ac2. a message spec with no header at all is refused before the derivation",
     (await codeOf(pki.cmp.build({ body: IRBODY },
       { kem: { key: kemKey.key, ciphertext: kemEncap.ct, kemAlgorithm: kemEncap.algorithm } }))) === "cmp/bad-input");
-  check("24ac. a message with no transaction identifier and no named one is refused",
-    (await codeOf(pki.cmp.build({ header: { sender: { directoryName: "CN=c" }, recipient: { directoryName: "CN=CA" } }, body: IRBODY },
-      { kem: { key: kemKey.key, ciphertext: kemEncap.ct, kemAlgorithm: kemEncap.algorithm } }))) === "cmp/bad-input");
+  // RFC 9810 sec. 5.1.1: a client MUST populate the transactionID when the message carries a
+  // KemCiphertextInfo; a header given none is filled with a fresh one, and the derivation binds
+  // to that value, which the receiver reads off the header.
+  var kemFilled = await pki.cmp.build({ header: { sender: { directoryName: "CN=c" }, recipient: { directoryName: "CN=CA" } }, body: IRBODY },
+    { kem: { key: kemKey.key, ciphertext: kemEncap.ct, kemAlgorithm: kemEncap.algorithm } });
+  var kemFilledHdr = pki.schema.cmp.parse(kemFilled).header;
+  check("24ac. a KEM message given no transaction identifier is filled with a fresh one and the derivation binds to it",
+    Buffer.isBuffer(kemFilledHdr.transactionID) && kemFilledHdr.transactionID.length === 16 &&
+    (await pki.cmp.verify(kemFilled, { kem: { sharedSecret: kemEncap.ss } })).valid === true);
 
   // A STRING secret is converted to bytes once, at the door, and that copy is recorded in the same
   // wipe list as the byte form -- so it is cleared on every path out rather than left behind by the

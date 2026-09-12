@@ -4,6 +4,18 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.43 — 2026-09-12
+
+A CMP message carries the transaction fields a receiver requires.
+
+### Changed
+
+- pki.cmp.build fills a header transactionID or senderNonce the caller omits with 16 fresh random bytes, under every protection flavor, so a message built without them verifies on receipt; a KEM-protected message given no transactionID binds its derivation to the filled one. A senderNonce given under 128 bits is refused with cmp/bad-input. Explicit values travel verbatim, and a recipNonce is never filled.
+
+### Fixed
+
+- pki.scep.build refuses a transactionId carrying a character outside the PrintableString set (RFC 8894 sec. 3.2.1.1) with scep/bad-input naming the rule, where the codec's own asn1/bad-printable-string surfaced.
+
 ## v0.7.42 — 2026-09-12
 
 An S/MIME message is signed only under a certificate a receiving agent accepts a mail signature from.

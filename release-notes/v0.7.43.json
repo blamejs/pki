@@ -1,0 +1,14 @@
+{
+  "version": "0.7.43",
+  "date": "2026-09-12",
+  "headline": "A CMP message carries the transaction fields a receiver requires.",
+  "summary": "pki.cmp.build sent a PKIMessage without a transactionID or a senderNonce when the caller gave none, and with a senderNonce of any length the caller gave, while a receiver following RFC 9483 sec. 3.5 (pki.cmp.verify included) refuses each of those on receipt. The builder now fills both fields with 128 fresh random bits, as RFC 9810 sec. 5.1.1 recommends, and refuses a senderNonce shorter than that.",
+  "sections": {
+    "Changed": [
+      "pki.cmp.build fills a header transactionID or senderNonce the caller omits with 16 fresh random bytes, under every protection flavor, so a message built without them verifies on receipt; a KEM-protected message given no transactionID binds its derivation to the filled one. A senderNonce given under 128 bits is refused with cmp/bad-input. Explicit values travel verbatim, and a recipNonce is never filled."
+    ],
+    "Fixed": [
+      "pki.scep.build refuses a transactionId carrying a character outside the PrintableString set (RFC 8894 sec. 3.2.1.1) with scep/bad-input naming the rule, where the codec's own asn1/bad-printable-string surfaced."
+    ]
+  }
+}
