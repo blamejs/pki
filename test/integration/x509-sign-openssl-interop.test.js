@@ -19,6 +19,8 @@ var ctx = require("./_interop-ctx");
 var pki = ctx.pki;
 var check = ctx.check;
 var signing = require("../helpers/signing");
+var pkixMod = require("../../lib/schema-pkix");
+var oidMod = require("../../lib/oid");
 var os = require("node:os");
 var fs = require("node:fs");
 var path = require("node:path");
@@ -191,6 +193,38 @@ async function run() {
     check("openssl x509 -text renders Policy Mappings and the Issuer Alternative Name",
       /Policy Mappings/i.test(polT.stdout) && /Issuer Alternative Name/i.test(polT.stdout) &&
       /DNS:issuer\.interop\.example/.test(polT.stdout));
+
+    // RFC 5280 sec. 4.2.2.2 / sec. 4.2.1.8 and RFC 6960 sec. 4.2.2.2.1. OpenSSL decodes the access
+    // method and location, the attribute type and its value, and names the no-check marker, so it
+    // reads the structures rather than only reporting that the extensions are present.
+    var siaKp = signing.makeSigner("ec-p256");
+    var siaPem = await pki.x509.sign({
+      subject: [{ commonName: "sia.interop.example" }], subjectPublicKey: siaKp.spki, notBefore: NB, notAfter: NA,
+      extensions: {
+        keyUsage: ["digitalSignature"],
+        subjectInfoAccess: [{ accessMethod: "id-ad-caRepository", accessLocation: { uniformResourceIdentifier: "https://ca.interop.example/repo" } }],
+        subjectDirectoryAttributes: [{ type: "1.3.6.1.4.1.99999.1", values: [pki.asn1.build.utf8("DE")] }],
+        ocspNoCheck: true,
+      },
+    }, { key: siaKp.key }, { pem: true });
+    var siaFile = path.join(dir, "sia.pem"); fs.writeFileSync(siaFile, siaPem);
+    var siaT = ctx.runOpenssl(["x509", "-in", siaFile, "-noout", "-text"], { allowNonZero: true });
+    check("openssl x509 -text parses the certificate carrying the access and marker extensions", siaT.code === 0);
+    check("openssl decodes the subject information access method and its location",
+      (/Subject Information Access/i.test(siaT.stdout) || siaT.stdout.indexOf("1.3.6.1.5.5.7.1.11") >= 0) &&
+      /CA Repository/i.test(siaT.stdout) && /URI:https:\/\/ca\.interop\.example\/repo/.test(siaT.stdout));
+    // Whether openssl prints a private attribute's OID or renders the Attribute opaquely depends on
+    // the release, so the assertion asks only that the extension is there and that the value it
+    // carries survived. The toolkit's own reader below is the oracle for the type.
+    check("openssl shows the subject directory attributes extension and the value it carries",
+      (/Subject Directory Attributes/i.test(siaT.stdout) || siaT.stdout.indexOf("2.5.29.9") >= 0) &&
+      /\bDE\b/.test(siaT.stdout));
+    var sdaBack = pki.schema.x509.parse(pki.schema.x509.pemDecode(siaPem, "CERTIFICATE"))
+      .extensions.filter(function (e) { return (e.name || e.oid) === "subjectDirectoryAttributes"; })[0];
+    check("the attribute type round-trips through the toolkit's own reader",
+      pkixMod.certExtensionDecoders(pkixMod.makeNS("path", pki.errors.PathError, oidMod)).byOid[oidMod.byName("subjectDirectoryAttributes")](sdaBack.value)[0].type === "1.3.6.1.4.1.99999.1");
+    check("openssl shows the OCSP no-check marker",
+      /OCSP No ?Check/i.test(siaT.stdout) || siaT.stdout.indexOf("1.3.6.1.5.5.7.48.1.5") >= 0);
 
     // The Active Directory Certificate Services enrollment extensions. OpenSSL names the certificate
     // template and prints the rest by OID, so it confirms the extensions parse and carry the bytes;

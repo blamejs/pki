@@ -1286,6 +1286,86 @@ async function testQcStatementsSpec() {
 // policyConstraints (RFC 5280 sec. 4.2.1.11), inhibitAnyPolicy (sec. 4.2.1.14) and policyMappings
 // (sec. 4.2.1.5) are what sec. 6.1 path validation acts on, and issuerAltName (sec. 4.2.1.7) is the
 // GeneralNames sibling of subjectAltName. All four were reachable only as hand-encoded DER.
+// subjectInfoAccess (RFC 5280 sec. 4.2.2.2), subjectDirectoryAttributes (sec. 4.2.1.8) and
+// ocspNoCheck (RFC 6960 sec. 4.2.2.2.1). Each ships with the reader that decodes it, so every vector
+// round-trips through the same OID-keyed table pki.schema.x509.parse uses.
+async function testSiaSdaNoCheckSpec() {
+  var s = makeSigner("ed25519");
+  function leaf(exts) {
+    return { subject: "sia.example", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: exts };
+  }
+  function extOf(der, name) {
+    return pki.schema.x509.parse(der).extensions.filter(function (e) { return (e.name || e.oid) === name; })[0];
+  }
+  function noLintErrors(der) {
+    return pki.lint.certificate(der).findings.filter(function (f) { return f.severity === "error"; }).length === 0;
+  }
+
+  // Sec. 4.2.2.2 shares sec. 4.2.2.1's AccessDescription syntax, so the spec shape matches AIA's.
+  var sia = await pki.x509.sign(leaf({
+    subjectInfoAccess: [
+      { accessMethod: "id-ad-caRepository", accessLocation: { uniformResourceIdentifier: "https://ca.example/repo" } },
+      { accessMethod: "id-ad-timeStamping", accessLocation: { uniformResourceIdentifier: "https://ts.example" } },
+    ],
+  }), { key: s.key });
+  var siaExt = extOf(sia, "subjectInfoAccess");
+  check("subjectInfoAccess is emitted from the spec", siaExt !== undefined);
+  check("subjectInfoAccess is non-critical, as sec. 4.2.2.2 requires", siaExt !== undefined && !siaExt.critical);
+  check("both access descriptions are emitted", siaExt !== undefined && asn1.decode(siaExt.value).children.length === 2);
+  check("a certificate carrying a subjectInfoAccess lints clean", noLintErrors(sia));
+  check("an empty subjectInfoAccess -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ subjectInfoAccess: [] }), { key: s.key })) === "x509/bad-input");
+  check("a subjectInfoAccess entry missing its accessLocation -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ subjectInfoAccess: [{ accessMethod: "id-ad-caRepository" }] }), { key: s.key })) === "x509/bad-input");
+
+  // Sec. 4.2.1.8: SEQUENCE SIZE (1..MAX) OF Attribute.
+  var sda = await pki.x509.sign(leaf({
+    subjectDirectoryAttributes: [{ type: "1.3.6.1.4.1.99999.1", values: [asn1.build.utf8("DE")] }],
+  }), { key: s.key });
+  var sdaExt = extOf(sda, "subjectDirectoryAttributes");
+  check("subjectDirectoryAttributes is emitted from the spec", sdaExt !== undefined);
+  check("subjectDirectoryAttributes is non-critical, as sec. 4.2.1.8 requires", sdaExt !== undefined && !sdaExt.critical);
+  check("a certificate carrying subjectDirectoryAttributes lints clean", noLintErrors(sda));
+  check("an empty subjectDirectoryAttributes -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ subjectDirectoryAttributes: [] }), { key: s.key })) === "x509/bad-input");
+  check("an attribute with no values -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ subjectDirectoryAttributes: [{ type: "1.3.6.1.4.1.99999.1", values: [] }] }), { key: s.key })) === "x509/bad-input");
+  // The reader caps an Attribute's values, so the writer is held to the same ceiling: otherwise the
+  // signer emits a certificate its own decoder refuses.
+  var maxVals = require("../../lib/constants").LIMITS.ATTRIBUTE_MAX_VALUES;
+  function nulls(n) { var a = []; for (var i = 0; i < n; i++) { a.push(asn1.build.nullValue()); } return a; }
+  check("an attribute at the value ceiling is accepted",
+    Buffer.isBuffer(await pki.x509.sign(leaf({ subjectDirectoryAttributes: [{ type: "1.2.3", values: nulls(maxVals) }] }), { key: s.key })));
+  check("an attribute above the value ceiling -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ subjectDirectoryAttributes: [{ type: "1.2.3", values: nulls(maxVals + 1) }] }), { key: s.key })) === "x509/bad-input");
+  check("an unknown key on an attribute -> x509/bad-input",
+    await codeOf(pki.x509.sign(leaf({ subjectDirectoryAttributes: [{ type: "1.3.6.1.4.1.99999.1", values: [asn1.build.utf8("x")], oid: "1.2.3" }] }), { key: s.key })) === "x509/bad-input");
+
+  // RFC 6960 sec. 4.2.2.2.1: the responder-certificate marker, whose value SHALL be NULL.
+  var nc = await pki.x509.sign(leaf({ ocspNoCheck: true }), { key: s.key });
+  var ncExt = extOf(nc, "ocspNoCheck");
+  check("ocspNoCheck is emitted from the spec", ncExt !== undefined);
+  check("the ocspNoCheck value is ASN.1 NULL", ncExt !== undefined && Buffer.from(ncExt.value).equals(Buffer.from([0x05, 0x00])));
+  check("ocspNoCheck is non-critical, which sec. 4.2.2.2.1 says it should be", ncExt !== undefined && !ncExt.critical);
+  check("a certificate carrying ocspNoCheck lints clean", noLintErrors(nc));
+  check("ocspNoCheck is a flag, so false is refused",
+    await codeOf(pki.x509.sign(leaf({ ocspNoCheck: false }), { key: s.key })) === "x509/bad-input");
+
+  // Each emitted value is read back by the very decoder that ships with it, which is what makes this
+  // one structure driving both directions rather than two that happen to agree today.
+  var pkix = require("../../lib/schema-pkix");
+  var oidReg = require("../../lib/oid");
+  var byOid = pkix.certExtensionDecoders(pkix.makeNS("path", pki.errors.PathError, oidReg)).byOid;
+  var back = byOid[oidReg.byName("subjectInfoAccess")](siaExt.value);
+  check("the emitted subjectInfoAccess decodes to the access methods written",
+    back.length === 2 && back[0].accessMethod === oidReg.byName("id-ad-caRepository") &&
+    back[1].accessMethod === oidReg.byName("id-ad-timeStamping"));
+  check("the emitted subjectDirectoryAttributes decodes to the attribute written",
+    byOid[oidReg.byName("subjectDirectoryAttributes")](sdaExt.value)[0].type === "1.3.6.1.4.1.99999.1");
+  check("the emitted ocspNoCheck decodes under its own reader",
+    byOid[oidReg.byName("ocspNoCheck")](ncExt.value) === null);
+}
+
 // The Active Directory Certificate Services enrollment extensions. These are proprietary, so the
 // toolkit's own reader is the contract the builder is held to: every vector round-trips through
 // pki.schema.x509.parse, which is what "one structure drives both directions" means here.
@@ -2083,6 +2163,7 @@ async function main() {
   await testPrecertificateSpec();
   await testPolicyQualifiersAndAkiSpec();
   await testMicrosoftEnrollmentSpec();
+  await testSiaSdaNoCheckSpec();
   console.log("CHECKS " + helpers.getChecks());
 }
 

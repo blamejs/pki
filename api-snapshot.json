@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.7.22",
+  "packageVersion": "0.7.23",
   "surface": {
     "C": {
       "kind": "object",
@@ -472,6 +472,9 @@
                 "nameConstraints": {
                   "kind": "string"
                 },
+                "ocspNoCheck": {
+                  "kind": "string"
+                },
                 "policyConstraints": {
                   "kind": "string"
                 },
@@ -485,6 +488,9 @@
                   "kind": "string"
                 },
                 "subjectAltName": {
+                  "kind": "string"
+                },
+                "subjectDirectoryAttributes": {
                   "kind": "string"
                 },
                 "subjectInfoAccess": {
@@ -1823,6 +1829,9 @@
                 "nameConstraints": {
                   "kind": "string"
                 },
+                "ocspNoCheck": {
+                  "kind": "string"
+                },
                 "policyConstraints": {
                   "kind": "string"
                 },
@@ -1836,6 +1845,9 @@
                   "kind": "string"
                 },
                 "subjectAltName": {
+                  "kind": "string"
+                },
+                "subjectDirectoryAttributes": {
                   "kind": "string"
                 },
                 "subjectInfoAccess": {
@@ -2558,7 +2570,7 @@
         },
         "renderedExtensions": {
           "kind": "array",
-          "length": 23
+          "length": 26
         }
       }
     },
