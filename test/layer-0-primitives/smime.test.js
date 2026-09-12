@@ -112,6 +112,29 @@ async function run() {
   try { await pki.smime.sign(MSG, new Array(100000000)); } catch (e) { sparseErr = e; }
   check("0n. a sparse signer list is refused at its first missing slot, before traversal",
     sparseErr !== null && sparseErr.code === "smime/bad-input" && /the signer list\[0\] is missing/.test(sparseErr.message));
+  // An accessor that throws is a caller fault reported in this verb's own class, never the
+  // accessor's raw exception.
+  var throwing = Object.create(null);
+  throwing.key = fit.key;
+  Object.defineProperty(throwing, "cert", { enumerable: true, get: function () { throw new Error("boom"); } });
+  check("0o. a certificate accessor that throws -> smime/bad-input, not the accessor's own error",
+    (await codeOf(function () { return pki.smime.sign(MSG, [throwing]); })) === "smime/bad-input");
+  // A descriptor whose fields are accessors over private state answers to its own receiver: the
+  // snapshot reads every field with the descriptor as `this`, so a class instance signs as it does
+  // through pki.cms.sign.
+  var PrivateSigner = (function () {
+    var store = new WeakMap();
+    function PrivateSigner(cert, key) { store.set(this, { cert: cert, key: key }); }
+    Object.defineProperty(PrivateSigner.prototype, "cert", { get: function () { return store.get(this).cert; } });
+    Object.defineProperty(PrivateSigner.prototype, "key", { get: function () { return store.get(this).key; } });
+    return PrivateSigner;
+  }());
+  check("0p. a descriptor whose fields are accessors over private state signs (read with its own receiver)",
+    (await codeOf(function () { return pki.smime.sign(MSG, [new PrivateSigner(fit.cert, fit.key)]); })) === "NO-THROW");
+  check("0q. and is held to the rule",
+    (await codeOf(function () { return pki.smime.sign(MSG, [new PrivateSigner(kuEnc.cert, kuEnc.key)]); })) === "smime/bad-signer-certificate");
+  check("0r. a descriptor whose own-keys trap throws -> smime/bad-input, not the trap's own error",
+    (await codeOf(function () { return pki.smime.sign(MSG, [new Proxy({ cert: fit.cert, key: fit.key }, { ownKeys: function () { throw new Error("ownKeys boom"); } })]); })) === "smime/bad-input");
   check("0f. the second of two signers is held to the same rule, named by position",
     /signer 2/.test(String((await (async function () { try { await pki.smime.sign(MSG, [{ cert: rsa.cert, key: rsa.key }, { cert: kuEnc.cert, key: kuEnc.key }]); return ""; } catch (e) { return e.message; } })()))));
 
