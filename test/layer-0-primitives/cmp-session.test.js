@@ -2558,6 +2558,9 @@ async function run() {
   // to hold the answer to. The issuer is required with it, and an unbound request is refused here
   // rather than answered with a CRL from a CA nobody named.
   check("172a6. a crlUpdate naming a dpn and no issuer -> cmp/bad-input", await codeOf(mk([H.genpOf("crls", crlsValue)]).session.info({ crlUpdate: { dpn: { fullName: [{ uri: "http://ca.example/ca.crl" }] } } })) === "cmp/bad-input");
+  // The supplied thisUpdate is written into the request as a DER time, so a year DER cannot carry is
+  // refused in this verb's domain before the codec sees it.
+  check("172a6b. a year-10000 crlUpdate.thisUpdate -> cmp/bad-input", await codeOf(mk([H.genpOf("crls", crlsValue)]).session.info({ crlUpdate: { issuer: CRL_ISSUER, thisUpdate: new Date("+010000-01-01T00:00:00Z") } })) === "cmp/bad-input");
   // A CRL that DOES say which point it speaks for is held to the one that was asked for. sec. 4.3.4
   // points at exactly that field for where a distribution point name comes from, and sec. 5.2.5
   // pins the comparison to the identical encoding.

@@ -48,7 +48,7 @@ function makePackFixture(files, gitignore) {
   // to whatever repository encloses the temp directory, and the guard then answers about THIS repo's
   // ignore rules instead of the fixture's. A silent failure here surfaces later as the guard's own
   // verdict being wrong, which reads as a real gate failure -- so name the setup fault instead.
-  var init = cp.spawnSync("git", ["init", "-q"], { cwd: dir, encoding: "utf8" });
+  var init = cp.spawnSync("git", ["init", "-q"], { cwd: dir, encoding: "utf8", env: withoutGlobalGitConfig(Object.assign({}, process.env), dir) });
   if (init.error || init.status !== 0) {
     throw new Error("pack-guard fixture setup failed: `git init` in " + dir + " exited "
       + (init.error ? String(init.error.message) : String(init.status))
@@ -100,6 +100,16 @@ function guardEnv() {
     if (k.toLowerCase() !== "npm_config_cache") env[k] = process.env[k];
   });
   env.npm_config_cache = NPM_CACHE;
+  return withoutGlobalGitConfig(env, NPM_CACHE);
+}
+// A fixture repository answers for its own configuration alone. The developer's global git config
+// would otherwise reach into every git call made in or about it: a `commit.gpgSign` that needs a
+// key the test runner does not hold fails the fixture commit, and a `core.excludesFile` hides a
+// fixture file from `check-ignore`. Git reads no global file when GIT_CONFIG_GLOBAL names one that
+// does not exist, and no system file under GIT_CONFIG_NOSYSTEM.
+function withoutGlobalGitConfig(env, dir) {
+  env.GIT_CONFIG_GLOBAL = path.join(dir, "no-global-gitconfig");
+  env.GIT_CONFIG_NOSYSTEM = "1";
   return env;
 }
 function toolAvailable(cmd) {
@@ -271,6 +281,50 @@ function run() {
   testSbomEmptyManifestStillEmits();
   testSsdfAttestationRequiresCommit();
   testSpellingCanarySweepsARecycledPid();
+  if (toolAvailable("git")) testWikiLastmodDatesEveryFileOnOneCalendar();
+  else console.log("  SKIP the wiki-lastmod group: git cannot run in this environment");
+}
+
+// ---- wiki lastmod map: one calendar for a committed file and a modified one ------------
+//
+// The map dates a committed file from its commit and a modified file from today, and the release
+// itself is dated in UTC. A commit made in the evening west of Greenwich sits on one calendar day
+// by its committer offset and on the next by UTC; dating it by the offset put a file committed
+// at 17:43 -07:00 on the 11th beside a file modified minutes later on the 12th, and a later cut
+// that touched the first file moved its date backward. Both dates come from the UTC calendar.
+function testWikiLastmodDatesEveryFileOnOneCalendar() {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "pki-wiki-lastmod-"));
+  var env = withoutGlobalGitConfig(Object.assign({}, process.env, {
+    GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.invalid",
+    GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.invalid",
+    GIT_AUTHOR_DATE: "2026-09-11T17:43:02-07:00", GIT_COMMITTER_DATE: "2026-09-11T17:43:02-07:00",
+  }), dir);
+  function git(args) {
+    var rv = cp.spawnSync("git", args, { cwd: dir, encoding: "utf8", env: env });
+    if (rv.error || rv.status !== 0) throw new Error("wiki-lastmod fixture: git " + args.join(" ") + " failed: " + (rv.error ? rv.error.message : rv.stderr));
+  }
+  try {
+    git(["init", "-q"]);
+    fs.mkdirSync(path.join(dir, "lib"));
+    fs.mkdirSync(path.join(dir, "examples", "wiki"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "lib", "committed.js"), "module.exports = 1;\n");
+    git(["add", "lib/committed.js"]);
+    git(["commit", "-q", "-m", "one"]);
+    fs.writeFileSync(path.join(dir, "lib", "modified.js"), "module.exports = 2;\n");
+    var run = cp.spawnSync(process.execPath, [path.join(ROOT, "scripts", "gen-wiki-lastmod.js"), dir], { cwd: ROOT, encoding: "utf8", env: env });
+    var out = path.join(dir, "examples", "wiki", "page-lastmod.json");
+    check("the lastmod generator accepts a repository root, exits clean and writes that root's map",
+          run.status === 0 && fs.existsSync(out));
+    var map = fs.existsSync(out) ? parseJson(fs.readFileSync(out, "utf8")) : {};
+    var todayUtc = new Date().toISOString().slice(0, 10);
+    check("a file committed at 17:43 -07:00 on the 11th is dated the 12th, the UTC day the release is dated on",
+          map["lib/committed.js"] === "2026-09-12");
+    check("a file modified in the working tree is dated today in UTC", map["lib/modified.js"] === todayUtc);
+    check("the committed date never exceeds the modified one on the shared calendar",
+          typeof map["lib/committed.js"] === "string" && map["lib/committed.js"] <= map["lib/modified.js"]);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 // ---- spelling gate: a probe left under a pid the OS later reassigns -------------

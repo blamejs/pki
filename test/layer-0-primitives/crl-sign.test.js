@@ -862,6 +862,13 @@ async function testFailClosed() {
   check("empty issuer DN -> crl/bad-issuer", await codeOf(pki.crl.sign({ issuer: [], thisUpdate: TU, nextUpdate: NU }, { publicKey: s.spki, key: s.key })) === "crl/bad-issuer");
   check("missing thisUpdate -> crl/bad-input", await codeOf(pki.crl.sign({ nextUpdate: NU }, issuerOf(s))) === "crl/bad-input");
   check("nextUpdate before thisUpdate -> crl/bad-input", await codeOf(pki.crl.sign({ thisUpdate: NU, nextUpdate: TU }, issuerOf(s))) === "crl/bad-input");
+  // A year DER cannot carry is refused in this verb's domain, not as an asn1/* error out of the codec,
+  // on each of the three routes a Date is written: the list times, an entry's revocationDate, and
+  // an entry's invalidityDate.
+  var Y10K = new Date("+010000-01-01T00:00:00Z");
+  check("year-10000 thisUpdate -> crl/bad-input", await codeOf(pki.crl.sign({ thisUpdate: Y10K, nextUpdate: new Date("+010000-02-01T00:00:00Z") }, issuerOf(s))) === "crl/bad-input");
+  check("year-10000 revocationDate -> crl/bad-input", await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 5n, revocationDate: Y10K }] }, issuerOf(s))) === "crl/bad-input");
+  check("year-10000 invalidityDate -> crl/bad-input", await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 5n, revocationDate: RD, invalidityDate: Y10K }] }, issuerOf(s))) === "crl/bad-input");
   check("revoked entry without a serialNumber -> crl/bad-input", await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ revocationDate: RD }] }, issuerOf(s))) === "crl/bad-input");
   check("unknown CRL extension key -> crl/bad-input", await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: { bogus: 1 } }, issuerOf(s))) === "crl/bad-input");
   // RFC 5280 sec. 5.1.2.6 -- a CRL must not list the same serial number twice.

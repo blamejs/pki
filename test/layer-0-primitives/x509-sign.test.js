@@ -227,6 +227,9 @@ async function testValidityEncoding() {
 
   // Invalid Date -> throws.
   check("Invalid Date notAfter -> throws", await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: new Date("nonsense") }, { key: s.key })) !== null);
+  // A year DER cannot carry is refused in this verb's domain, not as an asn1/* error out of the codec.
+  check("year-10000 notAfter -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: new Date("+010000-01-01T00:00:00Z") }, { key: s.key })) === "x509/bad-input");
+  check("year-10000 notBefore -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: new Date("+010000-01-01T00:00:00Z"), notAfter: new Date("+010001-01-01T00:00:00Z") }, { key: s.key })) === "x509/bad-input");
   // notBefore after notAfter -> config-time reject.
   check("notBefore after notAfter -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NA, notAfter: NB }, { key: s.key })) === "x509/bad-input");
 }

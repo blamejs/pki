@@ -247,6 +247,8 @@ async function testBadInput() {
   await rejects("a null messageImprint", function () { return pki.tsp.sign(null, tsa, { policy: "1.2.3", serialNumber: 1 }); }, "tsp/unsupported-algorithm");
   await rejects("an invalid genTime Date", function () { return pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 1, genTime: new Date("not a date") }); }, "tsp/bad-input");
   await rejects("a non-Date genTime", function () { return pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 1, genTime: "2026-01-01" }); }, "tsp/bad-input");
+  // A year DER cannot carry is refused in this verb's domain, not as an asn1/* error out of the codec.
+  await rejects("a year-10000 genTime", function () { return pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 1, genTime: new Date("+010000-01-01T00:00:00Z") }); }, "tsp/bad-input");
   // A caller-authored INTEGER goes through the shared coercion, so a value that is not one is a
   // typed tsp/bad-input rather than a raw SyntaxError or RangeError from BigInt() -- an untyped
   // fault out of a public verb, which a caller handling tsp/* codes cannot catch.

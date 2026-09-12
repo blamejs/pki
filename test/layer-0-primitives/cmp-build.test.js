@@ -430,6 +430,9 @@ async function run() {
   check("21n. a non-string messageTime -> cmp/bad-input", await codeOf(pki.cmp.build({ header: Object.assign({ messageTime: "now" }, HDR), body: irMsg.body }, SIG)) === "cmp/bad-input");
   check("21n2. an Invalid Date messageTime -> cmp/bad-input", await codeOf(pki.cmp.build({ header: Object.assign({ messageTime: new Date("nope") }, HDR), body: irMsg.body }, SIG)) === "cmp/bad-input");
   check("21n3. an Invalid Date confirmWaitTime -> cmp/bad-info-value", await codeOf(pki.cmp.build({ header: Object.assign({ generalInfo: [{ infoType: "confirmWaitTime", infoValue: new Date("nope") }] }, HDR), body: irMsg.body }, SIG)) === "cmp/bad-info-value");
+  // A year DER cannot carry is refused in this verb's domain, not as an asn1/* error out of the codec.
+  check("21n4. a year-10000 messageTime -> cmp/bad-input", await codeOf(pki.cmp.build({ header: Object.assign({ messageTime: new Date("+010000-01-01T00:00:00Z") }, HDR), body: irMsg.body }, SIG)) === "cmp/bad-input");
+  check("21n5. a year-10000 confirmWaitTime -> cmp/bad-info-value", await codeOf(pki.cmp.build({ header: Object.assign({ generalInfo: [{ infoType: "confirmWaitTime", infoValue: new Date("+010000-01-01T00:00:00Z") }] }, HDR), body: irMsg.body }, SIG)) === "cmp/bad-info-value");
   check("21o. an empty freeText array -> cmp/bad-freetext", await codeOf(pki.cmp.build({ header: Object.assign({ freeText: [] }, HDR), body: irMsg.body }, SIG)) === "cmp/bad-freetext");
   check("21p. a non-string freeText entry -> cmp/bad-freetext", await codeOf(pki.cmp.build({ header: Object.assign({ freeText: [5] }, HDR), body: irMsg.body }, SIG)) === "cmp/bad-freetext");
   check("21q. an unknown generalInfo infoType -> cmp/bad-name", await codeOf(pki.cmp.build({ header: Object.assign({ generalInfo: [{ infoType: "not-a-real-oid-name" }] }, HDR), body: irMsg.body }, SIG)) === "cmp/bad-name");

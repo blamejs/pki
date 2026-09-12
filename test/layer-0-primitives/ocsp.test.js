@@ -912,6 +912,77 @@ async function run() {
       { responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: "good" }] },
       { cert: w.issuerCertDer, key: w.issuerKeyPkcs8 }, new ResponseBag())));
 
+  // ---- RFC 6960 sec. 4.4.2 / 4.4.4 -- the SingleResponse extensions, read and written ----
+  // Archive cutoff and CRL references are singleExtensions. Each ships with its reader and its
+  // writer, so a response this verb emits is one pki.schema.ocsp.parseResponse reads back by name.
+  var cutoff = new Date("2020-06-01T00:00:00Z"), crlTime = new Date("2027-05-01T12:00:00Z");
+  function signSingle(singleExtensions) {
+    return pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: "good",
+      thisUpdate: TU, nextUpdate: NU, singleExtensions: singleExtensions }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 });
+  }
+  function srExts(der) { return pki.schema.ocsp.parseResponse(der).basicResponse.responses[0].singleExtensions || []; }
+  function srExt(der, name) { return srExts(der).filter(function (e) { return (e.name || e.oid) === name; })[0]; }
+
+  var withBoth = await signSingle({ archiveCutoff: cutoff, crlReferences: { crlUrl: "https://crl.example/ca.crl", crlNum: 42, crlTime: crlTime } });
+  var ac = srExt(withBoth, "ocspArchiveCutoff");
+  check("archiveCutoff is emitted as a singleExtension from the object form (sec. 4.4.4)", !!ac);
+  check("archiveCutoff is non-critical", !!ac && ac.critical !== true);
+  check("the parser reads archiveCutoff back as the Date written",
+    !!ac && ac.archiveCutoff instanceof Date && ac.archiveCutoff.getTime() === cutoff.getTime());
+  var cr = srExt(withBoth, "ocspCrl");
+  check("crlReferences is emitted as a singleExtension from the object form (sec. 4.4.2)", !!cr);
+  check("the parser reads crlReferences back with all three fields",
+    !!cr && cr.crlReferences && cr.crlReferences.crlUrl === "https://crl.example/ca.crl" &&
+    cr.crlReferences.crlNum === 42n && cr.crlReferences.crlTime instanceof Date && cr.crlReferences.crlTime.getTime() === crlTime.getTime());
+  var urlOnly = srExt(await signSingle({ crlReferences: { crlUrl: "https://crl.example/ca.crl" } }), "ocspCrl");
+  check("crlReferences with only a URL emits and reads back the URL alone",
+    !!urlOnly && urlOnly.crlReferences.crlUrl === "https://crl.example/ca.crl" && urlOnly.crlReferences.crlNum === null && urlOnly.crlReferences.crlTime === null);
+  check("the array form of singleExtensions still works beside the object form",
+    srExts(await signSingle([b.sequence([b.oid("1.3.6.1.4.1.99999.1"), b.octetString(b.nullValue())])])).length === 1);
+  // A response carrying both is still verified exactly as before, the extensions being informational.
+  check("a response carrying the SingleResponse extensions still verifies good",
+    (await pki.ocsp.verify(withBoth, { cert: w.targetCertDer, issuer: w.issuerCertDer, time: T })).status === "good");
+
+  // Faults in the typed spec are this verb's.
+  check("an archiveCutoff that is not a Date -> ocsp/bad-input",
+    (await codeOfAsync(function () { return signSingle({ archiveCutoff: "2020" }); })) === "ocsp/bad-input");
+  // A Date whose year DER cannot carry is this verb's fault to report, not the codec's, and the rule
+  // reaches every Date this verb takes rather than only the newest.
+  var FAR = new Date("+010000-01-01T00:00:00Z");
+  check("an archiveCutoff beyond year 9999 -> ocsp/bad-input, not an asn1 error",
+    (await codeOfAsync(function () { return signSingle({ archiveCutoff: FAR }); })) === "ocsp/bad-input");
+  check("a crlTime beyond year 9999 -> ocsp/bad-input",
+    (await codeOfAsync(function () { return signSingle({ crlReferences: { crlTime: FAR } }); })) === "ocsp/bad-input");
+  check("a producedAt beyond year 9999 -> ocsp/bad-input",
+    (await codeOfAsync(function () { return pki.ocsp.sign({ responderID: "byName", producedAt: FAR, responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: "good", thisUpdate: TU, nextUpdate: NU }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 }); })) === "ocsp/bad-input");
+  check("a revocation time beyond year 9999 -> ocsp/bad-input",
+    (await codeOfAsync(function () { return pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: { revoked: FAR }, thisUpdate: TU, nextUpdate: NU }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 }); })) === "ocsp/bad-input");
+  // The verify clock is compared, never written, so the same year is accepted there and the response
+  // is judged against it: its nextUpdate has long passed by then, which is the stale verdict.
+  var farClock = await pki.ocsp.verify(withBoth, { cert: w.targetCertDer, issuer: w.issuerCertDer, time: FAR });
+  check("a verify clock beyond year 9999 is compared, not refused: the stale response reads unknown", farClock.status === "unknown");
+  check("a crlUrl outside 7-bit ASCII -> ocsp/bad-input, not an asn1 error",
+    (await codeOfAsync(function () { return signSingle({ crlReferences: { crlUrl: "https://crl.example/" + String.fromCharCode(0xE9) } }); })) === "ocsp/bad-input");
+  check("a negative crlNum -> ocsp/bad-input",
+    (await codeOfAsync(function () { return signSingle({ crlReferences: { crlNum: -1 } }); })) === "ocsp/bad-input");
+  check("an unknown key on singleExtensions -> ocsp/bad-input",
+    (await codeOfAsync(function () { return signSingle({ archiveCutof: cutoff }); })) === "ocsp/bad-input");
+  check("an unknown key on crlReferences -> ocsp/bad-input",
+    (await codeOfAsync(function () { return signSingle({ crlReferences: { crlURL: "https://x" } }); })) === "ocsp/bad-input");
+
+  // A malformed value under either OID is refused rather than passed as opaque bytes, and the SIGNER
+  // refuses it before the reader has to, since it runs the same reader over a pre-encoded entry.
+  var badCutoffExt = b.sequence([b.oid(pki.oid.byName("ocspArchiveCutoff")), b.octetString(b.integer(1))]);
+  check("a pre-encoded archiveCutoff that is not a GeneralizedTime -> ocsp/bad-archive-cutoff at the signer",
+    (await codeOfAsync(function () { return signSingle([badCutoffExt]); })) === "ocsp/bad-archive-cutoff");
+  var badCrlExt = b.sequence([b.oid(pki.oid.byName("ocspCrl")), b.octetString(b.integer(1))]);
+  check("a pre-encoded CrlID that is not a SEQUENCE -> ocsp/bad-crl-id at the signer",
+    (await codeOfAsync(function () { return signSingle([badCrlExt]); })) === "ocsp/bad-crl-id");
+  // The CONTROL for the signer's new check: a well-formed pre-encoded entry is still accepted.
+  var goodCutoffExt = b.sequence([b.oid(pki.oid.byName("ocspArchiveCutoff")), b.octetString(b.generalizedTime(cutoff))]);
+  check("CONTROL: a well-formed pre-encoded archiveCutoff is accepted and read back",
+    srExt(await signSingle([goodCutoffExt]), "ocspArchiveCutoff").archiveCutoff.getTime() === cutoff.getTime());
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

@@ -138,6 +138,8 @@ async function testValidity() {
   check("notAfter-only round-trips", parse(await pki.crmf.build({ certTemplate: tpl(s.spki, { validity: { notAfter: NA } }) }, { key: s.key }))[0].certReq.certTemplate.validity.notBefore === null);
   check("empty validity -> crmf/bad-validity", await codeOf(pki.crmf.build({ certTemplate: tpl(s.spki, { validity: {} }) }, { key: s.key })) === "crmf/bad-validity");
   check("inverted validity -> crmf/bad-validity", await codeOf(pki.crmf.build({ certTemplate: tpl(s.spki, { validity: { notBefore: NA, notAfter: NB } }) }, { key: s.key })) === "crmf/bad-validity");
+  // A year DER cannot carry is refused in this verb's domain, not as an asn1/* error out of the codec.
+  check("year-10000 notAfter -> crmf/bad-input", await codeOf(pki.crmf.build({ certTemplate: tpl(s.spki, { validity: { notAfter: new Date("+010000-01-01T00:00:00Z") } }) }, { key: s.key })) === "crmf/bad-input");
 }
 
 // ---- proof of possession ---------------------------------------------------
