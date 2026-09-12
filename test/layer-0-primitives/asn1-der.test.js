@@ -329,6 +329,33 @@ function testGeneralizedTimeYearPad() {
   var reads = 0, flipping = {};
   Object.defineProperty(flipping, "fractional", { enumerable: true, get: function () { reads++; return reads < 3; } });
   check("build.generalizedTime reads fractional once and encodes what it validated", gtStr(new Date("2026-06-01T12:00:00.500Z"), flipping) === "20260601120000.5Z" && reads === 1);
+  // The fields are read from the Date's own instant through the captured Date.prototype getters,
+  // not through methods the object carries: an override on the instance changes nothing encoded.
+  var lying = new Date("2026-06-01T12:00:00.123Z");
+  lying.getUTCMilliseconds = function () { return 900; };
+  lying.getUTCSeconds = function () { return 59; };
+  lying.getUTCFullYear = function () { return 1999; };
+  check("build.generalizedTime encodes the instant, not the instance's overridden getters", gtStr(lying, { fractional: true }) === "20260601120000.123Z");
+  check("build.utcTime encodes the instant, not the instance's overridden getters", pki.asn1.decode(b.utcTime(lying)).content.toString("latin1") === "260601120000Z");
+  // A Date.prototype accessor replaced after the codec loaded does not reach the reader's own
+  // Date either: the fields are set and compared through the getters captured at load.
+  var real = {
+    getUTCSeconds: Date.prototype.getUTCSeconds, getUTCMilliseconds: Date.prototype.getUTCMilliseconds,
+    setUTCHours: Date.prototype.setUTCHours, getTime: Date.prototype.getTime,
+  };
+  var r = {};
+  try {
+    Date.prototype.getUTCSeconds = function () { return 59; };
+    Date.prototype.getUTCMilliseconds = function () { return 900; };
+    Date.prototype.setUTCHours = function () { return 0; };
+    r.readMs = real.getTime.call(pki.asn1.read.time(pki.asn1.decode(b.generalizedTime(new Date("2026-06-01T12:00:00.123Z"), { fractional: true })), { allowFractional: true }));
+    r.built = gtStr(new Date("2026-06-01T12:00:00.123Z"), { fractional: true });
+  } finally {
+    Date.prototype.getUTCSeconds = real.getUTCSeconds; Date.prototype.getUTCMilliseconds = real.getUTCMilliseconds;
+    Date.prototype.setUTCHours = real.setUTCHours;
+  }
+  check("read.time builds its Date through the captured setters and getters", r.readMs === new Date("2026-06-01T12:00:00.123Z").getTime());
+  check("build.generalizedTime under a replaced Date.prototype still encodes the instant", r.built === "20260601120000.123Z");
 }
 
 function testSequenceSetMustBeConstructed() {
