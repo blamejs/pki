@@ -101,6 +101,11 @@ async function run() {
     var der = makeResponse({ certs: [] });
     return JSON.stringify(ids(pki.lint.ocsp(pki.schema.ocsp.parseResponse(der)))) === JSON.stringify(ids(pki.lint.ocsp(der)));
   })());
+  // The parser records the PEM TEXT as a PEM-fed result's source, so the door re-reads a string here.
+  check("a response parsed from PEM lints the same as its bytes", (function () {
+    var der = makeResponse({ certs: [] });
+    return JSON.stringify(ids(pki.lint.ocsp(pki.schema.ocsp.parseResponse(pki.schema.ocsp.pemEncode(der))))) === JSON.stringify(ids(pki.lint.ocsp(der)));
+  })());
   check("a rebuilt parsed object is refused as config-time misuse, not linted", throwsCode(function () { pki.lint.ocsp(Object.assign({}, pki.schema.ocsp.parseResponse(makeResponse()))); }) === "lint/bad-input");
   check("a number is refused as config-time misuse", throwsCode(function () { pki.lint.ocsp(42); }) === "lint/bad-input");
   check("an object that is not a response is refused as config-time misuse", throwsCode(function () { pki.lint.ocsp({ hello: 1 }); }) === "lint/bad-input");
