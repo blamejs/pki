@@ -461,6 +461,18 @@ async function testCorrespondsTo(keyInternal) {
   try { await keyInternal.correspondsTo(dhAPk8, x942With([b.integer(dhP), b.integer(dhG), b.integer(2n)])); } catch (e) { qTwoErr = e; }
   check("an X9.42 public key stating q = 2 beside g = 2 (divides p-1, not the order of g) -> key/bad-input naming the order",
     qTwoErr !== null && qTwoErr.code === "key/bad-input" && /subgroup order its own p and g do not have/.test(qTwoErr.message));
+  // g^q = 1 proves the order of g DIVIDES q; q is the order only when q is prime, so a stated q
+  // that is a multiple of the order (p-1 beside a g of order (p-1)/2) is refused as not prime, and
+  // a composite modulus describes no group at all: both are the runtime's primality test on
+  // operands the cap already admitted.
+  var qCompositeErr = null;
+  try { await keyInternal.correspondsTo(dhAPk8, x942With([b.integer(dhP), b.integer(dhG), b.integer(dhP - 1n)])); } catch (e) { qCompositeErr = e; }
+  check("an X9.42 public key stating q = p-1 (g^q = 1, q not prime) -> key/bad-input naming the order as not prime",
+    qCompositeErr !== null && qCompositeErr.code === "key/bad-input" && /subgroup order that is not prime/.test(qCompositeErr.message));
+  var pCompositeErr = null;
+  try { await keyInternal.correspondsTo(dhAPk8, x942With([b.integer(15n), b.integer(4n), b.integer(2n)])); } catch (e) { pCompositeErr = e; }
+  check("an X9.42 public key whose modulus is composite (15, g = 4, q = 2, g^q = 1) -> key/bad-input naming the modulus",
+    pCompositeErr !== null && pCompositeErr.code === "key/bad-input" && /modulus is not prime/.test(pCompositeErr.message));
   check("an X9.42 public key whose cofactor is not (p-1)/q -> key/bad-input",
     (await codeOf(keyInternal.correspondsTo(dhAPk8, x942With([b.integer(dhP), b.integer(dhG), b.integer((dhP - 1n) / 2n), b.integer(3n)])))) === "key/bad-input");
   check("an X9.42 private key whose DomainParameters omit q -> key/bad-input",
