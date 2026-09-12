@@ -514,6 +514,44 @@ async function testCorrespondsTo(keyInternal) {
   try { await keyInternal.correspondsTo(dhAPk8, wide.publicKey.export({ format: "der", type: "spki" })); } catch (e) { wideMixErr = e; }
   check("a PKCS #3 DH public key of a group wider than the toolkit agrees over -> key/bad-input on its size, whatever the private half",
     wideMixErr !== null && wideMixErr.code === "key/bad-input" && /larger than any Diffie-Hellman group/.test(wideMixErr.message));
+  // The group is validated in the PKCS #3 form too, not only where the X9.42 form is rewritten
+  // into it: a pair over a composite modulus (p - 2 beside the modp14 g, the value recomputed in
+  // it) is refused on the modulus, and a generator outside (1, p-1) on the group.
+  var pComposite = dhP - 2n;
+  var xSmall = 123456789n;
+  var pkcs3Alg = function (p) { return b.sequence([b.oid(pki.oid.byName("dhKeyAgreement")), b.sequence([b.integer(p), b.integer(dhG)])]); };
+  var compositePk8 = b.sequence([b.integer(0n), pkcs3Alg(pComposite), b.octetString(b.integer(xSmall))]);
+  var compositeSpki = b.sequence([pkcs3Alg(pComposite), b.bitString(b.integer(keyInternal.modPow(dhG, xSmall, pComposite)), 0)]);
+  var pkcs3CompositeErr = null;
+  try { await keyInternal.correspondsTo(compositePk8, compositeSpki); } catch (e) { pkcs3CompositeErr = e; }
+  check("a PKCS #3 DH pair over a composite modulus -> key/bad-input naming the modulus",
+    pkcs3CompositeErr !== null && pkcs3CompositeErr.code === "key/bad-input" && /modulus is not prime/.test(pkcs3CompositeErr.message));
+  var badGAlg = b.sequence([b.oid(pki.oid.byName("dhKeyAgreement")), b.sequence([b.integer(dhP), b.integer(dhP - 1n)])]);
+  check("a PKCS #3 DH public key whose generator is p-1 -> key/bad-input on the group",
+    (await codeOf(keyInternal.correspondsTo(dhAPk8, b.sequence([badGAlg, b.raw(dhSpki.children[1].bytes)])))) === "key/bad-input");
+  // The PKCS #3 structure is read strictly in both halves: DHParameter is SEQUENCE { p, g,
+  // privateValueLength OPTIONAL } (PKCS #3 sec. 9), the optional length is a positive count no
+  // longer than the modulus, and a public value's BIT STRING is octet-aligned.
+  function pkcs3AlgWith(third) { return b.sequence([b.oid(pki.oid.byName("dhKeyAgreement")), b.sequence([b.integer(dhP), b.integer(dhG), third])]); }
+  check("a PKCS #3 DH public key whose privateValueLength is 0 -> key/bad-input",
+    (await codeOf(keyInternal.correspondsTo(dhAPk8, b.sequence([pkcs3AlgWith(b.integer(0n)), b.raw(dhSpki.children[1].bytes)])))) === "key/bad-input");
+  check("a PKCS #3 DH public key whose privateValueLength exceeds its modulus -> key/bad-input",
+    (await codeOf(keyInternal.correspondsTo(dhAPk8, b.sequence([pkcs3AlgWith(b.integer(2049n)), b.raw(dhSpki.children[1].bytes)])))) === "key/bad-input");
+  check("a PKCS #3 DH private key whose privateValueLength is 0 -> key/bad-input",
+    (await codeOf(keyInternal.correspondsTo(b.sequence([b.raw(dhPk8.children[0].bytes), pkcs3AlgWith(b.integer(0n)), b.raw(dhPk8.children[2].bytes)]), dhA.publicKey.export({ format: "der", type: "spki" })))) === "key/bad-input");
+  var yBytes = Buffer.from(pki.asn1.read.bitString(dhSpki.children[1]).bytes);
+  yBytes[yBytes.length - 1] &= 0xf8;   // three zero padding bits, so the encoding is DER with 3 unused bits
+  check("a PKCS #3 DH public key whose BIT STRING is not octet-aligned -> key/bad-input",
+    (await codeOf(keyInternal.correspondsTo(dhAPk8, b.sequence([b.raw(dhAlgNode.bytes), b.bitString(yBytes, 3)])))) === "key/bad-input");
+  // An X9.42 public value is held to the subgroup its own parameters state: -(g^x) has order 2q,
+  // sits inside (1, p-1), and is refused as outside the subgroup rather than answered false.
+  var yOut = dhP - keyInternal.modPow(dhG, xSmall, dhP);
+  var yOutErr = null;
+  try { await keyInternal.correspondsTo(b.sequence([b.integer(0n), x942Alg, b.octetString(b.integer(xSmall))]), b.sequence([x942Alg, b.bitString(b.integer(yOut), 0)])); } catch (e) { yOutErr = e; }
+  check("an X9.42 public value outside the stated subgroup -> key/bad-input naming the subgroup",
+    yOutErr !== null && yOutErr.code === "key/bad-input" && /not in the subgroup its own domain parameters state/.test(yOutErr.message));
+  check("a DH public value of 1 -> key/bad-input on the group (RFC 2875 sec. 3), not merely false",
+    (await codeOf(keyInternal.correspondsTo(dhAPk8, b.sequence([b.raw(dhAlgNode.bytes), b.bitString(b.integer(1n), 0)])))) === "key/bad-input");
   check("a DH private key whose exponent is zero -> key/bad-input",
     (await codeOf(keyInternal.correspondsTo(b.sequence([b.integer(0n), b.raw(dhAlgNode.bytes), b.octetString(b.integer(0n))]), dhA.publicKey.export({ format: "der", type: "spki" })))) === "key/bad-input");
   check("CONTROL: an X9.42 public key with its cofactor 2 and validationParms pairs",
