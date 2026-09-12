@@ -1,0 +1,14 @@
+{
+  "version": "0.7.33",
+  "date": "2026-09-12",
+  "headline": "pki.x509.extension encodes one certificate extension from its plain value form.",
+  "summary": "The pre-encoded array form of extensions on pki.x509.sign, pki.csr.sign and pki.crl.sign took hand-built Extension DER. pki.x509.extension(name, value, opts) now produces that DER from the same plain value spec.extensions takes, with the criticality the signer would emit, so composing a custom extension list no longer means writing ASN.1.",
+  "sections": {
+    "Added": [
+      "pki.x509.extension(name, value, opts) returns one Extension as DER. name is any extension name spec.extensions takes, or a dotted OID; value is the plain form spec.extensions takes for that name (the key-usage and purpose lists, the basicConstraints object, GeneralName lists, the policy, constraint, access and distribution-point objects, the qualified-certificate statements, the Active Directory enrollment values, true for the NULL-valued markers, and the explicit forms of the two key identifiers). For an unregistered dotted OID, value is the already-encoded extnValue as bytes and opts.critical is taken as stated. The criticality of a registered extension follows what pki.x509.sign emits for the object form: where RFC 5280 fixes it or the toolkit issues one form only, opts.critical may only restate that value and is otherwise refused with x509/bad-input; keyUsage, extendedKeyUsage, certificatePolicies, policyMappings, qcStatements and subjectAltName take opts.critical, and basicConstraints carries critical inside its value. subjectKeyIdentifier: true and authorityKeyIdentifier: true, which derive a value from the subject key or the issuer, are refused here and the message names spec.extensions; the authorityKeyIdentifier object form requires the key id bytes. Every registered extension encodes byte-identically through this verb and through spec.extensions. An unregistered OID's extnValue must hold exactly one DER-encoded value (RFC 5280 sec. 4.1), and a dotted string that is not a canonical OID (a first arc above 2, a second arc above 39 under arcs 0 and 1, a leading-zero arc) is refused as x509/bad-input rather than surfacing the OID codec's own error."
+    ],
+    "Changed": [
+      "The pre-encoded array form of extensions on the certificate, CSR, CRL, attribute-certificate and timestamp signers holds an extension no decoder answers for to the same rule: its extnValue must be exactly one DER-encoded value, or the signer refuses it with its own bad-input code. An extension the signer decodes keeps the decoder's typed refusal."
+    ]
+  }
+}
