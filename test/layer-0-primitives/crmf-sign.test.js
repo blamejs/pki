@@ -1460,6 +1460,11 @@ async function testPopoPrivKeyArms() {
     (await codeOf(pki.crmf.build({ certReqId: 49n, certTemplate: tpl(kemRsaSpki),
       pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: rsaTpl.privateKey.export({ format: "der", type: "pkcs8" }),
         identifier: "device-42", recipients: [{ cert: recip.cert }], archive: true } }))) === "crmf/bad-popo");
+  var rsaTplNode = pki.asn1.decode(rsaTpl.privateKey.export({ format: "der", type: "pkcs8" }));
+  check("V7. an unreadable classical key enclosed under a composite template -> crmf/bad-input (read before the family answers)",
+    (await codeOf(pki.crmf.build({ certReqId: 50n, certTemplate: tpl(kemRsaSpki),
+      pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: pki.asn1.build.sequence([pki.asn1.build.raw(rsaTplNode.children[0].bytes), pki.asn1.build.raw(rsaTplNode.children[1].bytes), pki.asn1.build.octetString(Buffer.from([1, 2, 3]))]),
+        identifier: "device-42", recipients: [{ cert: recip.cert }], archive: true } }))) === "crmf/bad-input");
   check("V7. an enclosed composite key whose component material cannot be read -> crmf/bad-input",
     (await codeOf(pki.crmf.build({ certReqId: 48n, certTemplate: tpl(kemRsaSpki),
       pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: kemRsaTruncPk8,

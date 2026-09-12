@@ -603,6 +603,18 @@ async function testCorrespondsTo(keyInternal) {
   var kemRSpkiTrunc = b.sequence([b.raw(kemRSpkiNode.children[0].bytes), b.bitString(Buffer.alloc(40, 1), 0)]);
   check("correspondsTo reports a composite public key whose component material cannot be read as key/bad-input",
     (await codeOf(keyInternal.correspondsTo(Buffer.from(kemR.dk_pkcs8, "base64"), kemRSpkiTrunc))) === "key/bad-input");
+  // The private half is read BEFORE any family shortcut answers: a private key that cannot be read
+  // is bad input whatever family the public half names, never "not a pair".
+  var rsaPk8Node = pki.asn1.decode(rsaPair.privateKey.export({ format: "der", type: "pkcs8" }));
+  var garbageRsa = b.sequence([b.raw(rsaPk8Node.children[0].bytes), b.raw(rsaPk8Node.children[1].bytes), b.octetString(Buffer.from([1, 2, 3]))]);
+  check("correspondsTo reports an unreadable classical private key as key/bad-input against a composite public key",
+    (await codeOf(keyInternal.correspondsTo(garbageRsa, katSpki(kemX)))) === "key/bad-input");
+  check("correspondsTo reports an unreadable classical private key as key/bad-input against a DH public key",
+    (await codeOf(keyInternal.correspondsTo(garbageRsa, dhA.publicKey.export({ format: "der", type: "spki" })))) === "key/bad-input");
+  check("correspondsTo reports an unreadable composite private key as key/bad-input against a classical public key",
+    (await codeOf(keyInternal.correspondsTo(kemRTrunc, rsaPair.publicKey.export({ format: "der", type: "spki" })))) === "key/bad-input");
+  check("correspondsTo reports an unreadable DH private key as key/bad-input against a classical public key",
+    (await codeOf(keyInternal.correspondsTo(b.sequence([b.raw(dhPk8.children[0].bytes), b.raw(dhPk8.children[1].bytes), b.octetString(Buffer.from([1, 2, 3]))]), rsaPair.publicKey.export({ format: "der", type: "spki" })))) === "key/bad-input");
   check("CONTROL: the composite ML-KEM/RSA KAT pair corresponds",
     (await keyInternal.correspondsTo(Buffer.from(kemR.dk_pkcs8, "base64"), katSpki(kemR))) === true);
   // Every secret a probe makes is wiped once the verdict is decided, whether the pair matched or not:
