@@ -4,6 +4,20 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.27 — 2026-09-12
+
+pki lint detects a certificate, a CRL or an OCSP response and runs the matching profile.
+
+### Added
+
+- pki lint <file> detects whether the file holds a certificate, a CRL or an OCSP response, as DER or PEM, and lints it with pki.lint.certificate, pki.lint.crl or pki.lint.ocsp. --profile, --severity and --json apply to whichever verb runs, and a profile that belongs to another structure is refused with the message naming the verb that takes it. For a file holding a structure no profile covers (a certificate request, a CMS message, a key), the command reports the name the detector gives it and exits instead of linting it as a certificate.
+- lint/rfc5280/extension-criticality (error) reports a certificate extension marked critical that RFC 5280 requires a conforming CA to mark non-critical: authorityKeyIdentifier (section 4.2.1.1), subjectKeyIdentifier (4.2.1.2), subjectDirectoryAttributes (4.2.1.8), freshestCRL (4.2.1.15), authorityInfoAccess (4.2.2.1) and subjectInfoAccess (4.2.2.2). Each finding names the extension and its clause.
+
+### Changed
+
+- A certificate marking one of those six extensions critical was reported as lint/rfc5280/unknown-critical-extension, which told an operator the extension was not recognized when the defect was its criticality. The profile recognizes them, so that finding no longer fires for them; the new row does, at the same severity, so a report filtered at error is unchanged in its verdict and changed in its name.
+- The table of extensions whose criticality RFC 5280 and RFC 6962 fix now lives once, in the shared PKIX schema module, and both pki.x509.sign (which refuses to write against it) and pki.lint.certificate (which reports against it) read it from there.
+
 ## v0.7.26 — 2026-09-12
 
 An OCSP response can be linted against RFC 6960, and against the RFC 5019 lightweight profile on request.

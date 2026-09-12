@@ -149,6 +149,43 @@ function run() {
     !has(pki.lint.certificate(makeCert({ exts: [keyUsage([0], true)] })), "lint/rfc5280/keycertsign-without-ca"));
   check("an unknown critical extension -> unknown-critical-extension (error)",
     has(pki.lint.certificate(makeCert({ exts: [extByOid("1.3.6.1.4.1.99999.7.7", true, b.nullValue())] })), "lint/rfc5280/unknown-critical-extension"));
+  // The six extensions RFC 5280 requires to be NON-critical are recognized by the profile, so
+  // marking one critical is reported as the criticality fault the clause names, not as an
+  // unrecognized extension: one finding, the right one, per extension, with the same table the
+  // signer refuses to write from.
+  var nonCriticalSix = [
+    ["authorityKeyIdentifier", ext("authorityKeyIdentifier", true, b.sequence([b.contextPrimitive(0, Buffer.alloc(20, 2))]))],
+    ["subjectKeyIdentifier", ext("subjectKeyIdentifier", true, b.octetString(Buffer.alloc(20, 1)))],
+    ["subjectDirectoryAttributes", ext("subjectDirectoryAttributes", true, b.sequence([b.sequence([b.oid(oid.byName("countryName")), b.set([b.printable("DE")])])]))],
+    ["freshestCRL", ext("freshestCRL", true, b.sequence([b.sequence([b.contextConstructed(0, b.contextConstructed(0, b.contextPrimitive(6, Buffer.from("http://x/f.crl", "ascii"))))])]))],
+    ["authorityInfoAccess", ext("authorityInfoAccess", true, b.sequence([b.sequence([b.oid(oid.byName("caIssuers")), b.contextPrimitive(6, Buffer.from("http://x/ca.der", "ascii"))])]))],
+    ["subjectInfoAccess", ext("subjectInfoAccess", true, b.sequence([b.sequence([b.oid(oid.byName("id-ad-caRepository")), b.contextPrimitive(6, Buffer.from("http://x/repo", "ascii"))])]))],
+  ];
+  check("each must-be-non-critical extension marked critical -> extension-criticality (error) naming it, and NOT unknown-critical-extension",
+    nonCriticalSix.every(function (row) {
+      var r = pki.lint.certificate(makeCert({ exts: [row[1]] }));
+      var f = r.findings.filter(function (x) { return x.id === "lint/rfc5280/extension-criticality"; });
+      return f.length === 1 && f[0].severity === "error" && f[0].context.extension === row[0] && f[0].context.required === "non-critical"
+        && !has(r, "lint/rfc5280/unknown-critical-extension");
+    }));
+  check("CONTROL: the same six marked non-critical draw neither row",
+    nonCriticalSix.every(function (row) {
+      var der = asn1.decode(row[1]);
+      var nonCritical = b.sequence([der.children[0].bytes, der.children[2].bytes]);
+      var r = pki.lint.certificate(makeCert({ exts: [nonCritical] }));
+      return !has(r, "lint/rfc5280/extension-criticality") && !has(r, "lint/rfc5280/unknown-critical-extension");
+    }));
+  check("a must-be-critical extension left non-critical keeps its own row and does not draw extension-criticality",
+    (function () {
+      var r = pki.lint.certificate(makeCert({ exts: [nameConstraints(false)] }));
+      return has(r, "lint/rfc5280/name-constraints-not-critical") && !has(r, "lint/rfc5280/extension-criticality");
+    })());
+  check("the linter and the signer read one criticality table: every extension the signer holds non-critical is a row here",
+    (function () {
+      var table = require("../../lib/schema-pkix").certFixedCriticality(oid);
+      var nonCritical = Object.keys(table).filter(function (o) { return table[o].critical === false; });
+      return nonCritical.length === 6 && nonCriticalSix.every(function (row) { return nonCritical.indexOf(oid.byName(row[0])) !== -1; });
+    })());
   // Strict-parse pre-emption (Open Q8): a duplicate extension OID / pathLen-without-cA are
   // rejected at PARSE, so they surface as a fatal lint/unparseable naming the exact code --
   // not a dedicated finding. Pin that documented behavioral difference here.
@@ -437,12 +474,17 @@ function run() {
     has(pki.lint.certificate(makeCert({ exts: [ext("qcStatements", true, qcExtVal)] })), "lint/rfc5280/unknown-critical-extension"));
   check("a non-critical qcStatements is NOT unknown-critical (informational, still decoded)",
     !has(pki.lint.certificate(makeCert({ exts: [ext("qcStatements", false, qcExtVal)] })), "lint/rfc5280/unknown-critical-extension"));
-  // Recognition mirrors path-validate's PROCESSED_EXTENSIONS, not the decoder table: a decode-only
-  // extension the validator does NOT process is flagged when critical (an authorityKeyIdentifier and
-  // an MS enterprise-CA extension both decode for display but MUST be non-critical), while
-  // precertificatePoison -- the one decode-only extension RFC 6962 REQUIRES critical -- is not flagged.
-  check("a critical authorityKeyIdentifier is unknown-critical (decode-only, not path-processed)",
-    has(pki.lint.certificate(makeCert({ exts: [extByOid(oid.byName("authorityKeyIdentifier"), true, b.nullValue())] })), "lint/rfc5280/unknown-critical-extension"));
+  // Recognition mirrors path-validate's PROCESSED_EXTENSIONS plus the fixed-criticality table: a
+  // decode-only extension the validator does NOT process and the table does not fix is flagged when
+  // critical (an MS enterprise-CA extension decodes for display but is not profiled), an extension
+  // the table fixes NON-critical (an authorityKeyIdentifier) draws the criticality row that names its
+  // clause instead, and precertificatePoison -- the one decode-only extension RFC 6962 REQUIRES
+  // critical -- is not flagged at all.
+  check("a critical authorityKeyIdentifier is a criticality fault, not an unrecognized extension",
+    (function () {
+      var r = pki.lint.certificate(makeCert({ exts: [extByOid(oid.byName("authorityKeyIdentifier"), true, b.nullValue())] }));
+      return has(r, "lint/rfc5280/extension-criticality") && !has(r, "lint/rfc5280/unknown-critical-extension");
+    })());
   check("a critical msCertificateTemplate is unknown-critical (decode-only enterprise extension)",
     has(pki.lint.certificate(makeCert({ exts: [extByOid(oid.byName("msCertificateTemplate"), true, b.sequence([b.oid("1.2.3")]))] })), "lint/rfc5280/unknown-critical-extension"));
   check("a critical precertificatePoison is NOT unknown-critical (RFC 6962 requires it critical)",

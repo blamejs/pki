@@ -100,6 +100,47 @@ function run() {
       var j = JSON.parse(lintGarbage.stdout);
       return lintGarbage.status === 1 && j.worst === "fatal" && j.findings[0].id === "lint/unparseable";
     })());
+    // The command detects which structure the file holds and runs the matching profile: a CRL and
+    // an OCSP response lint through their own verbs, as DER or as PEM, and a structure no profile
+    // exists for is refused by name rather than linted as a certificate.
+    var b = asn1.build, O = function (n) { return pki.oid.byName(n); };
+    var ALG = b.sequence([b.oid(O("ecdsaWithSHA256"))]), SIG = b.bitString(Buffer.alloc(8, 1), 0);
+    var DN = b.sequence([b.set([b.sequence([b.oid(O("commonName")), b.utf8("CLI CA")])])]);
+    var crlDer = b.sequence([b.sequence([b.integer(1n), ALG, DN, b.utcTime(new Date("2026-01-01T00:00:00Z")), b.utcTime(new Date("2026-02-01T00:00:00Z")),
+      b.explicit(0, b.sequence([b.sequence([b.oid(O("cRLNumber")), b.octetString(b.integer(1n))])]))]), ALG, SIG]);
+    var crlPath = path.join(tmp, "list.crl"), crlPemPath = path.join(tmp, "list.crl.pem");
+    fs.writeFileSync(crlPath, crlDer);
+    fs.writeFileSync(crlPemPath, pki.schema.crl.pemEncode(crlDer));
+    var lintCrl = cli(["lint", crlPath, "--json"]);
+    check("pki lint detects a CRL and runs the CRL profile (the missing AKI is its error)", (function () {
+      var j = JSON.parse(lintCrl.stdout);
+      return lintCrl.status === 1 && j.findings.some(function (f) { return f.id === "lint/rfc5280-crl/aki-missing"; });
+    })());
+    check("pki lint lints a PEM CRL the same as the DER", JSON.parse(cli(["lint", crlPemPath, "--json"]).stdout).findings.length === JSON.parse(lintCrl.stdout).findings.length);
+    var gt = function (s) { return b.generalizedTime(new Date(s)); };
+    var certId = b.sequence([b.sequence([b.oid(O("sha256")), b.nullValue()]), b.octetString(Buffer.alloc(32, 3)), b.octetString(Buffer.alloc(32, 4)), b.integer(1n)]);
+    var single = b.sequence([certId, b.contextPrimitive(0, Buffer.alloc(0)), gt("2027-01-01T00:00:00Z"), b.explicit(0, gt("2028-01-01T00:00:00Z"))]);
+    var rd = b.sequence([b.explicit(2, b.octetString(Buffer.alloc(20, 9))), gt("2027-01-01T00:00:00Z"), b.sequence([single])]);
+    var ocspDer = b.sequence([b.enumerated(0n), b.explicit(0, b.sequence([b.oid(O("ocspBasic")), b.octetString(b.sequence([rd, ALG, SIG]))]))]);
+    var ocspPath = path.join(tmp, "status.ors");
+    fs.writeFileSync(ocspPath, ocspDer);
+    var lintOcsp = cli(["lint", ocspPath, "--json"]);
+    check("pki lint detects an OCSP response and runs the OCSP profile (clean, exit 0, the rfc6960 rows ran)", (function () {
+      var j = JSON.parse(lintOcsp.stdout);
+      return lintOcsp.status === 0 && j.findings.length === 0 && j.ran.some(function (id) { return id.indexOf("lint/rfc6960/") === 0; });
+    })());
+    var lintOcspLw = cli(["lint", ocspPath, "--profile", "rfc5019", "--json"]);
+    check("pki lint --profile rfc5019 on an OCSP response runs the lightweight rows (byKey, one response: clean)", (function () {
+      var j = JSON.parse(lintOcspLw.stdout);
+      return lintOcspLw.status === 0 && j.ran.length === 4 && j.ran.every(function (id) { return id.indexOf("lint/rfc5019/") === 0; });
+    })());
+    check("pki lint with a CRL profile on a certificate is refused as a config error naming the verb",
+      (function () { var r = cli(["lint", FIXTURE, "--profile", "rfc5280-crl"]); return r.status !== 0 && /unknown-profile/.test(r.stderr) && /CRL profile/.test(r.stderr); })());
+    var csrDer = b.sequence([b.sequence([b.integer(0n), DN, b.sequence([b.sequence([b.oid(O("ecPublicKey")), b.oid(O("prime256v1"))]), b.bitString(Buffer.alloc(65, 4), 0)]), b.contextConstructed(0, Buffer.alloc(0))]), ALG, SIG]);
+    var csrPath = path.join(tmp, "req.csr");
+    fs.writeFileSync(csrPath, csrDer);
+    check("pki lint refuses a structure no profile exists for, naming what it found",
+      (function () { var r = cli(["lint", csrPath]); return r.status !== 0 && /csr/.test(r.stderr) && /certificate, CRL, or OCSP response/.test(r.stderr); })());
 
     // ---- convert ----
     var toDer = cliBuf(["convert", FIXTURE, "--to", "der"]);
