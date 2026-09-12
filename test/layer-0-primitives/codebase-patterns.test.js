@@ -1941,7 +1941,10 @@ function testNoDuplicateCodeBlocks() {
       // nearest preceding function rather than the run itself, which is why three unrelated names
       // appear here. family-subset so any 3+ match as more modules grow their door tables.
       mode: "family-subset",
-      files: ["lib/cmc-build.js:assertValid", "lib/est.js:_withClient", "lib/pkcs12-build.js:_err"],
+      files: [
+        "lib/cmc-build.js:assertValid", "lib/est.js:_withClient", "lib/pkcs12-build.js:_err",
+        "lib/cmp-session.js:setEngine", "lib/csr-sign.js:<top>", "lib/ocsp.js:buildRequest", "lib/ocsp.js:sign", "lib/smime.js:_err",
+      ],
       reason: "Per-module accepted-key tables declared as a uniform run of null-prototype literals; each table names a different structure's fields, so the repetition is the declaration shape and nothing shareable.",
     },
     {
@@ -1952,7 +1955,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/cmp-session.js:session", "lib/path-validate.js:build", "lib/scep.js:parse",
         "lib/cms-verify.js:_verify", "lib/cms-verify.js:parseCertsOnly",
         "lib/scep.js:getNextCACert", "lib/cms-verify.js:verify", "lib/ocsp.js:_signerVerdict",
-        "lib/scep.js:_assertStrongProfile", "lib/scep.js:_buildIssuerAndSerial",
+        "lib/scep.js:_assertStrongProfile", "lib/scep.js:_buildIssuerAndSerial", "lib/ct.js:signSct",
       ],
       reason: "The options door a public verb opens with: settle the caller's options object, then refuse any key the verb does not accept. Both steps ARE the shared primitives, already factored into guard-identifier, so what repeats is the pair of calls and nothing else; the arguments differ at every site, since each verb has its own accepted-key table and its own label. Settling has to happen at the verb, before it reads anything, so the call cannot move inside the key check. family-subset so any 3+ match as more verbs adopt the door.",
     },

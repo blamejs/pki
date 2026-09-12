@@ -457,30 +457,30 @@ async function testIssuerProfile() {
   var oneTargets = B.sequence([B.sequence([B.explicit(0, dns("printer.example")), B.explicit(1, dns("printers"))])]);
   check("CONTROL: pre-encoded targetInformation with one Targets element of two targets signs", Buffer.isBuffer(await pki.attrcert.sign(spec({ extensions: [noRev, extOf("targetInformation", true, oneTargets)] }), aaOf(aa))));
   // Sec. 4.3.5: one distribution point, a fullName, a single name, a DN or an HTTP / LDAP URL.
-  var crlp = byName(await pki.attrcert.sign(spec({ extensions: { crlDistributionPoints: ["http://crl.example/aa.crl"] } }), aaOf(aa)));
-  check("crlDistributionPoints object form with an HTTP URL signs, non-critical", crlp.cRLDistributionPoints && crlp.cRLDistributionPoints.critical === false && crlp.cRLDistributionPoints.decoded[0].distributionPoint.kind === "fullName");
-  check("crlDistributionPoints with an LDAP URL signs", !!byName(await pki.attrcert.sign(spec({ extensions: { crlDistributionPoints: ["ldap://ldap.example/cn=aa,o=x?certificateRevocationList"] } }), aaOf(aa))).cRLDistributionPoints);
-  check("crlDistributionPoints with a directoryName signs", !!byName(await pki.attrcert.sign(spec({ extensions: { crlDistributionPoints: [{ directoryName: "CN=aa crl" }] } }), aaOf(aa))).cRLDistributionPoints);
-  check("crlDistributionPoints with an https URL -> attrcert/bad-input (RFC 5755 sec. 4.3.5)", await codeOf(pki.attrcert.sign(spec({ extensions: { crlDistributionPoints: ["https://crl.example/aa.crl"] } }), aaOf(aa))) === "attrcert/bad-input");
-  check("crlDistributionPoints with a dNSName -> attrcert/bad-input (RFC 5755 sec. 4.3.5)", await codeOf(pki.attrcert.sign(spec({ extensions: { crlDistributionPoints: [{ dNSName: "crl.example" }] } }), aaOf(aa))) === "attrcert/bad-input");
-  check("crlDistributionPoints fullName with two names -> attrcert/bad-input (RFC 5755 sec. 4.3.5)", await codeOf(pki.attrcert.sign(spec({ extensions: { crlDistributionPoints: [{ fullName: ["http://crl.example/a", "http://crl.example/b"] }] } }), aaOf(aa))) === "attrcert/bad-input");
-  check("crlDistributionPoints with two distribution points -> attrcert/bad-input (RFC 5755 sec. 4.3.5)", await codeOf(pki.attrcert.sign(spec({ extensions: { crlDistributionPoints: ["http://crl.example/a", "http://crl.example/b"] } }), aaOf(aa))) === "attrcert/bad-input");
-  check("crlDistributionPoints with a cRLIssuer and no fullName -> attrcert/bad-input (RFC 5755 sec. 4.3.5)", await codeOf(pki.attrcert.sign(spec({ extensions: { crlDistributionPoints: [{ cRLIssuer: [{ directoryName: "CN=issuer" }] }] } }), aaOf(aa))) === "attrcert/bad-input");
+  var crlp = byName(await pki.attrcert.sign(spec({ extensions: { cRLDistributionPoints: ["http://crl.example/aa.crl"] } }), aaOf(aa)));
+  check("cRLDistributionPoints object form with an HTTP URL signs, non-critical", crlp.cRLDistributionPoints && crlp.cRLDistributionPoints.critical === false && crlp.cRLDistributionPoints.decoded[0].distributionPoint.kind === "fullName");
+  check("cRLDistributionPoints with an LDAP URL signs", !!byName(await pki.attrcert.sign(spec({ extensions: { cRLDistributionPoints: ["ldap://ldap.example/cn=aa,o=x?certificateRevocationList"] } }), aaOf(aa))).cRLDistributionPoints);
+  check("cRLDistributionPoints with a directoryName signs", !!byName(await pki.attrcert.sign(spec({ extensions: { cRLDistributionPoints: [{ directoryName: "CN=aa crl" }] } }), aaOf(aa))).cRLDistributionPoints);
+  check("cRLDistributionPoints with an https URL -> attrcert/bad-input (RFC 5755 sec. 4.3.5)", await codeOf(pki.attrcert.sign(spec({ extensions: { cRLDistributionPoints: ["https://crl.example/aa.crl"] } }), aaOf(aa))) === "attrcert/bad-input");
+  check("cRLDistributionPoints with a dNSName -> attrcert/bad-input (RFC 5755 sec. 4.3.5)", await codeOf(pki.attrcert.sign(spec({ extensions: { cRLDistributionPoints: [{ dNSName: "crl.example" }] } }), aaOf(aa))) === "attrcert/bad-input");
+  check("cRLDistributionPoints fullName with two names -> attrcert/bad-input (RFC 5755 sec. 4.3.5)", await codeOf(pki.attrcert.sign(spec({ extensions: { cRLDistributionPoints: [{ fullName: ["http://crl.example/a", "http://crl.example/b"] }] } }), aaOf(aa))) === "attrcert/bad-input");
+  check("cRLDistributionPoints with two distribution points -> attrcert/bad-input (RFC 5755 sec. 4.3.5)", await codeOf(pki.attrcert.sign(spec({ extensions: { cRLDistributionPoints: ["http://crl.example/a", "http://crl.example/b"] } }), aaOf(aa))) === "attrcert/bad-input");
+  check("cRLDistributionPoints with a cRLIssuer and no fullName -> attrcert/bad-input (RFC 5755 sec. 4.3.5)", await codeOf(pki.attrcert.sign(spec({ extensions: { cRLDistributionPoints: [{ cRLIssuer: [{ directoryName: "CN=issuer" }] }] } }), aaOf(aa))) === "attrcert/bad-input");
   var rdnDp = B.sequence([B.sequence([B.explicit(0, B.contextConstructed(1, B.sequence([B.oid(O("commonName")), B.utf8("crl")])))])]);   // [1] IMPLICIT RelativeDistinguishedName holds the AttributeTypeAndValue directly
-  check("pre-encoded crlDistributionPoints with a nameRelativeToCRLIssuer -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec({ extensions: [extOf("cRLDistributionPoints", false, rdnDp)] }), aaOf(aa))) === "attrcert/bad-input");
+  check("pre-encoded cRLDistributionPoints with a nameRelativeToCRLIssuer -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec({ extensions: [extOf("cRLDistributionPoints", false, rdnDp)] }), aaOf(aa))) === "attrcert/bad-input");
   var twoNameDp = B.sequence([B.sequence([B.explicit(0, B.contextConstructed(0, Buffer.concat([uri("http://crl.example/a"), uri("http://crl.example/b")])))])]);
-  check("pre-encoded crlDistributionPoints fullName with two names -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec({ extensions: [extOf("cRLDistributionPoints", false, twoNameDp)] }), aaOf(aa))) === "attrcert/bad-input");
+  check("pre-encoded cRLDistributionPoints fullName with two names -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec({ extensions: [extOf("cRLDistributionPoints", false, twoNameDp)] }), aaOf(aa))) === "attrcert/bad-input");
   var oneDp = B.sequence([B.sequence([B.explicit(0, B.contextConstructed(0, uri("HTTP://crl.example/a")))])]);
-  check("CONTROL: pre-encoded crlDistributionPoints with one HTTP URL signs (scheme case-folded)", Buffer.isBuffer(await pki.attrcert.sign(spec({ extensions: [extOf("cRLDistributionPoints", false, oneDp)] }), aaOf(aa))));
+  check("CONTROL: pre-encoded cRLDistributionPoints with one HTTP URL signs (scheme case-folded)", Buffer.isBuffer(await pki.attrcert.sign(spec({ extensions: [extOf("cRLDistributionPoints", false, oneDp)] }), aaOf(aa))));
   // A scheme alone is a URI and not an HTTP or LDAP URL: the former names a host after "//", the latter opens "ldap://".
-  check("crlDistributionPoints URI \"http:foo\" -> attrcert/bad-input (not an HTTP URL, RFC 2585)", await codeOf(pki.attrcert.sign(spec({ extensions: { crlDistributionPoints: [{ uniformResourceIdentifier: "http:foo" }] } }), aaOf(aa))) === "attrcert/bad-input");
-  check("crlDistributionPoints URI \"ldap:foo\" -> attrcert/bad-input (not an LDAP URL, RFC 4516)", await codeOf(pki.attrcert.sign(spec({ extensions: { crlDistributionPoints: [{ uniformResourceIdentifier: "ldap:foo" }] } }), aaOf(aa))) === "attrcert/bad-input");
+  check("cRLDistributionPoints URI \"http:foo\" -> attrcert/bad-input (not an HTTP URL, RFC 2585)", await codeOf(pki.attrcert.sign(spec({ extensions: { cRLDistributionPoints: [{ uniformResourceIdentifier: "http:foo" }] } }), aaOf(aa))) === "attrcert/bad-input");
+  check("cRLDistributionPoints URI \"ldap:foo\" -> attrcert/bad-input (not an LDAP URL, RFC 4516)", await codeOf(pki.attrcert.sign(spec({ extensions: { cRLDistributionPoints: [{ uniformResourceIdentifier: "ldap:foo" }] } }), aaOf(aa))) === "attrcert/bad-input");
   var schemeOnlyDp = B.sequence([B.sequence([B.explicit(0, B.contextConstructed(0, uri("http:foo")))])]);
-  check("pre-encoded crlDistributionPoints URI \"http:foo\" -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec({ extensions: [extOf("cRLDistributionPoints", false, schemeOnlyDp)] }), aaOf(aa))) === "attrcert/bad-input");
-  check("CONTROL: an HTTP URL with a single-label host (http://crl/aa.crl) signs (RFC 1738 sec. 3.1)", Buffer.isBuffer(await pki.attrcert.sign(spec({ extensions: { crlDistributionPoints: [{ uniformResourceIdentifier: "http://crl/aa.crl" }] } }), aaOf(aa))));
-  check("an HTTP URL with an empty host (http:///aa.crl) -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec({ extensions: { crlDistributionPoints: [{ uniformResourceIdentifier: "http:///aa.crl" }] } }), aaOf(aa))) === "attrcert/bad-input");
-  check("an HTTP URL with a port and no host (http://:80/a) -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec({ extensions: { crlDistributionPoints: [{ uniformResourceIdentifier: "http://:80/a" }] } }), aaOf(aa))) === "attrcert/bad-input");
-  check("an HTTP URL with userinfo and no host (http://@/a) -> attrcert/bad-input (RFC 2616 sec. 3.2.2 has no userinfo)", await codeOf(pki.attrcert.sign(spec({ extensions: { crlDistributionPoints: [{ uniformResourceIdentifier: "http://@/a" }] } }), aaOf(aa))) === "attrcert/bad-input");
+  check("pre-encoded cRLDistributionPoints URI \"http:foo\" -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec({ extensions: [extOf("cRLDistributionPoints", false, schemeOnlyDp)] }), aaOf(aa))) === "attrcert/bad-input");
+  check("CONTROL: an HTTP URL with a single-label host (http://crl/aa.crl) signs (RFC 1738 sec. 3.1)", Buffer.isBuffer(await pki.attrcert.sign(spec({ extensions: { cRLDistributionPoints: [{ uniformResourceIdentifier: "http://crl/aa.crl" }] } }), aaOf(aa))));
+  check("an HTTP URL with an empty host (http:///aa.crl) -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec({ extensions: { cRLDistributionPoints: [{ uniformResourceIdentifier: "http:///aa.crl" }] } }), aaOf(aa))) === "attrcert/bad-input");
+  check("an HTTP URL with a port and no host (http://:80/a) -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec({ extensions: { cRLDistributionPoints: [{ uniformResourceIdentifier: "http://:80/a" }] } }), aaOf(aa))) === "attrcert/bad-input");
+  check("an HTTP URL with userinfo and no host (http://@/a) -> attrcert/bad-input (RFC 2616 sec. 3.2.2 has no userinfo)", await codeOf(pki.attrcert.sign(spec({ extensions: { cRLDistributionPoints: [{ uniformResourceIdentifier: "http://@/a" }] } }), aaOf(aa))) === "attrcert/bad-input");
   var emptyHostAia = B.sequence([B.sequence([B.oid(O("ocsp")), uri("http://:80/a")])]);
   check("pre-encoded authorityInfoAccess OCSP at http://:80/a -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec({ extensions: [extOf("authorityInfoAccess", false, emptyHostAia)] }), aaOf(aa))) === "attrcert/bad-input");
   var userinfoAia = B.sequence([B.sequence([B.oid(O("ocsp")), uri("http://@/a")])]);
@@ -488,15 +488,15 @@ async function testIssuerProfile() {
   check("an HTTP URL with a query and no path (http://ocsp.example?x) -> attrcert/bad-input (RFC 2616 sec. 3.2.2)", await codeOf(pki.attrcert.sign(spec({ extensions: { authorityInfoAccess: [{ accessMethod: "ocsp", accessLocation: "http://ocsp.example?x" }] } }), aaOf(aa))) === "attrcert/bad-input");
   check("an HTTP URL with a fragment (http://ocsp.example/#f) -> attrcert/bad-input (RFC 2616 sec. 3.2.2)", await codeOf(pki.attrcert.sign(spec({ extensions: { authorityInfoAccess: [{ accessMethod: "ocsp", accessLocation: "http://ocsp.example/#f" }] } }), aaOf(aa))) === "attrcert/bad-input");
   check("CONTROL: an HTTP URL with a path and a query (http://ocsp.example/status?x=1) signs", Buffer.isBuffer(await pki.attrcert.sign(spec({ extensions: { authorityInfoAccess: [{ accessMethod: "ocsp", accessLocation: "http://ocsp.example/status?x=1" }] } }), aaOf(aa))));
-  check("CONTROL: an LDAP URL with a port and no host (ldap://:389/cn=aa) signs (RFC 4516 sec. 2)", Buffer.isBuffer(await pki.attrcert.sign(spec({ extensions: { crlDistributionPoints: [{ uniformResourceIdentifier: "ldap://:389/cn=aa,o=x?certificateRevocationList" }] } }), aaOf(aa))));
+  check("CONTROL: an LDAP URL with a port and no host (ldap://:389/cn=aa) signs (RFC 4516 sec. 2)", Buffer.isBuffer(await pki.attrcert.sign(spec({ extensions: { cRLDistributionPoints: [{ uniformResourceIdentifier: "ldap://:389/cn=aa,o=x?certificateRevocationList" }] } }), aaOf(aa))));
   check("CONTROL: an HTTP URL with a host and a port (http://ocsp.example:8080/) signs", Buffer.isBuffer(await pki.attrcert.sign(spec({ extensions: { authorityInfoAccess: [{ accessMethod: "ocsp", accessLocation: "http://ocsp.example:8080/" }] } }), aaOf(aa))));
-  check("an HTTP URL that ends at the authority marker (http://) -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec({ extensions: { crlDistributionPoints: [{ uniformResourceIdentifier: "http://" }] } }), aaOf(aa))) === "attrcert/bad-input");
-  check("CONTROL: an LDAP URL without a host (ldap:///cn=aa) signs (RFC 4516 sec. 2 leaves the host optional)", Buffer.isBuffer(await pki.attrcert.sign(spec({ extensions: { crlDistributionPoints: [{ uniformResourceIdentifier: "ldap:///cn=aa,o=x?certificateRevocationList" }] } }), aaOf(aa))));
+  check("an HTTP URL that ends at the authority marker (http://) -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec({ extensions: { cRLDistributionPoints: [{ uniformResourceIdentifier: "http://" }] } }), aaOf(aa))) === "attrcert/bad-input");
+  check("CONTROL: an LDAP URL without a host (ldap:///cn=aa) signs (RFC 4516 sec. 2 leaves the host optional)", Buffer.isBuffer(await pki.attrcert.sign(spec({ extensions: { cRLDistributionPoints: [{ uniformResourceIdentifier: "ldap:///cn=aa,o=x?certificateRevocationList" }] } }), aaOf(aa))));
   // RFC 5280 sec. 4.2.1.13, imported by sec. 4.3.5: a cRLIssuer names the CRL issuer as a directoryName, on both routes.
   var dnsIssuerDp = B.sequence([B.sequence([B.explicit(0, B.contextConstructed(0, uri("http://crl.example/a"))), B.contextConstructed(2, dns("crl-issuer.example"))])]);
-  check("pre-encoded crlDistributionPoints with a dNSName-only cRLIssuer -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec({ extensions: [extOf("cRLDistributionPoints", false, dnsIssuerDp)] }), aaOf(aa))) === "attrcert/bad-input");
+  check("pre-encoded cRLDistributionPoints with a dNSName-only cRLIssuer -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec({ extensions: [extOf("cRLDistributionPoints", false, dnsIssuerDp)] }), aaOf(aa))) === "attrcert/bad-input");
   var dnIssuerDp = B.sequence([B.sequence([B.explicit(0, B.contextConstructed(0, uri("http://crl.example/a"))), B.contextConstructed(2, B.explicit(4, B.sequence([B.set([B.sequence([B.oid(O("commonName")), B.utf8("crl issuer")])])])))])]);
-  check("CONTROL: pre-encoded crlDistributionPoints with a directoryName cRLIssuer signs", Buffer.isBuffer(await pki.attrcert.sign(spec({ extensions: [extOf("cRLDistributionPoints", false, dnIssuerDp)] }), aaOf(aa))));
+  check("CONTROL: pre-encoded cRLDistributionPoints with a directoryName cRLIssuer signs", Buffer.isBuffer(await pki.attrcert.sign(spec({ extensions: [extOf("cRLDistributionPoints", false, dnIssuerDp)] }), aaOf(aa))));
   // Sec. 4.3.4: an id-ad-ocsp accessLocation is a URI carrying an HTTP URL; other methods are unconstrained.
   var aia = byName(await pki.attrcert.sign(spec({ extensions: { authorityInfoAccess: [{ accessMethod: "ocsp", accessLocation: "http://ocsp.example/" }] } }), aaOf(aa)));
   check("authorityInfoAccess object form with an HTTP OCSP URL signs, non-critical", aia.authorityInfoAccess && aia.authorityInfoAccess.critical === false && aia.authorityInfoAccess.decoded[0].accessLocation.tag === 6);
@@ -506,7 +506,8 @@ async function testIssuerProfile() {
   check("authorityInfoAccess caIssuers with a dNSName signs (sec. 4.3.4 binds only the OCSP location)", !!byName(await pki.attrcert.sign(spec({ extensions: { authorityInfoAccess: [{ accessMethod: "caIssuers", accessLocation: { dNSName: "aia.example" } }] } }), aaOf(aa))).authorityInfoAccess);
   var aiaDns = B.sequence([B.sequence([B.oid(O("ocsp")), dns("ocsp.example")])]);
   check("pre-encoded authorityInfoAccess OCSP with a dNSName -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec({ extensions: [extOf("authorityInfoAccess", false, aiaDns)] }), aaOf(aa))) === "attrcert/bad-input");
-  check("noRevAvail beside the object-form crlDistributionPoints -> attrcert/bad-input (RFC 5755 sec. 6)", await codeOf(pki.attrcert.sign(ext({ crlDistributionPoints: ["http://crl.example/aa.crl"] }), aaOf(aa))) === "attrcert/bad-input");
+  check("the extension key is spelled as pki.x509.sign spells it: crlDistributionPoints -> attrcert/bad-input naming cRLDistributionPoints", await (async function () { try { await pki.attrcert.sign(spec({ extensions: { crlDistributionPoints: ["http://crl.example/aa.crl"] } }), aaOf(aa)); return false; } catch (e) { return e.code === "attrcert/bad-input" && /cRLDistributionPoints/.test(e.message); } })());
+  check("noRevAvail beside the object-form cRLDistributionPoints -> attrcert/bad-input (RFC 5755 sec. 6)", await codeOf(pki.attrcert.sign(ext({ cRLDistributionPoints: ["http://crl.example/aa.crl"] }), aaOf(aa))) === "attrcert/bad-input");
   // Sec. 4.3.3: the authority key identifier is included unless declined, and a stated one is the
   // AA certificate's subject key identifier when that certificate is at hand.
   var withSki = makeSigner("ec-p256", { ski: true });
@@ -530,6 +531,32 @@ async function testIssuerProfile() {
   var byKey = byName(await pki.attrcert.sign(ext({}), aaOf(aa)));
   check("name-and-key issuer: authorityKeyIdentifier keyIdentifier is the method (1) value of the AA key", byKey.authorityKeyIdentifier && byKey.authorityKeyIdentifier.decoded.keyIdentifier.length === 20);
   check("name-and-key issuer: a stated keyIdentifier is taken as given", Buffer.compare(byName(await pki.attrcert.sign(ext({ authorityKeyIdentifier: Buffer.alloc(4, 9) }), aaOf(aa))).authorityKeyIdentifier.decoded.keyIdentifier, Buffer.alloc(4, 9)) === 0);
+}
+
+// ---- every object the verb reads refuses an unknown field ----------------------------------------
+
+async function testUnknownFieldsRefused() {
+  var aa = makeSigner("ec-p256");
+  // A misspelled field would otherwise leave a default in force with nothing reported; each row is
+  // the conforming call plus one unknown key, and the message names the key.
+  async function refusal(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code === "attrcert/bad-input" ? e.message : e.code; } }
+  var rows = [
+    ["opts", function () { return pki.attrcert.sign(spec(), aaOf(aa), { pemm: true }); }, /pemm/],
+    ["role", function () { return pki.attrcert.sign(spec({ attributes: { role: { roleName: { uniformResourceIdentifier: "urn:r" }, rolename: 1 } } }), aaOf(aa)); }, /rolename/],
+    ["clearance", function () { return pki.attrcert.sign(spec({ attributes: { clearance: { policyId: "2.5.29.32.0", classlist: ["secret"] } } }), aaOf(aa)); }, /classlist/],
+    ["securityCategory", function () { return pki.attrcert.sign(spec({ attributes: { clearance: { policyId: "2.5.29.32.0", securityCategories: [{ type: "2.16.840.1.101.2.1.8.1", value: pki.asn1.build.utf8("N"), critical: true }] } } }), aaOf(aa)); }, /critical/],
+    ["group (IetfAttrSyntax)", function () { return pki.attrcert.sign(spec({ attributes: { group: { values: [{ string: "g" }], policyAuthorty: { directoryName: "CN=PA" } } } }), aaOf(aa)); }, /policyAuthorty/],
+    ["IetfAttrSyntax value", function () { return pki.attrcert.sign(spec({ attributes: { group: { values: [{ string: "g", encoding: "utf8" }] } } }), aaOf(aa)); }, /encoding/],
+    ["authenticationInfo (SvceAuthInfo)", function () { return pki.attrcert.sign(spec({ attributes: { authenticationInfo: { service: { dNSName: "s" }, ident: { dNSName: "i" }, authinfo: Buffer.from("x") } } }), aaOf(aa)); }, /authinfo/],
+    ["aaControls", function () { return pki.attrcert.sign(spec({ extensions: { aaControls: { pathLenConstraint: 1, permittedAttr: ["role"] } } }), aaOf(aa)); }, /permittedAttr/],
+    ["target entry", function () { return pki.attrcert.sign(spec({ extensions: { targetInformation: [{ targetName: { dNSName: "t.example" }, targetGroupName: 1 }] } }), aaOf(aa)); }, /targetGroupName/],
+    ["objectDigestInfo", function () { return pki.attrcert.sign(spec({ holder: { objectDigestInfo: { digestedObjectType: "publicKey", digestAlgorithm: "sha256", objectDigest: Buffer.alloc(32, 1), otherObjectTypeId: "1.2.3" } } }), aaOf(aa)); }, /otherObjectTypeId/],
+    ["baseCertificateID", function () { return pki.attrcert.sign(spec({ holder: { baseCertificateID: { issuer: [{ directoryName: "CN=CA" }], serial: 7n, issuerUid: Buffer.from([1]) } } }), aaOf(aa)); }, /issuerUid/],
+  ];
+  for (var i = 0; i < rows.length; i++) {
+    var m = await refusal(rows[i][1]);
+    check("an unknown field in " + rows[i][0] + " -> attrcert/bad-input naming it", rows[i][2].test(m) && /unknown/.test(m));
+  }
 }
 
 // Branch coverage (lib/attrcert-sign.js): 96% -- every REACHABLE branch is driven above. The residual
@@ -558,6 +585,7 @@ async function main() {
   await testSelfVerify();
   await testFailClosed();
   await testIssuerProfile();
+  await testUnknownFieldsRefused();
   console.log("CHECKS " + helpers.getChecks());
 }
 

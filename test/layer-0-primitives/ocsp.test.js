@@ -148,8 +148,28 @@ async function run() {
     (await codeOfAsync(function () { return pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer }, { nonce: Buffer.alloc(0) }); })) === "ocsp/bad-input");
   check("buildRequest a 129-octet nonce is rejected",
     (await codeOfAsync(function () { return pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer }, { nonce: Buffer.alloc(129) }); })) === "ocsp/bad-input");
-  check("buildRequest signer without requestorName -> ocsp/bad-input (RFC 6960 sec. 4.1.2)",
-    (await codeOfAsync(function () { return pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer }, { signer: { cert: w.issuerCertDer, key: w.issuerKeyPkcs8 } }); })) === "ocsp/bad-input");
+  // RFC 6960 sec. 4.1.2: a signed request names its requestor; the signer certificate's subject is
+  // that name when none is stated.
+  var reqDefaultName = pki.schema.ocsp.parseRequest(await pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer }, { signer: { cert: w.issuerCertDer, key: w.issuerKeyPkcs8 } }));
+  check("buildRequest signer without requestorName takes the signer certificate's subject (RFC 6960 sec. 4.1.2)",
+    reqDefaultName.requestorName != null && reqDefaultName.requestorName.tagNumber === 4 && reqDefaultName.requestorName.bytes.indexOf(pki.schema.x509.parse(w.issuerCertDer).subject.bytes) !== -1);
+  // RFC 9654 sec. 2.1: "An OCSP requester that implements the extension in this document MUST use
+  // a minimum length of 32 octets for Nonce", up to the 128 the section allows.
+  check("buildRequest a caller nonce of 31 octets -> ocsp/bad-input (RFC 9654 sec. 2.1 requester floor)",
+    (await codeOfAsync(function () { return pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer }, { nonce: Buffer.alloc(31, 1) }); })) === "ocsp/bad-input");
+  check("buildRequest a caller nonce of 32 octets signs", Buffer.isBuffer(await pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer }, { nonce: Buffer.alloc(32, 1) })));
+  check("buildRequest a caller nonce of 128 octets signs", Buffer.isBuffer(await pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer }, { nonce: Buffer.alloc(128, 1) })));
+  // An unknown field in any object the verbs read is refused, so a misspelled one cannot leave a
+  // default in force unreported.
+  async function unknownKeyMessage(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code === "ocsp/bad-input" ? e.message : e.code; } }
+  check("buildRequest query entry with an unknown field -> ocsp/bad-input naming it", /unknown query field.*isuer/.test(await unknownKeyMessage(function () { return pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer, isuer: 1 }); })));
+  check("buildRequest signer with an unknown field -> ocsp/bad-input naming it", /unknown request signer field.*keys/.test(await unknownKeyMessage(function () { return pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer }, { signer: { cert: w.issuerCertDer, key: w.issuerKeyPkcs8, keys: 1 } }); })));
+  // Each of these is the conforming signGood call plus one misspelled key, so the refusal can only
+  // be the unknown-field door (the message names the key).
+  check("sign responseData with an unknown field -> ocsp/bad-input naming it", /unknown responseData field.*producedAT/.test(await unknownKeyMessage(function () { return pki.ocsp.sign({ responderID: "byName", producedAT: TU, responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: "good", thisUpdate: TU, nextUpdate: NU }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 }); })));
+  check("sign response entry with an unknown field -> ocsp/bad-input naming it", /unknown response entry field.*nextUpdat/.test(await unknownKeyMessage(function () { return pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: "good", thisUpdate: TU, nextUpdate: NU, nextUpdat: NU }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 }); })));
+  check("sign responder with an unknown field -> ocsp/bad-input naming it", /unknown responder field.*embedCert/.test(await unknownKeyMessage(function () { return pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: "good", thisUpdate: TU, nextUpdate: NU }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8, embedCert: false }); })));
+  check("sign revoked status with an unknown field -> ocsp/bad-input naming it", /unknown revoked status field.*reason/.test(await unknownKeyMessage(function () { return pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: { revoked: TU, reason: "keyCompromise" }, thisUpdate: TU, nextUpdate: NU }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 }); })));
   check("buildRequest lightweight rejects a non-SHA-1 CertID",
     (await codeOfAsync(function () { return pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer }, { profile: "lightweight", hashAlgorithm: "sha256" }); })) === "ocsp/bad-input");
   var multiReq = await pki.ocsp.buildRequest([{ cert: w.targetCertDer, issuer: w.issuerCertDer }, { cert: w.targetCertDer, issuer: w.issuerCertDer }]);
@@ -546,6 +566,54 @@ async function run() {
   check("VR14b. certs excludes the malformed entry (only parseable certs reach the path-build pool)", vrJunk.certs.length === 1 && Buffer.compare(vrJunk.certs[0], w.issuerCertDer) === 0);
   check("VR15. embedded certs none of which signed -> signatureValid:false (not a throw)", (await pki.ocsp.verifyRequest(reorderCerts(await mkSignedReq(w.targetCertDer), [w.responderCertDer]))).signatureValid === false);
   check("VR16. opts.certs supplied but none signed -> signatureValid:false", (await pki.ocsp.verifyRequest(noCerts, { certs: [w.responderCertDer] })).signatureValid === false);
+  // RFC 6960 sec. 4.1.2: "If the request is signed, the requestor SHALL specify its name in the
+  // requestorName field." The signer's certificate names the requestor, so the builder takes the
+  // name from it when none is stated, and the responder holds a stated directoryName to the subject
+  // of the certificate that verified the signature.
+  var vrDefault = await pki.ocsp.verifyRequest(await pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer }, { signer: { cert: w.issuerCertDer, key: w.issuerKeyPkcs8 } }));
+  check("VR17. a signed request without a stated requestorName carries the signer certificate's subject", vrDefault.valid === true && vrDefault.requestorName !== null && vrDefault.signerSubject.dn === "CN=OCSP Mini CA");
+  var vrOther = await pki.ocsp.verifyRequest(await pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer }, { signer: { cert: w.issuerCertDer, key: w.issuerKeyPkcs8 }, requestorName: nameDN("Somebody Else") }));
+  check("VR18. a requestorName that is not the signer's subject -> valid:false, signatureValid stays true", vrOther.valid === false && vrOther.signatureValid === true && /requestorName/.test(String(vrOther.reason)));
+  // A signed request with no requestorName at all cannot come out of the builder, so it is written
+  // as bytes: the signer's own tbsRequest with the [1] field removed and re-signed.
+  var okReqDer = await mkSignedReq(w.targetCertDer);
+  var noNameTbs = (function () {
+    var r = pki.asn1.decode(okReqDer);
+    var tbs = r.children[0];
+    return b.sequence(tbs.children.filter(function (c) { return !(c.tagClass === "context" && c.tagNumber === 1); }).map(function (c) { return b.raw(c.bytes); }));
+  })();
+  var noNameSig = require("crypto").sign(null, noNameTbs, require("crypto").createPrivateKey({ key: w.issuerKeyPkcs8, format: "der", type: "pkcs8" }));   // the world's issuer key is Ed25519
+  var noNameReq = b.sequence([noNameTbs, b.explicit(0, b.sequence([b.sequence([b.oid(O("Ed25519"))]), b.bitString(noNameSig, 0), b.explicit(0, b.sequence([b.raw(w.issuerCertDer)]))]))]);
+  check("VR19. a signed request with no requestorName is refused by the parser (RFC 6960 sec. 4.1.2 SHALL)", (await codeOfAsync(function () { return pki.ocsp.verifyRequest(noNameReq); })) === "ocsp/missing-requestor-name");
+  // A requestor named by a form other than directoryName is not compared to a subject: unperformed, never a pass.
+  var mailNameTbs = (function () {
+    var r = pki.asn1.decode(okReqDer);
+    return b.sequence(r.children[0].children.map(function (c) {
+      return (c.tagClass === "context" && c.tagNumber === 1) ? b.explicit(1, b.contextPrimitive(1, Buffer.from("ca@example.com", "latin1"))) : b.raw(c.bytes);
+    }));
+  })();
+  var mailNameSig = require("crypto").sign(null, mailNameTbs, require("crypto").createPrivateKey({ key: w.issuerKeyPkcs8, format: "der", type: "pkcs8" }));
+  var mailNameReq = b.sequence([mailNameTbs, b.explicit(0, b.sequence([b.sequence([b.oid(O("Ed25519"))]), b.bitString(mailNameSig, 0), b.explicit(0, b.sequence([b.raw(w.issuerCertDer)]))]))]);
+  var vrMail = await pki.ocsp.verifyRequest(mailNameReq);
+  check("VR20. an rfc822Name requestorName -> valid:false, requestorNamed:false, signatureValid stays true", vrMail.valid === false && vrMail.requestorNamed === false && vrMail.signatureValid === true && /directoryName/.test(String(vrMail.reason)));
+  check("VR21. the verdict reports requestorNamed:true on the conforming request", vrOk.requestorNamed === true);
+  // A certificate with an empty subject names its holder in a critical subjectAltName (RFC 5280
+  // sec. 4.1.2.6). An empty Name names nobody, so it is not a requestorName the builder derives
+  // nor one the responder accepts.
+  var nsKp = require("crypto").generateKeyPairSync("ed25519");
+  var nsKey = nsKp.privateKey.export({ format: "der", type: "pkcs8" });
+  var nsCert = await pki.x509.sign({ subject: [], subjectPublicKey: nsKp.publicKey.export({ format: "der", type: "spki" }), notBefore: TU, notAfter: NU, extensions: { subjectAltName: [{ dNSName: "requestor.example" }] } }, { cert: w.issuerCertDer, key: w.issuerKeyPkcs8 });
+  check("VR22. a signer certificate with an empty subject and no stated requestorName -> ocsp/bad-input", (await codeOfAsync(function () { return pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer }, { signer: { cert: nsCert, key: nsKey } }); })) === "ocsp/bad-input");
+  var emptyNameTbs = (function () {
+    var r = pki.asn1.decode(okReqDer);
+    return b.sequence(r.children[0].children.map(function (c) {
+      return (c.tagClass === "context" && c.tagNumber === 1) ? b.explicit(1, b.contextConstructed(4, b.sequence([]))) : b.raw(c.bytes);
+    }));
+  })();
+  var emptyNameSig = require("crypto").sign(null, emptyNameTbs, nsKp.privateKey);
+  var emptyNameReq = b.sequence([emptyNameTbs, b.explicit(0, b.sequence([b.sequence([b.oid(O("Ed25519"))]), b.bitString(emptyNameSig, 0), b.explicit(0, b.sequence([b.raw(nsCert)]))]))]);
+  var vrEmpty = await pki.ocsp.verifyRequest(emptyNameReq);
+  check("VR23. an empty directoryName requestorName under an empty-subject signer -> valid:false, requestorNamed:false", vrEmpty.valid === false && vrEmpty.requestorNamed === false && vrEmpty.signatureValid === true && /nobody/.test(String(vrEmpty.reason)));
   // VR17: the request bytes are snapshotted at the door, so a caller mutating the buffer across the
   // async signature check cannot make verification read bytes other than those parsed and reported.
   var reqBuf = Buffer.from(await mkSignedReq(w.targetCertDer));
@@ -560,9 +628,18 @@ async function run() {
   // certificate beside its renewal. All verify; ALL are surfaced so the responder can pick a usable
   // one rather than being handed only whichever appears first.
   var caSpki = pki.schema.x509.parse(w.issuerCertDer).subjectPublicKeyInfo.bytes;
-  var caTwin = await pki.x509.sign({ subject: "OCSP Mini CA (renewed)", subjectPublicKey: caSpki, notBefore: new Date("2027-01-01T00:00:00Z"), notAfter: new Date("2029-01-01T00:00:00Z") }, { key: w.issuerKeyPkcs8 });
+  // A renewal keeps its subject, so both certificates name the requestor the request names.
+  var caTwin = await pki.x509.sign({ subject: "OCSP Mini CA", subjectPublicKey: caSpki, notBefore: new Date("2027-01-01T00:00:00Z"), notAfter: new Date("2029-01-01T00:00:00Z") }, { key: w.issuerKeyPkcs8 });
   var vrMulti = await pki.ocsp.verifyRequest(reorderCerts(await mkSignedReq(w.targetCertDer), [w.issuerCertDer, caTwin]));
   check("VR19. multiple certs sharing the signing key -> signerCerts lists all matches", vrMulti.signatureValid === true && vrMulti.signerCerts.length === 2 && Buffer.compare(vrMulti.signerCert, vrMulti.signerCerts[0]) === 0);
+  // A same-key certificate under ANOTHER subject verifies the signature but is not the requestor the
+  // request names, so it is left out of signerCerts and never surfaces as signerCert / signerSubject,
+  // whatever order the request embeds them in (the responder builds its trusted path from signerCert).
+  var caOther = await pki.x509.sign({ subject: "Somebody Else", subjectPublicKey: caSpki, notBefore: new Date("2027-01-01T00:00:00Z"), notAfter: new Date("2029-01-01T00:00:00Z") }, { key: w.issuerKeyPkcs8 });
+  var vrOtherFirst = await pki.ocsp.verifyRequest(reorderCerts(await mkSignedReq(w.targetCertDer), [caOther, w.issuerCertDer]));
+  check("VR19a. a same-key certificate under another subject, embedded first, is not the signer the verdict names", vrOtherFirst.valid === true && vrOtherFirst.signerSubject.dn === "CN=OCSP Mini CA" && vrOtherFirst.signerCerts.length === 1 && Buffer.compare(vrOtherFirst.signerCert, w.issuerCertDer) === 0);
+  var vrOtherOnly = await pki.ocsp.verifyRequest(reorderCerts(await mkSignedReq(w.targetCertDer), [caOther]));
+  check("VR19b. only a same-key certificate under another subject -> valid:false, requestorNamed:false", vrOtherOnly.valid === false && vrOtherOnly.requestorNamed === false && vrOtherOnly.signatureValid === true);
   // VR20: a request embeds the signer plus a non-signing (intermediate) certificate. Only the signer
   // verifies, but `certs` surfaces the FULL embedded bag so the responder has the chain to path-validate.
   var withChain = reorderCerts(await mkSignedReq(w.targetCertDer), [w.issuerCertDer, w.responderCertDer]);
@@ -754,8 +831,9 @@ async function run() {
   check("responderID omitted defaults to byName + verifies good", (await verify(w, ridDefault)).status === "good");
   check("sign with responseData carrying no responses -> ocsp/bad-input", (await codeOfAsync(function () { return pki.ocsp.sign({ responderID: "byName" }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 }); })) === "ocsp/bad-input");
   check("sign with a null response entry -> ocsp/bad-input", (await codeOfAsync(function () { return pki.ocsp.sign({ responderID: "byName", responses: [null] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 }); })) === "ocsp/bad-input");
-  var withProduced = await pki.ocsp.sign({ responderID: "byName", producedAt: new Date("2027-05-01Z"), extendedRevoke: true, responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: "good", thisUpdate: TU, nextUpdate: NU }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 });
+  var withProduced = await pki.ocsp.sign({ responderID: "byName", producedAt: new Date("2027-05-01Z"), responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: "good", thisUpdate: TU, nextUpdate: NU }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 }, { extendedRevoke: true });
   check("explicit producedAt + extendedRevoke build + verify good", (await verify(w, withProduced)).status === "good");
+  check("...and the extended-revoke extension is on the wire (it was silently dropped when given in responseData)", pki.schema.ocsp.parseResponse(withProduced).basicResponse.responseExtensions.some(function (e) { return e.oid === O("ocspExtendedRevoke"); }));
   check("verify with no opts -> ocsp/bad-input (cert + issuer required)", (await codeOfAsync(function () { return pki.ocsp.verify(good); })) === "ocsp/bad-input");
   check("verify accepts the parser's own response object", (await pki.ocsp.verify(pki.schema.ocsp.parseResponse(good), { cert: w.targetCertDer, issuer: w.issuerCertDer, time: T })).status === "good");
   // ...and refuses a REBUILT one. The signature, the algorithm that verifies it and the bytes it
