@@ -466,6 +466,18 @@ function testAcExtensionDecoders() {
   check("ext acProxying: empty inner Targets -> bad-targets (shared decoder)", extCode(PROXY, b.sequence([b.sequence([])])) === "attrcert/bad-proxy-info");
   check("ext acProxying: targetCert [2] rejected (RFC 5755 7.4)", extCode(PROXY, b.sequence([b.sequence([b.contextConstructed(2, b.integer(1))])])) === "attrcert/bad-proxy-info");
 
+  // The three RFC 5280 extensions RFC 5755 sec. 4.3.3 to 4.3.5 profile for an AC read through the
+  // certificate decoders, so the sec. 6 "pointer in AC" scheme reads them off the parse.
+  var AKI = pki.oid.byName("authorityKeyIdentifier"), AIA = pki.oid.byName("authorityInfoAccess"), CRLDP = pki.oid.byName("cRLDistributionPoints");
+  var uri = function (u) { return b.contextPrimitive(6, Buffer.from(u, "latin1")); };
+  check("ext authorityKeyIdentifier: keyIdentifier [0] decodes", Buffer.compare(extDecoded(AKI, b.sequence([b.contextPrimitive(0, Buffer.from([9, 9, 9]))])).keyIdentifier, Buffer.from([9, 9, 9])) === 0);
+  check("ext authorityKeyIdentifier: malformed -> typed attrcert/*", /^attrcert\//.test(extCode(AKI, b.integer(1)) || ""));
+  var aia = extDecoded(AIA, b.sequence([b.sequence([b.oid(pki.oid.byName("ocsp")), uri("http://ocsp.example/")])]));
+  check("ext authorityInfoAccess: the OCSP location decodes as a URI", aia[0].accessMethod === pki.oid.byName("ocsp") && aia[0].accessLocation.tag === 6 && aia[0].accessLocation.value === "http://ocsp.example/");
+  var dp = extDecoded(CRLDP, b.sequence([b.sequence([b.contextConstructed(0, b.contextConstructed(0, uri("http://crl.example/a.crl")))])]));
+  check("ext cRLDistributionPoints: the fullName decodes", dp.length === 1 && dp[0].distributionPoint.kind === "fullName" && dp[0].distributionPoint.names.length === 1);
+  check("ext cRLDistributionPoints: reasons-only point -> typed attrcert/*", /^attrcert\//.test(extCode(CRLDP, b.sequence([b.sequence([b.contextPrimitive(1, Buffer.from([0x06, 0x40]))])])) || ""));
+
   // opaque fallback for an unknown extension OID
   check("ext unknown OID -> opaque fallback", parse(attrCert({ extensions: [ext("1.2.3.4.5", b.nullValue())] })).extensions[0].decoded.opaque === true);
 }

@@ -52,6 +52,21 @@ function okTarget(t) { return { time: WITHIN, revocationStatus: "notRevoked", ta
 function aaOf(s) { return { name: "CN=Example AA", publicKey: s.spki, key: s.key }; }
 // The issuer argument the verifier takes: the AC issuer this caller directly trusts (sec. 5(4)).
 function trusted(s) { return { name: "CN=Example AA", publicKey: s.spki }; }
+// An AC carrying what RFC 5755 forbids an ISSUER to produce (a targetCert, several Targets
+// elements) cannot come out of pki.attrcert.sign, which refuses it, but a verifier MUST still
+// answer for one. It is written as the bytes a relying party would receive: the signer's own
+// AttributeCertificateInfo with the extensions field replaced, signed again under the AA key.
+function reissueWithExtensions(aa, extensions) {
+  var b = pki.asn1.build;
+  return pki.attrcert.sign(spec({ extensions: [] }), aaOf(aa)).then(function (der) {
+    var top = pki.asn1.decode(der);
+    var kids = top.children[0].children.map(function (c) { return b.raw(c.bytes); });
+    kids.push(b.sequence(extensions));   // no extensions were issued, so the field is appended
+    var tbs = b.sequence(kids);
+    var sig = require("crypto").sign("sha256", tbs, { key: aa.keyObject, dsaEncoding: "der" });
+    return b.sequence([tbs, b.raw(top.children[1].bytes), b.bitString(sig, 0)]);
+  });
+}
 
 // ---- accept: a well-formed AC verifies under the issuer the caller named ---
 
@@ -224,7 +239,7 @@ async function testAnAuditIdentityIsSupportedAndSurfaced() {
   }), aaOf(aa));
   var r = await pki.attrcert.verify(der, trusted(aa), OK);
   check("a critical audit identity does not refuse the AC", r.verified === true);
-  check("the verdict carries the extensions it read", Array.isArray(r.extensions) && r.extensions.length === 1);
+  check("the verdict carries the extensions it read (the audit identity and the default authorityKeyIdentifier)", Array.isArray(r.extensions) && r.extensions.length === 2);
   check("the audit identity is reachable on the verdict", r.extensions[0].name === "acAuditIdentity");
 }
 
@@ -268,7 +283,9 @@ async function testATargetCertIssuerIsNotATarget() {
   var targetCert = b.contextConstructed(2, issuerSerial);
   var extnValue = b.sequence([b.sequence([targetCert])]);
   var ext = b.sequence([b.oid(pki.oid.byName("targetInformation")), b.boolean(true), b.octetString(extnValue)]);
-  var der = await pki.attrcert.sign(spec({ extensions: [ext] }), aaOf(aa));
+  // The signer refuses the arm its own verifier refuses, so the AC is reissued as received bytes.
+  check("the signer refuses to produce a targetCert", await codeOf(pki.attrcert.sign(spec({ extensions: [ext] }), aaOf(aa))) === "attrcert/bad-input");
+  var der = await reissueWithExtensions(aa, [ext]);
 
   // The name is present in the extension bytes, which is exactly what makes this the trap.
   var parsedExt = pki.schema.attrcert.parse(der).extensions[0];
@@ -293,7 +310,7 @@ async function testATargetCertIssuerIsNotATarget() {
   var mine = b.explicit(0, b.contextPrimitive(2, Buffer.from("server-a.example", "latin1")));
   var both = b.sequence([b.oid(pki.oid.byName("targetInformation")), b.boolean(true),
     b.octetString(b.sequence([b.sequence([mine, targetCert])]))]);
-  var derBoth = await pki.attrcert.sign(spec({ extensions: [both] }), aaOf(aa));
+  var derBoth = await reissueWithExtensions(aa, [both]);
   var matching = okTarget({ dNSName: "server-a.example" });
   var rb = await pki.attrcert.verify(derBoth, trusted(aa), matching);
   check("a matching target does not rescue an AC carrying targetCert", rb.verified === false);
@@ -573,7 +590,10 @@ async function testSeveralTargetsGroupsFlatten() {
   // Two separate Targets groups, each naming one server.
   var extnValue = b.sequence([b.sequence([gn("server-a.example")]), b.sequence([gn("server-b.example")])]);
   var ext = b.sequence([b.oid(pki.oid.byName("targetInformation")), b.boolean(true), b.octetString(extnValue)]);
-  var der = await pki.attrcert.sign(spec({ extensions: [ext] }), aaOf(aa));
+  // Sec. 4.3.2 also says a conforming issuer produces one Targets element, and the signer holds
+  // to that, so the AC is reissued as the bytes an AC user MUST still accept.
+  check("the signer refuses to produce two Targets elements", await codeOf(pki.attrcert.sign(spec({ extensions: [ext] }), aaOf(aa))) === "attrcert/bad-input");
+  var der = await reissueWithExtensions(aa, [ext]);
 
   check("the AC carries two Targets groups",
     pki.schema.attrcert.parse(der).extensions[0].decoded.length === 2);
