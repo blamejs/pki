@@ -458,6 +458,20 @@ async function testFailClosedInputs() {
     (await codeOf(pki.pkcs12.build({ key: kemRsaHollow, cert: Buffer.from(kemRsa.x5c, "base64") }, { password: "1234" }))) === "pkcs12/bad-input");
   check("CONTROL: a key bag and a cert bag with DIFFERENT localKeyIds are not a pair and build",
     Buffer.isBuffer(await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert, localKeyId: lkid }, { type: "key", key: other.key, localKeyId: Buffer.from([0x0c]) }] }] }, { password: "1234" })));
+  // A localKeyId identifies ONE private key, so the pairing is a lookup and never a product: two key
+  // bags carrying the same id (even the same key twice) are refused before any pair is probed, and
+  // the message names the id. Several certificates under one key's id (a renewal beside the
+  // certificate it replaces) are each held to that one key.
+  var twoKeys = null;
+  try {
+    await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert, localKeyId: lkid }, { type: "key", key: s.key, localKeyId: lkid }] }, { bags: [{ type: "key", key: s.key, localKeyId: lkid }] }] }, { password: "1234" });
+  } catch (e) { twoKeys = e; }
+  check("two key bags carrying one localKeyId (across safes) -> pkcs12/bad-input naming the id",
+    twoKeys !== null && twoKeys.code === "pkcs12/bad-input" && /localKeyId 0a0b is carried by more than one key bag/.test(twoKeys.message));
+  check("CONTROL: two certificate bags under one key's localKeyId (a renewal) each pair with that key and build",
+    Buffer.isBuffer(await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert, localKeyId: lkid }, { type: "cert", cert: signing.minimalCert(s.spki, { serial: 0x78 }), localKeyId: lkid }, { type: "key", key: s.key, localKeyId: lkid }] }] }, { password: "1234" })));
+  check("two certificate bags under one localKeyId, one of them another key's -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert, localKeyId: lkid }, { type: "cert", cert: other.cert, localKeyId: lkid }, { type: "key", key: s.key, localKeyId: lkid }] }] }, { password: "1234" }))) === "pkcs12/bad-input");
   check("#11 public-key integrity with no signer -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] }, { integrity: { mode: "public-key" }, password: "1234" }))) === "pkcs12/bad-input");
   // The integrity signers are authoring input for this store, so they answer to the same rule as
   // every other field written here. Every field beyond the identity has a default, so a misspelled
