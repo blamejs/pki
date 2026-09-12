@@ -4,6 +4,18 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.42 — 2026-09-12
+
+An S/MIME message is signed only under a certificate a receiving agent accepts a mail signature from.
+
+### Changed
+
+- pki.smime.sign refuses, with smime/bad-signer-certificate, a signer certificate whose keyUsage extension asserts neither digitalSignature nor nonRepudiation (RFC 8550 sec. 4.4.2) or whose extendedKeyUsage extension carries neither emailProtection nor anyExtendedKeyUsage (sec. 4.4.4), naming the signer by position. A certificate that carries neither extension signs, as a reader presumes both key usage bits and any purpose for it. The rule is about the certificate the message carries: a key-only signer, which RFC 8550 sec. 3 permits where correspondents hold each other's certificates by other means, still signs, and the reader holds the certificate it supplies to the same rule. The signer descriptors are read once, so a certificate accessor answers the same certificate to this check and to the signing, and a sparse signer list is refused before it is traversed.
+
+### Fixed
+
+- The emailProtection requirement pki.smime.verify applies to a trusted signer is cited to RFC 8550 sec. 4.4.4, the certificate-handling specification, in the README and the reference; it was cited to RFC 8551.
+
 ## v0.7.41 — 2026-09-12
 
 A delivered or archived private key is proven the private half of its certificate with the key itself.

@@ -65,7 +65,7 @@ function makeSigner(alg, opts) {
 // A keyUsage extension (SEQUENCE { extnID, critical BOOLEAN, extnValue OCTET STRING }) asserting a
 // single named bit -- keyEncipherment (2) or keyAgreement (4), which M9/M15 of the CMS enveloped
 // profile require on a recipient certificate.
-var _KU_BIT = { digitalSignature: 0, keyEncipherment: 2, dataEncipherment: 3, keyAgreement: 4 };
+var _KU_BIT = { digitalSignature: 0, nonRepudiation: 1, keyEncipherment: 2, dataEncipherment: 3, keyAgreement: 4 };
 function keyUsageExt(bitName) {
   var ku = b.namedBitString([_KU_BIT[bitName]]);   // minimal single-bit NamedBitList (X.690 sec. 11.2.2)
   return b.sequence([b.oid(O("keyUsage")), b.boolean(true), b.octetString(ku)]);
