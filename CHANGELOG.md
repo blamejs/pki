@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.29 — 2026-09-12
+
+Every decision pki.key makes is taken with operations bound when the module loads.
+
+### Changed
+
+- pki.key.import, pki.key.generate, pki.key.decrypt, pki.key.encrypt, pki.key.export, pki.key.publicFromPrivate and the key-pair correspondence check read Array.isArray, Math.floor, isFinite, String, String.prototype.toUpperCase and String.prototype.indexOf, Buffer.from, Object.assign, Object.create and Object.prototype.hasOwnProperty as bound at module load. Replacing any of them afterwards changes nothing the module decides: a non-array usages is still refused, a fractional or infinite maxIterations is still refused, an Ed25519 import still receives signing usages, and an unrestricted RSASSA-PSS pair still corresponds when an inherited saltLength is planted on Object.prototype. Behavior on an untouched runtime is unchanged.
+
 ## v0.7.28 — 2026-09-12
 
 pki.cmp.verify names a MAC algorithm it does not compute as what it is, not as a failed signature.

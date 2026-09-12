@@ -1,0 +1,11 @@
+{
+  "version": "0.7.29",
+  "date": "2026-09-12",
+  "headline": "Every decision pki.key makes is taken with operations bound when the module loads.",
+  "summary": "pki.key decides whether an option is an array, whether an iteration cap is a whole finite number, which usages a key's algorithm name selects, and which restrictions an RSASSA-PSS half carries. Each of those read a global or a prototype method from the runtime at the moment it ran, so a replacement installed after load could steer the decision. The module now takes every such operation from the captures the rest of the toolkit uses, and the source gate that holds the other modules to that rule holds this one too.",
+  "sections": {
+    "Changed": [
+      "pki.key.import, pki.key.generate, pki.key.decrypt, pki.key.encrypt, pki.key.export, pki.key.publicFromPrivate and the key-pair correspondence check read Array.isArray, Math.floor, isFinite, String, String.prototype.toUpperCase and String.prototype.indexOf, Buffer.from, Object.assign, Object.create and Object.prototype.hasOwnProperty as bound at module load. Replacing any of them afterwards changes nothing the module decides: a non-array usages is still refused, a fractional or infinite maxIterations is still refused, an Ed25519 import still receives signing usages, and an unrestricted RSASSA-PSS pair still corresponds when an inherited saltLength is planted on Object.prototype. Behavior on an untouched runtime is unchanged."
+    ]
+  }
+}
