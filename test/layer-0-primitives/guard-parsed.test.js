@@ -28,6 +28,7 @@ var CERT = {
   validity: { notBefore: new Date(0), notAfter: new Date(1) },
   issuer: NAME, subject: NAME,
   subjectPublicKeyInfo: { bytes: Z, algorithm: ALG, publicKey: { bytes: Z, unusedBits: 0 } },
+  issuerUniqueID: null, subjectUniqueID: null,
   extensions: [],
 };
 var CRL = {

@@ -1793,6 +1793,12 @@ async function testPolicyMachinerySpec() {
     await codeOf(pki.x509.sign(ca({ policyMappings: [{ issuerDomainPolicy: "anyPolicy", subjectDomainPolicy: "domain-validated" }] }), { key: s.key })) === "x509/bad-input");
   check("mapping TO anyPolicy -> x509/bad-input",
     await codeOf(pki.x509.sign(ca({ policyMappings: [{ issuerDomainPolicy: "domain-validated", subjectDomainPolicy: "anyPolicy" }] }), { key: s.key })) === "x509/bad-input");
+  // The pre-encoded route is held to the same clause on the decoded value.
+  var pmAnyPre = asn1.build.sequence([asn1.build.oid(pki.oid.byName("policyMappings")), asn1.build.boolean(true), asn1.build.octetString(asn1.build.sequence([asn1.build.sequence([asn1.build.oid(pki.oid.byName("anyPolicy")), asn1.build.oid(pki.oid.byName("domain-validated"))])]))]);
+  var bcPre = asn1.build.sequence([asn1.build.oid(pki.oid.byName("basicConstraints")), asn1.build.boolean(true), asn1.build.octetString(asn1.build.sequence([asn1.build.boolean(true)]))]);
+  var kuPre = asn1.build.sequence([asn1.build.oid(pki.oid.byName("keyUsage")), asn1.build.boolean(true), asn1.build.octetString(asn1.build.bitString(Buffer.from([0x04]), 2))]);
+  check("a pre-encoded policyMappings mapping from anyPolicy -> x509/bad-input",
+    await codeOf(pki.x509.sign({ subject: "ca.example", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: [bcPre, kuPre, pmAnyPre] }, { key: s.key })) === "x509/bad-input");
   // A non-string identifier reaches the OID registry before it is typed, so the registry's own
   // oid/bad-input would surface where this verb documents x509/bad-input. #119 already fixed the
   // lexically-dotted case; this is the same contract for every producer spec that names an OID.

@@ -4,6 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.38 — 2026-09-12
+
+pki.lint.certificate grades six RFC 5280 rules its parser read past, and the parser surfaces the unique identifiers.
+
+### Added
+
+- pki.lint.certificate rules: lint/rfc5280/policy-mapping-any-policy (error, sec. 4.2.1.5: policies MUST NOT be mapped to or from anyPolicy), lint/rfc5280/unique-identifier-present (error, sec. 4.1.2.8: a conforming CA MUST NOT generate a certificate with a unique identifier), lint/rfc5280/san-critical-with-subject (warn, sec. 4.2.1.6: a subjectAltName beside a non-empty subject SHOULD be non-critical), lint/rfc5280/eku-critical-with-any-purpose (warn, sec. 4.2.1.12: an extKeyUsage naming anyExtendedKeyUsage SHOULD NOT be critical), lint/rfc5280/notice-ref-used (warn, sec. 4.2.1.4: noticeRef SHOULD NOT be used), and lint/rfc5280/recommended-criticality (warn, sec. 4.2.1.7 and 4.2.1.13: issuerAltName and cRLDistributionPoints SHOULD be non-critical), each naming its clause in the finding.
+- pki.schema.x509.parse returns issuerUniqueID and subjectUniqueID, each { unusedBits, bytes } or null, so a relying party sees the fields RFC 5280 sec. 4.1.2.8 tells a CA not to generate.
+
+### Changed
+
+- pki.x509.sign refuses a pre-encoded policyMappings extension that maps to or from anyPolicy, the rule its object form and pki.path.validate already applied (RFC 5280 sec. 4.2.1.5).
+
 ## v0.7.37 — 2026-09-12
 
 Every object a signer reads refuses a field it does not read, a signed OCSP request names its signer, and the requester nonce meets the RFC 9654 floor.

@@ -103,7 +103,7 @@
   "lib/schema-pkix.js": "2026-09-12",
   "lib/schema-smime.js": "2026-09-04",
   "lib/schema-tsp.js": "2026-09-06",
-  "lib/schema-x509.js": "2026-09-04",
+  "lib/schema-x509.js": "2026-09-12",
   "lib/shbs.js": "2026-09-06",
   "lib/sign-scheme.js": "2026-09-07",
   "lib/sigstore.js": "2026-09-12",
