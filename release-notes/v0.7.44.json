@@ -1,0 +1,11 @@
+{
+  "version": "0.7.44",
+  "date": "2026-09-12",
+  "headline": "A JWS whose embedded jwk carries a private key is refused on verify.",
+  "summary": "pki.jose.verify read a Flattened JWS whose protected header embedded a jwk carrying private key material (an EC/OKP d, the RSA CRT parameters, a symmetric k, or an AKP priv) and returned that private key in the verdict header. RFC 7515 sec. 4.1.3 makes the embedded jwk the signer's public key, and pki.jose.sign already refuses to embed a private one; verify now holds an incoming message to the same rule.",
+  "sections": {
+    "Changed": [
+      "pki.jose.verify refuses, with jose/private-key-material, a JWS whose protected header embeds a jwk carrying any private member (d, the RSA CRT parameters p, q, dp, dq, qi and the multi-prime oth, the symmetric k, or the AKP priv), before the signature is checked, so a malformed message carrying a private key in its header is never imported or returned in the verdict. A public-only embedded jwk is unaffected, and a message signed under the matching public key is refused the same way (the private embed is the fault)."
+    ]
+  }
+}

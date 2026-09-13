@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.44 — 2026-09-12
+
+A JWS whose embedded jwk carries a private key is refused on verify.
+
+### Changed
+
+- pki.jose.verify refuses, with jose/private-key-material, a JWS whose protected header embeds a jwk carrying any private member (d, the RSA CRT parameters p, q, dp, dq, qi and the multi-prime oth, the symmetric k, or the AKP priv), before the signature is checked, so a malformed message carrying a private key in its header is never imported or returned in the verdict. A public-only embedded jwk is unaffected, and a message signed under the matching public key is refused the same way (the private embed is the fault).
+
 ## v0.7.43 — 2026-09-12
 
 A CMP message carries the transaction fields a receiver requires.
