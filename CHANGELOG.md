@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.45 — 2026-09-13
+
+A signature-protected CMP message fills an omitted sender with the signer's subject.
+
+### Changed
+
+- pki.cmp.build fills a header sender the caller omits under signature protection with the signer certificate's subject (RFC 9483 sec. 3.1), so a message built without one is receivable rather than refused. A sender the caller states is left as given, matching the signer or not. A signer certificate with an empty subject names itself by a subjectAltName entry, which the builder cannot choose for the caller, so an omitted sender there is still refused with cmp/bad-input. MAC-protected messages carry no signer and are unchanged.
+
 ## v0.7.44 — 2026-09-12
 
 A JWS whose embedded jwk carries a private key is refused on verify.

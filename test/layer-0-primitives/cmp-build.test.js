@@ -419,7 +419,7 @@ async function run() {
   check("21c. an unknown header field -> cmp/bad-input", await codeOf(pki.cmp.build({ header: Object.assign({ bogus: 1 }, HDR), body: irMsg.body }, SIG)) === "cmp/bad-input");
   check("21d. a multi-key body object -> cmp/bad-input", await codeOf(pki.cmp.build({ header: HDR, body: { ir: irMsg.body.ir, cr: irMsg.body.ir } }, SIG)) === "cmp/bad-input");
   check("21e. an empty body object -> cmp/bad-input", await codeOf(pki.cmp.build({ header: HDR, body: {} }, SIG)) === "cmp/bad-input");
-  check("21f. a missing sender -> cmp/bad-input", await codeOf(pki.cmp.build({ header: { recipient: HDR.recipient }, body: irMsg.body }, SIG)) === "cmp/bad-input");
+  check("21f. a missing sender under MAC protection (no signer to fill it from) -> cmp/bad-input", await codeOf(pki.cmp.build({ header: { recipient: HDR.recipient }, body: irMsg.body }, { mac: { secret: "s3cret" } })) === "cmp/bad-input");
   check("21g. an unknown body arm -> cmp/bad-input", await codeOf(pki.cmp.build({ header: HDR, body: { nope: 1 } }, SIG)) === "cmp/bad-input");
   check("21h. a malformed inner ir/crmf spec surfaces a typed crmf/*", /^crmf\//.test(await codeOf(pki.cmp.build({ header: HDR, body: { ir: { certTemplate: { publicKey: Buffer.from([0x00]) } } } }, SIG))));
   check("21i. an unknown opts field -> cmp/bad-input", await codeOf(pki.cmp.build(irMsg, Object.assign({ bogus: 1 }, SIG))) === "cmp/bad-input");
@@ -450,6 +450,28 @@ async function run() {
     shortErr !== null && shortErr.code === "cmp/bad-input" && /RFC 9483 sec\. 3\.5/.test(shortErr.message));
   var macHdr = pki.schema.cmp.parse(await pki.cmp.build({ header: { sender: HDR.sender, recipient: HDR.recipient }, body: irMsg.body }, { mac: { secret: "s3cret" } })).header;
   check("21o6. the same defaults under MAC protection", Buffer.isBuffer(macHdr.transactionID) && macHdr.transactionID.length === 16 && Buffer.isBuffer(macHdr.senderNonce) && macHdr.senderNonce.length === 16);
+  // ---- 21p: under signature protection a sender the caller omits is the signer's subject ----
+  // A signature-protected message names its signer (RFC 9483 sec. 3.1), so an omitted sender is
+  // filled with the signer certificate's subject, the value a receiver holds it to, exactly as the
+  // transaction fields above are filled. This is the fill only: a present sender, matching or not,
+  // is left as given (whether the builder should REFUSE a mismatch is a separate posture).
+  var noSender = await pki.cmp.build({ header: { recipient: HDR.recipient }, body: irMsg.body }, SIG);
+  var noSenderHdr = pki.schema.cmp.parse(noSender).header;
+  check("21p1. a signature-protected header without a sender is filled with the signer certificate's subject",
+    noSenderHdr.sender && noSenderHdr.sender.value && noSenderHdr.sender.value.dn === "CN=Test Signer");
+  check("21p2. and the filled message verifies on receipt (the sender names the signer)",
+    (await pki.cmp.verify(noSender, { signerCert: s.cert })).valid === true);
+  check("21p3. CONTROL: an explicit sender is left as given, matching the signer or not",
+    pki.schema.cmp.parse(await pki.cmp.build({ header: Object.assign({}, HDR, { sender: { directoryName: [{ commonName: "client" }] } }), body: irMsg.body }, SIG)).header.sender.value.dn === "CN=client");
+  check("21p4. CONTROL: MAC protection has no signer to name, so an omitted sender is still refused",
+    (await codeOf(pki.cmp.build({ header: { recipient: HDR.recipient }, body: irMsg.body }, { mac: { secret: "s3cret" } }))) === "cmp/bad-input");
+  var emptyKp = await pki.key.generate("Ed25519");
+  var emptyCert = await pki.x509.sign({ subject: [], subjectPublicKey: await pki.key.export(emptyKp.publicKey), notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2030-01-01T00:00:00Z"), extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ dNSName: "ee.example" }] } }, { name: "Issuer", publicKey: s.spki, key: s.key });
+  var emptyBody = { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: await pki.key.export(emptyKp.publicKey) }, await pki.key.export(emptyKp.privateKey)) };
+  var emptyErr = null;
+  try { await pki.cmp.build({ header: { recipient: HDR.recipient }, body: emptyBody }, { key: await pki.key.export(emptyKp.privateKey), cert: emptyCert }); } catch (e) { emptyErr = e; }
+  check("21p5. an empty-subject signer with no sender is refused -> cmp/bad-input naming the subjectAltName",
+    emptyErr !== null && emptyErr.code === "cmp/bad-input" && /subjectAltName/.test(emptyErr.message));
   // A year DER cannot carry is refused in this verb's domain, not as an asn1/* error out of the codec.
   check("21n4. a year-10000 messageTime -> cmp/bad-input", await codeOf(pki.cmp.build({ header: Object.assign({ messageTime: new Date("+010000-01-01T00:00:00Z") }, HDR), body: irMsg.body }, SIG)) === "cmp/bad-input");
   check("21n5. a year-10000 confirmWaitTime -> cmp/bad-info-value", await codeOf(pki.cmp.build({ header: Object.assign({ generalInfo: [{ infoType: "confirmWaitTime", infoValue: new Date("+010000-01-01T00:00:00Z") }] }, HDR), body: irMsg.body }, SIG)) === "cmp/bad-info-value");

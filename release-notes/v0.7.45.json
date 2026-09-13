@@ -1,0 +1,11 @@
+{
+  "version": "0.7.45",
+  "date": "2026-09-13",
+  "headline": "A signature-protected CMP message fills an omitted sender with the signer's subject.",
+  "summary": "pki.cmp.build refused a signature-protected PKIMessage that omitted header.sender, though a receiver holds that sender to the signer certificate's subject (RFC 9483 sec. 3.1), which is a value the builder already knows. It now fills an omitted sender with the signer's subject, the same way it fills an omitted transactionID or senderNonce.",
+  "sections": {
+    "Changed": [
+      "pki.cmp.build fills a header sender the caller omits under signature protection with the signer certificate's subject (RFC 9483 sec. 3.1), so a message built without one is receivable rather than refused. A sender the caller states is left as given, matching the signer or not. A signer certificate with an empty subject names itself by a subjectAltName entry, which the builder cannot choose for the caller, so an omitted sender there is still refused with cmp/bad-input. MAC-protected messages carry no signer and are unchanged."
+    ]
+  }
+}
