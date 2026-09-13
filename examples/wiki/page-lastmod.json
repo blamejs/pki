@@ -23,7 +23,7 @@
   "lib/cbor-det.js": "2026-09-06",
   "lib/cmc-build.js": "2026-09-12",
   "lib/cmc-verify.js": "2026-09-07",
-  "lib/cmp-build.js": "2026-09-12",
+  "lib/cmp-build.js": "2026-09-13",
   "lib/cmp-session.js": "2026-09-07",
   "lib/cmp-verify.js": "2026-09-12",
   "lib/cms-compress.js": "2026-09-01",
