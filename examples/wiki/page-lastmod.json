@@ -1,5 +1,5 @@
 {
-  "README.md": "2026-09-12",
+  "README.md": "2026-09-13",
   "examples/wiki/concepts.js": "2026-09-04",
   "examples/wiki/lib/assets.js": "2026-07-13",
   "examples/wiki/lib/auto-site-entries.js": "2026-07-04",
@@ -70,7 +70,7 @@
   "lib/http-transport.js": "2026-09-06",
   "lib/inspect.js": "2026-09-12",
   "lib/ip-utils.js": "2026-09-05",
-  "lib/jose.js": "2026-09-11",
+  "lib/jose.js": "2026-09-13",
   "lib/key.js": "2026-09-12",
   "lib/lint.js": "2026-09-12",
   "lib/merkle.js": "2026-09-06",

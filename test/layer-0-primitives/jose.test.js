@@ -103,6 +103,35 @@ async function testJws() {
     (await pki.jose.verify(jws, Object.assign({}, OUTER, { key: reordered }))).keySource === "opts.key");
   check("25f. with no opts.key the embedded jwk is used and the verdict says so",
     (await pki.jose.verify(jws, OUTER)).keySource === "embedded-jwk");
+  // The embedded jwk is the signer's PUBLIC key (RFC 7515 sec. 4.1.3). sign refuses to embed one
+  // carrying private material (25g), and verify refuses to READ one: a JWS whose header.jwk carries
+  // the private half is malformed, and accepting it would hand that private key back in the verdict
+  // header for a caller to re-serialize or log. It is caught before the signature is even checked,
+  // so a message that would verify under the public half is still refused.
+  var b64u = pki.jose.base64url;
+  function forgeEmbedded(headerJwk) {
+    var hdr = { alg: "ES256", jwk: headerJwk, nonce: "AAAA", url: "https://ca.example/o" };
+    var pb = b64u.encode(Buffer.from(JSON.stringify(hdr), "utf8")), yb = b64u.encode(Buffer.from("{}"));
+    return { pb: pb, yb: yb, signingInput: Buffer.from(pb + "." + yb, "ascii") };
+  }
+  var fe = forgeEmbedded(privJwk);
+  var feSig = Buffer.from(await subtle.sign({ name: "ECDSA", hash: "SHA-256" }, ec.privateKey, fe.signingInput));
+  check("25k. verify refuses a JWS whose embedded jwk carries private key material -> jose/private-key-material",
+    (await acode(function () { return pki.jose.verify({ protected: fe.pb, payload: fe.yb, signature: b64u.encode(feSig) }, OUTER); })) === "jose/private-key-material");
+  check("25l. ...even when opts.key names the matching public key (the private embed is refused first)",
+    (await acode(function () { return pki.jose.verify({ protected: fe.pb, payload: fe.yb, signature: b64u.encode(feSig) }, Object.assign({}, OUTER, { key: ecJwk })); })) === "jose/private-key-material");
+  var rsaFullPriv = await subtle.exportKey("jwk", rsaPair.privateKey);
+  var rfe = forgeEmbedded(rsaFullPriv);
+  var rfeSig = Buffer.from(await subtle.sign({ name: "RSASSA-PKCS1-v1_5" }, rsaPair.privateKey, (function () { var h = { alg: "RS256", jwk: rsaFullPriv, nonce: "AAAA", url: "https://ca.example/o" }; var pb = b64u.encode(Buffer.from(JSON.stringify(h), "utf8")); rfe.pb = pb; return Buffer.from(pb + "." + rfe.yb, "ascii"); })()));
+  check("25m. an embedded RSA jwk carrying the CRT private members is refused too",
+    (await acode(function () { return pki.jose.verify({ protected: rfe.pb, payload: rfe.yb, signature: b64u.encode(rfeSig) }, OUTER); })) === "jose/private-key-material");
+  // The RFC 7518 sec. 6.3.2.7 multi-prime "oth" member is private material of a public RSA key
+  // never carries; a jwk carrying it alone is refused on either side.
+  var othJwk = Object.assign({}, rsaPubJwk, { oth: [{ r: "AA", d: "AA", t: "AA" }] });
+  check("25n. an embedded jwk carrying the multi-prime oth member is refused on verify",
+    (await acode(function () { return pki.jose.verify(Object.assign({}, jws, { protected: b64u.encode(Buffer.from(JSON.stringify({ alg: "RS256", jwk: othJwk, nonce: "AAAA", url: "https://ca.example/o" }), "utf8")) }), OUTER); })) === "jose/private-key-material");
+  check("25o. and refused on sign, and by assertPublicJwk directly",
+    code(function () { return pki.jose.assertPublicJwk(othJwk); }) === "jose/private-key-material");
   // 25g. A key that was SUPPLIED but cannot be used is refused, never quietly read as absent.
   // Falling back to the embedded jwk would drop the caller's intent to pin a signer exactly when
   // it matters -- a key that came back null from a lookup would verify against whatever the
