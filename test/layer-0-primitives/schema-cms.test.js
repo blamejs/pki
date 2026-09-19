@@ -165,7 +165,7 @@ function testContentType() {
   // the deferred set) — a malformed body fails with a structural cms/* code, not unsupported.
   check("13. id-envelopedData now decoded (structural error, not unsupported)", parseCode(contentInfo(ID_ENVELOPED_DATA, b.sequence([b.integer(0n)]))) === "cms/bad-enveloped-data");
   check("14a. id-encryptedData now decoded (structural error, not unsupported)", parseCode(contentInfo(ID_ENCRYPTED_DATA, b.sequence([b.integer(0n)]))) === "cms/bad-encrypted-data");
-  check("14b. id-digestedData -> unsupported", parseCode(contentInfo(ID_DIGESTED_DATA, b.sequence([b.integer(0n)]))) === "cms/unsupported-content-type");
+  check("14b. id-digestedData now decoded (structural error, not unsupported)", parseCode(contentInfo(ID_DIGESTED_DATA, b.sequence([b.integer(0n)]))) === "cms/bad-digested-data");
   check("14c. id-signedAndEnvelopedData -> unsupported", parseCode(contentInfo(ID_SIGNED_ENV, b.sequence([b.integer(0n)]))) === "cms/unsupported-content-type");
   check("14d. id-ct-authData now decoded (structural error, not unsupported)", parseCode(contentInfo(ID_CT_AUTHDATA, b.sequence([b.integer(0n)]))) === "cms/bad-auth-data");
   check("15. unknown OID -> unknown-content-type", parseCode(contentInfo("1.2.3.4.5", b.sequence([b.integer(0n)]))) === "cms/unknown-content-type");
@@ -1069,6 +1069,59 @@ function run() {
   testAeadAndAttrEdgeCases();
   testCmsFailClosedBranches();
   testCmsPemRoundTrip();
+  testDigestedData();
+}
+
+// RFC 5652 sec. 7 DigestedData, the last of the six content types. It is the integrity-only
+// container: no signer, no key, just a digest over the encapsulated content, so a reader can
+// tell that content arrived intact without being able to tell who sent it.
+//
+//   DigestedData ::= SEQUENCE { version CMSVersion, digestAlgorithm DigestAlgorithmIdentifier,
+//                               encapContentInfo EncapsulatedContentInfo, digest Digest }
+//
+// sec. 7 pins the version to the encapsulated type: 0 when eContentType is id-data, 2 otherwise.
+function testDigestedData() {
+  var OID_DIGESTED = pki.oid.byName("digestedData");
+  var OID_DATA = pki.oid.byName("data");
+  var OID_TSTINFO = pki.oid.byName("tSTInfo");
+  var CONTENT = Buffer.from("digested data content");
+  var SHA256 = require("node:crypto").createHash("sha256").update(CONTENT).digest();
+
+  function digestedData(o) {
+    o = o || {};
+    var eci = b.sequence([b.oid(o.eContentType || OID_DATA)]
+      .concat(o.omitContent ? [] : [b.explicit(0, b.octetString(o.content || CONTENT))]));
+    return contentInfo(OID_DIGESTED, b.sequence([
+      b.integer(o.version === undefined ? 0n : o.version),
+      b.sequence([b.oid(pki.oid.byName(o.digestAlg || "sha256"))]),
+      eci,
+      b.octetString(o.digest || SHA256),
+    ]));
+  }
+
+  var parsed = pki.schema.cms.parse(digestedData());
+  check("a DigestedData parses rather than reporting an unsupported content type",
+    parsed.contentTypeName === "digestedData");
+  check("its version, digest algorithm and digest are surfaced",
+    parsed.version === 0 && parsed.digestAlgorithm.name === "sha256" && parsed.digest.equals(SHA256));
+  check("and the encapsulated content comes back byte-exact",
+    Buffer.from(parsed.encapContentInfo.eContent).equals(CONTENT));
+
+  // sec. 7: version 0 with id-data, 2 with anything else. Each is refused under the other.
+  check("id-data content at version 2 is refused",
+    code(function () { pki.schema.cms.parse(digestedData({ version: 2n })); }) === "cms/bad-version");
+  check("non-data content at version 0 is refused",
+    code(function () { pki.schema.cms.parse(digestedData({ eContentType: OID_TSTINFO })); }) === "cms/bad-version");
+  check("non-data content at version 2 parses",
+    pki.schema.cms.parse(digestedData({ eContentType: OID_TSTINFO, version: 2n })).version === 2);
+
+  // A detached DigestedData carries no eContent; the digest then covers content the caller holds.
+  var detached = pki.schema.cms.parse(digestedData({ omitContent: true }));
+  check("a detached DigestedData parses with a null eContent", detached.encapContentInfo.eContent === null);
+
+  // The orchestrator routes it, and the whole content-type set is now covered.
+  check("pki.schema.parse routes a DigestedData",
+    pki.schema.parse(digestedData()).contentTypeName === "digestedData");
 }
 
 module.exports = { run: run };

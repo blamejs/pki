@@ -199,20 +199,36 @@ function _badge(label, value, cls) {
   return '<span class="badge ' + cls + '">' + esc(label) + " " + esc(value) + "</span>";
 }
 
+// A page is a slug, not a namespace: several source files may merge onto one
+// page, and two files sharing a namespace may sit on different pages. Resolve
+// the records from the files the entry was derived from, falling back to the
+// namespace index for an entry that carries no files.
+function _recsForEntry(e, docsByNs, docsByPath) {
+  var out = [];
+  var paths = e.sourcePaths || [];
+  for (var i = 0; i < paths.length; i++) {
+    var rec = docsByPath && docsByPath[paths[i]];
+    if (rec) out.push(rec);
+  }
+  if (out.length) return out;
+  var byNs = docsByNs[e.namespaces[0]];
+  return byNs ? [byNs] : [];
+}
+
 // Build a global index of documented primitives so @related resolves to a
 // page + anchor. Keyed by bare signature (e.g. "asn1.decode").
-function _primitiveIndex(entries, docsByNs) {
+function _primitiveIndex(entries, docsByNs, docsByPath) {
   var byBare = {};
   var nsToSlug = {};
   entries.forEach(function (e) {
-    e.namespaces.forEach(function (ns) { nsToSlug[ns] = e.slug; });
-    var rec = docsByNs[e.namespaces[0]];
-    if (!rec) return;
-    rec.primitives.forEach(function (p) {
-      var primTag = p.tags && p.tags.primitive;
-      if (!primTag) return;
-      var bare = _bare(primTag);
-      byBare[bare] = { slug: e.slug, anchor: _anchor(bare), tag: primTag };
+    e.namespaces.forEach(function (ns) { if (!nsToSlug[ns]) nsToSlug[ns] = e.slug; });
+    _recsForEntry(e, docsByNs, docsByPath).forEach(function (rec) {
+      rec.primitives.forEach(function (p) {
+        var primTag = p.tags && p.tags.primitive;
+        if (!primTag) return;
+        var bare = _bare(primTag);
+        byBare[bare] = { slug: e.slug, anchor: _anchor(bare), tag: primTag };
+      });
     });
   });
   return { byBare: byBare, nsToSlug: nsToSlug };
@@ -499,25 +515,25 @@ function _renderConcept(c, index) {
 }
 
 // ---- Reference: the auto-generated API index ----
-function _renderApiIndex(entries, docsByNs) {
+function _renderApiIndex(entries, docsByNs, docsByPath) {
   var main = [];
   main.push("<h1>API index</h1>");
   var total = 0;
   var sections = [];
   entries.forEach(function (e) {
-    var rec = docsByNs[e.namespaces[0]];
-    if (!rec || !rec.primitives.length) return;
     var rows = [];
-    rec.primitives.forEach(function (p) {
-      var tags = p.tags || {};
-      if (!tags.primitive) return;
-      total += 1;
-      var bare = _bare(tags.primitive);
-      var anchor = _anchor(bare);
-      var sig = tags.signature ? String(tags.signature).replace(/\s+/g, " ").trim() : tags.primitive;
-      rows.push("<tr><td><a href=\"/" + esc(e.slug) + "#" + esc(anchor) + "\"><code>" + esc(sig) + "</code></a></td>" +
-        "<td>" + (tags.since ? esc(tags.since) : "") + "</td>" +
-        "<td>" + (tags.status ? esc(tags.status) : "") + "</td></tr>");
+    _recsForEntry(e, docsByNs, docsByPath).forEach(function (rec) {
+      rec.primitives.forEach(function (p) {
+        var tags = p.tags || {};
+        if (!tags.primitive) return;
+        total += 1;
+        var bare = _bare(tags.primitive);
+        var anchor = _anchor(bare);
+        var sig = tags.signature ? String(tags.signature).replace(/\s+/g, " ").trim() : tags.primitive;
+        rows.push("<tr><td><a href=\"/" + esc(e.slug) + "#" + esc(anchor) + "\"><code>" + esc(sig) + "</code></a></td>" +
+          "<td>" + (tags.since ? esc(tags.since) : "") + "</td>" +
+          "<td>" + (tags.status ? esc(tags.status) : "") + "</td></tr>");
+      });
     });
     if (!rows.length) return;
     var hid = "ns-" + esc(e.slug);
@@ -608,10 +624,10 @@ function build(opts) {
     var rec = docsByPath[file];
     if (!rec.module) return;
     var ns = _moduleNs(rec.module.tags && rec.module.tags.module);
-    if (ns) docsByNs[ns] = rec;
+    if (ns && !docsByNs[ns]) docsByNs[ns] = rec;
   });
 
-  var index = _primitiveIndex(entries, docsByNs);
+  var index = _primitiveIndex(entries, docsByNs, docsByPath);
   var concepts = _loadConcepts();
 
   // Nav groups: group -> items, preserving the auto-sorted entry order.
@@ -824,19 +840,17 @@ function build(opts) {
 
   // ---- Namespace pages ----
   entries.forEach(function (e) {
-    var ns = e.namespaces[0];
-    var rec = docsByNs[ns];
-    if (!rec) return;
-    var modTags = (rec.module && rec.module.tags) || {};
-    // An entry can span several namespaces (pki.tsp and pki.schema.tsp both land on /tsp), and the
-    // page renders under the first. The expanded name is taken from whichever of them declares one,
-    // so a slug does not silently keep its bare acronym because the module that carries the
-    // @fullname happens to sort second.
+    var recs = _recsForEntry(e, docsByNs, docsByPath);
+    if (!recs.length) return;
+    var modTags = (recs[0].module && recs[0].module.tags) || {};
+    // The expanded name is the one the page's own module blocks declare. A page can merge several
+    // namespaces (pki.tsp and pki.schema.tsp both land on /tsp); it takes the name from whichever
+    // of them declares one, so a slug does not silently keep its bare acronym because the module
+    // that carries the @fullname happens to sort second.
     var fullname = null;
-    for (var ni = 0; ni < e.namespaces.length && !fullname; ni++) {
-      var nrec = docsByNs[e.namespaces[ni]];
-      var ntags = (nrec && nrec.module && nrec.module.tags) || {};
-      if (ntags.fullname) fullname = ntags.fullname;
+    for (var ri = 0; ri < recs.length && !fullname; ri++) {
+      var rtags = (recs[ri].module && recs[ri].module.tags) || {};
+      if (rtags.fullname) fullname = rtags.fullname;
     }
     var main = [];
     // The heading follows the <title>, so the page's most prominent line names the thing in the
@@ -845,9 +859,11 @@ function build(opts) {
     var introSrc = modTags.intro || (e.card && e.card.description) || "";
     if (introSrc) main.push('<div class="intro">' + _renderProse(introSrc).replace(/^<p>|<\/p>$/g, "") + "</div>");
     var headingParts = [];
-    rec.primitives.forEach(function (p) {
-      main.push(_renderPrimitive(p, index));
-      if (p.tags && p.tags.primitive) headingParts.push(p.tags.primitive);
+    recs.forEach(function (rec) {
+      rec.primitives.forEach(function (p) {
+        main.push(_renderPrimitive(p, index));
+        if (p.tags && p.tags.primitive) headingParts.push(p.tags.primitive);
+      });
     });
     _addPage("/" + e.slug, {
       title: e.title,
@@ -855,7 +871,7 @@ function build(opts) {
       main: main.join("\n"),
       description: _metaDescription(introSrc),
       headings: headingParts.join(" "),
-      source: e.namespaces.map(function (n) { return docsByNs[n] && docsByNs[n].sourcePath; }).filter(Boolean),
+      source: recs.map(function (r) { return r.sourcePath; }).filter(Boolean),
     });
   });
 
@@ -866,7 +882,7 @@ function build(opts) {
   _addPage("/api", {
     title: "API index",
     seoTitle: "API index: every primitive by namespace",
-    main: _renderApiIndex(entries, docsByNs),
+    main: _renderApiIndex(entries, docsByNs, docsByPath),
     description: "Every documented primitive in the toolkit, grouped by namespace, with since-version and stability.",
     source: allSources,
   });
@@ -879,7 +895,9 @@ function build(opts) {
   });
 
   // ---- Machine surfaces: symbols manifest, sitemap, robots ----
-  var symbols = symbolIndex.build(entries, docsByNs, { bare: _bare, anchor: _anchor });
+  var symbols = symbolIndex.build(entries, function (e) {
+    return _recsForEntry(e, docsByNs, docsByPath);
+  }, { bare: _bare, anchor: _anchor });
   var symbolsJson = JSON.stringify({ count: symbols.length, symbols: symbols });
 
   // <lastmod> comes from the commit that last touched the source the page is generated from (see

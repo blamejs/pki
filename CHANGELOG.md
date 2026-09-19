@@ -4,6 +4,31 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.1 — 2026-09-19
+
+CMS gains its last RFC 5652 content type, and the OID registry names every curve a certificate can declare.
+
+### Added
+
+- `pki.cms.digest(content, opts)` builds an RFC 5652 DigestedData under SHA-256, SHA-384 or SHA-512, attached or detached, and returns DER or PEM. `pki.cms.verifyDigest(message, opts)` recomputes the digest and compares it in constant time, returning `{ valid, digestAlgorithm, content, contentType }` with `code` set to `cms/digest-mismatch` when the content does not match. The verdict carries no signer and no trusted field: a DigestedData establishes that content matches a digest and nothing about who produced either, so its worth is the worth of the channel the two traveled over. Use `pki.cms.sign` to establish origin, or `pki.cms.authenticate` to establish it under a shared key.
+- `pki.schema.cms.parse` decodes a DigestedData ContentInfo instead of reporting it unparsed, and enforces the RFC 5652 section 7 version rule across fields: version 0 when the encapsulated content type is id-data, version 2 otherwise. A version that disagrees with the content type is `cms/bad-version`.
+- The OID registry names thirty-three elliptic curves, covering RFC 5480 section 2.1.1.1, RFC 5639 section 4.1 and secp256k1. `pki.oid.name` and `pki.oid.byName` resolve each in both directions, under the name `node:crypto` knows the curve by.
+
+### Changed
+
+- A `lint/cabf-tls/weak-key` finding raised against a non-approved elliptic curve names that curve in its context; the field was null for every curve outside the approved three. `pki.inspect.certificate` prints an `ASN1 OID:` line for those curves as well. Neither changes what the crypto engine accepts: importing a key on a curve the engine does not carry still fails with `webcrypto/not-supported`.
+
+### Fixed
+
+- A digest AlgorithmIdentifier carrying parameters that are neither absent nor DER NULL is refused with `cms/unsupported-algorithm` on the two paths that read one without checking it: the `digestAlgorithm` of a DigestedData, and the `digestAlgorithm` beside the `macAlgorithm` of an AuthenticatedData, which `pki.cms.decrypt` reads to check the message-digest attribute. RFC 5754 section 2 allows only those two forms, so a parameter value that is neither does not name the algorithm the message claims; both paths would otherwise have reported the content verified or authenticated under it. The `macAlgorithm` beside it, and every SignerInfo digest, were already held to the rule.
+
+### Documentation
+
+- `pki.path.validate` documents `opts.verifier`, which replaces the built-in signature check with `verifier.verify({ cert, workingPublicKey, workingPublicKeyAlgorithm, workingPublicKeyParameters })`. It is how a chain on a curve the engine does not carry, such as a brainpool one, is validated. It replaces the signature step alone: the RSA key-strength floor and every other RFC 5280 check still apply.
+- `pki.hpke` is described as carrying the three ML-KEM suites alongside the four DHKEM suites, which is what shipped.
+- The reference site at pkijs.com renders all 256 documented primitives; 46 of them reached no page. A page is identified by its URL, and a page built from two source files kept only one of them, so `pki.x509.sign`, the seven `pki.smime` verbs, `pki.tsp.sign` and every `pki.schema.*` parser were documented in the source and absent from the site. The symbol search and the API index resolve a primitive the same way the page does, so a search result and the section it links to agree.
+- Roadmap rows that claimed capability the code does not have are corrected. RFC 6961 multi-stapling, RFC 6979 deterministic (EC)DSA and the RFC 5915 `ECPrivateKey` structure are not implemented. A distinguished name is emitted as an RFC 4514 string and is not read back from one. AES-CCM content encryption parses but is not produced. The OpenSSL interop statement names the seven algorithm arms it covers rather than claiming all of them. No registry rows are reserved for FN-DSA or HQC. The CMC rows record that RFC 5272, RFC 5273 and RFC 5274 were obsoleted by RFC 10002, RFC 10003 and RFC 10004 in July 2026, which the shipped surface predates. The CVE-2022-0778 row states that a named curve is required when a key is imported to verify with, not when a certificate is parsed, since parsing stays deliberately permissive so a non-conforming certificate can be inspected and linted.
+
 ## v0.8.0 — 2026-09-19
 
 Verification is held to the rules signing already applied.

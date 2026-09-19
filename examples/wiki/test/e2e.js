@@ -135,15 +135,24 @@ async function run() {
     check("overview escapes nothing raw from the badge image-links", overview.body.indexOf('<img src="https://img.shields.io') !== -1);
     check("overview appears in the nav", overview.body.indexOf('href="/overview"') !== -1);
 
-    // Each namespace page.
+    // Each namespace page. A page is a slug: several source files can merge onto
+    // one, and two files sharing a namespace can sit on different ones, so every
+    // record is looked up by the files the entry was derived from.
     var docs = parser.parseTree(site.LIB_DIR);
-    var primCountByNs = {}, docsByNs = {};
+    var docsByNs = {};
     Object.keys(docs).forEach(function (f) {
       var rec = docs[f];
       if (!rec.module) return;
       var ns = String(rec.module.tags.module || "").replace(/^\s*pki\./, "").trim();
-      if (ns) { primCountByNs[ns] = rec.primitives.length; docsByNs[ns] = rec; }
+      if (ns && !docsByNs[ns]) docsByNs[ns] = rec;
     });
+    function recsFor(e) {
+      var out = (e.sourcePaths || []).map(function (p) { return docs[p]; }).filter(Boolean);
+      if (out.length) return out;
+      var byNs = docsByNs[e.namespaces[0]];
+      return byNs ? [byNs] : [];
+    }
+    var bodyBySlug = {};
 
     for (var i = 0; i < entries.length; i++) {
       var e = entries[i];
@@ -154,32 +163,46 @@ async function run() {
       // The heading is the module's @fullname when it declares one -- the expanded name a reader
       // arriving from a search used -- and the short sidebar @title otherwise. Asserting the exact
       // string either way keeps this a real check: a page that renders neither still fails.
+      var entryRecs = recsFor(e);
       var wantH1 = null;
-      for (var ni = 0; ni < e.namespaces.length && !wantH1; ni++) {
-        var nrec = docsByNs[e.namespaces[ni]];
-        var ntags = (nrec && nrec.module && nrec.module.tags) || {};
-        if (ntags.fullname) wantH1 = ntags.fullname;
+      for (var ri = 0; ri < entryRecs.length && !wantH1; ri++) {
+        var rtags = (entryRecs[ri].module && entryRecs[ri].module.tags) || {};
+        if (rtags.fullname) wantH1 = rtags.fullname;
       }
       wantH1 = wantH1 || e.title;
       check(pth + " <h1> carries " + (wantH1 === e.title ? "the title" : "the @fullname"),
         resp.body.indexOf(">" + wantH1 + "</h1>") !== -1 || resp.body.indexOf(wantH1 + "</h1>") !== -1);
-      // Populated content: at least one rendered primitive section.
-      var wantPrims = primCountByNs[e.namespaces[0]] || 0;
+      // Populated content: one rendered primitive section per primitive the
+      // entry's own source files document.
+      bodyBySlug[e.slug] = resp.body;
+      var wantPrims = entryRecs.reduce(function (n, r) { return n + r.primitives.length; }, 0);
       check(pth + " renders " + wantPrims + " primitive section(s)",
         (resp.body.match(/<section class="primitive"/g) || []).length === wantPrims);
       check(pth + " content is substantial", resp.body.length > 800);
-      // Every documented primitive of this namespace appears by name.
-      docs && Object.keys(docs).forEach(function (f) {
-        var rec = docs[f];
-        if (!rec.module) return;
-        var ns = String(rec.module.tags.module || "").replace(/^\s*pki\./, "").trim();
-        if (ns !== e.namespaces[0]) return;
+      // Every primitive those files document appears by name.
+      entryRecs.forEach(function (rec) {
         rec.primitives.forEach(function (p) {
           var tag = p.tags && p.tags.primitive;
           if (tag) check(pth + " documents " + tag, resp.body.indexOf(tag) !== -1);
         });
       });
     }
+
+    // No documented primitive is stranded. A record keyed by something that is
+    // not unique per page drops whichever file loses the collision, and the
+    // primitives it documents then reach no page at all.
+    Object.keys(docs).forEach(function (f) {
+      var rec = docs[f];
+      if (!rec.module) return;
+      rec.primitives.forEach(function (p) {
+        var tag = p.tags && p.tags.primitive;
+        if (!tag) return;
+        var on = Object.keys(bodyBySlug).filter(function (s) {
+          return bodyBySlug[s].indexOf('<h2><a href="#') !== -1 && bodyBySlug[s].indexOf(">" + tag + "</a></h2>") !== -1;
+        });
+        check(tag + " is rendered on exactly one page (got " + on.length + ")", on.length === 1);
+      });
+    });
 
     // ---- Hashed assets: CSS/JS serve immutable under their content hash ----
     var hrefs = built.assets.hrefs;
@@ -273,11 +296,14 @@ async function run() {
     // ---- /api: the auto-generated master index ----
     var api = await _get(port, "/api");
     check("GET /api -> 200", api.status === 200);
+    function primCount(e) {
+      return recsFor(e).reduce(function (n, r) { return n + r.primitives.length; }, 0);
+    }
     var totalPrims = 0;
-    entries.forEach(function (e) { totalPrims += primCountByNs[e.namespaces[0]] || 0; });
+    entries.forEach(function (e) { totalPrims += primCount(e); });
     check("/api counts every documented primitive", api.body.indexOf(totalPrims + " primitives") !== -1);
     entries.forEach(function (e) {
-      if ((primCountByNs[e.namespaces[0]] || 0) === 0) return;
+      if (primCount(e) === 0) return;
       check("/api deep-links into /" + e.slug, api.body.indexOf('href="/' + e.slug + '#') !== -1);
     });
 

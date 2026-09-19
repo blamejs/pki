@@ -81,6 +81,7 @@ jobs:
           - lint-crl
           - lint-ocsp
           - cms-verify
+          - cms-digest
           - csr-verify
           - crmf-verify
           - attrcert-verify

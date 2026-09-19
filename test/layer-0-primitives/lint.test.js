@@ -446,8 +446,12 @@ function run() {
 
   // weak-key EC branch: a non-approved named curve (secp256k1) -> weak-key.
   var ecBad = require("crypto").generateKeyPairSync("ec", { namedCurve: "secp256k1" }).publicKey.export({ format: "der", type: "spki" });
-  check("a non-approved EC curve -> weak-key (error)",
-    has(pki.lint.certificate(makeCert({ subject: dnCN("x.example"), validity: VALID_OK, spki: ecBad, exts: [eku(["serverAuth"]), san([dnsName("x.example")], false), aki()] })), "lint/cabf-tls/weak-key"));
+  var ecBadReport = pki.lint.certificate(makeCert({ subject: dnCN("x.example"), validity: VALID_OK, spki: ecBad, exts: [eku(["serverAuth"]), san([dnsName("x.example")], false), aki()] }));
+  check("a non-approved EC curve -> weak-key (error)", has(ecBadReport, "lint/cabf-tls/weak-key"));
+  // The finding names the curve it refused, so an operator reading the report
+  // does not have to decode the key to learn which one it is.
+  check("the weak-key finding names the refused curve",
+    ecBadReport.findings.filter(function (f) { return f.id === "lint/cabf-tls/weak-key"; })[0].context.curve === "secp256k1");
 
   // dNSName syntax branches: whitespace + a leading dot (beyond the underscore case above).
   check("a dNSName with whitespace -> dnsname-bad-syntax",
