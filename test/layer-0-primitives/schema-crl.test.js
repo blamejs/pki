@@ -299,6 +299,43 @@ function run() {
   testTimeEncodingCutover();
   testInputCoercion();
   testMultiDefectFailClosed();
+  testExtensionScope();
+}
+
+// RFC 5280 sec. 5.2 lists the extensions a CRL carries and sec. 5.3 the ones a revoked-entry
+// carries. The two sets are disjoint, so an extension in the wrong scope is UNRECOGNIZED
+// there, and sec. 5.2 says a non-critical unrecognized extension is ignored. One shared
+// OID-keyed decoder served both scopes, so an entry-only OID at CRL scope was decoded as if
+// in scope: a value malformed for that type failed the whole CRL, while an unknown OID in
+// the same position was correctly ignored.
+function testExtensionScope() {
+  // CONTROLS: each extension in its OWN scope still decodes, so a refusal below is scope.
+  check("CONTROL cRLNumber at CRL scope decodes", (function () {
+    var c = pki.schema.crl.parse(crl({ version: 1n, crlExtensions: [ext("2.5.29.20", b.integer(7n))] }));
+    return c.crlExtensions[0].value === 7n;
+  })());
+  check("CONTROL reasonCode at entry scope decodes", (function () {
+    var c = pki.schema.crl.parse(crl({ version: 1n, revoked: [revoked(1n, utc("2026-02-01T00:00:00Z"), [ext("2.5.29.21", b.enumerated(1n))])] }));
+    return c.revokedCertificates[0].crlEntryExtensions[0].value === 1;
+  })());
+  // An unknown non-critical OID at CRL scope is ignored: the baseline sec. 5.2 behavior.
+  check("CONTROL an unknown non-critical OID at CRL scope is carried opaque",
+    parseCode(crl({ version: 1n, crlExtensions: [ext("1.3.6.1.4.1.99999.7", b.octetString(Buffer.from([1])))] })) === "NO-THROW");
+
+  // An entry-only OID at CRL scope must be left opaque rather than decoded, so a value that
+  // is malformed as a CRLReason cannot fail a CRL the extension does not even belong to.
+  check("a malformed reasonCode at CRL scope does not fail the CRL",
+    parseCode(crl({ version: 1n, crlExtensions: [ext("2.5.29.21", b.octetString(Buffer.from([1, 2, 3])))] })) === "NO-THROW");
+  check("a malformed invalidityDate at CRL scope does not fail the CRL",
+    parseCode(crl({ version: 1n, crlExtensions: [ext("2.5.29.24", b.integer(1n))] })) === "NO-THROW");
+  // And the converse: a CRL-only OID inside an entry is left opaque too.
+  check("a malformed cRLNumber inside a revoked entry does not fail the CRL",
+    parseCode(crl({ version: 1n, revoked: [revoked(1n, utc("2026-02-01T00:00:00Z"), [ext("2.5.29.20", b.octetString(Buffer.from([1, 2, 3])))] )] })) === "NO-THROW");
+  // Out of scope means UNDECODED, not silently coerced: the raw value is still surfaced.
+  check("an out-of-scope extension keeps its raw value", (function () {
+    var c = pki.schema.crl.parse(crl({ version: 1n, crlExtensions: [ext("2.5.29.21", b.enumerated(1n))] }));
+    return Buffer.isBuffer(c.crlExtensions[0].value);
+  })());
 }
 
 module.exports = { run: run };

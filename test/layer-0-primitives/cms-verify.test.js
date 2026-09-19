@@ -1271,7 +1271,7 @@ async function testTrustSeam() {
     extensions: { keyUsage: ["digitalSignature"], subjectKeyIdentifier: true, authorityKeyIdentifier: true },
   }, { key: ourCa.key, cert: ourCa.der });
   // Signed with the self-signed cert embedded and identified by SKI, so the embedded one matches first.
-  var twinSigned = await pki.cms.sign(CONTENT, { cert: twinSelfSigned, key: twinKey, sid: "subjectKeyIdentifier" });
+  var twinSigned = await pki.cms.sign(CONTENT, { cert: twinSelfSigned, key: twinKey }, { sid: "ski" });
   var twinRes = await pki.cms.verify(twinSigned,
     Object.assign({ trustAnchors: [ourCa.der], certs: [twinIssued] }, AT));
   check("trust: a same-key sibling does not lend its trust to the certificate the message presented",
@@ -1335,7 +1335,7 @@ async function testTrustSeam() {
 
   // Presenting the CA-issued certificate itself is what makes it trusted -- the decision follows
   // the certificate, not the key.
-  var twinDirect = await pki.cms.sign(CONTENT, { cert: twinIssued, key: twinKey, sid: "subjectKeyIdentifier" });
+  var twinDirect = await pki.cms.sign(CONTENT, { cert: twinIssued, key: twinKey }, { sid: "ski" });
   check("trust: the same key IS trusted when the message presents the certificate that chains",
     (await pki.cms.verify(twinDirect, Object.assign({ trustAnchors: [ourCa.der] }, AT))).trusted === true);
 }
@@ -1384,6 +1384,139 @@ async function run() {
   await testMlDsaVerify();
   await testBadInput();
   await testMalformedCountersignatureValue();
+  await testWeakDigestPolicy();
+}
+
+// pki.cms.sign refuses to PRODUCE a SHA-1 signature ("unsupported RSA digest algorithm"),
+// and a SHA-1-signed certificate is refused by pki.path.validate because the sha1With*
+// signature OIDs are deliberately unregistered. The verifier carried sha1 in its own digest
+// tables, so a SHA-1 SignedData made elsewhere reached a positive verdict: the producer was
+// strict and the verifier was not. The fixtures are OpenSSL 3.5 output over the same content
+// and the same key, differing only in -md, so the SHA-256 one is the control throughout.
+async function testWeakDigestPolicy() {
+  var SHA1_CMS = Buffer.from([
+    "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",
+  ].join(""), "base64");
+
+  var byDefault = await pki.cms.verify(SHA1_CMS);
+  check("a SHA-1 SignedData does not verify by default", byDefault.valid === false);
+  check("and the reason names the digest, not a bad signature",
+    byDefault.signers[0].ok === false && byDefault.signers[0].code === "cms/weak-digest");
+  // The opt-in restores it for archive verification, and must be explicit. This is also the
+  // control: the signature itself is genuine, so the default refusal is policy and not a
+  // verification failure.
+  var allowed = await pki.cms.verify(SHA1_CMS, { allowWeakDigests: true });
+  check("allowWeakDigests: true verifies the same SHA-1 SignedData",
+    allowed.valid === true && allowed.signers[0].ok === true);
+  await rejects("a misspelled opt-in",
+    function () { return pki.cms.verify(SHA1_CMS, { allowWeakDigest: true }); }, "cms/bad-input");
+
+  // The opt-in has to reach the WHOLE signature tree. An archived message is exactly the one
+  // likely to carry a SHA-1 countersignature, so an opt-in that stops at the primary signer
+  // leaves the caller unable to verify the thing the option exists for.
+  var nodeCrypto = require("node:crypto");
+  var s = makeSigner("rsa");
+  var attached = await pki.cms.sign(CONTENT, { cert: s.cert, key: s.key });
+  var target = pki.schema.cms.parse(attached).signerInfos[0].signature;
+  var root = pki.asn1.decode(attached);
+  var sd = root.children[1].children[0];
+  var si = sd.children[sd.children.length - 1].children[0];
+  var csSi = b.sequence([
+    si.children[0].bytes, si.children[1].bytes,
+    b.sequence([b.oid(pki.oid.byName("sha1"))]),
+    b.sequence([b.oid(pki.oid.byName("rsaEncryption")), b.nullValue()]),
+    b.octetString(nodeCrypto.sign("sha1", Buffer.from(target), s.keyObject)),
+  ]);
+  var unsigned = b.set([b.sequence([b.oid(pki.oid.byName("countersignature")), b.set([csSi])])]);
+  unsigned[0] = 0xa1;
+  var siWithCs = b.sequence(si.children.map(function (n) { return n.bytes; }).concat([unsigned]));
+  var sdNew = b.sequence(sd.children.slice(0, -1).map(function (n) { return n.bytes; }).concat([b.set([siWithCs])]));
+  var withSha1Cs = b.sequence([root.children[0].bytes, b.explicit(0, sdNew)]);
+
+  var csDefault = await pki.cms.verify(withSha1Cs);
+  check("a SHA-1 countersignature is refused by default",
+    csDefault.signers[0].countersignatures[0].code === "cms/weak-digest");
+  var csAllowed = await pki.cms.verify(withSha1Cs, { allowWeakDigests: true });
+  check("allowWeakDigests reaches the countersignature too",
+    csAllowed.signers[0].countersignatures[0].ok === true);
+
+  // The policy is captured in the synchronous prologue, before any await over
+  // caller-controlled content. Read inside the signer loop instead, a detached stream could
+  // flip it from false to true while yielding, and a verification that began with weak
+  // digests refused would finish having accepted one.
+  var accessorOpts = {};
+  Object.defineProperty(accessorOpts, "allowWeakDigests", {
+    enumerable: true, configurable: true, get: function () { return true; },
+  });
+  await rejects("an accessor-backed policy option",
+    function () { return pki.cms.verify(SHA1_CMS, accessorOpts); }, "cms/bad-input");
+  // A plain field the caller mutates once verification is under way is read from the value
+  // captured before the first await, so the verdict is the one the policy had at entry.
+  var mutable = { allowWeakDigests: false };
+  var pending = pki.cms.verify(SHA1_CMS, mutable);
+  mutable.allowWeakDigests = true;
+  var mutated = await pending;
+  check("mutating the policy after the call starts does not widen the verdict",
+    mutated.valid === false && mutated.signers[0].code === "cms/weak-digest");
+
+  // The weak set is keyed on the OID, not the registry NAME. MD5 and MD2 are deliberately
+  // unregistered, so their name is undefined and a name-keyed set matched SHA-1 while
+  // letting them through on a scheme that carries its own hash and takes no signed
+  // attributes, where the digestAlgorithm field is not otherwise load-bearing.
+  var ed = makeSigner("ed25519");
+  var bare = await pki.cms.sign(CONTENT, { cert: ed.cert, key: ed.key }, { signedAttributes: false });
+  function withDigestOid(dotted) {
+    var r = pki.asn1.decode(bare);
+    var sd = r.children[1].children[0];
+    var si = sd.children[sd.children.length - 1].children[0];
+    var newSi = b.sequence([si.children[0].bytes, si.children[1].bytes,
+      b.sequence([b.oid(dotted)]), si.children[3].bytes, si.children[4].bytes]);
+    var newSd = b.sequence(sd.children.slice(0, -1).map(function (n) { return n.bytes; }).concat([b.set([newSi])]));
+    return b.sequence([r.children[0].bytes, b.explicit(0, newSd)]);
+  }
+  // CONTROL: untouched, the same message verifies, so a refusal below is the digest OID.
+  check("CONTROL: the attribute-less Ed25519 message verifies", (await pki.cms.verify(bare)).valid === true);
+  // SHA-1 is refused under a policy the caller can lift; the MD family is refused outright,
+  // because this toolkit has no verification path for those digests at all. The message a
+  // caller reads has to match which of the two it is, or the opt-in it names does nothing.
+  var sha1Res = await pki.cms.verify(withDigestOid("1.3.14.3.2.26"));
+  check("a SHA-1 digestAlgorithm is refused even with no signed attributes",
+    sha1Res.valid === false && sha1Res.signers[0].code === "cms/weak-digest");
+  var sha1Allowed = await pki.cms.verify(withDigestOid("1.3.14.3.2.26"), { allowWeakDigests: true });
+  check("and the opt-in it names actually verifies it", sha1Allowed.valid === true);
+  var mdOids = [["MD5", "1.2.840.113549.2.5"], ["MD4", "1.2.840.113549.2.4"], ["MD2", "1.2.840.113549.2.2"]];
+  for (var w = 0; w < mdOids.length; w++) {
+    var res = await pki.cms.verify(withDigestOid(mdOids[w][1]));
+    check("a " + mdOids[w][0] + " digestAlgorithm is refused outright",
+      res.valid === false && res.signers[0].code === "cms/unsupported-algorithm");
+    var forced = await pki.cms.verify(withDigestOid(mdOids[w][1]), { allowWeakDigests: true });
+    check("and allowWeakDigests does not claim to verify " + mdOids[w][0],
+      forced.valid === false && forced.signers[0].code === "cms/unsupported-algorithm");
+  }
 }
 
 module.exports = { run: run };

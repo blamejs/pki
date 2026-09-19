@@ -1074,7 +1074,7 @@ async function testCmsDoors() {
 
   // Detached content on the DETACHED-signature path too: the preimage arrives through
   // opts.content there, a different door from the eContent one above.
-  var detachedSig = await pki.cms.sign(CONTENT, { cert: s.cert, key: s.key, detached: true });
+  var detachedSig = await pki.cms.sign(CONTENT, { cert: s.cert, key: s.key }, { detached: true });
   await rejectsWith("cms.verify with detached opts.content",
     function () { return pki.cms.verify(detachedSig, { certs: [s.cert], content: detachedBuffer(CONTENT) }); },
     "cms/bad-input");
@@ -1401,6 +1401,39 @@ async function run() {
   await testInheritedArrayElementIsRefused();
   await testCallerDateCannotAnswerTheInstant();
   testTranslateStreamError();
+  await testLargeByteArgumentSnapshot();
+}
+
+// A byte argument's identity is its BYTES. The deep snapshot copied them and then walked the
+// value's named properties, which on a typed array means every index: above 2^24 elements V8
+// refuses to enumerate at all and throws a bare RangeError, so a caller signing 16 MiB got an
+// untyped error with no `code` out of a verb whose whole contract is a typed refusal.
+async function testLargeByteArgumentSnapshot() {
+  var E = function (c, m, cause) { return new TestError(c, m, cause); };
+  var big = Buffer.alloc(16777217);
+  // PASSING CONTROL: one byte smaller goes through, so a failure above is about the size.
+  var small = Buffer.alloc(16777216);
+  var okCopy = guardBytes.snapshotDeep(small, TestError, "t/bad", "content");
+  check("a 2^24-byte argument snapshots", Buffer.isBuffer(okCopy) && okCopy.length === small.length);
+
+  var copy = guardBytes.snapshotDeep(big, TestError, "t/bad", "content");
+  check("a byte argument above 2^24 snapshots rather than throwing RangeError",
+    Buffer.isBuffer(copy) && copy.length === big.length);
+  check("and the copy is a distinct buffer, not the caller's", copy !== big);
+
+  // The shipped consumer path: cms.sign over the same size must fail typed, or succeed.
+  var kp = await pki.key.generate("Ed25519");
+  var spki = await pki.key.export(kp.publicKey);
+  var cert = await pki.x509.sign({
+    subject: [{ commonName: "big-content" }], subjectPublicKey: spki,
+    notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"),
+  }, { key: kp.privateKey });
+  var thrown = null, signed = null;
+  try { signed = await pki.cms.sign(big, { cert: cert, key: kp.privateKey }, { detached: true }); }
+  catch (e) { thrown = e; }
+  check("pki.cms.sign over 2^24+1 bytes does not throw an untyped RangeError",
+    thrown === null ? Buffer.isBuffer(signed) : (thrown.isPkiError === true && typeof thrown.code === "string"));
+  void E;
 }
 
 // The shared streamed-content error translation cms.sign / cms.verify / cms.encrypt compose: the engine's

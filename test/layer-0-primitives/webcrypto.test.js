@@ -322,6 +322,25 @@ async function testEcImportCurveValidation() {
   var p384 = ecDer("secp384r1");
   var k256 = ecDer("secp256k1"); // not in the framework's CURVE_NODE set
 
+  // RFC 5480 sec. 2.1.1: an EC SubjectPublicKeyInfo names its curve as a namedCurve OID.
+  // node:crypto accepts the specifiedCurve SEQUENCE and derives the curve from it, so
+  // without this check an explicit-parameters key imports and verifies normally -- the
+  // CVE-2020-0601 class, where the curve a relying party verifies against stops being the
+  // one the issuer vouched for. The private-key path already pre-validates; this is the
+  // public-key path catching up.
+  var explicitEc = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1", paramEncoding: "explicit" });
+  var explicitSpki = explicitEc.publicKey.export({ format: "der", type: "spki" });
+  check("CONTROL: the same curve with named parameters imports",
+    (await code(async function () { await subtle.importKey("spki", p256.spki, { name: "ECDSA", namedCurve: "P-256" }, true, ["verify"]); })) === "NO-THROW");
+  check("spki import of explicit EC domain parameters rejects (data)",
+    (await code(async function () { await subtle.importKey("spki", explicitSpki, { name: "ECDSA", namedCurve: "P-256" }, true, ["verify"]); })) === "webcrypto/data");
+  check("ECDH is held to the same rule as ECDSA",
+    (await code(async function () { await subtle.importKey("spki", explicitSpki, { name: "ECDH", namedCurve: "P-256" }, true, []); })) === "webcrypto/data");
+  // A non-EC algorithm is untouched: Ed25519 omits parameters by RFC 8410 sec. 3.
+  var ed = nodeCrypto.generateKeyPairSync("ed25519");
+  check("CONTROL: an Ed25519 spki still imports with parameters absent",
+    (await code(async function () { await subtle.importKey("spki", ed.publicKey.export({ format: "der", type: "spki" }), { name: "Ed25519" }, true, ["verify"]); })) === "NO-THROW");
+
   // Unsupported curve → NotSupportedError, on every parse-based format.
   check("spki import of an unsupported curve (secp256k1) rejects (not-supported)",
     (await code(async function () { await subtle.importKey("spki", k256.spki, { name: "ECDSA", namedCurve: "P-256" }, true, ["verify"]); })) === "webcrypto/not-supported");

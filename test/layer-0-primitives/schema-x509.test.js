@@ -835,6 +835,126 @@ function run() {
   testRfc5280Conformance();
   testMultiDefectFailClosed();
   testMlKemCertificates();
+  testOidArcCountBound();
+  testExplicitEcParametersRefused();
+}
+
+// A format parser took no options, so the DER size and depth bounds were fixed at the
+// defaults and a caller parsing untrusted input could not tighten them for its own context.
+// A second argument was accepted and ignored, which is the worse half: a caller who passed
+// one believed it applied. The caps may only TIGHTEN -- an option that could raise the
+// bound would hand an attacker the resource ceiling the bound exists to hold.
+// RFC 5480 sec. 2.1.1: an id-ecPublicKey SubjectPublicKeyInfo carries its parameters as a
+// namedCurve OBJECT IDENTIFIER. The specifiedCurve SEQUENCE and implicitlyCA NULL forms are
+// not permitted in PKIX, and accepting one is the CVE-2020-0601 class: the curve a relying
+// party verifies against stops being the curve the issuer vouched for, so a signature can be
+// made to verify under an attacker-chosen generator. CVE-2022-0778 is the same encoding
+// reached as a parser bug rather than a trust bug.
+//
+// Both fixtures are OpenSSL 3.5 output for the SAME curve (prime256v1), differing only in
+// -param_enc, so the named one is the control that proves the refusal is about the encoding.
+function testExplicitEcParametersRefused() {
+  var EXPLICIT_PARAMS_CERT = [
+    "-----BEGIN CERTIFICATE-----",
+    "MIICfjCCAiOgAwIBAgIUUP1JhTllljRwV3PzKnPFrRqdXoQwCgYIKoZIzj0EAwIw",
+    "GjEYMBYGA1UEAwwPZXhwbGljaXQtcGFyYW1zMB4XDTI2MDkxOTE0MTgyNVoXDTM2",
+    "MDkxNjE0MTgyNVowGjEYMBYGA1UEAwwPZXhwbGljaXQtcGFyYW1zMIIBSzCCAQMG",
+    "ByqGSM49AgEwgfcCAQEwLAYHKoZIzj0BAQIhAP////8AAAABAAAAAAAAAAAAAAAA",
+    "////////////////MFsEIP////8AAAABAAAAAAAAAAAAAAAA///////////////8",
+    "BCBaxjXYqjqT57PrvVV2mIa8ZR0GsMxTsPY7zjw+J9JgSwMVAMSdNgiG5wSTamZ4",
+    "4ROdJreBn36QBEEEaxfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpZP40Li",
+    "/hp/m47n60p8D54WK84zV2sxXs7LtkBoN79R9QIhAP////8AAAAA//////////+8",
+    "5vqtpxeehPO5ysL8YyVRAgEBA0IABOd0sN0AScy5JwCCrpPs93rjoQUlrJ4BKcxN",
+    "tqv53ebz1G0anto9/gDWlzjhVDd0YCq0M/5/nJs8EAdSBTXbyCWjUzBRMB0GA1Ud",
+    "DgQWBBSgs/8/KsiFoweU8qvUIACzJq3+/zAfBgNVHSMEGDAWgBSgs/8/KsiFoweU",
+    "8qvUIACzJq3+/zAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0kAMEYCIQCp",
+    "sxonzPQGtwGaMtBP0Xv1HV79YSFgqQN7QGVbQ0QQUAIhAJ+ueuT1/cplHdKiQHfS",
+    "kJS3QQGM+WkSua4n6d6nW9cx",
+    "-----END CERTIFICATE-----",
+  ].join("\n");
+  var NAMED_CURVE_CERT = [
+    "-----BEGIN CERTIFICATE-----",
+    "MIIBgTCCASegAwIBAgIUAYh26GoLWZ+3WbpvJXM4fO3J/MMwCgYIKoZIzj0EAwIw",
+    "FjEUMBIGA1UEAwwLbmFtZWQtY3VydmUwHhcNMjYwOTE5MTQxODI1WhcNMzYwOTE2",
+    "MTQxODI1WjAWMRQwEgYDVQQDDAtuYW1lZC1jdXJ2ZTBZMBMGByqGSM49AgEGCCqG",
+    "SM49AwEHA0IABGdrXeuKrVP7X6Cwt3Bkdiew9ehj/Iq4cnL1hDKmugFFYb8R0hbR",
+    "P2SpOF0XvHblmWO2rIcjRzzCdX6wXQ4g6JijUzBRMB0GA1UdDgQWBBSbm/IyT+0J",
+    "lqHY0PhyhJkhlIXUKjAfBgNVHSMEGDAWgBSbm/IyT+0JlqHY0PhyhJkhlIXUKjAP",
+    "BgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0gAMEUCIDeipZXAGvRzzJYSJ22E",
+    "H9qlTMt5E0xAeLzSXk11pxKjAiEApk6Q9shW28raa8EWDmcGCqMNVhWW7ZtEJ4YM",
+    "T1mVlGs=",
+    "-----END CERTIFICATE-----",
+  ].join("\n");
+
+  // Parse stays DESCRIPTIVE on purpose: pki.inspect and pki.lint have to be able to open a
+  // non-conforming certificate and report on it, and an OCSP delegate legitimately omits its
+  // parameters to inherit the CA's (path-validate's O30 vector). The refusal belongs at the
+  // point the key is imported to VERIFY something, which is pinned in webcrypto.test.js.
+  check("CONTROL: a namedCurve EC certificate parses",
+    pki.schema.x509.parse(NAMED_CURVE_CERT).subject.dn === "CN=named-curve");
+  check("an explicit-parameters EC certificate still parses, so it can be inspected and linted",
+    pki.schema.x509.parse(EXPLICIT_PARAMS_CERT).subject.dn === "CN=explicit-params");
+
+  // The other two forbidden forms, driven through the same shipped verb: implicitlyCA is the
+  // parameters field present as NULL (inherit the issuer's curve), and an absent parameters
+  // field names no curve at all.
+  var b2 = pki.asn1.build, O2 = pki.oid.byName;
+  function certWithSpkiAlg(algSeq) {
+    var sk = signing.makeSigner("ec-p256");
+    var pt = pki.asn1.read.bitString(pki.asn1.decode(sk.spki).children[1]).bytes;
+    var nm = b2.sequence([b2.set([b2.sequence([b2.oid(O2("commonName")), b2.printable("ecparams")])])]);
+    var alg = b2.sequence([b2.oid(O2("ecdsaWithSHA256"))]);
+    var tbs = b2.sequence([b2.explicit(0, b2.integer(2n)), b2.integer(1n), alg, nm,
+      b2.sequence([b2.utcTime(new Date("2026-01-01T00:00:00Z")), b2.utcTime(new Date("2027-01-01T00:00:00Z"))]), nm,
+      b2.sequence([algSeq, b2.bitString(pt, 0)])]);
+    return b2.sequence([tbs, alg, b2.bitString(b2.sequence([b2.integer(1n), b2.integer(1n)]), 0)]);
+  }
+  check("CONTROL: a hand-built namedCurve EC SPKI parses",
+    code(function () { pki.schema.x509.parse(certWithSpkiAlg(b2.sequence([b2.oid(O2("ecPublicKey")), b2.oid(O2("prime256v1"))]))); }) === "NO-THROW");
+  check("an implicitlyCA (NULL parameters) EC SPKI parses",
+    code(function () { pki.schema.x509.parse(certWithSpkiAlg(b2.sequence([b2.oid(O2("ecPublicKey")), b2.nullValue()]))); }) === "NO-THROW");
+  check("an EC SPKI with no parameters at all parses, the form an OCSP delegate inherits",
+    code(function () { pki.schema.x509.parse(certWithSpkiAlg(b2.sequence([b2.oid(O2("ecPublicKey"))]))); }) === "NO-THROW");
+  check("CONTROL: an Ed25519 SPKI parses with parameters absent (RFC 8410 sec. 3)",
+    code(function () { pki.schema.x509.parse(certWithSpkiAlg(b2.sequence([b2.oid(O2("Ed25519"))]))); }) === "NO-THROW");
+}
+
+// RESOURCE BOUND: every certificate field that is an OBJECT IDENTIFIER routes through the
+// shared oidLeaf, so the arc-count bound the codec enforces must be reachable through the
+// shipped consumer path rather than only through pki.asn1. An extension OID is the widest
+// door -- a certificate may carry an unregistered extension whose OID is arbitrary -- and
+// each arc costs a BigInt and a decimal string, so an unbounded count turns a certificate
+// inside the DER size bound into hundreds of megabytes of heap.
+function testOidArcCountBound() {
+  var b = pki.asn1.build, O = pki.oid.byName;
+  function certWithExtensionOid(oidContent) {
+    var sk = signing.makeSigner("ec-p256");
+    var pt = pki.asn1.read.bitString(pki.asn1.decode(sk.spki).children[1]).bytes;
+    var nm = b.sequence([b.set([b.sequence([b.oid(O("commonName")), b.printable("arc-bound")])])]);
+    var alg = b.sequence([b.oid(O("ecdsaWithSHA256"))]);
+    var ext = b.sequence([
+      pki.asn1.encode(0x00, false, pki.asn1.TAGS.OBJECT_IDENTIFIER, oidContent),
+      b.octetString(Buffer.from([0x05, 0x00])),
+    ]);
+    var tbs = b.sequence([b.explicit(0, b.integer(2n)), b.integer(1n), alg, nm,
+      b.sequence([b.utcTime(new Date("2026-01-01T00:00:00Z")), b.utcTime(new Date("2027-01-01T00:00:00Z"))]), nm,
+      b.sequence([b.sequence([b.oid(O("ecPublicKey")), b.oid(O("prime256v1"))]), b.bitString(pt, 0)]),
+      b.explicit(3, b.sequence([ext]))]);
+    return b.sequence([tbs, alg, b.bitString(b.sequence([b.integer(1n), b.integer(1n)]), 0)]);
+  }
+  // PASSING CONTROL: an ordinary unregistered extension OID still parses, so a refusal
+  // below is about the arc count and not about the certificate shape this test builds.
+  var okCert = certWithExtensionOid(pki.asn1.encodeOidContent("1.3.6.1.4.1.99999.1"));
+  check("a certificate carrying an unregistered extension OID parses",
+    pki.schema.x509.parse(okCert).extensions.length === 1);
+  var arcCap = pki.C.LIMITS.OID_MAX_SUBIDENTIFIERS;
+  check("a certificate whose extension OID sits at the arc cap parses",
+    code(function () { pki.schema.x509.parse(certWithExtensionOid(Buffer.alloc(arcCap, 0x01))); }) === "NO-THROW");
+  check("a certificate whose extension OID exceeds the arc cap is refused",
+    code(function () { pki.schema.x509.parse(certWithExtensionOid(Buffer.alloc(arcCap + 1, 0x01))); }) === "oid/too-many-subidentifiers");
+  // The measured case: 400k arcs cost ~55 MB of heap before this bound existed.
+  check("a 400k-arc extension OID is refused rather than decoded",
+    code(function () { pki.schema.x509.parse(certWithExtensionOid(Buffer.alloc(400000, 0x01))); }) === "oid/too-many-subidentifiers");
 }
 
 // ML-KEM certificates (RFC 9935): the parse acceptance surface for all three parameter

@@ -247,11 +247,28 @@ function run() {
   check("an undecodable known extension -> extension-undecodable (error)",
     has(pki.lint.certificate(makeCert({ exts: [ext("basicConstraints", true, b.integer(5n))] })), "lint/rfc5280/extension-undecodable"));
 
-  // SHOULD-level advisories (notice).
-  check("a CA cert without SKI -> ski-missing (notice)",
-    sevOf(pki.lint.certificate(makeCert({ exts: [basicConstraints(true, null, true), keyUsage([5], true)] })), "lint/rfc5280/ski-missing") === "notice");
-  check("a non-self-signed cert without AKI -> aki-missing (notice)",
-    has(pki.lint.certificate(makeCert({ subject: dnCN("leaf.example") })), "lint/rfc5280/aki-missing"));
+  // Severity tracks clause strength. RFC 5280 sec. 4.2.1.2 makes the subjectKeyIdentifier a
+  // MUST in a CA certificate and sec. 4.2.1.1 makes the authorityKeyIdentifier a MUST in any
+  // certificate a conforming CA generates other than a self-signed one, so both grade error,
+  // the same grade the CRL profile already gives the identical absences at sec. 5.2.1.
+  check("a CA cert without SKI -> ski-missing (error, a sec. 4.2.1.2 MUST)",
+    sevOf(pki.lint.certificate(makeCert({ exts: [basicConstraints(true, null, true), keyUsage([5], true)] })), "lint/rfc5280/ski-missing") === "error");
+  check("a non-self-signed cert without AKI -> aki-missing (error, a sec. 4.2.1.1 MUST)",
+    sevOf(pki.lint.certificate(makeCert({ subject: dnCN("leaf.example") })), "lint/rfc5280/aki-missing") === "error");
+  // Self-issued status is decided by the RFC 5280 sec. 7.1 name comparison, not by the
+  // display string. A genuinely self-signed certificate whose issuer and subject differ only
+  // in case is one the path validator treats as self-issued, so an error-severity AKI lint
+  // must not fire on it.
+  check("a self-signed certificate whose names differ only in case does not flag aki-missing",
+    !has(pki.lint.certificate(makeCert({ subject: dnCN("CA"), issuer: dnCN("ca") })), "lint/rfc5280/aki-missing"));
+  check("CONTROL: a genuinely different issuer still flags it",
+    has(pki.lint.certificate(makeCert({ subject: dnCN("leaf.example"), issuer: dnCN("other-ca") })), "lint/rfc5280/aki-missing"));
+  check("the certificate and CRL profiles now grade the same absence alike", (function () {
+    var rules = pki.lint.rules();
+    rules = rules.rules || rules;
+    function sev(id) { var r = rules.filter(function (x) { return x.id === id; })[0]; return r && r.severity; }
+    return sev("lint/rfc5280/aki-missing") === sev("lint/rfc5280-crl/aki-missing");
+  })());
 
   // ---- RFC 5280 extension criticality + CA-scope coherence lints ----
   // basicConstraints: a CA whose key validates certificate signatures (keyCertSign) MUST mark
@@ -310,10 +327,11 @@ function run() {
   check("a cert with no keyUsage is NA for key-usage-not-critical",
     !has(pki.lint.certificate(makeCert({ exts: [ski(), aki()] })), "lint/rfc5280/key-usage-not-critical"));
 
-  // end-entity SKI SHOULD be present (4.2.1.2) -- notice; distinct from the CA-only ski-missing.
+  // end-entity SKI is a SHOULD (4.2.1.2) -- warn, the grade this profile gives its other
+  // SHOULD clauses; distinct from the CA-only ski-missing, which is a MUST and grades error.
   var eeNoSki = pki.lint.certificate(makeCert({ exts: [keyUsage([0], true), aki()] }));
-  check("an end-entity cert without SKI -> ski-missing-ee (notice)",
-    sevOf(eeNoSki, "lint/rfc5280/ski-missing-ee") === "notice");
+  check("an end-entity cert without SKI -> ski-missing-ee (warn, a sec. 4.2.1.2 SHOULD)",
+    sevOf(eeNoSki, "lint/rfc5280/ski-missing-ee") === "warn");
   check("the EE-SKI fixture carries an AKI so aki-missing does not blur it", !has(eeNoSki, "lint/rfc5280/aki-missing"));
   check("an end-entity cert WITH an SKI does NOT flag ski-missing-ee",
     !has(pki.lint.certificate(makeCert({ exts: [keyUsage([0], true), ski(), aki()] })), "lint/rfc5280/ski-missing-ee"));
@@ -383,10 +401,16 @@ function run() {
   check("a date-gated rule reports NE before its effective date (never fires)", !has(oldCert, "lint/cabf-tls/validity-too-long") && oldCert.counts.ne > 0);
 
   // ---- severity threshold ----
-  var withNotices = pki.lint.certificate(makeCert({ subject: dnCN("leaf.example") }));  // aki-missing notice
-  var filtered = pki.lint.certificate(makeCert({ subject: dnCN("leaf.example") }), { severity: "error" });
-  check("a severity:error threshold suppresses notice-level findings", !has(filtered, "lint/rfc5280/aki-missing") && has(withNotices, "lint/rfc5280/aki-missing"));
-  check("the threshold filters findings but leaves counts complete", filtered.counts.notice === withNotices.counts.notice);
+  // ski-missing-ee is a SHOULD (warn); aki-missing on the same certificate is a MUST (error),
+  // so one fixture exercises both sides of the threshold at once.
+  var eeFixture = makeCert({ subject: dnCN("leaf.example"), exts: [keyUsage([0], true)] });
+  var unfiltered = pki.lint.certificate(eeFixture);
+  var filtered = pki.lint.certificate(eeFixture, { severity: "error" });
+  check("a severity:error threshold suppresses below-error findings",
+    has(unfiltered, "lint/rfc5280/ski-missing-ee") && !has(filtered, "lint/rfc5280/ski-missing-ee"));
+  check("and keeps the error-level ones",
+    has(unfiltered, "lint/rfc5280/aki-missing") && has(filtered, "lint/rfc5280/aki-missing"));
+  check("the threshold filters findings but leaves counts complete", filtered.counts.warn === unfiltered.counts.warn);
 
   // ---- determinism + bytes/parsed parity ----
   var r1 = pki.lint.certificate(makeCert({ serial: b.integer(-1n) }));
