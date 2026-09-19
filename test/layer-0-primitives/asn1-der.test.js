@@ -11,6 +11,7 @@ var helpers = require("../helpers");
 var pki = helpers.pki;
 var check = helpers.check;
 var vectors = helpers.vectors;
+var guard = require("../../lib/guard-all");
 function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 function hex(buf) { return Buffer.from(buf).toString("hex"); }
 
@@ -160,6 +161,23 @@ function testIntegerAndOidCaps() {
     for (var i = 0; i < arcCap - 2; i++) arcs.push("1");
     return code(function () { pki.asn1.encodeOidContent(arcs.join(".")); }) === "NO-THROW";
   })());
+  // The bound lives in the canonical-OID guard, not beside the encoder, so the guard's
+  // acceptance implies the encoder's. A count check placed only in encodeOidContent made
+  // the encoder stricter than the guard, which the guard-encoding fuzz target caught as
+  // "encodeOidContent rejected a guard-accepted OID".
+  check("the guard refuses what the encoder refuses, under its own code", (function () {
+    var arcs = ["2", "25"];
+    for (var i = 0; i < arcCap; i++) arcs.push("1");
+    var dotted = arcs.join(".");
+    var guardCode = code(function () {
+      guard.identifier.assertCanonicalOid(dotted, function (c, m) { return new pki.errors.OidError(c, m); },
+        "oid/bad-input", "OID", "oid/bad-arc", "oid/too-many-subidentifiers");
+    });
+    return guardCode === code(function () { pki.asn1.encodeOidContent(dotted); });
+  })());
+  // The root-arc bound keeps its own distinct code rather than the count's.
+  check("an out-of-range root arc still reports oid/bad-arc",
+    code(function () { pki.asn1.encodeOidContent("3.1.1"); }) === "oid/bad-arc");
   check("a 400k-arc OID is refused rather than decoded",
     code(function () { pki.asn1.decodeOidContent(Buffer.alloc(400000, 0x01)); }) === "oid/too-many-subidentifiers");
   // The typed leaf reader inherits the bound, so no format parser can route around it.
