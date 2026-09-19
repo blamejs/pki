@@ -1464,6 +1464,25 @@ async function testWeakDigestPolicy() {
   check("allowWeakDigests reaches the countersignature too",
     csAllowed.signers[0].countersignatures[0].ok === true);
 
+  // The policy is captured in the synchronous prologue, before any await over
+  // caller-controlled content. Read inside the signer loop instead, a detached stream could
+  // flip it from false to true while yielding, and a verification that began with weak
+  // digests refused would finish having accepted one.
+  var accessorOpts = {};
+  Object.defineProperty(accessorOpts, "allowWeakDigests", {
+    enumerable: true, configurable: true, get: function () { return true; },
+  });
+  await rejects("an accessor-backed policy option",
+    function () { return pki.cms.verify(SHA1_CMS, accessorOpts); }, "cms/bad-input");
+  // A plain field the caller mutates once verification is under way is read from the value
+  // captured before the first await, so the verdict is the one the policy had at entry.
+  var mutable = { allowWeakDigests: false };
+  var pending = pki.cms.verify(SHA1_CMS, mutable);
+  mutable.allowWeakDigests = true;
+  var mutated = await pending;
+  check("mutating the policy after the call starts does not widen the verdict",
+    mutated.valid === false && mutated.signers[0].code === "cms/weak-digest");
+
   // The weak set is keyed on the OID, not the registry NAME. MD5 and MD2 are deliberately
   // unregistered, so their name is undefined and a name-keyed set matched SHA-1 while
   // letting them through on a scheme that carries its own hash and takes no signed

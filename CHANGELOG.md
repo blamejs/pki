@@ -21,7 +21,7 @@ Verification is held to the rules signing already applied.
 - A key the crypto engine cannot import now reports `path/unsupported-algorithm` instead of `path/bad-signature`, so a certificate on a curve the engine does not carry no longer reads as forged.
 - `pki.webcrypto.subtle.importKey("spki", ...)` refuses an ECDSA or ECDH key whose parameters are explicit domain parameters or the implicitlyCA form, as RFC 5480 section 2.1.1 requires a namedCurve. Certificate parsing still accepts such a key so it can be inspected and linted.
 - `lint/rfc5280/ski-missing` and `lint/rfc5280/aki-missing` are graded `error` rather than `notice`, matching the RFC 5280 section 4.2.1.1 and 4.2.1.2 MUST clauses and the grade the CRL profile already gives the same absence. `lint/rfc5280/ski-missing-ee` is graded `warn`, its clause being a SHOULD. A pipeline gating on `--severity error` will see findings it did not see before.
-- A `PkiError` for a network failure that says nothing about the bytes carries `permanent: false`: `transport/timeout` and `transport/proxy-connect-failed`. Every other code, including the deterministic transport refusals, stays `permanent: true`.
+- A `PkiError` whose reason is `timeout` carries `permanent: false`, so a caller can decide to retry from the error itself rather than from a code list of its own. The reason is read without its domain, so a timeout raised by a protocol client under its own prefix (`acme/timeout`, `est/timeout`) carries the flag too. Every other code stays `permanent: true`, including a proxy that refuses CONNECT with a definite status.
 
 ### Fixed
 

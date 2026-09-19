@@ -5432,6 +5432,14 @@ async function testKeyStrengthFloor() {
     threwJunk === null && resJunk !== null && resJunk.valid === false);
   check("and the verdict names the signature, not an ASN.1 fault",
     resJunk !== null && failCodes(resJunk).indexOf("asn1/truncated") === -1);
+  // Once the SPKI NAMES an RSA algorithm, an unreadable modulus is a refusal, not "no
+  // opinion". Skipping the floor there would let a custom verifier return a valid path for
+  // an RSA issuer whose strength was never measured.
+  check("an unmeasurable RSA issuer key fails closed as weak-key",
+    failCodes(resJunk).indexOf("path/weak-key") !== -1);
+  var resJunkCustom = await run([interJunk, leafUnderJunk], { time: T2027, trustAnchors: anchor, verifier: everTrue });
+  check("and a custom verifier cannot accept it either",
+    resJunkCustom.valid === false && failCodes(resJunkCustom).indexOf("path/weak-key") !== -1);
 
   var sha1Sig = b.sequence([b.oid("1.2.840.113549.1.1.5"), b.nullValue()]);
   var leafSha1 = await mkCert({ subject: "Sha1Leaf", issuer: "StrongRsaInter", signWith: "rsa",

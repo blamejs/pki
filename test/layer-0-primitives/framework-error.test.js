@@ -96,8 +96,16 @@ function testTransientCodes() {
     new TransportError("transport/blocked-address", "x").permanent === true);
 
   check("a timeout is not permanent", new TransportError("transport/timeout", "x").permanent === false);
-  check("a failed proxy connect is not permanent",
-    new TransportError("transport/proxy-connect-failed", "x").permanent === false);
+  // The reason is read without its domain, because the HTTP transport re-prefixes the same
+  // failure for each protocol client. A table of exact codes would have left the great
+  // majority of real network errors marked permanent.
+  check("a timeout under a protocol client's own prefix is not permanent either",
+    new pki.errors.AcmeError("acme/timeout", "x").permanent === false &&
+    new pki.errors.EstError("est/timeout", "x").permanent === false);
+  // A proxy that answers CONNECT with 403 has refused deterministically, so the shared
+  // connect-failure code stays permanent rather than inviting a retry of a refusal.
+  check("a failed proxy connect stays permanent",
+    new TransportError("transport/proxy-connect-failed", "x").permanent === true);
   // The flag stays on the documented shape either way.
   check("permanent is always a boolean",
     typeof new TransportError("transport/timeout", "x").permanent === "boolean");
