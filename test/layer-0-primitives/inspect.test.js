@@ -464,6 +464,13 @@ function run() {
   var unkCurve = pki.inspect.certificate(swapSpki(b.sequence([b.sequence([b.oid(pki.oid.byName("ecPublicKey")), b.oid("1.3.6.1.4.1.99999.5.5")]), b.bitString(Buffer.concat([Buffer.from([0x04]), Buffer.alloc(64, 0x11)]))])));
   check("inspect: an ecPublicKey with an unknown curve derives bits from the point, no ASN1 OID",
     /Public Key Algorithm: ecPublicKey\n\s+Public-Key: \(256 bit\)/.test(unkCurve) && unkCurve.indexOf("ASN1 OID:") < 0);
+  // A curve the crypto engine does not sign on is still named in the dump, so a
+  // certificate that only needs reading is readable. secp256k1 and the brainpool
+  // curves carry no NIST name, so that line is absent where prime256v1 has one.
+  var k1Curve = pki.inspect.certificate(swapSpki(b.sequence([b.sequence([b.oid(pki.oid.byName("ecPublicKey")), b.oid("1.3.132.0.10")]), b.bitString(Buffer.concat([Buffer.from([0x04]), Buffer.alloc(64, 0x11)]))])));
+  check("inspect: a secp256k1 key names its curve", /ASN1 OID: secp256k1/.test(k1Curve) && k1Curve.indexOf("NIST CURVE:") < 0);
+  var bp512 = pki.inspect.certificate(swapSpki(b.sequence([b.sequence([b.oid(pki.oid.byName("ecPublicKey")), b.oid("1.3.36.3.3.2.8.1.1.13")]), b.bitString(Buffer.concat([Buffer.from([0x04]), Buffer.alloc(128, 0x11)]))])));
+  check("inspect: a brainpoolP512r1 key names its curve", /ASN1 OID: brainpoolP512r1/.test(bp512) && /Public-Key: \(512 bit\)/.test(bp512));
   var rsaOdd = pki.inspect.certificate(swapSpki(b.sequence([b.sequence([b.oid(pki.oid.byName("rsaEncryption")), b.nullValue()]), b.bitString(b.sequence([b.integer(0x123n), b.integer(3n)]))])));
   check("inspect: an RSA modulus with odd-length hex is zero-padded", /Modulus:\n\s+01:23\n/.test(rsaOdd) && /Public-Key: \(9 bit\)/.test(rsaOdd));
   var rsaBad = pki.inspect.certificate(swapSpki(b.sequence([b.sequence([b.oid(pki.oid.byName("rsaEncryption")), b.nullValue()]), b.bitString(Buffer.from([0xff, 0xff, 0xff]))])));

@@ -25,6 +25,45 @@ function testRegistry() {
   check("has()", pki.oid.has("2.5.4.3") === true && pki.oid.has("9.9.9") === false);
 }
 
+// Named EC curves a certificate can carry, whether or not the crypto engine
+// signs or verifies on them. An unnamed curve reaches an operator as a null in
+// a lint finding's context and as a missing ASN1 OID line in an inspect dump.
+// The set is the fifteen curves of RFC 5480 sec. 2.1.1.1, secp256k1 of RFC 8422
+// sec. 5.1.1, the two other SECG Koblitz prime curves, and the fourteen
+// brainpool curves of RFC 5639 sec. 4.1. Oracle: the OID each curve's SPKI
+// carries when node:crypto generates a key on it.
+function testEcCurveNames() {
+  var curves = [
+    ["prime192v1", "1.2.840.10045.3.1.1"], ["prime256v1", "1.2.840.10045.3.1.7"],
+    ["sect163k1", "1.3.132.0.1"], ["sect163r1", "1.3.132.0.2"], ["secp256k1", "1.3.132.0.10"],
+    ["sect163r2", "1.3.132.0.15"], ["sect283k1", "1.3.132.0.16"], ["sect283r1", "1.3.132.0.17"],
+    ["sect233k1", "1.3.132.0.26"], ["sect233r1", "1.3.132.0.27"], ["secp192k1", "1.3.132.0.31"],
+    ["secp224k1", "1.3.132.0.32"], ["secp224r1", "1.3.132.0.33"], ["secp384r1", "1.3.132.0.34"],
+    ["secp521r1", "1.3.132.0.35"], ["sect409k1", "1.3.132.0.36"], ["sect409r1", "1.3.132.0.37"],
+    ["sect571k1", "1.3.132.0.38"], ["sect571r1", "1.3.132.0.39"],
+    ["brainpoolP160r1", "1.3.36.3.3.2.8.1.1.1"], ["brainpoolP160t1", "1.3.36.3.3.2.8.1.1.2"],
+    ["brainpoolP192r1", "1.3.36.3.3.2.8.1.1.3"], ["brainpoolP192t1", "1.3.36.3.3.2.8.1.1.4"],
+    ["brainpoolP224r1", "1.3.36.3.3.2.8.1.1.5"], ["brainpoolP224t1", "1.3.36.3.3.2.8.1.1.6"],
+    ["brainpoolP256r1", "1.3.36.3.3.2.8.1.1.7"], ["brainpoolP256t1", "1.3.36.3.3.2.8.1.1.8"],
+    ["brainpoolP320r1", "1.3.36.3.3.2.8.1.1.9"], ["brainpoolP320t1", "1.3.36.3.3.2.8.1.1.10"],
+    ["brainpoolP384r1", "1.3.36.3.3.2.8.1.1.11"], ["brainpoolP384t1", "1.3.36.3.3.2.8.1.1.12"],
+    ["brainpoolP512r1", "1.3.36.3.3.2.8.1.1.13"], ["brainpoolP512t1", "1.3.36.3.3.2.8.1.1.14"],
+  ];
+  curves.forEach(function (row) {
+    check("name(" + row[1] + ") -> " + row[0], pki.oid.name(row[1]) === row[0]);
+    check("byName(" + row[0] + ") -> " + row[1], pki.oid.byName(row[0]) === row[1]);
+  });
+  check("the named-curve set is 33 curves", curves.length === 33);
+  // Each name is the one node:crypto knows the curve by, so a name read out of a
+  // certificate is the name a reader hands back to a key generator.
+  var known = require("crypto").getCurves();
+  curves.forEach(function (row) {
+    check("node:crypto knows the curve by the registered name " + row[0], known.indexOf(row[0]) !== -1);
+  });
+  // A neighboring arc that names no curve stays unregistered.
+  check("an unassigned secg leaf stays unregistered", pki.oid.name("1.3.132.0.99") === undefined);
+}
+
 function testRegister() {
   pki.oid.register("1.3.6.1.4.1.99999.1", "acmeWidgetPolicy");
   check("register forward", pki.oid.name("1.3.6.1.4.1.99999.1") === "acmeWidgetPolicy");
@@ -262,6 +301,7 @@ function testKemParams() {
 
 function run() {
   testRegistry();
+  testEcCurveNames();
   testRegister();
   testArcs();
   testDer();

@@ -168,6 +168,41 @@ async function testMacAlgorithmStrictness() {
   var i = out.indexOf(oidBytes);
   var bad = Buffer.from(out); bad[i + oidBytes.length - 1] = 0x7f;   // hmacWithSHA256 -> an unknown HMAC OID
   check("#12 decrypt an unknown macAlgorithm -> cms/unsupported-algorithm (distinct, pre-secret)", (await codeOf(function () { return pki.cms.decrypt(bad, { kek: kek }); })) === "cms/unsupported-algorithm");
+  await testDigestAlgorithmParameters(kek);
+}
+
+// RFC 5754 sec. 2 governs the digestAlgorithm beside the macAlgorithm that is already held to it:
+// the parameters are absent, or DER NULL, and nothing else is that algorithm. The MAC covers the
+// authAttrs, not this field, so a spliced parameter value leaves the MAC verifying and the content
+// would come back authenticated under an identifier that names no algorithm the toolkit ran.
+async function testDigestAlgorithmParameters(kek) {
+  var out = await pki.cms.authenticate(MSG, [{ kek: kek, kekId: Buffer.from("k") }], {});
+
+  // Rebuild the ContentInfo with the [1] IMPLICIT digestAlgorithm field replaced, every other
+  // child carried over as its raw bytes.
+  function rebuild(extraParams) {
+    var ci = pki.asn1.decode(out);
+    var inner = ci.children[1].children[0];
+    var kids = inner.children.map(function (c) {
+      if (c.tagClass !== "context" || c.tagNumber !== 1) return c.bytes;
+      var content = Buffer.from(c.bytes.subarray(c.bytes.length - c.length));
+      return b.contextConstructed(1, extraParams ? Buffer.concat([content, extraParams]) : content);
+    });
+    return b.sequence([ci.children[0].bytes, b.contextConstructed(0, b.sequence(kids))]);
+  }
+
+  // CONTROL: the rebuild with no change is byte-faithful enough to still decrypt, so a refusal
+  // below is the parameters and not the surgery.
+  var same = rebuild(null);
+  var control = await pki.cms.decrypt(same, { kek: kek });
+  check("#12 CONTROL: the rebuilt AuthenticatedData still decrypts", Buffer.compare(control.content, MSG) === 0 && control.authenticated === true);
+  check("#12 CONTROL: DER NULL digestAlgorithm parameters are accepted",
+    (await pki.cms.decrypt(rebuild(Buffer.from([0x05, 0x00])), { kek: kek })).authenticated === true);
+
+  check("#12 INTEGER digestAlgorithm parameters -> cms/unsupported-algorithm (RFC 5754 sec. 2)",
+    (await codeOf(function () { return pki.cms.decrypt(rebuild(Buffer.from([0x02, 0x01, 0x7b])), { kek: kek }); })) === "cms/unsupported-algorithm");
+  check("#12 OCTET STRING digestAlgorithm parameters -> cms/unsupported-algorithm",
+    (await codeOf(function () { return pki.cms.decrypt(rebuild(Buffer.from([0x04, 0x01, 0x00])), { kek: kek }); })) === "cms/unsupported-algorithm");
 }
 
 // ---- 14 version == 0 for every recipient kind ------------------------------

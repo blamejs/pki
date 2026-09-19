@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.8.0",
+  "packageVersion": "0.8.1",
   "surface": {
     "C": {
       "kind": "object",
@@ -1372,6 +1372,10 @@
           "kind": "function",
           "arity": 3
         },
+        "digest": {
+          "kind": "function",
+          "arity": 2
+        },
         "encrypt": {
           "kind": "function",
           "arity": 3
@@ -1389,6 +1393,10 @@
           "arity": 3
         },
         "verify": {
+          "kind": "function",
+          "arity": 2
+        },
+        "verifyDigest": {
           "kind": "function",
           "arity": 2
         }
@@ -3708,6 +3716,8 @@
     "pki.cmp.session": "0.3.27",
     "pki.cmp.openKeyPackage": "0.6.52",
     "pki.cmp.verify": "0.3.26",
+    "pki.cms.digest": "0.8.1",
+    "pki.cms.verifyDigest": "0.8.1",
     "pki.cms.verify": "0.2.14",
     "pki.cms.sign": "0.2.15",
     "pki.cms.countersign": "0.3.13",

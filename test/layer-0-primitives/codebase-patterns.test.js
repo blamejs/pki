@@ -1956,6 +1956,9 @@ function testNoDuplicateCodeBlocks() {
         "lib/cms-verify.js:_verify", "lib/cms-verify.js:parseCertsOnly",
         "lib/scep.js:getNextCACert", "lib/cms-verify.js:verify", "lib/ocsp.js:_signerVerdict",
         "lib/scep.js:_assertStrongProfile", "lib/scep.js:_buildIssuerAndSerial", "lib/ct.js:signSct",
+        "lib/cms-digest.js:_digest", "lib/cms-digest.js:_verifyDigest",
+        "lib/cms-digest.js:digest", "lib/cms-digest.js:verifyDigest", "lib/cms-digest.js:_digestName",
+        "lib/cmp-build.js:_resolveProtection", "lib/pkcs12-build.js:_normalizeSpec",
       ],
       reason: "The options door a public verb opens with: settle the caller's options object, then refuse any key the verb does not accept. Both steps ARE the shared primitives, already factored into guard-identifier, so what repeats is the pair of calls and nothing else; the arguments differ at every site, since each verb has its own accepted-key table and its own label. Settling has to happen at the verb, before it reads anything, so the call cannot move inside the key check. family-subset so any 3+ match as more verbs adopt the door.",
     },
@@ -2035,6 +2038,7 @@ function testNoDuplicateCodeBlocks() {
         // the unknown-key refusal against that verb's own table. Same shape, different table.
         "lib/cms-sign.js:_sign", "lib/cms-sign.js:_countersign",
         "lib/cms-verify.js:_verify", "lib/tsp-sign.js:verify",
+        "lib/cms-digest.js:digest", "lib/cms-digest.js:verifyDigest",
         // pki.key's six verbs, pki.path's two, pki.lint.certificate and pki.ocsp.verify. Each
         // binds its own table, error class and message. key.export names the verb that
         // encrypts, and path.validate and path.build name each other's anchor spelling, so the
@@ -2088,7 +2092,7 @@ function testNoDuplicateCodeBlocks() {
       // further extractable. family-subset so any 3+ of the format modules match.
       files: [
         "lib/schema-cms.js:_expectedSignedDataVersion", "lib/schema-cms.js:_expectedEnvelopedDataVersion",
-        "lib/schema-cms.js:makeSignerInfo",
+        "lib/schema-cms.js:makeSignerInfo", "lib/schema-cms.js:_expectedAuthDataVersion",
         "lib/schema-ocsp.js:_rawSignature",
         "lib/schema-pkcs8.js:<top>", "lib/schema-tsp.js:<top>",
         "lib/schema-pkcs12.js:<top>", "lib/schema-crmf.js:popoPrivKey",
@@ -2118,6 +2122,7 @@ function testNoDuplicateCodeBlocks() {
       files: [
         "lib/cms-sign.js:<top>", "lib/tsp-sign.js:<top>", "lib/x509-sign.js:<top>", "lib/csr-sign.js:<top>", "lib/attrcert-sign.js:<top>", "lib/crmf-sign.js:<top>", "lib/cmp-build.js:<top>", "lib/crl-sign.js:<top>",
         "lib/cmc-build.js:<top>", "lib/cmc-verify.js:<top>", "lib/schema-cmc.js:<top>",
+        "lib/cms-digest.js:<top>", "lib/cms-digest.js:_err",
         "lib/cms-sign.js:_err", "lib/tsp-sign.js:_err", "lib/x509-sign.js:_err", "lib/csr-sign.js:_err", "lib/attrcert-sign.js:_err", "lib/crmf-sign.js:_err", "lib/cmp-build.js:_err", "lib/crl-sign.js:_err",
         // The run continues past the factories: makeNS(domain) then makeBuilder({...})
         // with that domain's error class and schemas. Same idiom, same reason -- the
@@ -3200,13 +3205,13 @@ function testGuardReadsRuntimeLive() {
     "lib/http-digest.js": 73,
     "lib/pkcs12-build.js": 64,
     "lib/ct.js": 76,
-    "lib/cms-verify.js": 20,
+    "lib/cms-verify.js": 19,
     "lib/cms-encrypt.js": 66,
     "lib/crl-sign.js": 66,
     "lib/cmc-build.js": 58,
     "lib/pki-build.js": 35,
     "lib/hpke.js": 41,
-    "lib/cms-decrypt.js": 50,
+    "lib/cms-decrypt.js": 49,
     "lib/cmc-verify.js": 38,
     "lib/x509-sign.js": 26,
     "lib/schema-attrcert.js": 26,

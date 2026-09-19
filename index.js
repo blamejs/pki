@@ -99,6 +99,7 @@ module.exports = {
   // and exporting the module wholesale would put it on the public surface.
   cms:       { verify: cms.verify, sign: cms.sign, countersign: cms.countersign, encrypt: cms.encrypt,
     authenticate: cms.authenticate, decrypt: cms.decrypt, compress: cms.compress, decompress: cms.decompress,
+    digest: cms.digest, verifyDigest: cms.verifyDigest,
     certsOnly: cms.certsOnly, parseCertsOnly: cms.parseCertsOnly, isCertsOnly: cms.isCertsOnly },
   smime:     smime,
   // `cmc` interprets an RFC 5272 Full PKI Response into one terminal verdict;
@@ -160,7 +161,8 @@ module.exports = {
   shbs:      shbs,
   // `hpke` is RFC 9180 Hybrid Public Key Encryption -- the KEM + HKDF key
   // schedule + AEAD context construction behind TLS ECH / MLS / OHTTP. Pure
-  // composition over node:crypto; the classical DHKEM suites, all four modes.
+  // composition over node:crypto; the four DHKEM suites and the three ML-KEM
+  // suites, all four modes.
   hpke:      hpke,
   // `kem` is composite ML-KEM key establishment (draft-ietf-lamps-pq-composite-kem):
   // pki.kem.encapsulate / decapsulate over a post-quantum ML-KEM hybridized with a

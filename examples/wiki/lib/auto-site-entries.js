@@ -15,7 +15,13 @@
 //   @card    <description>   — landing-page card description. Omitted ->
 //                              no card (the page still exists).
 //   @slug    <url-slug>      — optional URL slug override. Default
-//                              kebab-cases the namespace.
+//                              kebab-cases the namespace. Files that resolve
+//                              to the same slug merge into one page; files
+//                              that share a namespace under different slugs
+//                              each get their own. An entry therefore carries
+//                              the files it was derived from, and a consumer
+//                              resolves records by file rather than by
+//                              namespace.
 //   @order   <n>             — within-group sort key (default 100).
 //   @featured true           — opt the namespace into the home-page card
 //                              grid.
@@ -37,11 +43,18 @@ function _moduleNs(modTag) {
 
 // Build entries from every @module block parsed under libDir. Returns an
 // array shaped like site.config rows: { slug, title, group, order,
-// namespaces: [ns], featured, card?: { description } }.
+// namespaces: [ns...], sourcePaths: [file...], featured,
+// card?: { description } }.
+//
+// Several files may resolve to one slug: a format's reader and its builder
+// (pki.schema.x509 and pki.x509) are one page to a reader. They merge into a
+// single entry that carries every namespace and every source file. The first
+// file to claim the slug supplies the page metadata (title, nav group, order,
+// card, intro); the rest contribute their namespaces, files and primitives.
 function deriveFromLib(libDir) {
   var docs = parser.parseTree(libDir);
   var entries = [];
-  var seenSlugs = {};
+  var bySlug = {};
   Object.keys(docs).forEach(function (file) {
     var rec = docs[file];
     if (!rec.module) return;
@@ -51,21 +64,27 @@ function deriveFromLib(libDir) {
     // Only namespaces that actually document at least one primitive.
     if (!rec.primitives || rec.primitives.length === 0) return;
     var slug = modTags.slug || _kebab(ns);
-    if (seenSlugs[slug]) return;
-    seenSlugs[slug] = true;
+    var existing = bySlug[slug];
+    if (existing) {
+      if (existing.namespaces.indexOf(ns) === -1) existing.namespaces.push(ns);
+      existing.sourcePaths.push(rec.sourcePath || file);
+      return;
+    }
 
     var orderRaw = modTags.order != null ? parseInt(modTags.order, 10) : NaN;
     var order = isFinite(orderRaw) ? orderRaw : 100;
 
     var entry = {
-      slug:       slug,
-      title:      modTags.title || ("pki." + ns),
-      group:      modTags.nav || "Other",
-      order:      order,
-      namespaces: [ns],
-      featured:   false,
-      intro:      modTags.intro || "",
+      slug:        slug,
+      sourcePaths: [rec.sourcePath || file],
+      title:       modTags.title || ("pki." + ns),
+      group:       modTags.nav || "Other",
+      order:       order,
+      namespaces:  [ns],
+      featured:    false,
+      intro:       modTags.intro || "",
     };
+    bySlug[slug] = entry;
     if (modTags.card) {
       entry.card = {
         description: String(modTags.card).replace(/\s+/g, " ").replace(/^\s+|\s+$/g, ""),

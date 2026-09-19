@@ -16,21 +16,24 @@
 //   anchor the section anchor on that page ("asn1-decode")
 //   title  the owning page title (shown under the signature)
 
-function build(entries, docsByNs, helpers) {
+// `recsFor(entry)` returns the parsed records the entry's page renders, in the
+// order it renders them, so a symbol's page and anchor follow the section that
+// actually exists rather than the entry that happens to own the namespace.
+function build(entries, recsFor, helpers) {
   var symbols = [];
   entries.forEach(function (e) {
-    var rec = docsByNs[e.namespaces[0]];
-    if (!rec) return;
-    rec.primitives.forEach(function (p) {
-      var tags = p.tags || {};
-      if (!tags.primitive) return;
-      var bare = helpers.bare(tags.primitive);
-      symbols.push({
-        sig:    tags.signature ? String(tags.signature).replace(/\s+/g, " ").trim() : tags.primitive,
-        bare:   bare,
-        page:   "/" + e.slug,
-        anchor: helpers.anchor(bare),
-        title:  e.title,
+    recsFor(e).forEach(function (rec) {
+      rec.primitives.forEach(function (p) {
+        var tags = p.tags || {};
+        if (!tags.primitive) return;
+        var bare = helpers.bare(tags.primitive);
+        symbols.push({
+          sig:    tags.signature ? String(tags.signature).replace(/\s+/g, " ").trim() : tags.primitive,
+          bare:   bare,
+          page:   "/" + e.slug,
+          anchor: helpers.anchor(bare),
+          title:  e.title,
+        });
       });
     });
   });
