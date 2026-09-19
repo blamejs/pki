@@ -1500,11 +1500,22 @@ async function testWeakDigestPolicy() {
   }
   // CONTROL: untouched, the same message verifies, so a refusal below is the digest OID.
   check("CONTROL: the attribute-less Ed25519 message verifies", (await pki.cms.verify(bare)).valid === true);
-  var weakOids = [["MD5", "1.2.840.113549.2.5"], ["MD2", "1.2.840.113549.2.2"], ["SHA-1", "1.3.14.3.2.26"]];
-  for (var w = 0; w < weakOids.length; w++) {
-    var res = await pki.cms.verify(withDigestOid(weakOids[w][1]));
-    check("a " + weakOids[w][0] + " digestAlgorithm is refused even with no signed attributes",
-      res.valid === false && res.signers[0].code === "cms/weak-digest");
+  // SHA-1 is refused under a policy the caller can lift; the MD family is refused outright,
+  // because this toolkit has no verification path for those digests at all. The message a
+  // caller reads has to match which of the two it is, or the opt-in it names does nothing.
+  var sha1Res = await pki.cms.verify(withDigestOid("1.3.14.3.2.26"));
+  check("a SHA-1 digestAlgorithm is refused even with no signed attributes",
+    sha1Res.valid === false && sha1Res.signers[0].code === "cms/weak-digest");
+  var sha1Allowed = await pki.cms.verify(withDigestOid("1.3.14.3.2.26"), { allowWeakDigests: true });
+  check("and the opt-in it names actually verifies it", sha1Allowed.valid === true);
+  var mdOids = [["MD5", "1.2.840.113549.2.5"], ["MD4", "1.2.840.113549.2.4"], ["MD2", "1.2.840.113549.2.2"]];
+  for (var w = 0; w < mdOids.length; w++) {
+    var res = await pki.cms.verify(withDigestOid(mdOids[w][1]));
+    check("a " + mdOids[w][0] + " digestAlgorithm is refused outright",
+      res.valid === false && res.signers[0].code === "cms/unsupported-algorithm");
+    var forced = await pki.cms.verify(withDigestOid(mdOids[w][1]), { allowWeakDigests: true });
+    check("and allowWeakDigests does not claim to verify " + mdOids[w][0],
+      forced.valid === false && forced.signers[0].code === "cms/unsupported-algorithm");
   }
 }
 
