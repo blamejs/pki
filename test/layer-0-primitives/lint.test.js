@@ -255,6 +255,14 @@ function run() {
     sevOf(pki.lint.certificate(makeCert({ exts: [basicConstraints(true, null, true), keyUsage([5], true)] })), "lint/rfc5280/ski-missing") === "error");
   check("a non-self-signed cert without AKI -> aki-missing (error, a sec. 4.2.1.1 MUST)",
     sevOf(pki.lint.certificate(makeCert({ subject: dnCN("leaf.example") })), "lint/rfc5280/aki-missing") === "error");
+  // Self-issued status is decided by the RFC 5280 sec. 7.1 name comparison, not by the
+  // display string. A genuinely self-signed certificate whose issuer and subject differ only
+  // in case is one the path validator treats as self-issued, so an error-severity AKI lint
+  // must not fire on it.
+  check("a self-signed certificate whose names differ only in case does not flag aki-missing",
+    !has(pki.lint.certificate(makeCert({ subject: dnCN("CA"), issuer: dnCN("ca") })), "lint/rfc5280/aki-missing"));
+  check("CONTROL: a genuinely different issuer still flags it",
+    has(pki.lint.certificate(makeCert({ subject: dnCN("leaf.example"), issuer: dnCN("other-ca") })), "lint/rfc5280/aki-missing"));
   check("the certificate and CRL profiles now grade the same absence alike", (function () {
     var rules = pki.lint.rules();
     rules = rules.rules || rules;
