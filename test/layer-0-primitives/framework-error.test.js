@@ -79,6 +79,28 @@ function run() {
   testDefineClass();
   testCodeShapeGuard();
   testPerDomain();
+  testTransientCodes();
+}
+
+// `permanent` is documented as "the same input will never parse on retry", which is true of a
+// verdict on bytes in hand and false of a network timeout. Every error was stamped permanent
+// unconditionally, so a caller could not tell a deterministic refusal from one worth retrying
+// and each client hand-rolled its own retry policy instead of reading the error.
+function testTransientCodes() {
+  var TransportError = pki.errors.TransportError;
+  // CONTROL: a verdict on bytes stays permanent, which is the overwhelming majority.
+  check("a parse verdict is permanent", new pki.errors.Asn1Error("asn1/indefinite-length", "x").permanent === true);
+  check("a transport verdict that IS deterministic stays permanent",
+    new TransportError("transport/insecure-url", "x").permanent === true);
+  check("a policy refusal stays permanent",
+    new TransportError("transport/blocked-address", "x").permanent === true);
+
+  check("a timeout is not permanent", new TransportError("transport/timeout", "x").permanent === false);
+  check("a failed proxy connect is not permanent",
+    new TransportError("transport/proxy-connect-failed", "x").permanent === false);
+  // The flag stays on the documented shape either way.
+  check("permanent is always a boolean",
+    typeof new TransportError("transport/timeout", "x").permanent === "boolean");
 }
 
 module.exports = { run: run };

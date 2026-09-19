@@ -1548,6 +1548,15 @@ embedding it is responsible for.
 - **Application-layer misuse.** Calling a parse entry point and then ignoring the
   thrown error, or trusting a field the toolkit surfaced but the operator never
   validated, defeats the fail-closed design.
+- **Hostname matching against a subject `commonName`.** Name constraints apply to
+  the name forms a certificate actually carries, plus the one synthesis RFC 5280
+  section 4.2.1.10 requires: an `rfc822Name` constraint applies to an
+  `emailAddress` attribute in the subject when the certificate has no subject
+  alternative name. A `dNSName` constraint does not apply to a subject
+  `commonName`, and `pki.path.validate` matches no name against a reference
+  identity of your own. RFC 9525 section 1.3 retires `commonName` as a source of
+  hostname identity: take the identity from a `dNSName` or `iPAddress` subject
+  alternative name and compare it yourself.
 - **Integrity of state the caller stores between calls.** A `pki.cmp.session`
   `resumeToken` carries no secret, and a resumed poll still verifies, nonce-binds
   and key-binds every response. Its fields are what the resumed exchange is held

@@ -4,6 +4,36 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.0 — 2026-09-19
+
+Verification is held to the rules signing already applied.
+
+### Added
+
+- `pki.C.LIMITS.OID_MAX_SUBIDENTIFIERS` (128) bounds how many sub-identifiers an OBJECT IDENTIFIER may carry, alongside the existing per-sub-identifier octet bound.
+- `pki.C.LIMITS.RSA_MIN_MODULUS_BITS` (2048) and `pki.path.validate` option `minRsaModulusBits`, which may only raise the floor.
+- `allowWeakDigests` on `pki.cms.verify`, `pki.smime.verify` and `pki.tsp.verify`, for verifying an archived signature made under a digest that is no longer collision resistant.
+
+### Changed
+
+- `pki.cms.verify` reports a SignerInfo whose message digest is SHA-1, MD5, MD4 or MD2 as `cms/weak-digest` instead of verifying it, and does the same for a countersignature at any nesting depth. `pki.smime.verify` and `pki.tsp.verify` inherit this through the same signature check. Pass `allowWeakDigests: true` to verify one anyway. The RFC 3161 message imprint is unaffected: that digest is the requester's choice and an archived timestamp under SHA-1 remains readable.
+- `pki.path.validate` refuses an RSA issuer key below 2048 bits with `path/weak-key`. Raise the floor with `minRsaModulusBits`; it cannot be lowered.
+- A key the crypto engine cannot import now reports `path/unsupported-algorithm` instead of `path/bad-signature`, so a certificate on a curve the engine does not carry no longer reads as forged.
+- `pki.webcrypto.subtle.importKey("spki", ...)` refuses an ECDSA or ECDH key whose parameters are explicit domain parameters or the implicitlyCA form, as RFC 5480 section 2.1.1 requires a namedCurve. Certificate parsing still accepts such a key so it can be inspected and linted.
+- `lint/rfc5280/ski-missing` and `lint/rfc5280/aki-missing` are graded `error` rather than `notice`, matching the RFC 5280 section 4.2.1.1 and 4.2.1.2 MUST clauses and the grade the CRL profile already gives the same absence. `lint/rfc5280/ski-missing-ee` is graded `warn`, its clause being a SHOULD. A pipeline gating on `--severity error` will see findings it did not see before.
+- A `PkiError` for a network failure that says nothing about the bytes carries `permanent: false`: `transport/timeout` and `transport/proxy-connect-failed`. Every other code, including the deterministic transport refusals, stays `permanent: true`.
+
+### Fixed
+
+- Reading an OBJECT IDENTIFIER with more than 128 sub-identifiers throws `oid/too-many-subidentifiers` rather than expanding it. Each sub-identifier costs a bignum and a decimal string, so a 400 KB certificate carrying one such OID cost 55 MB of memory to parse and the ceiling scaled with the 16 MiB input bound. Every format parser reads OIDs through the bounded reader. Encoding is held to the same count, so a value the reader refuses cannot be produced. The generic `pki.asn1.decode` still returns such a value as an opaque primitive node, which allocates nothing beyond the input.
+- `pki.cms.sign` and `pki.cms.countersign` over more than 16 MiB of buffered content threw an untyped `RangeError` instead of a `PkiError`.
+- A CRL extension is decoded only in the scope RFC 5280 defines it for: `cRLNumber` at CRL scope (section 5.2.3), `reasonCode` and `invalidityDate` in a revoked-certificate entry (sections 5.3.1 and 5.3.2). An extension carried in the other scope is left with its raw value, as an unrecognized non-critical extension should be, instead of failing the whole CRL when its value does not parse as that type.
+- The `pki.cms.verify` reference example built a signature with `detached` in the signer descriptor, where it is ignored; the example produced an attached SignedData while describing a detached one.
+
+### Documentation
+
+- SECURITY.md states that the toolkit matches no reference identity: name constraints reach the name forms a certificate carries plus the `emailAddress` synthesis RFC 5280 section 4.2.1.10 requires, and a `dNSName` constraint does not reach a subject `commonName`. RFC 9525 section 1.3 retires `commonName` as a source of hostname identity.
+
 ## v0.7.45 — 2026-09-13
 
 A signature-protected CMP message fills an omitted sender with the signer's subject.

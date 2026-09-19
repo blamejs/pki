@@ -139,6 +139,34 @@ function testIntegerAndOidCaps() {
   // set, so this is one never-terminating sub-identifier.
   check("over-cap OID sub-identifier throws subidentifier-too-large",
     code(function () { pki.asn1.decodeOidContent(Buffer.alloc(64, 0x81)); }) === "oid/subidentifier-too-large");
+  // The sub-identifier cap bounds each arc's LENGTH. The arc COUNT needs its own bound:
+  // every byte below 0x80 terminates an arc, so N content bytes of 0x01 decode as N+1
+  // arcs, each costing a BigInt and a decimal string. Without a count cap an OID inside
+  // the 16 MiB DER bound decodes to hundreds of megabytes of heap.
+  var arcCap = pki.C.LIMITS.OID_MAX_SUBIDENTIFIERS;
+  check("OID sub-identifier count has a cap", typeof arcCap === "number" && arcCap > 11);
+  check("OID at the sub-identifier count cap decodes",
+    code(function () { pki.asn1.decodeOidContent(Buffer.alloc(arcCap, 0x01)); }) === "NO-THROW");
+  check("OID one arc beyond the count cap throws too-many-subidentifiers",
+    code(function () { pki.asn1.decodeOidContent(Buffer.alloc(arcCap + 1, 0x01)); }) === "oid/too-many-subidentifiers");
+  // Encode is bounded to the same count, so a value the decoder refuses cannot be produced.
+  check("encodeOidContent refuses more sub-identifiers than the decoder accepts", (function () {
+    var arcs = ["2", "25"];
+    for (var i = 0; i < arcCap; i++) arcs.push("1");
+    return code(function () { pki.asn1.encodeOidContent(arcs.join(".")); }) === "oid/too-many-subidentifiers";
+  })());
+  check("encodeOidContent still accepts an OID at the cap", (function () {
+    var arcs = ["2", "25"];
+    for (var i = 0; i < arcCap - 2; i++) arcs.push("1");
+    return code(function () { pki.asn1.encodeOidContent(arcs.join(".")); }) === "NO-THROW";
+  })());
+  check("a 400k-arc OID is refused rather than decoded",
+    code(function () { pki.asn1.decodeOidContent(Buffer.alloc(400000, 0x01)); }) === "oid/too-many-subidentifiers");
+  // The typed leaf reader inherits the bound, so no format parser can route around it.
+  check("asn1.read.oid inherits the sub-identifier count cap",
+    code(function () {
+      pki.asn1.read.oid(pki.asn1.decode(pki.asn1.encode(0x00, false, TAGS.OBJECT_IDENTIFIER, Buffer.alloc(400000, 0x01))));
+    }) === "oid/too-many-subidentifiers");
   // In-cap values still round-trip (defense-in-depth must not reject valid DER).
   check("in-cap INTEGER round-trips", (function () {
     var big = 0n;

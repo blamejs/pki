@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.7.45",
+  "packageVersion": "0.8.0",
   "surface": {
     "C": {
       "kind": "object",
@@ -143,7 +143,13 @@
             "MIME_MAX_BYTES": {
               "kind": "number"
             },
+            "NAMED_SCAN_MAX_ELEMENTS": {
+              "kind": "number"
+            },
             "OCSP_MAX_CERTS": {
+              "kind": "number"
+            },
+            "OID_MAX_SUBIDENTIFIERS": {
               "kind": "number"
             },
             "OID_MAX_SUBIDENTIFIER_BYTES": {
@@ -195,6 +201,9 @@
               "kind": "number"
             },
             "PROXY_MAX_TLS_ANCHORS": {
+              "kind": "number"
+            },
+            "RSA_MIN_MODULUS_BITS": {
               "kind": "number"
             },
             "SAFETYNET_CERT_MAX_BYTES": {
@@ -1526,7 +1535,13 @@
             "MIME_MAX_BYTES": {
               "kind": "number"
             },
+            "NAMED_SCAN_MAX_ELEMENTS": {
+              "kind": "number"
+            },
             "OCSP_MAX_CERTS": {
+              "kind": "number"
+            },
+            "OID_MAX_SUBIDENTIFIERS": {
               "kind": "number"
             },
             "OID_MAX_SUBIDENTIFIER_BYTES": {
@@ -1578,6 +1593,9 @@
               "kind": "number"
             },
             "PROXY_MAX_TLS_ANCHORS": {
+              "kind": "number"
+            },
+            "RSA_MIN_MODULUS_BITS": {
               "kind": "number"
             },
             "SAFETYNET_CERT_MAX_BYTES": {

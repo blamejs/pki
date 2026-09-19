@@ -50,6 +50,14 @@ var ALG = {
     gen: { name: "ECDSA", namedCurve: "P-256" }, sign: { name: "ECDSA", hash: "SHA-256" },
     sigOid: "1.2.840.10045.4.3.2", sigParams: "omit", p1363: 32,
   },
+  // A 1024-bit RSA key: a real, verifiable signature under a modulus below the
+  // strength floor, so the refusal has to come from the floor and not from a
+  // broken signature.
+  rsaweak: {
+    gen: { name: "RSASSA-PKCS1-v1_5", modulusLength: 1024, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
+    sign: { name: "RSASSA-PKCS1-v1_5" },
+    sigOid: "1.2.840.113549.1.1.11", sigParams: "null",
+  },
   mldsa65: {
     gen: { name: "ML-DSA-65" }, sign: { name: "ML-DSA-65" },
     sigOid: "2.16.840.1.101.3.4.3.18", sigParams: "omit",
@@ -2118,6 +2126,17 @@ async function testCrlCheckerUnreadableExtensions() {
   var crlGood = await mkCrl({ issuer: "GoodKuSigner", signWith: "ed25519i" });
   var r2 = await pki.path.crlChecker([crlGood]).check(leafUnderGood, { workingPublicKey: signer.spki, issuerCert: interGoodKu }, ctx);
   check("control: readable cRLSign keyUsage stays authoritative", r2.status === "good");
+
+  // RFC 5280 sec. 6.3.3(f) conditions the cRLSign check on keyUsage being PRESENT, so an
+  // issuer that omits the extension is unconstrained. pki.path.validate is pinned to that
+  // reading at testRfc5280ConformanceMusts; the standalone checker is the SECOND door onto
+  // the same rule and must not diverge from it. An UNREADABLE keyUsage stays unknown (r1
+  // above): absent and unreadable are different, and only absence is permitted.
+  var interNoKu = pki.schema.x509.parse(await mkCert({ subject: "NoKuSigner", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true)] }));
+  var leafUnderNoKu = pki.schema.x509.parse(await mkCert({ subject: "UnderNoKu", issuer: "NoKuSigner", signWith: "ed25519i", subjectKeys: "ed25519leaf", serial: 6164n }));
+  var crlNoKu = await mkCrl({ issuer: "NoKuSigner", signWith: "ed25519i" });
+  var r2b = await pki.path.crlChecker([crlNoKu]).check(leafUnderNoKu, { workingPublicKey: signer.spki, issuerCert: interNoKu }, ctx);
+  check("standalone checker matches pki.path.validate on an absent CRL-issuer keyUsage", r2b.status === "good");
 
   // §6.3.3(b)(2) scope: a cert whose basicConstraints is unreadable has
   // UNDETERMINABLE CA-ness, so neither an onlyContainsUserCerts nor an
@@ -5296,6 +5315,163 @@ async function runSuite() {
   await testCoverageEdges();
   await testUnknownOptionsRefused();
   await testTrustAnchorsPlural();
+  await testKeyStrengthFloor();
+  await testNameConstraintFormScope();
+}
+
+// RFC 5280 sec. 4.2.1.10: "Restrictions apply only when the specified name form is present."
+// The one synthesis the clause mandates is the legacy emailAddress attribute, which an
+// rfc822Name constraint MUST be applied to when the certificate carries no subject
+// alternative name. It mandates no equivalent for commonName, and RFC 9525 removes
+// CN-as-hostname entirely, so a dNSName constraint does not reach a subject commonName.
+// That boundary is security-relevant in both directions and is pinned here so it cannot
+// drift silently: adding the synthesis would let a dNSName constraint reject a certificate
+// RFC 5280 calls acceptable, and dropping the mandated one would let a constrained CA issue
+// an unconstrained legacy mail certificate.
+async function testNameConstraintFormScope() {
+  var anchor = await mkAnchor("ed25519", "Root");
+
+  // The MANDATED synthesis: an emailAddress ATV is constrained when there is no rfc822 SAN.
+  var interMail = await mkCert({ subject: "MailInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i",
+    extensions: caExts([ncExt([gnEmail("permitted.example")], null)]) });
+  var OID_EMAIL = "1.2.840.113549.1.9.1";
+  var leafBadMail = await mkCert({
+    subject: [b.set([atv("2.5.4.3", "leaf")]), b.set([atv(OID_EMAIL, "user@evil.example")])],
+    issuer: "MailInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", serial: 7101n });
+  var resMail = await run([interMail, leafBadMail], { time: T2027, trustAnchors: anchor });
+  check("an emailAddress attribute is reached by an rfc822Name constraint (sec. 4.2.1.10)",
+    resMail.valid === false && failCodes(resMail).indexOf("path/name-constraint-not-permitted") !== -1);
+
+  // CONTROL: the same certificate under a permitted mailbox validates, so the refusal above
+  // is the constraint and not the fixture.
+  var leafOkMail = await mkCert({
+    subject: [b.set([atv("2.5.4.3", "leaf")]), b.set([atv(OID_EMAIL, "user@permitted.example")])],
+    issuer: "MailInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", serial: 7102n });
+  check("CONTROL: a permitted emailAddress attribute validates",
+    (await run([interMail, leafOkMail], { time: T2027, trustAnchors: anchor })).valid === true);
+
+  // The NON-synthesis: a dNSName constraint does not reach a subject commonName.
+  var interDns = await mkCert({ subject: "DnsInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i",
+    extensions: caExts([ncExt([gnDns("permitted.example")], null)]) });
+  var leafCnOnly = await mkCert({ subject: "outside.evil.example",
+    issuer: "DnsInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", serial: 7103n });
+  var resCn = await run([interDns, leafCnOnly], { time: T2027, trustAnchors: anchor });
+  check("a dNSName constraint does not reach a subject commonName (no SAN present)", resCn.valid === true);
+  // CONTROL: the same name AS A SAN is reached, so the constraint itself is live.
+  var leafSan = await mkCert({ subject: "leaf", issuer: "DnsInter", signWith: "ed25519i",
+    subjectKeys: "ed25519leaf", serial: 7104n, extensions: [sanExt([gnDns("outside.evil.example")])] });
+  var resSan = await run([interDns, leafSan], { time: T2027, trustAnchors: anchor });
+  check("CONTROL: the same name as a dNSName SAN IS reached by the constraint",
+    resSan.valid === false && failCodes(resSan).indexOf("path/name-constraint-not-permitted") !== -1);
+}
+
+// A verifying key below the security-strength floor is refused. C.LIMITS already carries
+// DH_MIN_MODULUS_BYTES, so Diffie-Hellman has had a 2048-bit floor while RSA had none: the
+// same rule applied to one algorithm family and not the rest. The signatures here are
+// genuine, so the refusal can only come from the floor.
+async function testKeyStrengthFloor() {
+  var anchor = await mkAnchor("ed25519", "Root");
+  // The floor applies to a key that VERIFIES something, so it is reached through an issuer.
+  // PASSING CONTROL: an RSA-2048 intermediate signs a leaf and the path validates, so a
+  // refusal below is about modulus size and not about RSA issuers failing in this harness.
+  var interStrong = await mkCert({ subject: "StrongRsaInter", issuer: "Root", signWith: "ed25519", subjectKeys: "rsa", extensions: caExts([]) });
+  var leafUnderStrong = await mkCert({ subject: "UnderStrongRsa", issuer: "StrongRsaInter", signWith: "rsa", subjectKeys: "ed25519leaf", serial: 7001n });
+  var resStrong = await run([interStrong, leafUnderStrong], { time: T2027, trustAnchors: anchor });
+  check("control: an RSA-2048 issuer key validates", resStrong.valid === true);
+
+  var interWeak = await mkCert({ subject: "WeakRsaInter", issuer: "Root", signWith: "ed25519", subjectKeys: "rsaweak", extensions: caExts([]) });
+  var leafUnderWeak = await mkCert({ subject: "UnderWeakRsa", issuer: "WeakRsaInter", signWith: "rsaweak", subjectKeys: "ed25519leaf", serial: 7002n });
+  var resWeak = await run([interWeak, leafUnderWeak], { time: T2027, trustAnchors: anchor });
+  check("an RSA-1024 issuer key is refused by the strength floor",
+    resWeak.valid === false && failCodes(resWeak).indexOf("path/weak-key") !== -1);
+
+  // The floor may be raised, never lowered: an option that could weaken it would undo the
+  // default for exactly the caller who most needs it.
+  var raised = await run([interStrong, leafUnderStrong], { time: T2027, trustAnchors: anchor, minRsaModulusBits: 4096 });
+  check("the floor can be raised above the default",
+    raised.valid === false && failCodes(raised).indexOf("path/weak-key") !== -1);
+  var lowered = null;
+  try { await run([interWeak, leafUnderWeak], { time: T2027, trustAnchors: anchor, minRsaModulusBits: 1024 }); }
+  catch (e) { lowered = e; }
+  check("the floor cannot be lowered below the default", lowered && lowered.code === "path/bad-input");
+  // A non-RSA issuer is untouched by the RSA floor.
+  check("an Ed25519 issuer is unaffected by the RSA floor", resStrong.valid === true);
+
+  // The floor is a POLICY, so it must not live inside one of two interchangeable verifiers.
+  // opts.verifier replaces the built-in signature check entirely; a caller who supplies a
+  // crypto backend must not thereby switch the strength policy off.
+  var everTrue = { verify: function () { return Promise.resolve(true); } };
+  var resWeakCustom = await run([interWeak, leafUnderWeak], { time: T2027, trustAnchors: anchor, verifier: everTrue });
+  check("a custom verifier does not bypass the strength floor",
+    resWeakCustom.valid === false && failCodes(resWeakCustom).indexOf("path/weak-key") !== -1);
+  // CONTROL: the same custom verifier validates a chain that satisfies the floor, so the
+  // refusal above is the policy and not the verifier being ignored.
+  check("CONTROL: the same custom verifier validates a conforming chain",
+    (await run([interStrong, leafUnderStrong], { time: T2027, trustAnchors: anchor, verifier: everTrue })).valid === true);
+  check("and a raised floor still applies through a custom verifier",
+    (await run([interStrong, leafUnderStrong], { time: T2027, trustAnchors: anchor, verifier: everTrue, minRsaModulusBits: 4096 })).valid === false);
+
+  // The strength gate reads the signature algorithm to decide whether the issuer key is RSA
+  // at all. A certificate whose signature algorithm does not resolve (sha1WithRSAEncryption
+  // is deliberately unregistered) gives it no algorithm to key off, so it declines to answer
+  // and the verifier reports the real fault instead of a strength verdict.
+  // An issuer SPKI that SAYS RSA but whose BIT STRING does not decode must still produce a
+  // verdict: pki.path.validate answers about a certificate, it does not abort on one.
+  var junkRsaSpki = b.sequence([
+    b.sequence([b.oid(pki.oid.byName("rsaEncryption")), b.nullValue()]),
+    b.bitString(Buffer.from([0x30, 0x82]), 0),
+  ]);
+  var interJunk = await mkCert({ subject: "JunkRsaInter", issuer: "Root", signWith: "ed25519",
+    spki: junkRsaSpki, extensions: caExts([]) });
+  var leafUnderJunk = await mkCert({ subject: "UnderJunkRsa", issuer: "JunkRsaInter", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: 7006n });
+  var resJunk = null, threwJunk = null;
+  try { resJunk = await run([interJunk, leafUnderJunk], { time: T2027, trustAnchors: anchor }); }
+  catch (e) { threwJunk = e; }
+  check("a malformed RSA issuer key yields a verdict rather than aborting validation",
+    threwJunk === null && resJunk !== null && resJunk.valid === false);
+  check("and the verdict names the signature, not an ASN.1 fault",
+    resJunk !== null && failCodes(resJunk).indexOf("asn1/truncated") === -1);
+
+  var sha1Sig = b.sequence([b.oid("1.2.840.113549.1.1.5"), b.nullValue()]);
+  var leafSha1 = await mkCert({ subject: "Sha1Leaf", issuer: "StrongRsaInter", signWith: "rsa",
+    subjectKeys: "ed25519leaf", serial: 7005n, sigAlgOverride: sha1Sig });
+  var resSha1 = await run([interStrong, leafSha1], { time: T2027, trustAnchors: anchor });
+  check("an unresolvable signature algorithm reports unsupported, not a strength verdict",
+    resSha1.valid === false &&
+    failCodes(resSha1).indexOf("path/unsupported-algorithm") !== -1 &&
+    failCodes(resSha1).indexOf("path/weak-key") === -1);
+
+  // A key the engine cannot import reports itself as unsupported, not as a bad signature.
+  // pathCode keeps a code only when it starts with "path/", so an engine refusal used to
+  // degrade to path/bad-signature and a certificate the toolkit merely cannot read looked
+  // forged. Driven with a curve outside the engine's set, and with explicit EC domain
+  // parameters, which are the two ways an import legitimately fails on a genuine signature.
+  var BRAINPOOL_CERT = [
+    "-----BEGIN CERTIFICATE-----",
+    "MIIBfTCCASSgAwIBAgIULGgXtaAWACrOgeVp2EAiTo513XwwCgYIKoZIzj0EAwIw",
+    "FDESMBAGA1UEAwwJYnJhaW5wb29sMB4XDTI2MDkxOTE0MjU1NFoXDTM2MDkxNjE0",
+    "MjU1NFowFDESMBAGA1UEAwwJYnJhaW5wb29sMFowFAYHKoZIzj0CAQYJKyQDAwII",
+    "AQEHA0IABA80nT5zYKZ5mZmwFrA0fLdqgauuBjEtts+56ythq90QTDuwNuSJxbOW",
+    "U8USDIdhh05u6KGEyqcHr6hZep+oOL+jUzBRMB0GA1UdDgQWBBQHjitiTFxhAYfF",
+    "Jynlt3TorfPP3jAfBgNVHSMEGDAWgBQHjitiTFxhAYfFJynlt3TorfPP3jAPBgNV",
+    "HRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0cAMEQCIF+CbkjVCY4lBCsdRAeXhKxU",
+    "aOEPdtSCMhPbUvxr25VQAiA5aCIwoE/WAFd20NpJc6stmkqhqfkbrPz9XRzbXpqn",
+    "1Q==",
+    "-----END CERTIFICATE-----",
+  ].join("\n");
+  var bpTime = new Date("2026-10-01T00:00:00Z");
+  var resBp = await pki.path.validate([BRAINPOOL_CERT], { trustAnchors: [pki.path.anchorFromCert(BRAINPOOL_CERT)], time: bpTime });
+  check("an unsupported curve reports unsupported-algorithm, not bad-signature",
+    resBp.valid === false &&
+    failCodes(resBp).indexOf("path/unsupported-algorithm") !== -1 &&
+    failCodes(resBp).indexOf("path/bad-signature") === -1);
+  // CONTROL: the certificate is otherwise well-formed and self-consistent -- it parses and
+  // its validity window covers bpTime -- so the only failing check is the signature one.
+  check("CONTROL: the brainpool certificate is otherwise valid at that time",
+    pki.schema.x509.parse(BRAINPOOL_CERT).subject.dn === "CN=brainpool" &&
+    failCodes(resBp).indexOf("path/expired") === -1 &&
+    failCodes(resBp).indexOf("path/not-yet-valid") === -1);
 }
 
 module.exports = { run: runSuite };
