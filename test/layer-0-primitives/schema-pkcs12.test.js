@@ -235,6 +235,14 @@ function testAcceptKeyBags() {
   check("keyBag: type", m.safeBags[0].type === "keyBag");
   check("keyBag: delegated to pkcs8.parse (algorithm oid)", m.safeBags[0].key.privateKeyAlgorithm.oid === ED25519);
 
+  // A key this parse cannot read is PKCS#8's fault to report, in PKCS#8's own error class, even
+  // though this parse's caps reach that walk.
+  check("keyBag: a delegated PKCS#8 failure keeps the PKCS#8 error class",
+        (function () {
+          try { parse(minimalPfx({ bags: [safeBag(KEY_BAG, b.sequence([]))] })); return false; }
+          catch (e) { return e instanceof pki.errors.Pkcs8Error && e.code.indexOf("pkcs8/") === 0; }
+        })());
+
   m = parse(minimalPfx({ bags: [shroudedKeyBag()] }));
   check("shroudedKeyBag: type", m.safeBags[0].type === "pkcs8ShroudedKeyBag");
   check("shroudedKeyBag: PBE algorithm surfaced", m.safeBags[0].encrypted.encryptionAlgorithm.oid === PBE_SHA_3DES);
