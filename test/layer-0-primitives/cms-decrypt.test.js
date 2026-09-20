@@ -81,6 +81,11 @@ async function run() {
   check("recipientIndex 0 explicitly selects the sole recipient", Buffer.compare((await pki.cms.decrypt(singlePwri, { password: "pw" }, { recipientIndex: 0 })).content, MSG) === 0);
 
   // ---- the uniform verdict: EVERY secret-dependent failure -> cms/decrypt-failed ----
+  // CVE-2019-1563: OpenSSL's CMS and PKCS7 decrypt returned different observable outcomes for a
+  // padding failure and a content failure, which is the oracle a Bleichenbacher attack counts
+  // queries against. The defense is that a caller who can observe the outcome learns nothing about
+  // WHICH step failed, so the codes across structurally different secret-dependent failures must
+  // collapse to one value rather than merely each being non-empty.
   // GCM: tampered tag, ciphertext, and AAD each -> uniform, authenticated never leaks.
   var gEnv = await pki.cms.encrypt(MSG, [{ cert: rsa.cert }]);
   check("GCM tampered ciphertext -> cms/decrypt-failed", (await codeOf(function () { return pki.cms.decrypt(_flipByte(gEnv, gEnv.length - 25), { key: rsa.key, cert: rsa.cert }); })) === "cms/decrypt-failed");
@@ -94,6 +99,19 @@ async function run() {
   // PWRI oracle: wrong password -> uniform (check-byte mismatch indistinguishable).
   var pwriEnv = await pki.cms.encrypt(MSG, [{ password: "right" }], { contentEncryptionAlgorithm: "aes-256-cbc" });
   check("PWRI wrong password -> cms/decrypt-failed", (await codeOf(function () { return pki.cms.decrypt(pwriEnv, { password: "wrong" }); })) === "cms/decrypt-failed");
+  // CVE-2019-1563, stated as the property rather than as three separate assertions: the failures
+  // above break at different layers (an AEAD tag, a key-wrap integrity check, a password check),
+  // and a caller reading the code cannot tell them apart. Asserting the SET has one member is what
+  // distinguishes this from three checks that each merely throw something.
+  var authenticatedFailures = [
+    await codeOf(function () { return pki.cms.decrypt(_flipByte(gEnv, gEnv.length - 25), { key: rsa.key, cert: rsa.cert }); }),
+    await codeOf(function () { return pki.cms.decrypt(kekEnv, { kek: Buffer.alloc(32, 8) }); }),
+    await codeOf(function () { return pki.cms.decrypt(pwriEnv, { password: "wrong" }); }),
+    await codeOf(function () { return pki.cms.decrypt(pwriEnv, { password: "also-wrong-but-longer" }); }),
+  ];
+  var distinct = authenticatedFailures.filter(function (c, i) { return authenticatedFailures.indexOf(c) === i; });
+  check("CVE-2019-1563 secret-dependent failures at three different layers report ONE code (no oracle)",
+    distinct.length === 1 && distinct[0] === "cms/decrypt-failed");
   // Bleichenbacher/MMA (RFC 3218 implicit rejection): a corrupt-padding, a corrupt-mid, and a valid-
   // padding-wrong-key v1.5 input each drive the countermeasure. The content cipher here is UNAUTHENTICATED
   // (CBC), so a wrong/synthetic CEK cannot GUARANTEE a throw -- CBC padding is coincidentally valid ~1/256,

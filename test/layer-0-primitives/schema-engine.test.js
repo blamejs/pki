@@ -758,6 +758,59 @@ function run() {
   testEmbeddedDerOptsFallback();
   testAssertMinimalNamedBits();
   testCombinatorDefaultOpts();
+  testOptionalCannotReseatTheNextField();
+}
+
+// CVE-2025-12816: node-forge's ASN.1 validator desynchronized. A malformed OPTIONAL was skipped
+// and the NEXT mandatory field was then read out of the slot the OPTIONAL had occupied, so a value
+// the sender put in one field came back as another. That is the failure this engine exists to make
+// impossible, which is why it is checked on the engine rather than on any one format.
+//
+// The test is not "a malformed OPTIONAL is refused". It is that the mandatory field after it never
+// takes a value that was not its own: every shape below either refuses, or returns c holding c.
+function testOptionalCannotReseatTheNextField() {
+  var sch = S.seq([
+    S.field("a", S.integerLeaf()),
+    S.optional("b", S.integerLeaf(), { tag: 0, explicit: true, emptyCode: "t/bad-b" }),
+    S.field("c", S.integerLeaf()),
+  ], {
+    assert: "sequence", code: "t/bad", what: "Reseat",
+    build: function (m) { return { a: m.fields.a.value, b: m.fields.b.present ? m.fields.b.value : null, c: m.fields.c.value }; },
+  });
+
+  // Two controls, so every refusal below is about the OPTIONAL and not about the shape.
+  var both = walk(sch, b.sequence([b.integer(1n), b.explicit(0, b.integer(7n)), b.integer(9n)])).result;
+  check("CVE-2025-12816 CONTROL: a well-formed optional binds to b and leaves c alone",
+    both.a === 1n && both.b === 7n && both.c === 9n);
+  var absent = walk(sch, b.sequence([b.integer(1n), b.integer(9n)])).result;
+  check("CVE-2025-12816 CONTROL: an absent optional leaves c holding its own value",
+    absent.a === 1n && absent.b === null && absent.c === 9n);
+
+  // A malformed value in the OPTIONAL slot. Each is refused; none lets 9 arrive as b, and none
+  // lets the value in the [0] slot arrive as c.
+  var malformed = [
+    ["inner value is the wrong universal type", b.sequence([b.integer(1n), b.explicit(0, b.octetString(Buffer.from([0x63]))), b.integer(9n)])],
+    ["tagged primitive where EXPLICIT is required", b.sequence([b.integer(1n), b.contextPrimitive(0, Buffer.from([0x07])), b.integer(9n)])],
+    ["the explicit wrapper is empty", b.sequence([b.integer(1n), b.contextConstructed(0, Buffer.alloc(0)), b.integer(9n)])],
+    ["the explicit wrapper holds two values", b.sequence([b.integer(1n), b.contextConstructed(0, Buffer.concat([b.integer(7n), b.integer(8n)])), b.integer(9n)])],
+    ["the inner INTEGER is non-minimal", b.sequence([b.integer(1n), b.contextConstructed(0, Buffer.from("02020001", "hex")), b.integer(9n)])],
+  ];
+  malformed.forEach(function (row) {
+    var got = "NO-THROW", result = null;
+    try { result = walk(sch, row[1]).result; } catch (e) { got = (e && e.code) || "RAW"; }
+    check("CVE-2025-12816 " + row[0] + " is refused, never re-seated",
+      got !== "NO-THROW" || (result.c === 9n && result.b !== 9n));
+  });
+
+  // The shape a re-seating walk gets wrong most visibly: the OPTIONAL is present and the mandatory
+  // field after it is absent. Reading [0] as c, or reporting b missing instead of c, are both the
+  // desynchronization. The engine reports the SEQUENCE as wrong and binds nothing.
+  check("CVE-2025-12816 an optional with the following mandatory field absent is refused",
+    code(function () { walk(sch, b.sequence([b.integer(1n), b.explicit(0, b.integer(7n))])); }) === "t/bad");
+  check("CVE-2025-12816 a sequence holding only the first field is refused",
+    code(function () { walk(sch, b.sequence([b.integer(1n)])); }) === "t/bad");
+  check("CVE-2025-12816 an element matching neither the optional nor the mandatory field is refused",
+    code(function () { walk(sch, b.sequence([b.integer(1n), b.octetString(Buffer.from([9]))])); }) === "asn1/unexpected-tag");
 }
 
 module.exports = { run: run };

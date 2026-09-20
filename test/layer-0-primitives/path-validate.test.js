@@ -1179,6 +1179,44 @@ async function testSelfIssuedAndConstraints() {
     resEmptyMail.valid === false &&
     failCodes(resEmptyMail).indexOf("path/name-constraint-unsupported") !== -1 &&
     failCodes(resEmptyMail).indexOf("path/bad-name-constraints") === -1);
+  // CVE-2022-3602 and CVE-2022-3786: OpenSSL decoded a punycode A-label out of an email address
+  // into a fixed-size stack buffer while checking name constraints. 3602 wrote four attacker-chosen
+  // bytes past the end; 3786 wrote an arbitrary run of '.'. Nothing in lib/ decodes punycode: an
+  // A-label is compared as the ASCII it is, so the class has no code to occur in. What that leaves
+  // testable is the consequence an operator sees, which is that the constraint decision on these
+  // exact shapes is still the right one and still a verdict rather than a throw.
+  var puny = "xn--e1afmkfd.xn--p1ai";
+  var punyCa = await mkCert({ subject: "PunyInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i",
+    extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt([gnEmail(puny)], null)] });
+  var punyIn = await mkCert({ subject: "PunyIn", issuer: "PunyInter", signWith: "ed25519i", subjectKeys: "ed25519leaf",
+    extensions: [sanExt([gnEmail("user@" + puny)])] });
+  check("CVE-2022-3602 CONTROL: an address inside a punycode mail constraint validates",
+    (await run([punyCa, punyIn], { time: T2027, trustAnchors: anchor })).valid === true);
+  var punyOut = await mkCert({ subject: "PunyOut", issuer: "PunyInter", signWith: "ed25519i", subjectKeys: "ed25519leaf",
+    extensions: [sanExt([gnEmail("user@example.com")])] });
+  var resPunyOut = await run([punyCa, punyOut], { time: T2027, trustAnchors: anchor });
+  check("CVE-2022-3602 an address outside it is excluded, so the comparison is real",
+    resPunyOut.valid === false && failCodes(resPunyOut).indexOf("path/name-constraint-not-permitted") !== -1);
+  // The two overflow payload shapes, driven through the same door. Each must reach a verdict:
+  // the 3602 shape is a valid A-label that simply does not match, the 3786 shape is a run of dots
+  // that no decoder here ever sees. Neither may hang, and neither may leave the typed-error path.
+  var hostile = [
+    ["3602 four-byte payload", "user@xn--a-ecp.ru"],
+    ["3786 dots-only payload", "user@xn--" + new Array(201).join(".") + ".com"],
+    ["an over-long A-label", "user@xn--" + new Array(301).join("a") + ".com"],
+  ];
+  for (var hi = 0; hi < hostile.length; hi++) {
+    var hostileLeaf = await mkCert({ subject: "Puny" + hi, issuer: "PunyInter", signWith: "ed25519i", subjectKeys: "ed25519leaf",
+      extensions: [sanExt([gnEmail(hostile[hi][1])])] });
+    var hr;
+    try { hr = await run([punyCa, hostileLeaf], { time: T2027, trustAnchors: anchor }); }
+    catch (e) { hr = { threw: e }; }
+    check("CVE-2022-3786 " + hostile[hi][0] + " reaches a verdict, not a throw",
+      !hr.threw && typeof hr.valid === "boolean");
+    check("CVE-2022-3786 " + hostile[hi][0] + " is not admitted by the punycode constraint",
+      !hr.threw && hr.valid === false);
+  }
+
   // The URI form is exempted at decode alongside the other two IA5 forms, so record what the
   // comparison then makes of it rather than leaving a changed tag unmeasured.
   var emptyUriCa = await mkCert({ subject: "EmptyUriInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i",
@@ -1442,7 +1480,7 @@ async function testCoreRejections() {
   var notCa = await mkCert({ subject: "NotCa", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(false)] });
   var below = await mkCert({ subject: "Below", issuer: "NotCa", signWith: "ed25519i", subjectKeys: "ed25519leaf" });
   var res11a = await run([notCa, below], { time: T2027, trustAnchors: anchor });
-  check("cA:FALSE intermediate rejected", res11a.valid === false && failCodes(res11a).indexOf("path/not-a-ca") !== -1);
+  check("CVE-2021-3450 cA:FALSE intermediate rejected", res11a.valid === false && failCodes(res11a).indexOf("path/not-a-ca") !== -1);
   var noBc = await mkCert({ subject: "NoBc", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i" });
   var below2 = await mkCert({ subject: "Below2", issuer: "NoBc", signWith: "ed25519i", subjectKeys: "ed25519leaf" });
   var res11b = await run([noBc, below2], { time: T2027, trustAnchors: anchor });
@@ -1590,6 +1628,18 @@ async function testPolicyMachinery() {
   var leafB = await mkCert({ subject: "PB", issuer: "PA", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt([P2])] });
   var res19 = await run([interA, leafB], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true });
   check("disjoint policies under explicit-policy rejected", res19.valid === false && failCodes(res19).indexOf("path/policy-required") !== -1);
+  // CVE-2023-0466: OpenSSL documented X509_VERIFY_PARAM_add0_policy() as enabling the policy
+  // check, and it did not, so callers who asked for policy enforcement silently got none. An
+  // option that is advertised is only real if the SAME chain reaches a DIFFERENT verdict with it
+  // and without it. Asserting only the rejection above would still pass on an implementation that
+  // rejected this chain for some other reason and never read the option at all.
+  var res19off = await run([interA, leafB], { time: T2027, trustAnchors: anchor });
+  check("CVE-2023-0466 the same disjoint chain validates when explicit policy is NOT required",
+    res19off.valid === true);
+  check("CVE-2023-0466 so initialExplicitPolicy is what changes the verdict",
+    res19off.valid !== res19.valid);
+  check("CVE-2023-0466 and the failure it adds is the policy one, not a side effect",
+    failCodes(res19off).length === 0 && failCodes(res19).indexOf("path/policy-required") !== -1);
 
   // mapping to/from anyPolicy is prohibited (§6.1.4(a)).
   var interMapAny = await mkCert({ subject: "MapAny", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([cpExt([P1]), pmExt([[P1, ANY_POLICY]])]) });
@@ -1602,7 +1652,7 @@ async function testPolicyMachinery() {
   var interRich = await mkCert({ subject: "Rich", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([cpExt([ANY_POLICY])]) });
   var leafRich = await mkCert({ subject: "RichLeaf", issuer: "Rich", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt([P1, P2, P3])] });
   var res21 = await run([interRich, leafRich], { time: T2027, trustAnchors: anchor, maxPolicyNodes: 2 });
-  check("policy-tree cap fail-closed", res21.valid === false && failCodes(res21).indexOf("path/policy-tree-cap") !== -1);
+  check("CVE-2023-0464 policy-tree cap fail-closed", res21.valid === false && failCodes(res21).indexOf("path/policy-tree-cap") !== -1);
 
   // a malformed policy OID is rejected, never silently dropped
   // (CVE-2023-0465 class). 0x80 is an invalid first OID content byte.
@@ -1753,7 +1803,7 @@ async function testSignatureAndInputEdges() {
   var confused = await mkCert({ subject: "Confused", issuer: "Root", signWith: "confused", subjectKeys: "ed25519leaf" });
   var res31 = await run([confused], { time: T2027, trustAnchors: anchor });
   var codes31 = failCodes(res31);
-  check("algorithm-confused cert rejected typed", res31.valid === false &&
+  check("CVE-2015-9235 algorithm-confused cert rejected typed", res31.valid === false &&
     (codes31.indexOf("path/bad-signature") !== -1 || codes31.indexOf("path/unsupported-algorithm") !== -1));
 
   // multi-defect chain fails typed, never a raw TypeError.

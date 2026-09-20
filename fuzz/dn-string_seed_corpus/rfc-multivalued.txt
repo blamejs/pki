@@ -1,0 +1,1 @@
+OU=Sales+CN=J.  Smith,DC=example,DC=net
