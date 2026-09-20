@@ -1,0 +1,1 @@
+CN=Before\0dAfter,DC=example,DC=net

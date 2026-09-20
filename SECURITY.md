@@ -146,7 +146,7 @@ security-only patches after the next major releases.
   `opts.maxOutputBytes`) and throws `cms/decompress-too-large`.
   `pki.tls.decompressCertificate` (RFC 8879) caps at the message's own declared
   `uncompressed_length`, so an attacker's declaration is its own ceiling, bounded
-  in turn by the RFC 8446 §4 handshake framing limit
+  in turn by the RFC 8446 §4 handshake framing limit (TLS 1.3 is now RFC 9846)
   `C.LIMITS.TLS_CERT_MSG_MAX_BYTES` (2^24-1) and by any tighter caller cap, and
   throws `tls/too-large`. Every other malformed, truncated, or corrupt stream
   collapses to a uniform per-domain code, with no per-errno telemetry.
@@ -460,7 +460,7 @@ security-only patches after the next major releases.
   message was authentic, so on a forged AEAD message the plaintext exists in full
   and is then abandoned. Withholding it from the caller is not destroying it, and
   RFC 5083 §1 requires a receiver whose integrity check fails to destroy it. Every
-  cipher the toolkit runs — CMS content decryption and the RFC 3211 password
+  cipher the toolkit runs — CMS content decryption and the password
   recipient unwrap, PBES2, HPKE `open`, PKCS#12 safe decryption, and the AES-GCM,
   AES-CBC, AES-CTR and AES-KW paths of the crypto engine — goes through one place
   that clears both halves on both exits. The success path is cleared for the same
@@ -481,7 +481,8 @@ security-only patches after the next major releases.
   uniform `key/decrypt-failed` (RFC 8018 §8), so an attacker cannot distinguish
   the two. PBES1, PBMAC1, and scrypt are refused rather than silently accepted.
 - **PKCS#12 MAC integrity (CWE-347 / CWE-208).** `pki.pkcs12.verifyMac`
-  recomputes a store's classic Appendix B HMAC or RFC 9579 PBMAC1 over the exact
+  recomputes a store's classic Appendix B HMAC or PBMAC1 (RFC 9579, obsoleted by
+  RFC 9879) over the exact
   AuthenticatedSafe byte range (`macedBytes`, excluding the OCTET STRING header,
   which is the canonical off-by-the-header MAC trap) and compares it in constant
   time through `guard.crypto.constantTimeEqual`, so a wrong password leaks no
@@ -534,8 +535,9 @@ security-only patches after the next major releases.
   collapses to the single uniform `cms/decrypt-failed` verdict — same code, same
   message, no cause chaining — so an attacker measuring the error has no
   distinguishable signal (RFC 3218, EFAIL). That covers a PKCS#1 v1.5 or
-  RSAES-OAEP unwrap fault, an AES-KW integrity-check (A6A6…) mismatch, an RFC
-  3211 PWRI check-byte mismatch, a CBC padding fault, an AES-GCM tag mismatch,
+  RSAES-OAEP unwrap fault, an AES-KW integrity-check (A6A6…) mismatch, a PWRI
+  check-byte mismatch (RFC 3211, carried forward by RFC 3370), a CBC padding
+  fault, an AES-GCM tag mismatch,
   and a content-key length mismatch. The PKCS#1 v1.5 arm is decrypt-only and
   applies the RFC 3218 §2.3.2 implicit-rejection countermeasure: on any v1.5
   fault it substitutes a fresh random content-encryption key and proceeds, so the
@@ -1030,7 +1032,8 @@ security-only patches after the next major releases.
   in constant time and by full value, so a truncated echo cannot match on a
   prefix. Where several status controls are present the worst governs, so a
   rejection cannot hide behind an earlier success. The carrier's own signature is
-  not assumed: RFC 5272 §3.2.1.3.4 requires it. A conforming response carries its
+  not assumed: RFC 5272 §3.2.1.3.4 requires it (that document is obsoleted by
+  RFC 10002, which the shipped surface predates). A conforming response carries its
   own signer certificate and is checked against it with nothing asked of the
   caller. Where the signer is found nowhere, verification is fail-closed with a
   named opt-out (`allowUnverified`, which reports `signatureVerified: false`)

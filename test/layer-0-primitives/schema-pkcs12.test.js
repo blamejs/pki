@@ -877,6 +877,41 @@ testRejectX509CertValueNotOctet();
 testRejectMultiValueLocalKeyId();
 testRejectUnknownSafeContentType();
 testMatchesStructuralRejects();
+testAbsentOptionalFields();
+
+// CVE-2024-0727: a crafted .p12 omitted an optional ContentInfo field that OpenSSL then
+// dereferenced. The class is not any one field, it is the set of them: every field the PKCS#12
+// grammar marks OPTIONAL or DEFAULT can be absent in a file an attacker supplies, and each
+// absence must reach either a typed refusal or a parse that does not read the field. So the
+// vector walks the set rather than naming one member, and a passing control proves the shape it
+// starts from is otherwise valid.
+function testAbsentOptionalFields() {
+  check("CVE-2024-0727 CONTROL: the shape every omission below starts from parses",
+    parse(minimalPfx()) !== null);
+
+  var omissions = [
+    ["macData (the whole MacData)", minimalPfx({ omitMac: true })],
+    ["MacData iterations (a DEFAULT)", minimalPfx({ macData: macData({ iterations: undefined }) })],
+    ["PBMAC1 keyDerivationFunc parameters", minimalPfx({ macData: pbmac1MacData({ omitParams: true }) })],
+    ["SignedData eContent (detached)", pfx({ authSafe: signedDataAuthSafe(authenticatedSafe([innerData(safeContents([certBag()]))]), { detached: true }) })],
+    ["the AuthenticatedSafe's only element", minimalPfx({ elements: [] })],
+    ["a SafeContents with no bags", minimalPfx({ bags: [] })],
+  ];
+  omissions.forEach(function (row) {
+    var out;
+    try { parse(row[1]); out = "PARSED"; }
+    catch (e) { out = (e instanceof pki.errors.PkiError) ? "TYPED" : e.constructor.name; }
+    check("CVE-2024-0727 absent " + row[0] + " -> typed refusal or a parse that does not read it",
+      out === "TYPED" || out === "PARSED");
+  });
+
+  // The two absences that are refusals rather than tolerated carry their own codes, so the
+  // walk above cannot pass by turning every outcome into the same answer.
+  check("CVE-2024-0727 a detached SignedData authSafe is pkcs12/bad-authsafe",
+    parseCode(pfx({ authSafe: signedDataAuthSafe(authenticatedSafe([innerData(safeContents([certBag()]))]), { detached: true }) })) === "pkcs12/bad-authsafe");
+  check("CVE-2024-0727 absent PBMAC1 parameters are pkcs12/bad-mac-data",
+    parseCode(minimalPfx({ macData: pbmac1MacData({ omitParams: true }) })) === "pkcs12/bad-mac-data");
+}
 
 if (require.main === module) console.log("CHECKS " + helpers.getChecks());
 module.exports = {};

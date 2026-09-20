@@ -47,6 +47,36 @@ function testRoundTrip() {
   check("read.octetString round-trips", pki.asn1.read.octetString(pki.asn1.decode(b.octetString(Buffer.from("hi")))).toString() === "hi");
   check("read.oid round-trips", pki.asn1.read.oid(pki.asn1.decode(b.oid("1.2.840.10045.2.1"))) === "1.2.840.10045.2.1");
   check("read.utf8 round-trips", pki.asn1.read.string(pki.asn1.decode(b.utf8("héllo"))) === "héllo");
+  // CVE-2021-3712: a reader that treated an ASN.1 string as NUL-terminated read past the declared
+  // length, or stopped short at an embedded NUL and compared a truncated name. The reader here
+  // slices by the declared length, so an embedded NUL is one ordinary octet of the value: the
+  // characters after it survive, and the string keeps the length the encoding declared. The NUL is
+  // built into the wire bytes rather than written as an escape, so this file stays pure ASCII.
+  var nulBytes = Buffer.concat([Buffer.from("ab", "ascii"), Buffer.from([0x00]), Buffer.from("cd", "ascii")]);
+  var nulRead = pki.asn1.read.string(pki.asn1.decode(b.utf8(nulBytes)));
+  check("CVE-2021-3712 a string with an embedded NUL keeps its declared length", nulRead.length === nulBytes.length);
+  check("CVE-2021-3712 the octets after the embedded NUL are not dropped", nulRead.charCodeAt(3) === 0x63 && nulRead.charCodeAt(4) === 0x64);
+  check("CVE-2021-3712 the NUL is one octet of the value, not a terminator", nulRead.charCodeAt(2) === 0);
+  // CONTROL: the same characters with no NUL read as the four they are, so the assertions above
+  // are about the NUL and not about the reader mangling every string.
+  // A UTF-8 decoder strips a leading U+FEFF unless told not to, which would make the decoded
+  // value differ from the bytes that encoded it. For a name that is a defect with teeth: two
+  // certificates carrying different subject bytes would decode to strings that compare equal.
+  // X.690 gives U+FEFF no special meaning inside a UTF8String; it is one more character.
+  var bomBytes = Buffer.from([0xef, 0xbb, 0xbf]);
+  var leadingBom = Buffer.concat([bomBytes, Buffer.from("ab", "ascii")]);
+  var leadingRead = pki.asn1.read.string(pki.asn1.decode(b.utf8(leadingBom)));
+  check("a UTF8String beginning with U+FEFF keeps it", leadingRead.length === 3 && leadingRead.charCodeAt(0) === 0xfeff);
+  check("and re-encodes to the bytes it was read from", b.utf8(leadingRead).equals(b.utf8(leadingBom)));
+  check("so a value with a leading U+FEFF does not compare equal to the same value without one",
+    leadingRead !== pki.asn1.read.string(pki.asn1.decode(b.utf8(Buffer.from("ab", "ascii")))));
+  // CONTROL: the same three bytes anywhere but the front were never at risk.
+  var midBom = Buffer.concat([Buffer.from("a", "ascii"), bomBytes, Buffer.from("b", "ascii")]);
+  check("CONTROL: U+FEFF in the middle of a UTF8String is kept",
+    pki.asn1.read.string(pki.asn1.decode(b.utf8(midBom))).charCodeAt(1) === 0xfeff);
+
+  check("CVE-2021-3712 CONTROL: the same string without the NUL reads as four characters",
+    pki.asn1.read.string(pki.asn1.decode(b.utf8(Buffer.from("abcd", "ascii")))) === "abcd");
   check("sequence nests + navigates", (function () {
     var der = b.sequence([b.integer(1n), b.oid("2.5.4.3"), b.utf8("x")]);
     var node = pki.asn1.decode(der);
@@ -76,6 +106,21 @@ function testRejects() {
   // Non-minimal NEGATIVE INTEGER: 02 02 FF 80 -- a leading 0xFF is redundant when the next
   // octet's high bit is already set (-128 is minimally 02 01 80). X.690 sec. 8.3.2.
   check("rejects non-minimal negative integer", code(function () { pki.asn1.read.integer(pki.asn1.decode(Buffer.from("0202ff80", "hex"))); }) === "asn1/non-minimal-integer");
+  // CVE-2016-2108: an ASN.1 reader that accepted a negative-zero or otherwise redundant INTEGER
+  // wrote a different encoding back out, and the two lengths disagreed. The class needs all three
+  // of: no redundant leading octet (above), no zero-content INTEGER, no all-zero multi-octet
+  // encoding, and a re-encode that reproduces the input byte for byte.
+  check("CVE-2016-2108 rejects an INTEGER with no content octets",
+    code(function () { pki.asn1.read.integer(pki.asn1.decode(Buffer.from("0200", "hex"))); }) === "asn1/bad-integer");
+  check("CVE-2016-2108 rejects an all-zero INTEGER encoding (negative zero)",
+    code(function () { pki.asn1.read.integer(pki.asn1.decode(Buffer.from("02020000", "hex"))); }) === "asn1/non-minimal-integer");
+  // CONTROLS: the shapes that only LOOK like the refused ones are read, and each re-encodes to
+  // the bytes it came from, so nothing above is refusing valid input.
+  ["020100", "020101", "020180", "0201ff", "0202ff7f", "02028000"].forEach(function (hex) {
+    var input = Buffer.from(hex, "hex");
+    var value = pki.asn1.read.integer(pki.asn1.decode(input));
+    check("CVE-2016-2108 CONTROL " + hex + " reads and re-encodes to itself", pki.asn1.build.integer(value).equals(input));
+  });
   // read.integer is strict on the tag: ENUMERATED shares INTEGER's content
   // encoding but is a distinct universal type, so an INTEGER-pinned field encoded
   // as ENUMERATED (and vice-versa) is a tag mismatch, never silently coerced.
@@ -95,6 +140,27 @@ function testRejects() {
     for (var i = 0; i < 5; i++) d = pki.asn1.build.sequence([d]);
     pki.asn1.decode(d, { maxDepth: 2 });
   }) === "asn1/too-deep");
+  // CVE-2025-66031: node-forge's asn1.fromDer recursed once per nesting level, so a deeply nested
+  // TLV exhausted the V8 stack before any cap could apply. Two properties together answer for it:
+  // the DEFAULT cap refuses (not one a caller passed), and the walk is iterative, so a nesting
+  // depth far past what a stack survives still produces a typed error rather than a RangeError.
+  function nest(levels) {
+    var d = pki.asn1.build.integer(1n);
+    for (var i = 0; i < levels; i++) d = pki.asn1.build.sequence([d]);
+    return d;
+  }
+  var DEPTH_CAP = pki.C.LIMITS.DER_MAX_DEPTH;
+  check("CVE-2025-66031 CONTROL: nesting one level inside the default cap decodes",
+    pki.asn1.decode(nest(DEPTH_CAP - 1)) !== null);
+  check("CVE-2025-66031 the default depth cap refuses one level past it, with no caller option",
+    code(function () { pki.asn1.decode(nest(DEPTH_CAP + 1)); }) === "asn1/too-deep");
+  var bomb = nest(100000);
+  check("CVE-2025-66031 100000 levels is a typed refusal, not a stack overflow",
+    code(function () { pki.asn1.decode(bomb); }) === "asn1/too-deep");
+  check("CVE-2025-66031 the same bytes through a format door are a typed refusal",
+    code(function () { pki.schema.x509.parse(bomb); }) === "x509/bad-der");
+  check("CVE-2025-66031 and through the format detector",
+    code(function () { pki.schema.parse(bomb); }) !== "NO-THROW");
   // Size cap.
   check("enforces size cap", code(function () { pki.asn1.decode(pki.asn1.build.octetString(Buffer.alloc(100)), { maxBytes: 10 }); }) === "asn1/too-large");
   // Item cap: a dense run of tiny TLVs fans a small input into a huge eager node

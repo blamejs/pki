@@ -332,9 +332,9 @@ async function testEcImportCurveValidation() {
   var explicitSpki = explicitEc.publicKey.export({ format: "der", type: "spki" });
   check("CONTROL: the same curve with named parameters imports",
     (await code(async function () { await subtle.importKey("spki", p256.spki, { name: "ECDSA", namedCurve: "P-256" }, true, ["verify"]); })) === "NO-THROW");
-  check("spki import of explicit EC domain parameters rejects (data)",
+  check("CVE-2020-0601 / CVE-2022-0778 spki import of explicit EC domain parameters rejects (data)",
     (await code(async function () { await subtle.importKey("spki", explicitSpki, { name: "ECDSA", namedCurve: "P-256" }, true, ["verify"]); })) === "webcrypto/data");
-  check("ECDH is held to the same rule as ECDSA",
+  check("CVE-2020-0601 ECDH is held to the same rule as ECDSA",
     (await code(async function () { await subtle.importKey("spki", explicitSpki, { name: "ECDH", namedCurve: "P-256" }, true, []); })) === "webcrypto/data");
   // A non-EC algorithm is untouched: Ed25519 omits parameters by RFC 8410 sec. 3.
   var ed = nodeCrypto.generateKeyPairSync("ed25519");
@@ -1285,7 +1285,64 @@ async function testForeignKeyRefusal() {
   })());
 }
 
+// CVE-2006-4340: NSS accepted trailing data after the DigestInfo inside a PKCS#1 v1.5 signature
+// block. With a small public exponent that is enough to forge, because a forger can pick the
+// garbage tail so the whole block is a perfect cube and take its integer cube root without ever
+// holding the private key. The vector below builds exactly that block and that root, so what is
+// under test is a real forgery rather than a mutated signature.
+//
+// Every verifier in the toolkit reaches RSA through this door, so the check belongs here.
+function _bigFromBuf(buf) { return BigInt("0x" + buf.toString("hex")); }
+function _bufFromBig(v, len) {
+  var h = v.toString(16); if (h.length % 2) h = "0" + h;
+  var raw = Buffer.from(h, "hex");
+  if (raw.length >= len) return raw.subarray(raw.length - len);
+  return Buffer.concat([Buffer.alloc(len - raw.length), raw]);
+}
+function _icbrt(n) {
+  if (n < 2n) return n;
+  var lo = 1n, hi = 2n;
+  while (hi * hi * hi <= n) { lo = hi; hi *= 2n; }
+  while (lo + 1n < hi) { var mid = (lo + hi) / 2n; if (mid * mid * mid <= n) lo = mid; else hi = mid; }
+  return lo;
+}
+
+async function testPkcs1v15TrailingData() {
+  var kp = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048, publicExponent: 3 });
+  var k = 256;
+  var msg = Buffer.from("the bytes a forged signature would claim to cover");
+  var digest = nodeCrypto.createHash("sha256").update(msg).digest();
+  // DigestInfo for SHA-256, the prefix a v1.5 block carries before the hash.
+  var digestInfo = Buffer.concat([Buffer.from("3031300d060960864801650304020105000420", "hex"), digest]);
+  // The NSS-accepted shape: the padding is cut short and the remainder of the block is garbage.
+  var left = Buffer.concat([Buffer.from([0x00, 0x01]), Buffer.alloc(8, 0xff), Buffer.from([0x00]), digestInfo]);
+  var block = Buffer.concat([left, Buffer.alloc(k - left.length, 0x00)]);
+  var root = _icbrt(_bigFromBuf(block)) + 1n;
+  var forged = _bufFromBig(root, k);
+
+  // The forgery is only a forgery if cubing it really does reproduce the block, so that is
+  // asserted before anything is concluded from the refusal.
+  var n = _bigFromBuf(Buffer.from(kp.publicKey.export({ format: "jwk" }).n, "base64url"));
+  var cubed = _bufFromBig((root * root * root) % n, k);
+  check("CVE-2006-4340 the forged value cubes to a v1.5 block carrying the right DigestInfo",
+    cubed.subarray(0, left.length).equals(left));
+  check("CVE-2006-4340 and that block carries trailing data after the DigestInfo", k - left.length > 0);
+
+  var spki = kp.publicKey.export({ format: "der", type: "spki" });
+  var key = await subtle.importKey("spki", spki, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, true, ["verify"]);
+  check("CVE-2006-4340 a PKCS#1 v1.5 block with trailing data after the DigestInfo does not verify",
+    (await subtle.verify({ name: "RSASSA-PKCS1-v1_5" }, key, forged, msg)) === false);
+  // CONTROL: a real signature over the same bytes under the same key does verify, so the refusal
+  // above is the padding and not the key, the hash, or the message.
+  var signKey = await subtle.importKey("pkcs8", kp.privateKey.export({ format: "der", type: "pkcs8" }),
+    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, true, ["sign"]);
+  var real = await subtle.sign({ name: "RSASSA-PKCS1-v1_5" }, signKey, msg);
+  check("CONTROL: a genuine signature under the same e=3 key verifies",
+    (await subtle.verify({ name: "RSASSA-PKCS1-v1_5" }, key, real, msg)) === true);
+}
+
 async function run() {
+  await testPkcs1v15TrailingData();
   await testSurface();
   await testNodeErrorTyping();
   await testRandom();

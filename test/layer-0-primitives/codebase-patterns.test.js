@@ -3209,7 +3209,7 @@ function testGuardReadsRuntimeLive() {
     "lib/cms-encrypt.js": 66,
     "lib/crl-sign.js": 66,
     "lib/cmc-build.js": 58,
-    "lib/pki-build.js": 35,
+    "lib/pki-build.js": 34,
     "lib/hpke.js": 41,
     "lib/cms-decrypt.js": 49,
     "lib/cmc-verify.js": 38,
