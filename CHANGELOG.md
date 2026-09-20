@@ -4,6 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.6 — 2026-09-25
+
+A node:crypto KeyObject signs, without being asked to export its private half.
+
+### Added
+
+- A `node:crypto` `KeyObject` is accepted wherever a signing verb takes a private key, and signs through `node:crypto` rather than being exported to PKCS#8 first. RSA with PKCS#1 v1.5 and with PSS padding, ECDSA on P-256, P-384 and P-521, Ed25519, Ed448, ML-DSA and SLH-DSA all sign this way, and the bytes produced are the bytes WebCrypto would have produced: an ECDSA signature is taken in the fixed-width form of RFC 9053 sec. 2.1 and encoded by the toolkit, so the artifact is byte-identical to one signed by the equivalent `CryptoKey`.
+- A `KeyObject` is held to the key the artifact names exactly as a `CryptoKey` is. Its algorithm must match the certificate's key algorithm and, for an EC key, its curve must match the certificate's curve; a public or a secret key is refused by type; and the signature is verified against the declared key before the artifact is returned, so a `KeyObject` for a different key of the same algorithm is refused rather than producing something no relying party can validate.
+
+### Changed
+
+- `pki.x509.sign` and the other signing verbs no longer refuse a `node:crypto` `KeyObject` with the message naming it as not a `CryptoKey`. A caller matching on that message to detect the refusal will stop seeing it, because the key now signs.
+
 ## v0.8.5 — 2026-09-25
 
 A key this process cannot export can sign, and every verb that signs proves its signature first.
