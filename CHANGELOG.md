@@ -4,6 +4,28 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.3 — 2026-09-25
+
+A parser takes decode caps from its caller, and a resource refusal says so instead of reading as malformed input.
+
+### Added
+
+- Every parse function takes an optional second argument of decode caps: `maxBytes`, `maxDepth` and `maxItems`. That includes `pki.schema.parse`, the format-detecting door, where the caps bound both the detection decode and the decode of whichever format matches. Each may tighten below the corresponding `pki.C.LIMITS` default and is refused with `<format>/bad-input` if it names a value above it, so a caller can bound a parse more strictly than the toolkit does and cannot grant itself more resource than the built-in refusal allows. An option outside that set is named in the refusal rather than ignored.
+- A new `<format>/too-large` code on each format, reported when a decode limit refuses the input.
+
+### Changed
+
+- An input refused for exceeding a decode limit reports `<format>/too-large` where it previously reported `<format>/bad-der`. The two say different things to whoever reads them: one is answered by raising a cap, the other by fixing the bytes. A caller matching on `bad-der` to detect malformed input will stop seeing oversized and over-nested inputs under that code.
+
+### Fixed
+
+- A parse that exhausts its decode budget cannot report anything but a refusal, even when code inside the parse catches the failure. The budget latches on exhaustion, and each parser door re-reads that latch after its walk and before returning a result, so a `catch` between the two can absorb the exception and still not produce a value. This is the guarantee that makes the caps worth relying on: without it any of the toolkit's error-absorbing paths could turn `over budget` into an ordinary absent value and change a verdict.
+- The caps a caller names are read into a fresh object, and no flag is ever written onto the object the caller passed or onto the one the decode receives. A resource option therefore cannot alter which encodings a parse accepts; the strictness of a parse is the same whatever caps are asked for.
+
+### Documentation
+
+- The caps bound the decode of the input a parser is given, which is what bounds a parse overall, since everything a parse reads comes from those bytes. A structure decoded separately from inside that input keeps the built-in `pki.C.LIMITS` defaults rather than a tighter figure the caller named.
+
 ## v0.8.2 — 2026-09-25
 
 A distinguished name can be read back from its string form, and twelve attributes the name table published can finally be encoded.

@@ -157,8 +157,12 @@ function testRejects() {
   var bomb = nest(100000);
   check("CVE-2025-66031 100000 levels is a typed refusal, not a stack overflow",
     code(function () { pki.asn1.decode(bomb); }) === "asn1/too-deep");
-  check("CVE-2025-66031 the same bytes through a format door are a typed refusal",
-    code(function () { pki.schema.x509.parse(bomb); }) === "x509/bad-der");
+  // A format door reports a depth refusal as the resource verdict it is, distinct from the
+  // malformed-input verdict, so a caller can tell "raise the cap" from "these bytes are wrong".
+  check("CVE-2025-66031 the same bytes through a format door are a typed resource refusal",
+    code(function () { pki.schema.x509.parse(bomb); }) === "x509/too-large");
+  check("CVE-2025-66031 and that is not the malformed-input verdict",
+    code(function () { pki.schema.x509.parse(Buffer.from("3003020101ff", "hex")); }) === "x509/bad-der");
   check("CVE-2025-66031 and through the format detector",
     code(function () { pki.schema.parse(bomb); }) !== "NO-THROW");
   // Size cap.
