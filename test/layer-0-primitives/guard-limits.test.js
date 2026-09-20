@@ -14,6 +14,7 @@ var limits = require("../../lib/guard-limits");
 var errors = require("../../lib/framework-error");
 var helpers = require("../helpers");
 var check = helpers.check;
+var pki = helpers.pki;
 
 var TestError = errors.defineClass("TestError");
 function E(code, message) { return new TestError(code, message); }
@@ -75,11 +76,73 @@ function testByteCap() {
   check("byteCap over-cap with no label uses the default label", typeErr(function () { limits.byteCap(buf, 9, E, "x/too-large"); }) === "x/too-large");
 }
 
+// The budget a parse spends against. Its reason for existing is narrow and worth stating: a
+// resource failure must not be convertible into a semantic answer. There are roughly 230
+// swallowing catches in lib/, and auditing all of them is the approach that failed; latching
+// the exhaustion on an object the swallow cannot reach is the approach that does not need to.
+function testBudget() {
+  var b = limits.budget({ maxBytes: 100 });
+  check("a fresh budget is not exhausted", b.exhausted() === false);
+  check("it reports its maximum", b.max() === 100);
+  check("spending under the maximum returns what was spent", b.spend(40, "a value") === 40);
+  check("and accumulates", b.spent() === 40 && b.remaining() === 60);
+  check("spending up to exactly the maximum is allowed", b.spend(60, "the rest") === 60);
+  check("which leaves nothing remaining", b.remaining() === 0 && b.exhausted() === false);
+
+  var threw = null;
+  try { b.spend(1, "one byte too many"); } catch (e) { threw = e; }
+  check("spending past the maximum throws", threw !== null);
+  check("the throw is a budget exhaustion", limits.isBudgetExceeded(threw) === true);
+  check("and names what overran it", String(threw.message).indexOf("one byte too many") !== -1);
+
+  // The property the whole design rests on: catching the throw does not undo the exhaustion.
+  check("the budget stays exhausted after the throw was caught", b.exhausted() === true);
+  var again = null;
+  try { b.spend(0, "nothing at all"); } catch (e) { again = e; }
+  check("and a later zero-cost spend still reports exhausted", b.exhausted() === true);
+  void again;
+
+  // A budget exhaustion is NOT a PkiError, so the re-throw shape every domain uses passes it
+  // through rather than reading it as a decode verdict.
+  check("a budget exhaustion is not a PkiError", (threw instanceof pki.errors.PkiError) === false);
+  check("so the common re-throw guard lets it past", (function () {
+    try {
+      try { limits.budget({ maxBytes: 1 }).spend(2, "x"); }
+      catch (e) { if (e instanceof pki.errors.PkiError) return "absorbed"; throw e; }
+    } catch (outer) { return limits.isBudgetExceeded(outer) ? "rethrown" : "other"; }
+    return "fell-through";
+  })() === "rethrown");
+
+  // trip() is the same latch for a limit that is not counted in bytes.
+  var t = limits.budget({ maxBytes: 10 });
+  var tripped = null;
+  try { t.trip("a nesting depth"); } catch (e) { tripped = e; }
+  check("trip throws a budget exhaustion", limits.isBudgetExceeded(tripped) === true);
+  check("trip latches the same way", t.exhausted() === true);
+  check("trip names what overran", String(tripped.message).indexOf("a nesting depth") !== -1);
+
+  // The budget is frozen, so a caller holding one cannot clear the latch by writing over it.
+  var f = limits.budget({ maxBytes: 5 });
+  try { f.spend(9, "over"); } catch (_e) { /* expected */ }
+  try { f.exhausted = function () { return false; }; } catch (_e2) { /* frozen in strict mode */ }
+  check("the latch cannot be replaced on the budget object", f.exhausted() === true);
+
+  // Authoring-time refusals: a bad maximum or a bad spend is a TypeError at the boundary.
+  check("a non-integer maximum throws TypeError", typeErr(function () { limits.budget({ maxBytes: 1.5 }); }) === "TYPE");
+  check("a negative maximum throws TypeError", typeErr(function () { limits.budget({ maxBytes: -1 }); }) === "TYPE");
+  check("a negative spend throws TypeError", typeErr(function () { limits.budget({ maxBytes: 10 }).spend(-1, "x"); }) === "TYPE");
+  check("a non-integer spend throws TypeError", typeErr(function () { limits.budget({ maxBytes: 10 }).spend(1.5, "x"); }) === "TYPE");
+  check("no maximum falls back to the DER byte cap", limits.budget().max() === pki.C.LIMITS.DER_MAX_BYTES);
+  check("isBudgetExceeded says no to an ordinary error", limits.isBudgetExceeded(new Error("x")) === false);
+  check("isBudgetExceeded says no to null", limits.isBudgetExceeded(null) === false);
+}
+
 function run() {
   testCap();
   testCapAuthoringBounds();
   testCounter();
   testByteCap();
+  testBudget();
 }
 
 module.exports = { run: run };

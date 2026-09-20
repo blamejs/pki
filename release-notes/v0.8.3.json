@@ -1,0 +1,22 @@
+{
+  "version": "0.8.3",
+  "date": "2026-09-25",
+  "headline": "A parser takes decode caps from its caller, and a resource refusal says so instead of reading as malformed input.",
+  "summary": "Every format parser accepted a second argument and ignored it, so a caller who bounded a parse got the built-in limits and no indication otherwise. The caps now reach the decode at every door, and a cap may tighten below the built-in default but never past it. Alongside that, a refusal caused by a limit is reported as its own verdict rather than as a claim about the bytes: an over-deep or oversized input used to come back as `bad-der`, which sends a reader to inspect input that is fine and a cap that is too small.",
+  "sections": {
+    "Added": [
+      "Every parse function takes an optional second argument of decode caps: `maxBytes`, `maxDepth` and `maxItems`. That includes `pki.schema.parse`, the format-detecting door, where the caps bound both the detection decode and the decode of whichever format matches. Each may tighten below the corresponding `pki.C.LIMITS` default and is refused with `<format>/bad-input` if it names a value above it, so a caller can bound a parse more strictly than the toolkit does and cannot grant itself more resource than the built-in refusal allows. An option outside that set is named in the refusal rather than ignored.",
+      "A new `<format>/too-large` code on each format, reported when a decode limit refuses the input."
+    ],
+    "Changed": [
+      "An input refused for exceeding a decode limit reports `<format>/too-large` where it previously reported `<format>/bad-der`. The two say different things to whoever reads them: one is answered by raising a cap, the other by fixing the bytes. A caller matching on `bad-der` to detect malformed input will stop seeing oversized and over-nested inputs under that code."
+    ],
+    "Fixed": [
+      "A parse that exhausts its decode budget cannot report anything but a refusal, even when code inside the parse catches the failure. The budget latches on exhaustion, and each parser door re-reads that latch after its walk and before returning a result, so a `catch` between the two can absorb the exception and still not produce a value. This is the guarantee that makes the caps worth relying on: without it any of the toolkit's error-absorbing paths could turn `over budget` into an ordinary absent value and change a verdict.",
+      "The caps a caller names are read into a fresh object, and no flag is ever written onto the object the caller passed or onto the one the decode receives. A resource option therefore cannot alter which encodings a parse accepts; the strictness of a parse is the same whatever caps are asked for."
+    ],
+    "Documentation": [
+      "The caps bound the decode of the input a parser is given, which is what bounds a parse overall, since everything a parse reads comes from those bytes. A structure decoded separately from inside that input keeps the built-in `pki.C.LIMITS` defaults rather than a tighter figure the caller named."
+    ]
+  }
+}
