@@ -311,6 +311,15 @@ function testAcceptPublicKeyIntegrity() {
   var sm = parse(skidPfx);
   check("signedData authSafe: constructed skid reassembles byte-exact",
         sm.authSafeSigned.signerInfos[0].sid.subjectKeyIdentifier.equals(Buffer.concat([k1, k2])));
+
+  // The same boundary as the privacy safes: a SignedData this parse cannot read is CMS's fault
+  // to report, in CMS's own error class, even though this parse's caps reach that walk.
+  var brokenSigned = pfx({ authSafe: contentInfo(ID_SIGNED_DATA, b.sequence([b.integer(3)])) });
+  check("signedData authSafe: a delegated CMS failure keeps the CMS error class",
+        (function () {
+          try { parse(brokenSigned); return false; }
+          catch (e) { return e instanceof pki.errors.CmsError && e.code.indexOf("cms/") === 0; }
+        })());
 }
 
 // ---- ACCEPT: safeContentsBag recursion ---------------------
@@ -349,6 +358,16 @@ function testAcceptEncryptedSafes() {
   // the same fault as a detached encryptedContent, same reject.
   check("encryptedData safe: zero-length ciphertext rejected",
         parseCode(minimalPfx({ elements: [innerData(safeContents([certBag()])), encryptedDataSafe(true)] })) === "pkcs12/bad-safe-contentinfo");
+
+  // A privacy safe the CMS parser refuses keeps the CMS verdict: the delegate answers in its own
+  // domain, and threading this parse's caps into that walk must not hand it this parse's namespace.
+  var brokenCms = minimalPfx({ elements: [contentInfo(ID_ENCRYPTED_DATA, b.sequence([]))] });
+  check("delegated CMS failure keeps the cms/* code", parseCode(brokenCms).indexOf("cms/") === 0);
+  check("delegated CMS failure keeps the CMS error class",
+        (function () {
+          try { parse(brokenCms); return false; }
+          catch (e) { return e instanceof pki.errors.CmsError; }
+        })());
 
   m = parse(minimalPfx({ elements: [envelopedDataSafe()] }));
   check("envelopedData safe: parses with recipientInfos", m.encryptedSafes[0].type === "envelopedData" &&

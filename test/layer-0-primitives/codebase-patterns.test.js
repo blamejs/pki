@@ -138,6 +138,7 @@ function _shellFiles() {
 var VALID_ALLOW_CLASSES = {
   "spdx-header":                   1,
   "inline-require":                1,
+  "bare-decode":                   1,
   "raw-byte-literal":              1,
   "raw-time-literal":              1,
   "ai-attribution":                1,
@@ -1481,6 +1482,28 @@ function testAllowMarkersAreRegistered() {
 //                        waitUntil-vs-setTimeout rule runs here)
 var KNOWN_ANTIPATTERNS = [
   {
+    // A format module decoding a value it read out of its own input -- an embedded OCTET
+    // STRING payload, an encapsulated protocol body -- through the bare codec rather than
+    // through pkix.decodeNested. Two things are lost that way. The caps the caller named at
+    // the door stop applying, so a caller asking for a stricter bound than the built-in
+    // default gets it at the root and nowhere else. And a resource refusal raised down here
+    // is not recorded on the parse budget, so any catch between it and the door can turn
+    // "over budget" into an ordinary absent value, which is the class that withdrew this
+    // feature once already.
+    //
+    // Scoped to the format modules: schema-pkix owns decodeNested and the root decode, and
+    // schema-engine decodes below the format layer where no ctx is in hand.
+    id: "format-module-bare-nested-decode",
+    primitive: "pkix.decodeNested(bytes, ctx, label) -- it applies the door's caps and records a resource refusal on the parse budget, so an absorbed refusal still refuses at the door",
+    regex: /\basn1\.decode\s*\(/,
+    skipCommentLines: true,
+    onlyFiles: /^lib[\\/]schema-[a-z0-9]+\.js$/,
+    reportEvery: true,
+    allowClass: "bare-decode",
+    allowlist: [],
+    reason: "a nested decode through the bare codec ignores the caller's decode caps and leaves a resource refusal off the parse budget, so a catch between it and the door can read 'over budget' as an absent value and change a verdict",
+  },
+  {
     // The one test-discipline detector carried in the unified catalogue:
     // a fixed-budget setTimeout sleep used as a condition-wait in a test.
     id: "test-promise-settimeout-sleep",
@@ -1701,6 +1724,9 @@ function testKnownAntipatterns() {
     for (var fi = 0; fi < files.length; fi++) {
       var rel = _relPath(files[fi]);
       if (allowSet[rel]) continue;
+      // `onlyFiles` narrows a detector to the files whose layer the rule is about, so a rule
+      // that reads as a violation everywhere is not stated as one everywhere.
+      if (ap.onlyFiles && !ap.onlyFiles.test(rel)) continue;
       var content;
       try { content = fs.readFileSync(files[fi], "utf8"); }
       catch (_e) { continue; }
@@ -1711,12 +1737,26 @@ function testKnownAntipatterns() {
           return ln;
         }).join("\n");
       }
+      if (ap.requires && ap.requires.test(content)) continue;
+      // `reportEvery` lists every site rather than the first in each file. A detector whose
+      // fix is a per-site conversion is worked from its own output, and one line per file
+      // turns that into a re-run per site.
+      if (ap.reportEvery) {
+        var global = new RegExp(ap.regex.source, ap.regex.flags.indexOf("g") === -1 ? ap.regex.flags + "g" : ap.regex.flags);
+        var hit;
+        while ((hit = global.exec(subject)) !== null) {
+          bad.push({ file: rel, line: subject.slice(0, hit.index).split(/\r?\n/).length,
+            content: "antipattern '" + ap.id + "' — use " + ap.primitive });
+          if (hit.index === global.lastIndex) global.lastIndex += 1;
+        }
+        continue;
+      }
       var m = ap.regex.exec(subject);
       if (!m) continue;
-      if (ap.requires && ap.requires.test(content)) continue;
       var lineNum = subject.slice(0, m.index).split(/\r?\n/).length;
       bad.push({ file: rel, line: lineNum, content: "antipattern '" + ap.id + "' — use " + ap.primitive });
     }
+    if (ap.allowClass) bad = _filterMarkers(bad, ap.allowClass);
     if (bad.length) {
       allBad = allBad.concat(bad);
       _report("known-antipattern '" + ap.id + "' — use " + ap.primitive, bad);

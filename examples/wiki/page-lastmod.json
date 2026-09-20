@@ -97,7 +97,7 @@
   "lib/schema-crmf.js": "2026-09-20",
   "lib/schema-csr.js": "2026-09-20",
   "lib/schema-csrattrs.js": "2026-09-20",
-  "lib/schema-engine.js": "2026-09-06",
+  "lib/schema-engine.js": "2026-09-20",
   "lib/schema-ocsp.js": "2026-09-20",
   "lib/schema-pkcs12.js": "2026-09-20",
   "lib/schema-pkcs8.js": "2026-09-20",
