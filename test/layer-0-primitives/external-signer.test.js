@@ -254,6 +254,17 @@ async function testCallerObjectIsReadOnce() {
     await code(pki.x509.sign(rootSpec(pWrongHash.spki), { key: wrongHash })) === "x509/bad-input");
   check("and it is refused before the signer is asked to sign", wrongHash.calls === 0);
 
+  // The curve is the other member an ECDSA declaration carries, and it answers for a different key.
+  var wrongCurve = {
+    algorithm: { name: "ECDSA", namedCurve: "P-384", hash: { name: "SHA-256" } },
+    publicKey: pWrongHash.spki,
+    calls: 0,
+    sign: function (bytes) { wrongCurve.calls += 1; return subtle.sign({ name: "ECDSA", hash: "SHA-256" }, pWrongHash.pair.privateKey, bytes); },
+  };
+  check("a signer that declares a curve the certificate's key is not on is refused",
+    await code(pki.x509.sign(rootSpec(pWrongHash.spki), { key: wrongCurve })) === "x509/bad-input");
+  check("and it is refused before the signer is asked to sign", wrongCurve.calls === 0);
+
   // A nested field of the declared algorithm is read once too: the hash a scheme checks is the
   // hash that signs, and a getter cannot make those two different answers.
   var p = await p256Signer();
