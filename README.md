@@ -192,10 +192,18 @@ var ok  = await subtle.verify({ name: "ML-DSA-65" }, kp.publicKey, sig, data); /
 
 ### Sign with a key this process cannot export
 
-Every signing verb takes a signer object wherever it takes a private key, for a
-key held in a hardware security module, a cloud key management service, a PKCS#11
-token, a PIV slot or a Trusted Platform Module. The private half never reaches
-the toolkit.
+Every signing verb takes a `node:crypto` `KeyObject` wherever it takes a private
+key, and signs through `node:crypto`, so a key an OpenSSL engine or provider
+refuses to export still signs.
+
+```js
+var keyObject = crypto.createPrivateKey({ key: pem });
+var cert = await pki.x509.sign(spec, { key: keyObject, cert: caCert });
+```
+
+For a key that is not in this process at all, held in a hardware security module,
+a cloud key management service, a PKCS#11 token, a PIV slot or a Trusted Platform
+Module, every signing verb takes a signer object in the same place.
 
 ```js
 var signer = {

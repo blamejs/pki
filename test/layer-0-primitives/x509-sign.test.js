@@ -705,12 +705,18 @@ async function testCryptoKeySigningKey() {
     try { await pki.x509.sign({ subject: "x", subjectPublicKey: spki, notBefore: NB, notAfter: NA }, { key: kp.publicKey }); return false; }
     catch (e) { return e.code === "x509/bad-input" && /type "public"/.test(e.message) && /private key/.test(e.message); }
   })());
-  // refusal: a node:crypto KeyObject is not a WebCrypto CryptoKey -- refused precisely, naming it.
+  // A node:crypto KeyObject signs too, and is held to the same key the certificate names: one for
+  // a different key of the same algorithm is refused rather than producing an unverifiable cert.
   var ko = require("crypto").generateKeyPairSync("ed25519").privateKey;
-  check("Half A: a node KeyObject is refused, naming it not a CryptoKey", await (async function () {
+  check("Half A: a node KeyObject for a different key is refused", await (async function () {
     try { await pki.x509.sign({ subject: "x", subjectPublicKey: spki, notBefore: NB, notAfter: NA }, { key: ko }); return false; }
-    catch (e) { return e.code === "x509/bad-input" && /KeyObject/.test(e.message); }
+    catch (e) { return e.code === "x509/bad-input"; }
   })());
+  var koPair = require("crypto").generateKeyPairSync("ed25519");
+  var koSpki = koPair.publicKey.export({ format: "der", type: "spki" });
+  var koCert = await pki.x509.sign({ subject: "ko-leaf", subjectPublicKey: koSpki, notBefore: NB, notAfter: NA }, { key: koPair.privateKey });
+  check("Half A: x509.sign accepts a node:crypto KeyObject private key",
+    pki.schema.x509.parse(koCert).subject.dn === "CN=ko-leaf");
 }
 
 async function testInputForms() {
