@@ -54,6 +54,14 @@ function testCapsReachTheParser() {
       catch (e) { return e instanceof pki.errors.PkiError; }
     })());
   // A budget exhaustion is not handed to a caller as its own class: the door converts it.
+  // The door translates the codec's resource refusal once. A refusal that is already this door's
+  // own verdict is not wrapped again, or a caller reading `cause` for the cap that was exceeded
+  // finds another copy of the same verdict and has to go one level deeper for it.
+  check("a root cap refusal carries the codec's own refusal as its cause",
+    (function () {
+      try { pki.schema.x509.parse(CERT, { maxBytes: 10 }); return false; }
+      catch (e) { return e.cause != null && e.cause.code === "asn1/too-large"; }
+    })());
   check("a caller never sees a raw budget exhaustion",
     (function () {
       try { pki.schema.x509.parse(CERT, { maxBytes: 16 }); return false; }
@@ -202,6 +210,28 @@ function testRewrappedBudgetStillRefusesAsTooLarge() {
     (function () {
       try { pkix.runParse(der, factoryOpts(rewrappingSchema()), {}); return false; }
       catch (e) { return e.code === "probe/too-large" && e.cause != null && e.cause.code === "probe/bad-value"; }
+    })());
+
+  // A format that catches the trip and reports the door's OWN resource code has already given the
+  // caller the right verdict, so it travels unchanged and keeps the cause it was given. Wrapping
+  // it would put a second copy of the verdict where a caller looks for what was exceeded.
+  var ownCode = schema.seq([schema.field("n", schema.integerLeaf())], {
+    assert: "sequence", code: "probe/bad-shape", what: "Probe",
+    build: function (m, ctx) {
+      try {
+        ctx.budget.trip("a nested decode");
+      } catch (e) {
+        throw NS.E("probe/too-large", "the embedded value exceeds the budget", e);
+      }
+      return { reported: false };
+    },
+  });
+  check("a format that reports the door's own resource code is not wrapped again",
+    (function () {
+      try { pkix.runParse(der, factoryOpts(ownCode), {}); return false; }
+      catch (e) {
+        return e.code === "probe/too-large" && limits.isBudgetExceeded(e.cause) === true;
+      }
     })());
 
   // CONTROL: a domain error thrown with no budget trip behind it is reported as itself, so the
