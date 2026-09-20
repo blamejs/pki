@@ -4,6 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.5 — 2026-09-25
+
+A key this process cannot export can sign, and every verb that signs proves its signature first.
+
+### Added
+
+- A signer `{ algorithm, publicKey, sign }` is accepted wherever a signing verb takes a private key: `pki.x509.sign`, `pki.crl.sign`, `pki.csr.sign`, `pki.cms.sign` and its countersignatures, `pki.attrcert.sign`, `pki.cmp.build`, `pki.crmf.build`, `pki.ocsp.buildRequest`, `pki.ocsp.sign` and `pki.tsp.sign`. `sign(bytes)` is handed the bytes WebCrypto would be handed and returns the bytes WebCrypto would return, or a promise of them; for ECDSA that is the fixed-width `r || s` of RFC 9053 sec. 2.1, and a DER `SEQUENCE` is refused by name rather than encoded a second time. The private half never reaches the toolkit.
+- A signer's declared `algorithm` is held to the algorithm of the key the artifact certifies, and its declared `publicKey` to the key the signature is verified against, both before the callback is asked to sign. The caller's object is read once, in the synchronous prologue, so an accessor cannot answer one way to the check and another to the use. For an ECDSA key, whose curve is named but whose digest is chosen per signature, the digest the signer declares is checked on its own, before any remote signing request. The bytes the callback is handed are a copy in an allocation of its own, so a callback that rewrites them rewrites only its own copy and cannot reach the bytes the artifact carries. The bytes it returns are copied before use. Hold a client or any mutable state in the callback's closure: a signing verb snapshots its options, so the signer object the callback sees is a copy of the one you passed. A composite ML-DSA signature is refused by name, since it is produced from both component private keys and one callback cannot do that.
+
+### Fixed
+
+- `pki.ocsp.sign`, `pki.ocsp.buildRequest` and `pki.cms.sign`'s countersignature path verify the signature they produced against the public key the artifact declares, which the other signing verbs already did. A signer holding a key that does not match the certificate it signs under produced an OCSP response, an OCSP request or a countersignature that no relying party could validate, and the emitting side reported success.
+
 ## v0.8.4 — 2026-09-25
 
 A decode cap bounds every structure a parse reads, and a refusal caused by a cap is no longer reported as malformed input.

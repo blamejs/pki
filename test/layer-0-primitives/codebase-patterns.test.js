@@ -4086,6 +4086,31 @@ function testNoInstanceofArrayBuffer() {
   _report("no `instanceof ArrayBuffer` outside the guard family (ask guard.bytes.isByteSource / intrinsic.types.isArrayBuffer)", matches);
 }
 
+function testEverySigningFileProvesItsSignature() {
+  // class: signing-file-does-not-prove-its-signature
+  // A file that turns a private key into a signature must also prove that signature verifies against
+  // the public key the artifact it emits declares. The proof is what stands between a caller who
+  // passed the wrong key and an artifact nobody can validate, and it is load-bearing for the
+  // { algorithm, publicKey, sign } signer form, whose bytes come from outside the toolkit entirely.
+  // File scope rather than function scope on purpose: a consumer may bind the shared verifier under
+  // a local name, and the binding still names the export, so this survives the rename that a
+  // function-scoped check would go silently green on.
+  var signers = _scanLib(/\.signOverTbs\(/, { skipComments: true });
+  var files = [];
+  signers.forEach(function (m) { if (files.indexOf(m.file) === -1) files.push(m.file); });
+  var bad = [];
+  files.forEach(function (file) {
+    var src;
+    try { src = fs.readFileSync(path.join(LIB_ROOT, path.basename(file)), "utf8"); }
+    catch (_e) { return; }
+    // The builder's own export, not a local of a similar name: a local alias whose initializer
+    // stopped naming the export would otherwise keep this silent.
+    if (/\.assertSignatureVerifies\b/.test(src)) return;
+    bad.push({ file: file, line: 1, content: "signs with signOverTbs but never names assertSignatureVerifies, so nothing proves the signature it emits verifies against the key the artifact declares" });
+  });
+  _report("every lib file that signs proves its signature against the key it declares", bad);
+}
+
 function testNoPartialByteAcceptance() {
   // class: partial-byte-source-acceptance
   // A byte-INPUT door that admits only the two forms `Buffer.isBuffer(x) || x instanceof Uint8Array` (or the
@@ -4177,6 +4202,7 @@ function run() {
   testLibRegexHitsLexing();
   testNoInstanceofArrayBuffer();
   testNoPartialByteAcceptance();
+  testEverySigningFileProvesItsSignature();
   testNoDuplicateCodeBlocks();
 
   // Cumulative gate — every detector is hard.

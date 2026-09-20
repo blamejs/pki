@@ -190,6 +190,33 @@ var ok  = await subtle.verify({ name: "ML-DSA-65" }, kp.publicKey, sig, data); /
 // same call shape, and every key it exports is OpenSSL/NSS-interoperable.
 ```
 
+### Sign with a key this process cannot export
+
+Every signing verb takes a signer object wherever it takes a private key, for a
+key held in a hardware security module, a cloud key management service, a PKCS#11
+token, a PIV slot or a Trusted Platform Module. The private half never reaches
+the toolkit.
+
+```js
+var signer = {
+  algorithm: { name: "ECDSA", namedCurve: "P-256", hash: { name: "SHA-256" } },
+  publicKey: spkiDer,                       // the SPKI DER of the public half
+  sign: function (bytes) { return kms.sign(keyId, bytes); },   // bytes or a promise of them
+};
+
+var cert = await pki.x509.sign(spec, { key: signer, cert: caCert });
+```
+
+`sign(bytes)` is handed the bytes WebCrypto would be handed and returns the bytes
+WebCrypto would return: for ECDSA the fixed-width `r || s` of RFC 9053 §2.1, not a
+DER `SEQUENCE`. `algorithm` is held to the certificate's key algorithm, `publicKey`
+is held to the key the signature is verified against, and the signature is
+verified before the artifact is returned. The bytes handed to the callback are a
+copy, so rewriting them rewrites nothing the artifact carries. Hold the client and
+any mutable state in the callback's closure, as the example does: a signing verb
+snapshots its options, so the signer object the callback sees is a copy of the one
+you passed.
+
 ## What ships today
 
 Everything below is callable now; nothing is a stub. The whole documented
