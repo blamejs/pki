@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.8.3",
+  "packageVersion": "0.8.4",
   "surface": {
     "C": {
       "kind": "object",
@@ -3193,6 +3193,10 @@
               "kind": "function",
               "arity": 2
             },
+            "decodeNested": {
+              "kind": "function",
+              "arity": 4
+            },
             "embeddedDer": {
               "kind": "function",
               "arity": 4
@@ -3253,6 +3257,10 @@
               "kind": "function",
               "arity": 2
             },
+            "isResourceRefusal": {
+              "kind": "function",
+              "arity": 1
+            },
             "isUniversal": {
               "kind": "function",
               "arity": 2
@@ -3300,6 +3308,10 @@
             "walk": {
               "kind": "function",
               "arity": 3
+            },
+            "withResources": {
+              "kind": "function",
+              "arity": 2
             }
           }
         },

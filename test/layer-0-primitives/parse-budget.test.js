@@ -26,7 +26,9 @@ var b = pki.asn1.build;
 
 function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return (e && e.code) || e.name; } }
 
-var ProbeError = errors.defineClass("ProbeError");
+// Every shipped format error class is defined with a cause, so the probe class is too: a door
+// that threads the absorbed failure onto its refusal must be driven against the same shape.
+var ProbeError = errors.defineClass("ProbeError", { withCause: true });
 var NS = pkix.makeNS("probe", ProbeError, pki.oid);
 
 // A real certificate is the shipped consumer path for the door vectors.
@@ -52,6 +54,14 @@ function testCapsReachTheParser() {
       catch (e) { return e instanceof pki.errors.PkiError; }
     })());
   // A budget exhaustion is not handed to a caller as its own class: the door converts it.
+  // The door translates the codec's resource refusal once. A refusal that is already this door's
+  // own verdict is not wrapped again, or a caller reading `cause` for the cap that was exceeded
+  // finds another copy of the same verdict and has to go one level deeper for it.
+  check("a root cap refusal carries the codec's own refusal as its cause",
+    (function () {
+      try { pki.schema.x509.parse(CERT, { maxBytes: 10 }); return false; }
+      catch (e) { return e.cause != null && e.cause.code === "asn1/too-large"; }
+    })());
   check("a caller never sees a raw budget exhaustion",
     (function () {
       try { pki.schema.x509.parse(CERT, { maxBytes: 16 }); return false; }
@@ -165,6 +175,113 @@ function testSwallowedBudgetStillRefuses() {
     pkix.runParse(der, factoryOpts(quiet), {}).absorbed === false);
 }
 
+// ---- the door re-read: re-throwing a domain error changes nothing either ---
+function testRewrappedBudgetStillRefusesAsTooLarge() {
+  // Every format module wraps a nested decode failure in its own typed error: `catch (e) {
+  // throw NS.E("<fmt>/bad-<thing>", "...", e) }`. That is the second way a catch can hide a
+  // resource refusal, and it is the common one: the door sees a well-formed domain error and
+  // would otherwise report "this value is malformed" for input that was only over budget.
+  function rewrappingSchema() {
+    return schema.seq([schema.field("n", schema.integerLeaf())], {
+      assert: "sequence", code: "probe/bad-shape", what: "Probe",
+      build: function (m, ctx) {
+        try {
+          ctx.budget.trip("a nested decode");
+        } catch (e) {
+          throw NS.E("probe/bad-value", "the embedded value is malformed", e);
+        }
+        return { rewrapped: false };
+      },
+    });
+  }
+
+  var der = b.sequence([b.integer(1n)]);
+
+  // CONTROL: driven with no door above it, the schema really does report its own domain code,
+  // so the door assertion below is about the door and not about the schema.
+  var directNs = { prefix: "probe", E: NS.E, oid: pki.oid, budget: limits.budget({ maxBytes: 10 }) };
+  check("CONTROL: the rewrapping schema reports its own domain code on its own",
+    code(function () { schema.walk(rewrappingSchema(), pki.asn1.decode(der), directNs); }) === "probe/bad-value");
+  check("CONTROL: and the budget it tripped is latched", directNs.budget.exhausted() === true);
+
+  check("a budget exhaustion rewrapped as a domain error still refuses at the door",
+    code(function () { pkix.runParse(der, factoryOpts(rewrappingSchema()), {}); }) === "probe/too-large");
+  check("and the rewrapped domain error is kept as the cause",
+    (function () {
+      try { pkix.runParse(der, factoryOpts(rewrappingSchema()), {}); return false; }
+      catch (e) { return e.code === "probe/too-large" && e.cause != null && e.cause.code === "probe/bad-value"; }
+    })());
+
+  // A format that catches the trip and reports the door's OWN resource code has already given the
+  // caller the right verdict, so it travels unchanged and keeps the cause it was given. Wrapping
+  // it would put a second copy of the verdict where a caller looks for what was exceeded.
+  var ownCode = schema.seq([schema.field("n", schema.integerLeaf())], {
+    assert: "sequence", code: "probe/bad-shape", what: "Probe",
+    build: function (m, ctx) {
+      try {
+        ctx.budget.trip("a nested decode");
+      } catch (e) {
+        throw NS.E("probe/too-large", "the embedded value exceeds the budget", e);
+      }
+      return { reported: false };
+    },
+  });
+  check("a format that reports the door's own resource code is not wrapped again",
+    (function () {
+      try { pkix.runParse(der, factoryOpts(ownCode), {}); return false; }
+      catch (e) {
+        return e.code === "probe/too-large" && limits.isBudgetExceeded(e.cause) === true;
+      }
+    })());
+
+  // CONTROL: a domain error thrown with no budget trip behind it is reported as itself, so the
+  // door is reading the latch rather than relabeling every failure.
+  var plain = schema.seq([schema.field("n", schema.integerLeaf())], {
+    assert: "sequence", code: "probe/bad-shape", what: "Probe",
+    build: function () { throw NS.E("probe/bad-value", "the embedded value is malformed"); },
+  });
+  check("CONTROL: a domain error with no budget trip behind it keeps its own code",
+    code(function () { pkix.runParse(der, factoryOpts(plain), {}); }) === "probe/bad-value");
+}
+
+// ---- the caps reach a decode of bytes the root decode never walked --------
+function testEmbeddedPayloadTakesTheCallersCaps() {
+  // The root decode stops at an OCTET STRING, so the structure inside it is decoded separately
+  // and restarts depth and item counting from zero. That second decode is where a cap the caller
+  // named used to go missing, and it is the decode every format performs on an embedded payload
+  // or an encapsulated body.
+  var INNERMOST = schema.seq([schema.field("n", schema.integerLeaf())], {
+    assert: "sequence", code: "probe/bad-innermost", what: "Innermost",
+    build: function (m) { return { n: m.fields.n.value }; },
+  });
+  var INNER = schema.seq([schema.field("inner", INNERMOST)], {
+    assert: "sequence", code: "probe/bad-inner", what: "Inner",
+    build: function (m) { return m.fields.inner.value.result; },
+  });
+  var OUTER = schema.seq([schema.field("payload", schema.octetString())], {
+    assert: "sequence", code: "probe/bad-shape", what: "Outer",
+    build: function (m, ctx) {
+      return schema.embeddedDer(INNER, m.fields.payload.value, ctx,
+        { code: "probe/bad-embedded", what: "the embedded structure" });
+    },
+  });
+
+  // The payload nests one level deeper than the envelope that carries it: SEQUENCE { SEQUENCE {
+  // INTEGER } } inside an OCTET STRING inside a SEQUENCE. maxDepth 1 admits the envelope and
+  // refuses the payload, which is measured by the two controls rather than assumed.
+  var der = b.sequence([b.octetString(b.sequence([b.sequence([b.integer(1n)])]))]);
+  var opts = factoryOpts(OUTER);
+
+  check("CONTROL: the envelope and its payload parse with no caps",
+    pkix.runParse(der, opts, {}).result.n === 1n);
+  check("CONTROL: the envelope alone decodes under the tight cap, so the refusal below is the payload",
+    pki.asn1.decode(der, { maxDepth: 1 }).children.length === 1);
+  check("a cap the envelope satisfies still refuses the payload that exceeds it",
+    code(function () { pkix.runParse(der, opts, { maxDepth: 1 }); }) === "probe/too-large");
+  check("CONTROL: a cap the payload satisfies parses through the same door",
+    pkix.runParse(der, opts, { maxDepth: 2 }).result.n === 1n);
+}
+
 // ---- the budget reaches a parse through every door shape ------------------
 function testEveryDoorShapeCarriesTheOptions() {
   // A recording parser wraps the plain one to record provenance. The earlier attempt lost the
@@ -190,6 +307,7 @@ function testEveryDoorShapeCarriesTheOptions() {
     return doors;
   }
 
+  // Under a cap below the input, every door refuses for that reason.
   var tiny = { maxBytes: 8 };
   var dropped = [];
   everyParseDoor().forEach(function (row) {
@@ -198,6 +316,24 @@ function testEveryDoorShapeCarriesTheOptions() {
     catch (e) { got = (e && e.code) || e.name; }
     if (got.indexOf("/too-large") === -1) dropped.push(row[0] + " -> " + got);
   });
+
+  // The control that assertion needs, per route. A door that refused everything with
+  // `/too-large` would satisfy it while being useless, so each door must also reach the SAME
+  // verdict under a generous cap as it does with no options at all. Most of these read a
+  // structure a certificate is not, so the shared verdict is usually their own refusal; what
+  // matters is that naming a generous cap changed nothing.
+  var generous = { maxBytes: pki.C.LIMITS.DER_MAX_BYTES, maxDepth: pki.C.LIMITS.DER_MAX_DEPTH };
+  var perturbed = [];
+  everyParseDoor().forEach(function (row) {
+    function verdict(opts) {
+      try { row[1](CERT, opts); return "NO-THROW"; }
+      catch (e) { return (e && e.code) || e.name; }
+    }
+    var bare = verdict(undefined);
+    var withCaps = verdict(generous);
+    if (bare !== withCaps) perturbed.push(row[0] + ": " + bare + " -> " + withCaps);
+  });
+  check("a generous cap changes no door's verdict (" + perturbed.join("; ") + ")", perturbed.length === 0);
   check("every schema parse door applies a cap the caller named (" + dropped.join("; ") + ")",
     dropped.length === 0);
 
@@ -266,6 +402,8 @@ function run() {
   testOptionSurface();
   testCapsDoNotChangeAcceptance();
   testSwallowedBudgetStillRefuses();
+  testRewrappedBudgetStillRefusesAsTooLarge();
+  testEmbeddedPayloadTakesTheCallersCaps();
   testEveryDoorShapeCarriesTheOptions();
   testDelegatingDoorsOwnTheirOptions();
 }

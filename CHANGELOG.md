@@ -4,6 +4,25 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.4 — 2026-09-25
+
+A decode cap bounds every structure a parse reads, and a refusal caused by a cap is no longer reported as malformed input.
+
+### Added
+
+- `pki.schema.engine.decodeNested(bytes, ctx, label, opts?)`, the decode to perform on a value already read out of a parse's input. It applies the caps carried on the walk context and records a resource refusal against the parse before re-throwing, which is what a format parser composed on the engine needs so its embedded payloads answer to the caller's caps.
+- `pki.schema.engine.withResources(ns, source)` carries a parse's caps and budget onto another namespace, for a format whose structure is carried inside another one. The structure is still walked in its own namespace, so a fault in it keeps that format's error class and code. `pki.schema.engine.isResourceRefusal(err)` reports whether a codec error was a limit rather than a claim about the bytes.
+
+### Changed
+
+- An input refused for exceeding a decode limit reports `<format>/too-large` in cases where it previously reported the format's own malformed-value code, such as `cms/bad-aead-params` or `cmp/bad-body`. A parser that decodes a value out of its input wraps a decode failure in a code of its own, and that code sent a reader to inspect bytes that were fine and a cap that was too small. A caller matching on one of those codes to detect malformed input will stop seeing over-budget inputs under it. The wrapped error is carried on the refusal as its `cause`.
+
+### Fixed
+
+- A decode cap bounds every structure a parse reads, not the input alone. An embedded `OCTET STRING` payload, an encapsulated protocol body, a `SafeContents` inside a PKCS#12 store and an attribute value are all decoded under the caps the caller named. The 0.8.3 notes recorded that a structure decoded from inside the input kept the built-in `pki.C.LIMITS` defaults; it no longer does.
+- `pki.schema.cmc.parse` applies the caller's caps to the `PKIData` or `PKIResponse` body. It read the caps, bounded the CMS carrier with them, and then decoded the body that carries the request or response with the built-in defaults.
+- A parse cannot return a result after a decode limit has refused something inside that parse, whatever the code between the two does with the failure. A parser that catches a resource refusal and re-throws its own typed error is the common shape, and that shape previously carried the parse past the latch the budget sets. The door now reads the latch on the failure path as well as on the success path.
+
 ## v0.8.3 — 2026-09-25
 
 A parser takes decode caps from its caller, and a resource refusal says so instead of reading as malformed input.

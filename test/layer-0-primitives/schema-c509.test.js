@@ -1661,6 +1661,46 @@ async function run() {
     check("342." + String.fromCharCode(97 + i) + " a type-3 may still carry " + g[0],
       codeSync(function () { var o = {}; o[g[1]] = g[2]; return pki.schema.c509.parse(V.mk(o)); }) !== "c509/non-specific-encoding");
   });
+  // A generic extension value is opaque DER inside the CBOR, so reading it is a second decode that
+  // restarts node counting. The caps named at this door reach it, and the probe that reads it
+  // absorbs a failure by returning null, so the refusal has to survive that absorption.
+  var wideInts = [];
+  for (var wi = 0; wi < 200; wi++) wideInts.push(b.integer(BigInt(wi)));
+  var wideDer = b.sequence(wideInts);
+  var wideExt = type2WithExts(CBb2.array([
+    CBb2.byteString(pki.asn1.encodeOidContent("2.5.29.14")), CBb2.byteString(wideDer),
+  ]).toString("hex"));
+  function cborItems(der) {
+    var n = 0;
+    (function walkNode(node) { n += 1; (node.children || []).forEach(walkNode); })(pki.cbor.decode(der));
+    return n;
+  }
+  var wideCborItems = cborItems(wideExt);
+  check("343a. CONTROL: the CBOR carrier counts fewer items than the DER extension value",
+    wideCborItems < 201);
+  check("343a. CONTROL: the certificate parses with no caps",
+    codeSync(function () { return pki.schema.c509.parse(wideExt); }) === "NO-THROW");
+  check("343a. a cap the CBOR carrier satisfies still refuses the extension value that exceeds it",
+    codeSync(function () { return pki.schema.c509.parse(wideExt, { maxItems: 100 }); }) === "c509/too-large");
+  check("343a. CONTROL: a cap the extension value satisfies parses through the same door",
+    codeSync(function () { return pki.schema.c509.parse(wideExt, { maxItems: 400 }); }) === "NO-THROW");
+
+  // The refusal survives a later fault too: a certificate that is also malformed after the
+  // extension reports the cap that was exceeded, not the malformation, because the one is
+  // answered by raising the cap and the other by fixing the bytes.
+  var wideAndBad = (function () {
+    var g = t2Fields.slice();
+    g[9] = CBb2.array([
+      CBb2.byteString(pki.asn1.encodeOidContent("2.5.29.14")), CBb2.byteString(wideDer),
+    ]).toString("hex");
+    g[10] = CBb2.int(1n).toString("hex");
+    return Buffer.from("8b" + g.join(""), "hex");
+  })();
+  check("343b. CONTROL: the malformed signature is the verdict when no cap was exceeded",
+    codeSync(function () { return pki.schema.c509.parse(wideAndBad); }) === "c509/bad-signature");
+  check("343b. an exceeded cap is the verdict even when a later field is malformed",
+    codeSync(function () { return pki.schema.c509.parse(wideAndBad, { maxItems: 100 }); }) === "c509/too-large");
+
   // The rule names the VALUE, not the form. Two ways it must not overreach: an algorithm with no
   // registry row has only the generic spelling, and a registry OID carrying parameters the row does
   // not name is a different value that no int can express.

@@ -131,7 +131,7 @@ function timeStampResp(o) {
 
 function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return (e && e.code) || ("RAW:" + (e && e.constructor && e.constructor.name)); } }
 function tstCode(der) { return code(function () { pki.schema.tsp.parseTstInfo(der); }); }
-function respCode(der) { return code(function () { pki.schema.tsp.parse(der); }); }
+function respCode(der, caps) { return code(function () { pki.schema.tsp.parse(der, caps); }); }
 function tokenCode(der) { return code(function () { pki.schema.tsp.parseToken(der); }); }
 
 // ---- ACCEPT — TSTInfo ------------------------------------------------
@@ -269,6 +269,45 @@ function testToken() {
   check("44. token accept: single signerInfo surfaced", parsed.signerInfo && Array.isArray(parsed.certificates));
   // 44a. the raw eContent (verification feed for the CMS message-digest) is byte-exact.
   check("44a. raw eContent surfaced byte-exact", Buffer.isBuffer(parsed.eContent) && parsed.eContent.equals(tstDer));
+  // The TSTInfo is decoded out of the eContent the CMS layer hands back, so its decode restarts
+  // node counting from zero and takes the caller's caps the way the carrier does. The carrier
+  // here counts far fewer nodes than the TSTInfo, because the root decode stops at the eContent
+  // OCTET STRING; the controls measure that rather than assume it.
+  function nodeCount(node) {
+    var n = 1;
+    (node.children || []).forEach(function (kid) { n += nodeCount(kid); });
+    return n;
+  }
+  var manyExts = [];
+  for (var xi = 1; xi <= 40; xi++) {
+    manyExts.push(extension("1.3.6.1.4.1.4." + xi, b.octetString(b.sequence([b.integer(BigInt(xi))]))));
+  }
+  var richTst = tstInfo({ extensions: manyExts });
+  var richTk = timeStampToken(richTst);
+  var carrierNodes = nodeCount(pki.asn1.decode(richTk));
+  var tstNodes = nodeCount(pki.asn1.decode(richTst));
+  check("48a. CONTROL: the carrier counts fewer nodes than the TSTInfo inside it",
+        carrierNodes < tstNodes);
+  check("48a. CONTROL: the token parses with no caps", pki.schema.tsp.parseToken(richTk).tstInfo.version === 1);
+  check("48a. CONTROL: the carrier alone decodes under a cap between the two counts",
+        pki.asn1.decode(richTk, { maxItems: tstNodes - 1 }).children.length === 2);
+  check("48a. a cap the carrier satisfies still refuses the TSTInfo that exceeds it",
+        code(function () { pki.schema.tsp.parseToken(richTk, { maxItems: tstNodes - 1 }); }) === "tsp/too-large");
+  check("48a. CONTROL: a cap the TSTInfo satisfies parses through the same door",
+        pki.schema.tsp.parseToken(richTk, { maxItems: tstNodes }).tstInfo.version === 1);
+
+  // A TimeStampResp carries a token, and the token carries a TSTInfo. A cap named at the response
+  // door reaches both, not just the response envelope.
+  var richResp = timeStampResp({ token: richTk });
+  check("48b. CONTROL: the response parses with no caps",
+        pki.schema.tsp.parse(richResp).timeStampToken.tstInfo.version === 1);
+  check("48b. CONTROL: the response envelope alone decodes under a cap between the two counts",
+        pki.asn1.decode(richResp, { maxItems: tstNodes - 1 }).children.length === 2);
+  check("48b. a cap the response satisfies still refuses the TSTInfo inside its token",
+        respCode(richResp, { maxItems: tstNodes - 1 }) === "tsp/too-large");
+  check("48b. CONTROL: a cap the TSTInfo satisfies parses through the same door",
+        pki.schema.tsp.parse(richResp, { maxItems: tstNodes }).timeStampToken.tstInfo.version === 1);
+
   check("45. wrong eContentType rejected", tokenCode(timeStampToken(tstInfo({}), { eContentType: ID_DATA })) === "tsp/wrong-econtent-type");
   check("46. detached token rejected", tokenCode(timeStampToken(tstInfo({}), { detached: true })) === "tsp/detached-token");
   check("47. multi-signer token rejected", tokenCode(timeStampToken(tstInfo({}), { signerCount: 2 })) === "tsp/multi-signer");
