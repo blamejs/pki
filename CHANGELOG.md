@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.9 — 2026-09-23
+
+The 0.8.9 tarball is the one to install for everything 0.8.8 added.
+
+### Changed
+
+- `npm install @blamejs/pki@0.8.8` resolves nothing; 0.8.9 is the published version carrying that surface. The two differ in one test file and nothing the tarball ships.
+
 ## v0.8.8 — 2026-09-23
 
 A key moves in and out in the encodings operators hold it in, and a PEM file is walked once from the front.
