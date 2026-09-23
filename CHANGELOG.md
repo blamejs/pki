@@ -4,6 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.10 — 2026-09-23
+
+A certificate's names are read the same way wherever the toolkit reads them.
+
+### Fixed
+
+- `pki.tsp.verify` reports `tsp/bad-eku` for an empty extendedKeyUsage. RFC 5280 section 4.2.1.12 has at least one KeyPurposeId, and an empty one decodes as a SEQUENCE, so a reader checking only the tag called it well-formed and reported it as naming the wrong purpose, `tsp/eku-not-exclusive`. Every other consumer of that extension already answered with the malformed-extension code.
+- The subjectAltName a timestamp token names its TSA through is read under the same rules every other consumer reads a name under, so a name this toolkit refuses elsewhere cannot be a source of TSA identity. The match itself is still a comparison of the encoded GeneralName bytes, which is what naming a TSA means: the name in the token and the name in the certificate have to be the same name.
+
+### Security
+
+- `pki.sigstore.verifyBundle` refuses a Fulcio certificate whose subjectAltName carries more than one name, whatever forms those names take. It counted only rfc822Name, dNSName, uniformResourceIdentifier and otherName, and dropped every other form before counting, so a certificate pairing a URI with an iPAddress or a directoryName was accepted as binding one identity. A caller identity policy matched the form the verifier reported and never saw the other, which is the outcome the one-identity rule exists to prevent. The rule now counts every name the extension carries. A certificate carrying a single name in a form with no identity string still reports `identity.san` as `null`, unchanged, so a policy gates on the null rather than on a name nothing read.
+
 ## v0.8.9 — 2026-09-23
 
 The 0.8.9 tarball is the one to install for everything 0.8.8 added.
