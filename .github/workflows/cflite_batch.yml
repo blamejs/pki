@@ -57,6 +57,7 @@ jobs:
           - smime-verify
           - smime-decrypt
           - pkix-ext-parse
+          - extension-table
           - crl-parse
           - csr-parse
           - pkcs8-parse

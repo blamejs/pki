@@ -3262,7 +3262,7 @@ function testGuardReadsRuntimeLive() {
     "lib/trust.js": 106,
     "lib/cms-sign.js": 60,
     "lib/webauthn-mds.js": 90,
-    "lib/attrcert-sign.js": 89,
+    "lib/attrcert-sign.js": 87,
     "lib/tsp-sign.js": 49,
     "lib/http-digest.js": 73,
     "lib/pkcs12-build.js": 63,
@@ -3278,7 +3278,7 @@ function testGuardReadsRuntimeLive() {
     "lib/x509-sign.js": 26,
     "lib/schema-attrcert.js": 26,
     "lib/tls-cert-compress.js": 18,
-    "lib/schema-crl.js": 10,
+    "lib/schema-crl.js": 7,
     "lib/schema-ocsp.js": 9,
   };
   var counts = {};

@@ -2100,9 +2100,23 @@ async function run() {
     f.push(vB.octetString(value));
     return vB.sequence(f);
   }
+  // Hand-built rather than signed through pki.x509.sign: most of these fixtures carry an RFC 3779
+  // value that is not the structure its identifier names, which is the input the C509 encoder's
+  // fallback exists for, and the signer validates a pre-encoded extension through the shared
+  // decoder and refuses it. The signature is real, because the encoder reads its curve.
+  var nodeCrypto = require("node:crypto");
+  function r3779Cert(extDer) {
+    var alg = vB.sequence([vB.oid(vO("ecdsaWithSHA256"))]);
+    var name = vB.sequence([vB.set([vB.sequence([vB.oid(vO("commonName")), vB.printable("rfc3779")])])]);
+    var tbs = vB.sequence([
+      vB.explicit(0, vB.integer(2n)), vB.integer(0x77n), alg, name,
+      vB.sequence([vB.utcTime(new Date("2026-01-01T00:00:00Z")), vB.utcTime(new Date("2027-01-01T00:00:00Z"))]),
+      name, vB.raw(vk.spki), vB.explicit(3, vB.sequence([extDer])),
+    ]);
+    return vB.sequence([tbs, alg, vB.bitString(nodeCrypto.sign("sha256", tbs, vk.keyObject), 0)]);
+  }
   async function r3779Enc(extDer) {
-    var der = Buffer.from(await pki.x509.sign({ subject: [{ commonName: "rfc3779" }], subjectPublicKey: vk.spki,
-      notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"), extensions: [extDer] }, { key: vk.key }));
+    var der = r3779Cert(extDer);
     var enc = pki.schema.c509.encode(der);
     var kids = pki.cbor.decode(enc).children[9].children;
     return { der: der, enc: enc, id: kids[0], val: kids[1],

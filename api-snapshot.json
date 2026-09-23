@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.8.10",
+  "packageVersion": "0.8.11",
   "surface": {
     "C": {
       "kind": "object",
@@ -289,6 +289,17 @@
         "NAMES": {
           "kind": "object",
           "members": {
+            "ADDRESS_FAMILY": {
+              "kind": "object",
+              "members": {
+                "1": {
+                  "kind": "string"
+                },
+                "2": {
+                  "kind": "string"
+                }
+              }
+            },
             "ALGORITHM": {
               "kind": "object",
               "members": {
@@ -735,6 +746,17 @@
                   "kind": "string"
                 },
                 "8": {
+                  "kind": "string"
+                }
+              }
+            },
+            "TLS_FEATURE": {
+              "kind": "object",
+              "members": {
+                "5": {
+                  "kind": "string"
+                },
+                "17": {
                   "kind": "string"
                 }
               }
@@ -1722,6 +1744,17 @@
         "NAMES": {
           "kind": "object",
           "members": {
+            "ADDRESS_FAMILY": {
+              "kind": "object",
+              "members": {
+                "1": {
+                  "kind": "string"
+                },
+                "2": {
+                  "kind": "string"
+                }
+              }
+            },
             "ALGORITHM": {
               "kind": "object",
               "members": {
@@ -2168,6 +2201,17 @@
                   "kind": "string"
                 },
                 "8": {
+                  "kind": "string"
+                }
+              }
+            },
+            "TLS_FEATURE": {
+              "kind": "object",
+              "members": {
+                "5": {
+                  "kind": "string"
+                },
+                "17": {
                   "kind": "string"
                 }
               }
@@ -2751,7 +2795,7 @@
         },
         "renderedExtensions": {
           "kind": "array",
-          "length": 26
+          "length": 31
         }
       }
     },
@@ -3136,6 +3180,14 @@
         "attrcert": {
           "kind": "object",
           "members": {
+            "decodeExtension": {
+              "kind": "function",
+              "arity": 2
+            },
+            "decodeExtensions": {
+              "kind": "function",
+              "arity": 2
+            },
             "parse": {
               "kind": "function",
               "arity": 2
@@ -3217,6 +3269,14 @@
         "crl": {
           "kind": "object",
           "members": {
+            "decodeExtension": {
+              "kind": "function",
+              "arity": 2
+            },
+            "decodeExtensions": {
+              "kind": "function",
+              "arity": 2
+            },
             "parse": {
               "kind": "function",
               "arity": 2
@@ -3234,6 +3294,14 @@
         "crmf": {
           "kind": "object",
           "members": {
+            "decodeExtension": {
+              "kind": "function",
+              "arity": 2
+            },
+            "decodeExtensions": {
+              "kind": "function",
+              "arity": 2
+            },
             "parse": {
               "kind": "function",
               "arity": 2
@@ -3251,6 +3319,14 @@
         "csr": {
           "kind": "object",
           "members": {
+            "decodeExtension": {
+              "kind": "function",
+              "arity": 2
+            },
+            "decodeExtensions": {
+              "kind": "function",
+              "arity": 2
+            },
             "parse": {
               "kind": "function",
               "arity": 2
@@ -3618,6 +3694,14 @@
         "x509": {
           "kind": "object",
           "members": {
+            "decodeExtension": {
+              "kind": "function",
+              "arity": 2
+            },
+            "decodeExtensions": {
+              "kind": "function",
+              "arity": 2
+            },
             "parse": {
               "kind": "function",
               "arity": 2
@@ -4039,6 +4123,8 @@
     "pki.schema.attrcert.parse": "0.1.14",
     "pki.schema.attrcert.pemDecode": "0.1.14",
     "pki.schema.attrcert.pemEncode": "0.1.23",
+    "pki.schema.attrcert.decodeExtensions": "0.8.11",
+    "pki.schema.attrcert.decodeExtension": "0.8.11",
     "pki.schema.c509.parse": "0.2.30",
     "pki.schema.c509.encode": "0.3.4",
     "pki.schema.cmc.parsePkiData": "0.4.16",
@@ -4053,12 +4139,18 @@
     "pki.schema.crl.parse": "0.1.7",
     "pki.schema.crl.pemDecode": "0.1.7",
     "pki.schema.crl.pemEncode": "0.1.23",
+    "pki.schema.crl.decodeExtensions": "0.8.11",
+    "pki.schema.crl.decodeExtension": "0.8.11",
     "pki.schema.crmf.parse": "0.1.17",
     "pki.schema.crmf.pemDecode": "0.1.17",
     "pki.schema.crmf.pemEncode": "0.1.23",
+    "pki.schema.crmf.decodeExtensions": "0.8.11",
+    "pki.schema.crmf.decodeExtension": "0.8.11",
     "pki.schema.csr.parse": "0.1.8",
     "pki.schema.csr.pemDecode": "0.1.8",
     "pki.schema.csr.pemEncode": "0.1.8",
+    "pki.schema.csr.decodeExtensions": "0.8.11",
+    "pki.schema.csr.decodeExtension": "0.8.11",
     "pki.schema.csrattrs.parse": "0.1.24",
     "pki.schema.engine.walk": "0.1.7",
     "pki.schema.engine.encode": "0.1.17",
@@ -4093,6 +4185,8 @@
     "pki.schema.x509.pemDecode": "0.1.7",
     "pki.schema.x509.pemEncode": "0.1.7",
     "pki.schema.x509.parse": "0.1.7",
+    "pki.schema.x509.decodeExtensions": "0.8.11",
+    "pki.schema.x509.decodeExtension": "0.8.11",
     "pki.shbs.verify": "0.2.1",
     "pki.shbs.verifyLms": "0.2.1",
     "pki.sigstore.pae": "0.2.3",

@@ -199,14 +199,16 @@ async function run() {
   check("a certificate extension entry with no Buffer value is refused",
     guard.isCert(cert({ extensions: [{ oid: "2.5.29.15", name: "keyUsage", critical: false }] })) === false);
   // A CRL's known extension values are DECODED by its parser (cRLNumber is a BigInt,
-  // reasonCode a Number), so only presence can be asserted there -- but the dispatch
-  // key is the same and it is the part that decides anything.
+  // reasonCode a Number), so only presence can be asserted for `value` -- but the record also
+  // carries the raw octets the decoded value came from, and those are required as a Buffer.
   check("a CRL extension entry carrying a decoded value is accepted",
-    guard.isCrl(crl({ crlExtensions: [{ oid: "2.5.29.20", name: "cRLNumber", critical: false, value: 5n }] })) === true);
+    guard.isCrl(crl({ crlExtensions: [{ oid: "2.5.29.20", name: "cRLNumber", critical: false, value: 5n, valueBytes: Z }] })) === true);
   check("a CRL extension entry with no oid is refused",
-    guard.isCrl(crl({ crlExtensions: [{ name: "cRLNumber", critical: false, value: 5n }] })) === false);
+    guard.isCrl(crl({ crlExtensions: [{ name: "cRLNumber", critical: false, value: 5n, valueBytes: Z }] })) === false);
   check("a CRL extension entry with no value at all is refused",
-    guard.isCrl(crl({ crlExtensions: [{ oid: "2.5.29.20", name: "cRLNumber", critical: false }] })) === false);
+    guard.isCrl(crl({ crlExtensions: [{ oid: "2.5.29.20", name: "cRLNumber", critical: false, valueBytes: Z }] })) === false);
+  check("a CRL extension entry with no raw valueBytes is refused",
+    guard.isCrl(crl({ crlExtensions: [{ oid: "2.5.29.20", name: "cRLNumber", critical: false, value: 5n }] })) === false);
 
   // ---- accept(): the three input classes --------------------------------------
   var parseCalls = 0;
