@@ -6845,7 +6845,7 @@ async function testFetchingCheckerEdges() {
   // The flag says this transport filters the address it resolved. A value it merely inherits was
   // not declared by whoever wrote the transport, and in a process carrying a prototype-pollution
   // primitive that is the difference between refusing a hostname and opening it.
-  var plainFn = function () { return Promise.resolve(ok200(cleanCrl, "application/pkix-crl")); };
+  var plainFn = function (_req) { return Promise.resolve(ok200(cleanCrl, "application/pkix-crl")); };
   var pollutedCalls = 0, restoredFnProto;
   var countingFn = function (req) { pollutedCalls += 1; return plainFn(req); };
   var leafNamedHost = await mkCert({ subject: "NamedHostEdge", issuer: "Root", signWith: "ed25519",

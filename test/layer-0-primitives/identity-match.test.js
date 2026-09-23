@@ -148,6 +148,9 @@ async function testIpId() {
 
   // The length that was checked is the length that is compared: the snapshot is taken at the
   // door, so a buffer that shrinks afterwards cannot make the comparison read what it did not.
+  // `maxByteLength` is the second argument of the ES2024 resizable-ArrayBuffer constructor and is
+  // what makes the `resize` below legal; a static analyzer holding the one-argument signature
+  // reports it as a superfluous argument, which is the analyzer's signature and not this code's.
   var rab = new ArrayBuffer(16, { maxByteLength: 16 });
   var view = new Uint8Array(rab);
   view.set(v6);
