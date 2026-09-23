@@ -474,6 +474,13 @@ async function testTspCoverage() {
   // an EKU extnValue that is not decodable DER at all (a truncated TLV) -> the decode catch, fail closed.
   var truncEkuTsa = makeTsa(extDer(pki.oid.byName("extKeyUsage"), true, Buffer.from([0x30, 0x05])));
   check("non-DER EKU value -> tsp/bad-eku", (await pki.tsp.verify(await signToken(truncEkuTsa), DATA, {})).code === "tsp/bad-eku");
+  // An EMPTY ExtKeyUsage is malformed: RFC 5280 sec. 4.2.1.12 has at least one KeyPurposeId. It
+  // decodes as a SEQUENCE, so a reader that only checks the tag calls it well-formed and reports
+  // it as the wrong purpose rather than as a bad extension -- a different code for the same class
+  // of fault than every other consumer of this extension gives.
+  var emptyEkuTsa = makeTsa(extDer(pki.oid.byName("extKeyUsage"), true, Buffer.from([0x30, 0x00])));
+  check("empty EKU value -> tsp/bad-eku, not a purpose complaint",
+    (await pki.tsp.verify(await signToken(emptyEkuTsa), DATA, {})).code === "tsp/bad-eku");
   // a keyUsage extension whose value is not a decodable BIT STRING -> the keyUsage decode catch.
   var badKuTsa = makeTsa([ekuExt([TS_EKU], true), extDer(pki.oid.byName("keyUsage"), false, Buffer.from([0x03, 0x05]))]);
   check("malformed keyUsage value -> tsp/bad-key-usage", (await pki.tsp.verify(await signToken(badKuTsa), DATA, {})).code === "tsp/bad-key-usage");

@@ -961,6 +961,46 @@ async function run() {
   check("synthetic multi-identity SAN -> sigstore/bad-certificate",
     await codeOf(pki.sigstore.verifyBundle(synMulti.bundle, synMulti.trust)) === "sigstore/bad-certificate");
 
+  // The one-identity rule has to count every GeneralName the SAN carries, not only the forms this
+  // reader turns into an identity string. A SAN pairing a recognized form with an unrecognized one
+  // binds two identities as surely as two URIs do, and a caller policy that matches the recognized
+  // one never sees the other.
+  var synMixed = buildSynBundle({ san: [gnUriDer("https://a/1"), B.contextPrimitive(7, Buffer.from([10, 0, 0, 1]))] });
+  check("synthetic SAN pairing a URI with an iPAddress -> sigstore/bad-certificate",
+    await codeOf(pki.sigstore.verifyBundle(synMixed.bundle, synMixed.trust)) === "sigstore/bad-certificate");
+  var synMixedDir = buildSynBundle({ san: [gnUriDer("https://a/1"),
+    B.contextConstructed(4, B.sequence([B.set([B.sequence([synOid("commonName"), B.utf8("dir")])])]))] });
+  check("synthetic SAN pairing a URI with a directoryName -> sigstore/bad-certificate",
+    await codeOf(pki.sigstore.verifyBundle(synMixedDir.bundle, synMixedDir.trust)) === "sigstore/bad-certificate");
+
+  // A SAN this toolkit refuses elsewhere does not verify here either. The refusal comes from the
+  // CHAIN leg rather than from the identity leg: pki.path.validate reads the certificate under the
+  // RFC 5280 sec. 4.2.1.6 rules and stops on a dNSName carrying a control byte (CVE-2009-2408
+  // class), an empty GeneralNames, or a zero-length name, so the identity leg is never reached.
+  // Pinned as the code it actually answers with rather than the one the identity leg would use:
+  // the property is that the bundle fails closed, and naming the wrong leg would hide it moving.
+  var NUL = String.fromCharCode(0);
+  var synNul = buildSynBundle({ san: [B.contextPrimitive(2, Buffer.from("a" + NUL + "b.example", "latin1"))] });
+  check("synthetic SAN dNSName carrying a NUL byte does not verify",
+    await codeOf(pki.sigstore.verifyBundle(synNul.bundle, synNul.trust)) === "sigstore/chain-invalid");
+  var synCr = buildSynBundle({ san: [B.contextPrimitive(2, Buffer.from("a" + String.fromCharCode(13) + "b.example", "latin1"))] });
+  check("synthetic SAN dNSName carrying a CR does not verify",
+    await codeOf(pki.sigstore.verifyBundle(synCr.bundle, synCr.trust)) === "sigstore/chain-invalid");
+  var synEmptyDns = buildSynBundle({ san: [B.contextPrimitive(2, Buffer.alloc(0))] });
+  check("synthetic SAN carrying a zero-length dNSName does not verify",
+    await codeOf(pki.sigstore.verifyBundle(synEmptyDns.bundle, synEmptyDns.trust)) === "sigstore/chain-invalid");
+  var synEmptySan = buildSynBundle({ san: [] });
+  check("synthetic empty SAN does not verify",
+    await codeOf(pki.sigstore.verifyBundle(synEmptySan.bundle, synEmptySan.trust)) === "sigstore/chain-invalid");
+
+  // CONTROL: the shapes this reader is meant to take still verify, so the rules above are the
+  // shared reader's and not a refusal of everything.
+  var synDnsOk = buildSynBundle({ san: [B.contextPrimitive(2, Buffer.from("build.example", "latin1"))] });
+  var svDns = await pki.sigstore.verifyBundle(synDnsOk.bundle, synDnsOk.trust);
+  check("CONTROL: a single well-formed dNSName still verifies and surfaces as the identity",
+    svDns && svDns.verified === true && svDns.identity.san.type === "dNSName" &&
+    svDns.identity.san.value === "build.example");
+
   // A SAN carrying only a directoryName (no rfc822/dNS/URI machine identity)
   // surfaces a null SAN rather than throwing; a caller identity policy still
   // gates against the null value.
