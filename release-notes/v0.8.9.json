@@ -1,0 +1,11 @@
+{
+  "version": "0.8.9",
+  "date": "2026-09-23",
+  "headline": "The 0.8.9 tarball is the one to install for everything 0.8.8 added.",
+  "summary": "0.8.9 carries the same `lib/` as 0.8.8. The 0.8.8 tarball was never published, so an operator upgrading from 0.8.7 installs 0.8.9 and reads the 0.8.8 entry below for what changed: the PKCS#1, SEC1 and JWK key encodings, the PEM bundle reader, RFC 9525 identity matching, the fetching revocation checker, and the option-door and transport hardening that came with them.",
+  "sections": {
+    "Changed": [
+      "`npm install @blamejs/pki@0.8.8` resolves nothing; 0.8.9 is the published version carrying that surface. The two differ in one test file and nothing the tarball ships."
+    ]
+  }
+}
