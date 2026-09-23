@@ -50,6 +50,7 @@ var cmp       = require("./lib/cmp-session");
 var crl       = require("./lib/crl-sign");
 var key       = require("./lib/key");
 var pkcs12    = require("./lib/pkcs12-build");
+var pkcs11    = require("./lib/pkcs11-uri");
 var merkle    = require("./lib/merkle");
 var shbs      = require("./lib/shbs");
 var hpke      = require("./lib/hpke");
@@ -148,6 +149,11 @@ module.exports = {
   // under PBES2, a classic HMAC or PBMAC1 MAC), and pki.pkcs12.verifyMac checks a store's MAC. Parsing lives
   // at pki.schema.pkcs12.parse.
   pkcs12:    pkcs12,
+  // `pkcs11` is the RFC 7512 PKCS #11 URI syntax -- pki.pkcs11.parseUri reads a URI naming a token,
+  // a slot, a library and an object on a PKCS #11 device into a prototype-less record, and
+  // pki.pkcs11.formatUri writes one back. Syntax only: nothing here loads a module or talks to a
+  // token, and `id` is carried as bytes rather than text so two spellings of one identifier compare.
+  pkcs11:    pkcs11,
   // `merkle` is the RFC 6962 / RFC 9162 Merkle-tree proof-verification core --
   // pki.merkle.leafHash / nodeHash / emptyRootHash build the domain-separated
   // (0x00 leaf / 0x01 node) SHA-256 tree hashes; pki.merkle.verifyInclusion and

@@ -51,10 +51,10 @@ function testRoundTrip() {
   // length, or stopped short at an embedded NUL and compared a truncated name. The reader here
   // slices by the declared length, so an embedded NUL is one ordinary octet of the value: the
   // characters after it survive, and the string keeps the length the encoding declared. The NUL is
-  // built into the wire bytes rather than written as an escape, so this file stays pure ASCII.
-  var nulBytes = Buffer.concat([Buffer.from("ab", "ascii"), Buffer.from([0x00]), Buffer.from("cd", "ascii")]);
-  var nulRead = pki.asn1.read.string(pki.asn1.decode(b.utf8(nulBytes)));
-  check("CVE-2021-3712 a string with an embedded NUL keeps its declared length", nulRead.length === nulBytes.length);
+  // made at runtime rather than written as an escape, so this file stays pure ASCII.
+  var nulText = "ab" + String.fromCharCode(0) + "cd";
+  var nulRead = pki.asn1.read.string(pki.asn1.decode(b.utf8(nulText)));
+  check("CVE-2021-3712 a string with an embedded NUL keeps its declared length", nulRead.length === nulText.length);
   check("CVE-2021-3712 the octets after the embedded NUL are not dropped", nulRead.charCodeAt(3) === 0x63 && nulRead.charCodeAt(4) === 0x64);
   check("CVE-2021-3712 the NUL is one octet of the value, not a terminator", nulRead.charCodeAt(2) === 0);
   // CONTROL: the same characters with no NUL read as the four they are, so the assertions above
@@ -63,20 +63,19 @@ function testRoundTrip() {
   // value differ from the bytes that encoded it. For a name that is a defect with teeth: two
   // certificates carrying different subject bytes would decode to strings that compare equal.
   // X.690 gives U+FEFF no special meaning inside a UTF8String; it is one more character.
-  var bomBytes = Buffer.from([0xef, 0xbb, 0xbf]);
-  var leadingBom = Buffer.concat([bomBytes, Buffer.from("ab", "ascii")]);
+  var bom = String.fromCharCode(0xfeff);
+  var leadingBom = bom + "ab";
   var leadingRead = pki.asn1.read.string(pki.asn1.decode(b.utf8(leadingBom)));
   check("a UTF8String beginning with U+FEFF keeps it", leadingRead.length === 3 && leadingRead.charCodeAt(0) === 0xfeff);
   check("and re-encodes to the bytes it was read from", b.utf8(leadingRead).equals(b.utf8(leadingBom)));
   check("so a value with a leading U+FEFF does not compare equal to the same value without one",
-    leadingRead !== pki.asn1.read.string(pki.asn1.decode(b.utf8(Buffer.from("ab", "ascii")))));
+    leadingRead !== pki.asn1.read.string(pki.asn1.decode(b.utf8("ab"))));
   // CONTROL: the same three bytes anywhere but the front were never at risk.
-  var midBom = Buffer.concat([Buffer.from("a", "ascii"), bomBytes, Buffer.from("b", "ascii")]);
   check("CONTROL: U+FEFF in the middle of a UTF8String is kept",
-    pki.asn1.read.string(pki.asn1.decode(b.utf8(midBom))).charCodeAt(1) === 0xfeff);
+    pki.asn1.read.string(pki.asn1.decode(b.utf8("a" + bom + "b"))).charCodeAt(1) === 0xfeff);
 
   check("CVE-2021-3712 CONTROL: the same string without the NUL reads as four characters",
-    pki.asn1.read.string(pki.asn1.decode(b.utf8(Buffer.from("abcd", "ascii")))) === "abcd");
+    pki.asn1.read.string(pki.asn1.decode(b.utf8("abcd"))) === "abcd");
   check("sequence nests + navigates", (function () {
     var der = b.sequence([b.integer(1n), b.oid("2.5.4.3"), b.utf8("x")]);
     var node = pki.asn1.decode(der);
@@ -638,6 +637,26 @@ function testIa5SevenBit() {
       return pki.asn1.read.string(pki.asn1.decode(b.utf8("a" + astral + "b"))) === "a" + astral + "b";
     })());
   check("build.utf8 accepts plain text", code(function () { b.utf8("abc"); }) === "NO-THROW");
+  // A string builder encodes the caller's text. Turning something else into text encodes a value
+  // the caller never named: an object arrives as its default string form and a list as its members
+  // joined with a comma, and the certificate or message carries that instead.
+  check("build.utf8 refuses an object rather than encoding its default string form",
+    code(function () { b.utf8({ name: "A" }); }) === "asn1/bad-string");
+  check("build.utf8 refuses a list rather than joining it",
+    code(function () { b.utf8(["a", "b"]); }) === "asn1/bad-string");
+  check("build.utf8 refuses a number", code(function () { b.utf8(7); }) === "asn1/bad-string");
+  check("build.ia5 refuses a non-string", code(function () { b.ia5({}); }) === "asn1/bad-string");
+  check("build.printable refuses a non-string", code(function () { b.printable(["A"]); }) === "asn1/bad-string");
+  check("build.bmpString refuses a non-string", code(function () { b.bmpString(7); }) === "asn1/bad-string");
+  check("build.utf8 refuses bytes, which are content rather than text",
+    code(function () { b.utf8(Buffer.from("abc")); }) === "asn1/bad-string");
+  check("build.utf8 refuses a value that is not there",
+    code(function () { b.utf8(null); }) === "asn1/bad-string" && code(function () { b.utf8(undefined); }) === "asn1/bad-string");
+  check("the refusal names what it was given", (function () {
+    var seen = "";
+    try { b.utf8(Buffer.from("abc")); } catch (e) { seen = e.message; }
+    return seen.indexOf("a Buffer") !== -1;
+  })());
   // build.bmpString: UTF-16BE, tag 0x1e, no NULL terminator (the terminator is an App. B.1 password
   // artifact, not part of the ASN.1 value); an unpaired surrogate is rejected (the inverse of _decodeUtf16be).
   check("build.bmpString(\"Beavis\") is the exact 14-byte TLV",
@@ -973,6 +992,74 @@ function testEncodeNonBufferContent() {
   var fromUndefined = pki.asn1.encode(0x00, false, TAGS.NULL, undefined);
   check("encode accepts an omitted content as empty",
     pki.asn1.read.nullValue(pki.asn1.decode(fromUndefined)) === null);
+  function contentHex(c) { return hex(pki.asn1.read.octetString(pki.asn1.decode(pki.asn1.encode(0x00, false, TAGS.OCTET_STRING, c)))); }
+  check("encode accepts a Uint8Array", contentHex(new Uint8Array([4, 5])) === "0405");
+  check("encode accepts a typed array of another element type", contentHex(new Int8Array([5, 6])) === "0506");
+  check("encode accepts an ArrayBuffer", (function () {
+    var ab = new ArrayBuffer(2); new Uint8Array(ab).set([7, 8]); return contentHex(ab) === "0708";
+  })());
+  check("encode accepts a DataView", (function () {
+    var ab = new ArrayBuffer(2); new Uint8Array(ab).set([9, 10]); return contentHex(new DataView(ab)) === "090a";
+  })());
+  check("encode takes a view's own bytes rather than its whole backing store",
+    contentHex(Buffer.from([0, 1, 2, 3, 4]).subarray(1, 3)) === "0102");
+  check("encode refuses a view onto shared memory, which another thread can rewrite mid-encode",
+    typeof SharedArrayBuffer !== "function" ||
+      code(function () { pki.asn1.encode(0x00, false, TAGS.OCTET_STRING, new Uint8Array(new SharedArrayBuffer(2))); }) === "asn1/not-buffer");
+  check("encode refuses a detached view", (function () {
+    var ab = new ArrayBuffer(4);
+    var u8 = new Uint8Array(ab);
+    structuredClone(ab, { transfer: [ab] });
+    return code(function () { pki.asn1.encode(0x00, false, TAGS.OCTET_STRING, u8); }) === "asn1/not-buffer";
+  })());
+  // Content is bytes. A value that is not bytes reaches the structure as whatever the byte
+  // conversion makes of it: a string as its UTF-8 encoding, an object through its valueOf, an
+  // element past 255 as that element modulo 256. Each writes content the caller never named.
+  check("encode refuses a string, since text is encoded by the string builders",
+    code(function () { pki.asn1.encode(0x00, false, TAGS.OCTET_STRING, "abc"); }) === "asn1/not-buffer");
+  check("encode refuses an object that answers a string through valueOf",
+    code(function () {
+      pki.asn1.encode(0x00, false, TAGS.OCTET_STRING, { valueOf: function () { return "hello"; } });
+    }) === "asn1/not-buffer");
+  check("encode refuses a number with a typed error rather than a Node argument fault",
+    code(function () { pki.asn1.encode(0x00, false, TAGS.OCTET_STRING, 7); }) === "asn1/not-buffer");
+  check("encode refuses an array element that is not a byte",
+    code(function () { pki.asn1.encode(0x00, false, TAGS.OCTET_STRING, [1, 300]); }) === "asn1/not-buffer");
+  check("encode refuses an array element that is not a number",
+    code(function () { pki.asn1.encode(0x00, false, TAGS.OCTET_STRING, [1, "2"]); }) === "asn1/not-buffer");
+  // The children of a constructed value are read from the caller's own array. Calling that array's
+  // own map to walk it lets the array answer with children the check never saw.
+  check("a children array cannot answer through its own map", (function () {
+    var children = [];
+    children.map = function () { return [[0x30, 0x00]]; };
+    var written = null, refusal = null;
+    try { written = hex(pki.asn1.build.sequence(children)); }
+    catch (e) { refusal = (e && e.code) || e.name; }
+    return written === "3000" || refusal === "asn1/bad-children" || refusal === "asn1/not-buffer";
+  })());
+  check("CONTROL: an ordinary children array still builds",
+    hex(pki.asn1.build.sequence([pki.asn1.build.nullValue()])) === "30020500");
+  // An element getter that shortens the array mid-walk must not leave the tail of the content as
+  // the zeros it was allocated with.
+  check("content shortened while it is read is refused rather than zero-filled", (function () {
+    var list = [1, 2, 3];
+    Object.defineProperty(list, 0, { get: function () { list.length = 1; return 1; }, configurable: true });
+    var written = null, refusal = null;
+    try { written = hex(pki.asn1.read.octetString(pki.asn1.decode(pki.asn1.encode(0x00, false, TAGS.OCTET_STRING, list)))); }
+    catch (e) { refusal = (e && e.code) || e.name; }
+    return refusal === "asn1/not-buffer" || written === "010203";
+  })());
+  // An element read once for the check and again for the copy could pass as 2 and be written as
+  // 300, which the copy narrows to 44.
+  check("encode writes the element it checked", (function () {
+    var reads = 0;
+    var list = [1, 2];
+    Object.defineProperty(list, 1, { get: function () { reads += 1; return reads === 1 ? 2 : 300; }, configurable: true });
+    var written = null, refusal = null;
+    try { written = hex(pki.asn1.read.octetString(pki.asn1.decode(pki.asn1.encode(0x00, false, TAGS.OCTET_STRING, list)))); }
+    catch (e) { refusal = (e && e.code) || e.name; }
+    return written === "0102" || refusal === "asn1/not-buffer";
+  })());
 }
 
 // build.integer's numeric path (intToDer): an unsafe JS number and a

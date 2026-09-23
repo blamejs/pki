@@ -378,6 +378,15 @@ async function testAttributes() {
   var bag = pki.schema.pkcs12.parse(p12).safeBags[0];
   check("#15 friendlyName round-trips as a BMPString value", bag.friendlyName === "my cert");
   check("#15 localKeyId round-trips as the exact OCTET STRING", Buffer.isBuffer(bag.localKeyId) && bag.localKeyId.equals(lki));
+  // A friendlyName is text a person reads in a key store's own list. An object turned into text
+  // stores its default string form under the name the caller meant to give the bag.
+  var refused = null;
+  try {
+    await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert, friendlyName: { name: "my cert" } }] }] },
+      { password: "1234" });
+  } catch (e) { refused = (e && e.code) || e.name; }
+  check("#15 a friendlyName that is not text is refused rather than stored as its string form (" + refused + ")",
+    refused === "asn1/bad-string" || refused === "pkcs12/bad-input");
 }
 
 // ---- #11 public-key integrity config-time rejects + fail-closed inputs ------
