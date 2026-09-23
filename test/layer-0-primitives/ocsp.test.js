@@ -816,6 +816,27 @@ async function run() {
   check("revoked with no revocationReason still verifies revoked", (await verify(w, revNoReason)).status === "revoked");
   check("revoked with an unknown revocationReason name -> ocsp/bad-input",
     (await codeOfAsync(function () { return pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: { revoked: new Date(), revocationReason: "notARealReason" }, thisUpdate: TU, nextUpdate: NU }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 }); })) === "ocsp/bad-input");
+  // The URL this verb returns is handed to a transport, which parses it. RFC 3986 sec. 5.2.4
+  // removes a `.` or `..` path segment during that parse, so a responder URL carrying one would
+  // have the request sent to a path other than the one built here. The base is normalized before
+  // the segment is appended, so what comes back is what goes on the wire.
+  var dotty = pki.ocsp.httpRequest(Buffer.alloc(40, 1), "http://ocsp.example/./a/../b");
+  check("a responder URL carrying dot segments survives the transport's own parse",
+    new URL(dotty.url).href === dotty.url);
+  check("...and the normalized path is what the request rides on",
+    dotty.url.indexOf("http://ocsp.example/b/") === 0);
+  var trailingDot = pki.ocsp.httpRequest(Buffer.alloc(40, 1), "http://ocsp.example/.");
+  check("a responder URL that is only a dot segment normalizes the same way",
+    new URL(trailingDot.url).href === trailingDot.url);
+  // A POST names the same destination, normalized the same way, so both methods reach one place.
+  var bigPost = pki.ocsp.httpRequest(Buffer.alloc(400, 1), "http://ocsp.example/./p");
+  check("a POST names the normalized responder URL too",
+    bigPost.method === "POST" && new URL(bigPost.url).href === bigPost.url &&
+    bigPost.url === "http://ocsp.example/p");
+  // CONTROL: a URL with nothing to normalize is returned unchanged.
+  check("CONTROL: a URL needing no normalization is unchanged",
+    pki.ocsp.httpRequest(Buffer.alloc(400, 1), "http://ocsp.example/p").url === "http://ocsp.example/p");
+
   // RFC 5019 sec. 5 bounds the whole encoded URL at 255 BYTES. A character above US-ASCII is more
   // than one byte on the wire, so a responder URL carrying one would be measured short and a GET
   // sent for a URL over the bound. RFC 3986 sec. 2 builds a URI out of US-ASCII alone, so such a

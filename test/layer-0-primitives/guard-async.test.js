@@ -55,6 +55,50 @@ async function testBounded() {
   check("a negative bound refuses the same way",
     (await codeOf(async.bounded(new Promise(function () { }), -1, E, "t/slow", "op"))) === "t/slow");
 
+  // A deadline can expire between the check that starts an operation and the bound computed for
+  // it, so the zero-bound path can be handed a promise that is already running. Refusing without
+  // observing it leaves a rejection nobody handled, and the default behavior for one is to end the
+  // process: the caller catching the refusal does not reach it.
+  var unhandled = [];
+  function onUnhandled(reason) { unhandled.push(reason); }
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    check("a zero bound over an already-rejecting operation still refuses",
+      (await codeOf(async.bounded(Promise.reject(new Error("already failing")), 0, E, "t/slow", "op"))) === "t/slow");
+    check("...and a negative bound too",
+      (await codeOf(async.bounded(Promise.reject(new Error("already failing")), -5, E, "t/slow", "op"))) === "t/slow");
+    // The rejection is delivered on a later turn, so the observation has to be given time to run.
+    await new Promise(function (r) { setImmediate(r); });
+    await new Promise(function (r) { setImmediate(r); });
+    check("...and the operation's own rejection is observed rather than left to end the process",
+      unhandled.length === 0);
+  } finally {
+    process.removeListener("unhandledRejection", onUnhandled);
+  }
+
+  // The timed path observes it too: the input settling after the bound has already fired must not
+  // surface as an unhandled rejection either.
+  var lateUnhandled = [];
+  function onLate(reason) { lateUnhandled.push(reason); }
+  process.on("unhandledRejection", onLate);
+  try {
+    // A deferred whose rejection is triggered from an observation window rather than from a timer
+    // inside the promise, so the fixture is a delayed outcome rather than a sleep.
+    var rejectLate;
+    var slowReject = new Promise(function (_res, rej) { rejectLate = rej; });
+    helpers.passiveObserve(40, "holding the operation open past the bound").then(function () {
+      rejectLate(new Error("late"));
+    });
+    check("a bound that fires before the operation rejects still refuses at the bound",
+      (await codeOf(async.bounded(slowReject, 10, E, "t/slow", "op"))) === "t/slow");
+    // The absence of an event over a window, which is what passiveObserve is for: the rejection
+    // lands at 40ms and would be reported on the turn after that.
+    await helpers.passiveObserve(90, "waiting out the late rejection without it going unhandled");
+    check("...and the late rejection is observed", lateUnhandled.length === 0);
+  } finally {
+    process.removeListener("unhandledRejection", onLate);
+  }
+
   // The refusal names the bound it passed, so an operator reading it can tell a slow source from
   // a source that answered with a fault.
   var msg = null;
