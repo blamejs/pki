@@ -3256,7 +3256,7 @@ function testGuardReadsRuntimeLive() {
     "lib/est.js": 166,
     "lib/cmp-build.js": 135,
     "lib/crmf-sign.js": 36,
-    "lib/path-validate.js": 104,
+    "lib/path-validate.js": 98,
     "lib/webauthn.js": 165,
     "lib/asn1-der.js": 105,
     "lib/trust.js": 106,

@@ -4,6 +4,20 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.12 — 2026-09-23
+
+A certification path whose policies map to each other validates instead of exhausting the policy-node budget.
+
+### Changed
+
+- The `pki.path.validate` result carries `validPolicyGraph` where it carried `validPolicyTree`, and the structure it holds is a graph rather than a tree. It is `{ nodes }`, a flat list linked by index, each entry `{ id, depth, validPolicy, qualifierSet, expectedPolicySet, parents, children }`, where `parents` and `children` hold the ids of other entries and the root is id 0. A caller that walked `.children` from a root and read `.parent` reads the list and follows ids instead. The list is flat because a graph handed back as a root to walk re-expands into the exponential structure the moment anything recurses into every child, `JSON.stringify` included.
+- `C.LIMITS.PATH_MAX_POLICY_NODES` is unchanged at 4096 and still fails closed with `path/policy-tree-cap`, and `opts.maxPolicyNodes` still tightens it. What it bounds has changed with the structure: the graph grows with the number of distinct policies and mappings the path actually carries, so the cap is reached by a path that names that many policies, not by a path that names a few and is several certificates long. A single certificate carrying 4096 distinct policies still reaches it.
+
+### Fixed
+
+- `pki.path.validate` accepts a conforming certification path whose certificate policies map to each other across several levels. Such a path was refused with `path/policy-tree-cap` once its policy tree exceeded `maxPolicyNodes`, which the tree reached at six certificates carrying four mutually mapped policies. Certificate policies are now processed as the RFC 9618 `valid_policy_graph`, whose size is linear in the policies and mappings on the path rather than exponential in its length.
+- `userConstrainedPolicySet` reports the policies of the nodes whose only parent is the `anyPolicy` node, which is what RFC 5280 section 6.1.5 (g)(iii)(1) and RFC 9618 section 5.5 step (g)(2) both define it as. It reported the policies of the deepest nodes instead. The two answers differ wherever a policy mapping is in play: for a chain where an issuer domain policy is mapped to a subject domain policy, the set now names the issuer domain policy, which is the domain the relying party asked about and the reason mapping exists.
+
 ## v0.8.11 — 2026-09-23
 
 What a certificate, CRL, request or attribute certificate asserts in its extensions is read in one call.
