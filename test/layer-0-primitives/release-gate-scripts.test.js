@@ -302,21 +302,35 @@ function testChangelogDatesReadOneClock() {
   var list = String(tags.stdout || "").trim().split("\n").filter(Boolean);
   if (list.length === 0) { helpers.skip("no version tags in this checkout"); return; }
 
+  // `%cd --date=short` renders in the zone the process is running in, so whether the two clocks
+  // disagree is a fact about the RUNNER and not about the repository: on a UTC machine, which is
+  // what CI is, they agree for every tag and the exercised-check below would fail although nothing
+  // is wrong. The zone is therefore chosen here rather than inherited, and both directions are
+  // tried so a tag at any hour of the UTC day can disagree with one of them.
+  var ZONES = ["America/Los_Angeles", "Asia/Tokyo"];
+  function localDay(tag, zone) {
+    return String(cp.spawnSync("git", ["log", "-1", "--format=%cd", "--date=short", tag],
+      { cwd: ROOT, encoding: "utf8", env: Object.assign({}, process.env, { TZ: zone }) }).stdout || "").trim();
+  }
+
   var disagreed = 0, wrong = 0;
   list.forEach(function (tag) {
     var epoch = String(cp.spawnSync("git", ["log", "-1", "--format=%ct", tag], { cwd: ROOT, encoding: "utf8" }).stdout || "").trim();
-    var local = String(cp.spawnSync("git", ["log", "-1", "--format=%cd", "--date=short", tag], { cwd: ROOT, encoding: "utf8" }).stdout || "").trim();
     if (!/^\d+$/.test(epoch)) return;
     var utc = new Date(Number(epoch) * 1000).toISOString().slice(0, 10);
-    if (local !== utc) disagreed += 1;
+    if (ZONES.some(function (z) { return localDay(tag, z) !== utc; })) disagreed += 1;
     if (gen.tagDate(tag.replace(/^v/, "")) !== utc) wrong += 1;
   });
   check("every tag's changelog date is the UTC day of its commit", wrong === 0);
-  // The vector only means something on a history where the two clocks actually differ. This
-  // repository's does; a future checkout whose commits all landed mid-day would not, and the
-  // vector would pass without having been asked anything.
-  check("and this history has tags whose local and UTC days differ, so the rule was exercised",
-    disagreed > 0);
+  // The vector only means something where the two clocks actually differ, which is what the forced
+  // zones above arrange. A history in which no tag disagrees with either of them would leave the
+  // rule unasked, so that is recorded as a skip rather than passing silently.
+  if (disagreed > 0) {
+    check("and a tag's local and UTC days differ under a chosen zone, so the rule was exercised",
+      disagreed > 0);
+  } else {
+    helpers.skip("no tag in this history falls on a different day in either forced zone");
+  }
 
   // A release note may pin its own date, which overrides the tag. A pinned date that disagrees
   // with the tag it ships under is how the changelog came to carry five entries dated five days
