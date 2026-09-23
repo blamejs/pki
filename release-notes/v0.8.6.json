@@ -1,6 +1,6 @@
 {
   "version": "0.8.6",
-  "date": "2026-09-25",
+  "date": "2026-09-20",
   "headline": "A node:crypto KeyObject signs, without being asked to export its private half.",
   "summary": "A `KeyObject` is what `crypto.createPrivateKey` returns and what an OpenSSL engine or provider hands back, and it was refused by name at the one key door with the advice to export it to PKCS#8. A key that will not export had no way through. It is now accepted wherever a private key is, and signs through `node:crypto` itself, so the private half is never asked for.",
   "sections": {

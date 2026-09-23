@@ -694,9 +694,12 @@ async function testEdges() {
   var secret = await subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
   check("export of a secret CryptoKey -> key/bad-input", (await codeOf(pki.key.export(secret))) === "key/bad-input");
 
-  // export with an unsupported output format.
+  // export with an unsupported output format. `der`, `pem`, `pkcs1`, `sec1` and `jwk` are the
+  // encodings this verb writes; anything else is named in the refusal.
   var pair = await pki.key.generate("Ed25519");
-  check("export with an unsupported format -> key/bad-input", (await codeOf(pki.key.export(pair.publicKey, { format: "jwk" }))) === "key/bad-input");
+  check("export with an unsupported format -> key/bad-input", (await codeOf(pki.key.export(pair.publicKey, { format: "pkcs12" }))) === "key/bad-input");
+  check("export to jwk is supported, and carries the key type RFC 8037 names",
+    (await pki.key.export(pair.publicKey, { format: "jwk" })).kty === "OKP");
 
   // import with an opts.algorithm that mismatches the key structure -> the WebCrypto fault propagates typed.
   var edSpki = await pki.key.export(pair.publicKey);

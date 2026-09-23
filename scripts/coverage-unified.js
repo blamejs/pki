@@ -39,6 +39,23 @@ var detail = process.argv.indexOf("--detail") >= 0;
 // for the handle to close rather than ending the run.
 var RM = { recursive: true, force: true, maxRetries: 20, retryDelay: 150 };
 
+// `rmSync` takes maxRetries and `renameSync` does not, so the same held handle that the removal
+// waits out ends the run here instead. Wait it out the same way, and fall back to a copy, which
+// a sync client cannot hold open against a fresh destination.
+function moveWithRetry(from, to) {
+  for (var attempt = 0; ; attempt++) {
+    try { fs.renameSync(from, to); return; }
+    catch (e) {
+      if (attempt >= 20 || (e.code !== "EBUSY" && e.code !== "EPERM" && e.code !== "EACCES")) {
+        if (attempt >= 20) { fs.copyFileSync(from, to); return; }
+        throw e;
+      }
+      var until = Date.now() + 150;
+      while (Date.now() < until) { /* allow:busy-wait a sync step with no event loop to yield to */ }
+    }
+  }
+}
+
 fs.rmSync(COV, RM);
 fs.mkdirSync(MERGE, { recursive: true });
 
@@ -60,7 +77,7 @@ function layer(opts) {
     process.stderr.write("[coverage-unified] " + opts.label + " skipped (exit " + r.status + ") -- coverage discarded, continuing\n");
     return false;
   }
-  fs.readdirSync(layerDir).forEach(function (fn) { fs.renameSync(path.join(layerDir, fn), path.join(MERGE, fn)); });
+  fs.readdirSync(layerDir).forEach(function (fn) { moveWithRetry(path.join(layerDir, fn), path.join(MERGE, fn)); });
   fs.rmSync(layerDir, RM);
   return true;
 }

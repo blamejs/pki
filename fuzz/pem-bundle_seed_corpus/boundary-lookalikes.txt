@@ -1,0 +1,7 @@
+------BEGIN CERTIFICATE------
+-----BEGIN  CERTIFICATE-----
+-----begin certificate-----
+see -----BEGIN CERTIFICATE----- inline
+-----BEGIN CERTIFICATE-----
+MAUCAQEFAA==
+-----END CERTIFICATE-----

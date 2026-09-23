@@ -1,0 +1,9 @@
+-----BEGIN X-Y-----
+MAUCAQEFAA==
+-----END X-Y-----
+-----BEGIN Certificate-----
+MAUCAQEFAA==
+-----END Certificate-----
+-----BEGIN -----
+MAUCAQEFAA==
+-----END -----

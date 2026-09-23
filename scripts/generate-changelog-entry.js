@@ -139,18 +139,27 @@ function _readPackageVersion() {
 
 // Tag date for v<version>, or null when the tag isn't present yet (the
 // version being cut has no tag until after merge).
+//
+// The committer epoch rendered in UTC, matching scripts/gen-changelog.js. `%cd --date=short`
+// renders in the committer's own zone, which disagrees with UTC for any tag landing late in a
+// negative-offset zone, and this file renders the same entry that one does.
 function _tagDate(version) {
   var rv = cp.spawnSync("git",
-    ["log", "-1", "--format=%cd", "--date=short", "v" + version],
+    ["log", "-1", "--format=%ct", "v" + version],
     { cwd: ROOT, encoding: "utf8" });
   if (rv.status !== 0) return null;
   var out = (rv.stdout || "").trim();
-  return /^\d{4}-\d{2}-\d{2}$/.test(out) ? out : null;
+  if (!/^\d+$/.test(out)) return null;
+  return new Date(Number(out) * 1000).toISOString().slice(0, 10);
 }
 
 function _todayUtc() {
   return new Date().toISOString().slice(0, 10);
 }
+
+// The date rule is exercised from here rather than from the operator-local generator, which is
+// not part of a checkout: both render the same entry, and this is the copy CI has.
+module.exports = { tagDate: _tagDate };
 
 // Normalize `sections` (object keyed by heading, OR an array of
 // { heading, items }) into an ordered list of { heading, items } sorted to
@@ -366,4 +375,4 @@ function main() {
     " entry (" + markdown.length + " chars) from " + loaded.source + ". Use --json for structured output.\n");
 }
 
-main();
+if (require.main === module) main();

@@ -137,12 +137,58 @@ function testBudget() {
   check("isBudgetExceeded says no to null", limits.isBudgetExceeded(null) === false);
 }
 
+// A per-operation timeout bounds each operation and nothing bounds their sum: six distribution
+// points at a 30-second transport default is a three-minute validation. The deadline is that
+// outer bound, read from a monotonic clock so a wall clock stepping backward cannot extend it,
+// with the clock injectable so a vector drives the bound without waiting for it.
+function testDeadline() {
+  function threw(fn) { try { fn(); return null; } catch (e) { return e.constructor.name; } }
+  var t = 0;
+  function clock() { return t; }
+  var d = limits.deadline(100, { now: clock });
+
+  check("40. a fresh deadline has its whole budget and has not expired",
+    d.remaining() === 100 && d.expired() === false && d.elapsed() === 0 && d.total() === 100);
+  t = 60;
+  check("41. time spent comes off the budget", d.remaining() === 40 && d.elapsed() === 60 && d.expired() === false);
+  t = 100;
+  check("42. the budget reaching zero is expiry", d.remaining() === 0 && d.expired() === true);
+  t = 5000;
+  check("43. ...and it stays expired, with the remainder never going below zero",
+    d.remaining() === 0 && d.expired() === true);
+  t = -500;
+  check("44. a clock that steps backward does not hand the budget back",
+    d.elapsed() === 0 && d.remaining() === 100);
+
+  check("45. a zero deadline is expired from the start", (function () {
+    var z = limits.deadline(0, { now: clock });
+    return z.expired() === true && z.remaining() === 0;
+  })());
+  check("46. the default clock is monotonic and the budget is bounded by it", (function () {
+    var real = limits.deadline(50);
+    return real.remaining() <= 50 && real.remaining() >= 0 && real.expired() === false;
+  })());
+  check("47. a negative or non-integer total is a configuration fault",
+    threw(function () { limits.deadline(-1); }) === "TypeError" &&
+    threw(function () { limits.deadline(1.5); }) === "TypeError" &&
+    threw(function () { limits.deadline("100"); }) === "TypeError");
+  check("48. a clock that does not return a finite number is a configuration fault",
+    threw(function () { limits.deadline(10, { now: function () { return "x"; } }); }) === "TypeError" &&
+    threw(function () { limits.deadline(10, { now: function () { return NaN; } }); }) === "TypeError");
+  check("49. the deadline is frozen, so a caller cannot move it",
+    Object.isFrozen(d) && (function () {
+      try { d.remaining = function () { return 999; }; } catch (_e) { /* frozen */ }
+      return d.remaining() === 100;
+    })());
+}
+
 function run() {
   testCap();
   testCapAuthoringBounds();
   testCounter();
   testByteCap();
   testBudget();
+  testDeadline();
 }
 
 module.exports = { run: run };

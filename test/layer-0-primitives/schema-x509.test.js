@@ -106,7 +106,13 @@ function testPem() {
   check("label-less pemDecode enforces the CERTIFICATE label", pki.schema.x509.pemDecode(vectors.CERT_EC_PEM).equals(der));
   var bundle = pki.schema.x509.pemEncode(Buffer.from([0x30, 0x00]), "PRIVATE KEY") + vectors.CERT_EC_PEM;
   check("label-less pemDecode rejects a foreign first block", code(function () { pki.schema.x509.pemDecode(bundle); }) === "pem/label-mismatch");
-  check("pemDecode(text, null) takes the first block of any type", pki.schema.x509.pemDecode(bundle, null).equals(Buffer.from([0x30, 0x00])));
+  // `null` opts out of the label, not out of the count: the verb still reads one object, and a
+  // file holding two is a question it cannot answer by taking whichever came first.
+  check("pemDecode(text, null) takes a block of any type",
+    pki.schema.x509.pemDecode(pki.schema.x509.pemEncode(Buffer.from([0x30, 0x00]), "PRIVATE KEY"), null)
+      .equals(Buffer.from([0x30, 0x00])));
+  check("pemDecode(text, null) refuses a file holding two objects",
+    code(function () { pki.schema.x509.pemDecode(bundle, null); }) === "pem/multiple-blocks");
   // A detached-backed PEM Buffer must fail closed as a typed PemError, not a raw
   // TypeError -- the text guard re-views through the byte guard, which threads
   // the raw failure as the cause (PemError carries withCause).

@@ -1,6 +1,6 @@
 {
   "version": "0.7.12",
-  "date": "2026-09-10",
+  "date": "2026-09-11",
   "headline": "An issuer can draw a certificate serial number before signing with it.",
   "summary": "pki.x509.sign draws a 20-octet random serial when the spec names none, but a caller who has to record a serial before the certificate exists had no way to obtain that value without signing first and reading it back, or re-implementing the draw. pki.x509.randomSerial() returns it.",
   "sections": {

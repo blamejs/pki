@@ -1,6 +1,6 @@
 {
   "version": "0.8.2",
-  "date": "2026-09-25",
+  "date": "2026-09-20",
   "headline": "A distinguished name can be read back from its string form, and twelve attributes the name table published can finally be encoded.",
   "summary": "Every parsed name carries `dn`, its string form, and nothing read one back, so a caller holding a distinguished name as text had to assemble the RDN structure by hand to sign anything with it. `pki.x509.parseDn` is the inverse. Building it surfaced two gaps behind it: twelve of the twenty-five attributes in the published short-name table resolved to no OID, so a name written with any of them could not be encoded at all, and a value the parser hands back in the `#`-prefixed or backslash-escaped form could not be fed back to the builder it came from.",
   "sections": {

@@ -1338,6 +1338,42 @@ async function testTrustSeam() {
   var twinDirect = await pki.cms.sign(CONTENT, { cert: twinIssued, key: twinKey }, { sid: "ski" });
   check("trust: the same key IS trusted when the message presents the certificate that chains",
     (await pki.cms.verify(twinDirect, Object.assign({ trustAnchors: [ourCa.der] }, AT))).trusted === true);
+
+  // The trust configuration is copied before it is used, and the copy is what every later decision
+  // reads. Taking that copy with the caller's own `slice` / `map` puts the contents of the copy in
+  // reach of anything sharing the realm: the option the caller set is not the option the rule is
+  // applied to, and the substitution shows up as a verdict rather than as an error.
+  async function underPrototype(name, replacement, fn) {
+    var real = Array.prototype[name];
+    Array.prototype[name] = replacement;
+    try { return await fn(); }
+    finally { Array.prototype[name] = real; }
+  }
+  var emailOnlyKp = require("crypto").generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var emailOnlyCert = await pki.x509.sign({
+    subject: [{ commonName: "email-only-signer.example" }],
+    subjectPublicKey: emailOnlyKp.publicKey.export({ format: "der", type: "spki" }),
+    serialNumber: 31, notBefore: NB, notAfter: NA,
+    extensions: { keyUsage: ["digitalSignature"], extendedKeyUsage: ["emailProtection"],
+      subjectKeyIdentifier: true, authorityKeyIdentifier: true },
+  }, { key: ourCa.key, cert: ourCa.der });
+  var emailOnlySigned = await pki.cms.sign(CONTENT, {
+    cert: emailOnlyCert, key: emailOnlyKp.privateKey.export({ format: "der", type: "pkcs8" }) });
+  var ekuOpts = Object.assign({ trustAnchors: [ourCa.der], requiredEku: ["clientAuth"] }, AT);
+  check("trust: a signer that does not assert the required purpose is not trusted",
+    (await pki.cms.verify(emailOnlySigned, ekuOpts)).trusted === false);
+  check("trust: ...and a replaced Array.prototype.slice cannot trade that purpose for one the signer carries",
+    (await underPrototype("slice", function () { return ["emailProtection"]; }, function () {
+      return pki.cms.verify(emailOnlySigned, ekuOpts);
+    })).trusted === false);
+  // The same question on the anchor list, which is copied with a map rather than a slice. Here the
+  // substitution rides on the caller's own array rather than the prototype, which is what an object
+  // arriving from a configuration layer can carry: the own method offers the anchor that DOES issue
+  // the signer in place of the one the caller named.
+  var hostileAnchors = [otherCa.der];
+  hostileAnchors.map = function () { return [ourCa.der]; };
+  check("trust: an own map on the anchor array cannot substitute the anchors the caller named",
+    (await pki.cms.verify(signed, Object.assign({ trustAnchors: hostileAnchors }, AT))).trusted === false);
 }
 
 // ENGINE-GAP-1/2 for pki.scep (and any signed-attribute consumer): cms.verify surfaces each signer's

@@ -283,6 +283,79 @@ function run() {
   testSpellingCanarySweepsARecycledPid();
   if (toolAvailable("git")) testWikiLastmodDatesEveryFileOnOneCalendar();
   else console.log("  SKIP the wiki-lastmod group: git cannot run in this environment");
+  if (toolAvailable("git")) testChangelogDatesReadOneClock();
+  else console.log("  SKIP the changelog-date group: git cannot run in this environment");
+}
+
+// ---- the changelog reads one clock -----------------------------------------------
+//
+// A tag's date is read as the committer epoch and rendered in UTC. Read as `%cd --date=short` it
+// renders in whichever zone the committer was in, and the two disagree whenever a tag lands late
+// in a negative-offset zone: three of this repository's own v0.8.x tags have a local day of
+// 2026-09-19 and a UTC day of 2026-09-20. A CHANGELOG mixing the two reads as though a release
+// shipped before the one it follows, which is what the wiki lastmod map was already fixed for.
+function testChangelogDatesReadOneClock() {
+  // The tracked renderer, not the operator-local `gen-changelog.js`, which a checkout does not
+  // carry: both render the same entry and this is the copy every run has.
+  var gen = require(path.join(ROOT, "scripts", "generate-changelog-entry.js"));
+  var tags = cp.spawnSync("git", ["tag", "--list", "v*"], { cwd: ROOT, encoding: "utf8" });
+  var list = String(tags.stdout || "").trim().split("\n").filter(Boolean);
+  if (list.length === 0) { helpers.skip("no version tags in this checkout"); return; }
+
+  var disagreed = 0, wrong = 0;
+  list.forEach(function (tag) {
+    var epoch = String(cp.spawnSync("git", ["log", "-1", "--format=%ct", tag], { cwd: ROOT, encoding: "utf8" }).stdout || "").trim();
+    var local = String(cp.spawnSync("git", ["log", "-1", "--format=%cd", "--date=short", tag], { cwd: ROOT, encoding: "utf8" }).stdout || "").trim();
+    if (!/^\d+$/.test(epoch)) return;
+    var utc = new Date(Number(epoch) * 1000).toISOString().slice(0, 10);
+    if (local !== utc) disagreed += 1;
+    if (gen.tagDate(tag.replace(/^v/, "")) !== utc) wrong += 1;
+  });
+  check("every tag's changelog date is the UTC day of its commit", wrong === 0);
+  // The vector only means something on a history where the two clocks actually differ. This
+  // repository's does; a future checkout whose commits all landed mid-day would not, and the
+  // vector would pass without having been asked anything.
+  check("and this history has tags whose local and UTC days differ, so the rule was exercised",
+    disagreed > 0);
+
+  // A release note may pin its own date, which overrides the tag. A pinned date that disagrees
+  // with the tag it ships under is how the changelog came to carry five entries dated five days
+  // after the commits that shipped them.
+  var notesDir = path.join(ROOT, "release-notes");
+  var mismatched = [];
+  fs.readdirSync(notesDir).forEach(function (f) {
+    var m = /^v(\d+\.\d+\.\d+)\.json$/.exec(f);
+    if (!m) return;
+    var doc = JSON.parse(fs.readFileSync(path.join(notesDir, f), "utf8"));
+    if (!doc.date) return;
+    var tagged = gen.tagDate(m[1]);
+    if (tagged !== null && doc.date !== tagged) mismatched.push(f + " pins " + doc.date + ", its tag is " + tagged);
+  });
+  check("no release note pins a date its own tag disagrees with (" + mismatched.join("; ") + ")",
+    mismatched.length === 0);
+
+  // And the rendered result reads forward: an entry listed above an older one carries a date that
+  // is not earlier than it. A reader scanning the file takes the order as chronological.
+  var rows = [];
+  fs.readFileSync(path.join(ROOT, "CHANGELOG.md"), "utf8").split("\n").forEach(function (line) {
+    var m2 = /^## v(\S+) . (\d{4}-\d{2}-\d{2})/.exec(line);
+    if (m2) rows.push({ v: m2[1], d: m2[2] });
+  });
+  var backward = [];
+  for (var i = 1; i < rows.length; i++) {
+    if (rows[i].d > rows[i - 1].d) backward.push("v" + rows[i - 1].v + " " + rows[i - 1].d + " above v" + rows[i].v + " " + rows[i].d);
+  }
+  check("the changelog reads forward, newest first (" + backward.join("; ") + ")", backward.length === 0);
+  check("and it has entries to read", rows.length > 100);
+
+  // Requiring the generator must not write the file: a test that regenerates the CHANGELOG would
+  // mask a drift the release gate exists to catch.
+  var before = fs.statSync(path.join(ROOT, "CHANGELOG.md")).mtimeMs;
+  var renderer = path.join(ROOT, "scripts", "generate-changelog-entry.js");
+  delete require.cache[require.resolve(renderer)];
+  require(renderer);
+  check("requiring the renderer writes nothing",
+    fs.statSync(path.join(ROOT, "CHANGELOG.md")).mtimeMs === before);
 }
 
 // ---- wiki lastmod map: one calendar for a committed file and a modified one ------------

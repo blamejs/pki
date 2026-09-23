@@ -1,6 +1,6 @@
 {
   "version": "0.8.3",
-  "date": "2026-09-25",
+  "date": "2026-09-20",
   "headline": "A parser takes decode caps from its caller, and a resource refusal says so instead of reading as malformed input.",
   "summary": "Every format parser accepted a second argument and ignored it, so a caller who bounded a parse got the built-in limits and no indication otherwise. The caps now reach the decode at every door, and a cap may tighten below the built-in default but never past it. Alongside that, a refusal caused by a limit is reported as its own verdict rather than as a claim about the bytes: an over-deep or oversized input used to come back as `bad-der`, which sends a reader to inspect input that is fine and a cap that is too small.",
   "sections": {

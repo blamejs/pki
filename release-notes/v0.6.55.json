@@ -1,6 +1,6 @@
 {
   "version": "0.6.55",
-  "date": "2026-09-07",
+  "date": "2026-09-08",
   "headline": "A Diffie-Hellman key proves possession by agreeing a secret with the authority, without signing anything.",
   "summary": "RFC 4211 gives a key agreement key four ways to prove possession, and the fourth needs no signature: the requester and the authority agree a secret, and that secret keys a MAC over the request. pki.crmf.build assembles it, which is the last of the four it did not. Section 4.3 requires every Diffie-Hellman implementation to support this proof.",
   "sections": {

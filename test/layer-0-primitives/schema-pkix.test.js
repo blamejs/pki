@@ -1014,6 +1014,96 @@ function run() {
   testSignedEnvelopeTbs();
   testDecisionsSurviveSubstitution();
   testCoerceToDerRequiresItsOptions();
+  testPemScannerWalksForward();
+}
+
+// The scanner reads a file of encapsulated blocks (RFC 7468 sec. 2). It takes untrusted text at
+// every parse door, it decides where a block ends, and it decides whether a buffer is armored at
+// all, so each of those has to hold on a file assembled to break it rather than on a well-formed
+// one.
+function testPemScannerWalksForward() {
+  var CERT = Buffer.from([0x30, 0x03, 0x02, 0x01, 0x07]);
+  var body = CERT.toString("base64");
+  function block(beginLabel, endLabel, b64) {
+    return "-----BEGIN " + beginLabel + "-----\n" + (b64 || body) + "\n-----END " + endLabel + "-----\n";
+  }
+  var one = block("CERTIFICATE", "CERTIFICATE");
+
+  // A BEGIN line with no END of its own must not make the scan search the rest of the file again.
+  // Quadratic here is a parse-time denial of service, since PEM_MAX_BYTES admits 16 MiB of it.
+  check("an unterminated BEGIN run is walked once, not once per line", (function () {
+    // 200,000 boundary lines is 5.4 MB, inside the 16 MiB a parse accepts. One forward pass over
+    // it is tens of milliseconds. A walk that restarts after each line searches the remainder
+    // again, which is 200,000 passes over megabytes and does not finish in any bound worth
+    // writing. The gap between those is wide enough that a loaded machine cannot close it, which
+    // a ratio between two small timings cannot say.
+    var text = new Array(200001).join("-----BEGIN CERTIFICATE-----\n") + "x";
+    var t0 = Date.now();
+    var verdict = code(function () { pkix.pemDecode(text, "CERTIFICATE", errors.PathError); });
+    return Date.now() - t0 < 10000 && verdict === "pem/no-block";
+  })());
+
+  // A block closed under a label it was not opened under. The body must not run on to the next
+  // matching END, swallowing whatever lies between, and the verdict must name the label.
+  check("a block closed under a different label is refused by label, not as base64",
+    code(function () {
+      pkix.pemDecode(block("CERTIFICATE", "TRUSTED CERTIFICATE") + one, "CERTIFICATE", errors.PathError);
+    }) === "pem/label-mismatch");
+  check("CONTROL: the same two blocks, each closed under its own label, are refused for their number",
+    code(function () {
+      pkix.pemDecode(one + one, "CERTIFICATE", errors.PathError);
+    }) === "pem/multiple-blocks");
+  check("CONTROL: one of those blocks alone reads",
+    pkix.pemDecode(one, "CERTIFICATE", errors.PathError).equals(CERT));
+
+  // A boundary line is the whole line: the keyword, a label, five hyphens, and then the end of the
+  // line. Each of those three is what separates a boundary from a line of prose that resembles one,
+  // and a line failing any of them is text the scan walks past rather than a block it opens.
+  // RFC 7468 sec. 3 writes the label as `[ labelchar *( ["-" / SP] labelchar ) ]`, so an empty
+  // label is a label and a boundary carrying none is a boundary. It is refused for being the wrong
+  // label, which is a different verdict from not being a block at all.
+  check("a BEGIN line with no label opens a block whose label is empty",
+    code(function () { pkix.pemDecode("-----BEGIN -----\n" + body + "\n-----END -----\n", "CERTIFICATE", errors.PathError); }) === "pem/label-mismatch");
+  check("a BEGIN line whose label is not closed by five hyphens is prose",
+    code(function () { pkix.pemDecode("-----BEGIN CERTIFICATE---\n" + body + "\n-----END CERTIFICATE-----\n", "CERTIFICATE", errors.PathError); }) === "pem/no-block");
+  check("a BEGIN line carrying anything after its hyphens is prose",
+    code(function () { pkix.pemDecode("-----BEGIN CERTIFICATE----- (see below)\n" + body + "\n-----END CERTIFICATE-----\n", "CERTIFICATE", errors.PathError); }) === "pem/no-block");
+  check("CONTROL: prose naming a boundary mid-sentence does not open a block, and the real one still reads",
+    pkix.pemDecode("the file starts -----BEGIN CERTIFICATE----- like this\n" + one, "CERTIFICATE", errors.PathError).equals(CERT));
+
+  // Whether a buffer is armored is a question about the whole buffer. Answering it from the first
+  // 4096 bytes refuses a valid file for the length of its header, and blames the DER for it.
+  check("a PEM buffer is recognized behind more than 4 KiB of explanatory text", (function () {
+    var prose = new Array(5000).join("x") + "\n";
+    var out = pkix.coerceToDer(Buffer.from(prose + one, "latin1"),
+      { pemLabel: "CERTIFICATE", PemError: errors.PathError, ErrorClass: errors.PathError, prefix: "path" });
+    return Buffer.isBuffer(out) && out.equals(CERT);
+  })());
+  check("CONTROL: the same text as a string reads the same way",
+    pkix.pemDecode(new Array(5000).join("x") + "\n" + one, "CERTIFICATE", errors.PathError).equals(CERT));
+  check("CONTROL: a DER buffer is still read as DER, not searched for armor", (function () {
+    var out = pkix.coerceToDer(CERT,
+      { pemLabel: "CERTIFICATE", PemError: errors.PathError, ErrorClass: errors.PathError, prefix: "path" });
+    return out.equals(CERT);
+  })());
+  // A buffer that is text the whole way down and carries no boundary is not armor either. The walk
+  // reaches the end of it rather than stopping at a byte no text file carries.
+  check("a buffer of text with no boundary in it is handed on as bytes, not read as PEM", (function () {
+    var text = Buffer.from(new Array(200).join("plain text with no boundary\n"), "latin1");
+    var out = pkix.coerceToDer(text,
+      { pemLabel: "CERTIFICATE", PemError: errors.PathError, ErrorClass: errors.PathError, prefix: "path" });
+    return Buffer.isBuffer(out) && out.equals(text);
+  })());
+
+  // The RFC 8555 chain profile shares this scanner, so a block closed under another label is its
+  // verdict too rather than a base64 fault attributed to the wrong object.
+  check("the chain profile refuses a block closed under another label",
+    code(function () {
+      pkix.pemDecodeAll("-----BEGIN CERTIFICATE-----\n" + body + "\n-----END TRUSTED CERTIFICATE-----\n",
+        "CERTIFICATE", errors.PathError);
+    }) === "pem/label-mismatch");
+  check("CONTROL: the chain profile still reads a well-formed chain",
+    pkix.pemDecodeAll(one + one, "CERTIFICATE", errors.PathError).length === 2);
 }
 
 // coerceToDer builds each of its refusals out of opts, so a caller that misspells a key keeps a

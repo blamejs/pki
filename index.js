@@ -35,6 +35,7 @@ var oid       = require("./lib/oid");
 var webcrypto = require("./lib/webcrypto");
 var schema    = require("./lib/schema-all");
 var path      = require("./lib/path-validate");
+var identity  = require("./lib/identity-match");
 var ct        = require("./lib/ct");
 var tls       = require("./lib/tls-cert-compress");
 var cms       = require("./lib/cms-verify");
@@ -87,6 +88,10 @@ module.exports = {
   // `path` is RFC 5280 sec. 6 certification-path validation -- pki.path.validate
   // runs the sec. 6.1 state machine over an already-parsed path + a trust anchor.
   path:      path,
+  // `identity` is RFC 9525 service identity -- pki.identity.match says whether a certificate
+  // presents a name the client was trying to reach. A separate answer from path validation,
+  // which pki.path.validate gives; sec. 1.2 has an application need both.
+  identity:  { match: identity.match },
   // `ct` is RFC 6962 Certificate Transparency -- pki.ct.parseSctList decodes the
   // SCT-list extension a certificate / OCSP response carries; the signature is
   // surfaced raw for external verification (pki.ct.reconstructSignedData).

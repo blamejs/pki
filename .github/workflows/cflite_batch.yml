@@ -84,6 +84,11 @@ jobs:
           - cms-digest
           - dn-string
           - pkcs11-uri
+          - pem-bundle
+          - pkcs1-parse
+          - sec1-parse
+          - identity-match
+          - ocsp-http-request
           - csr-verify
           - crmf-verify
           - attrcert-verify

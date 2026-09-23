@@ -528,7 +528,8 @@ function testKnownKeys() {
         errOf(function () { identifier.optionsObject(liar, E, "x/bad", "opts"); }).code === "x/bad");
   // optionsObject hands the caller's own bag back. Which names a caller supplied is decided by
   // where they sit, so returning a copy would throw that away; what it establishes is that the
-  // options are values, and that reading them does not change the set about to be checked.
+  // options are values, that reading them does not change the set about to be checked, and that
+  // none of them is reached through a prototype the caller does not own.
   var caller = { alpha: 1, beta: 2 };
   var settled = identifier.optionsObject(caller, E, "x/bad", "opts");
   check("optionsObject returns the caller's own bag", settled === caller);
@@ -935,7 +936,101 @@ async function run() {
   testPollutionPlantedBeforeLoad();
   testGlobalScanNoAccessor();
   testAssertCallable();
+  testOptionsObjectCarriesOnlyWhatTheCallerSet();
   await testConsumersFailClosed();
+}
+
+// guard.identifier.optionsObject is the door every verb's options go through, and the verb then
+// reads its fields with `opts.name`, which walks the prototype chain. A name on a prototype the
+// caller does not own therefore answers as though the caller had passed it.
+//
+// The unknown-key refusal already walks the chain and catches a planted name that is not an option
+// at all. A planted name that IS an option passes it, because the name is real. These pin the
+// other half: what comes back reads undefined for such a name, so the verb behaves as though
+// nobody passed it, while the call itself still runs.
+function testOptionsObjectCarriesOnlyWhatTheCallerSet() {
+  var KNOWN_OPTS = { alpha: 1, beta: 1 };
+
+  // A KNOWN option name planted on Object.prototype, non-enumerable so `Object.keys` never shows
+  // it. `{}.beta` answers `true`, and the verb would read it as an option that was passed.
+  var plantedRead, plantedAccepted, restored;
+  Object.defineProperty(Object.prototype, "beta", { value: true, writable: true, configurable: true, enumerable: false });
+  try {
+    var bag = identifier.optionsObject({ alpha: 1 }, E, "x/bad", "verb: opts");
+    plantedAccepted = codeOf(function () { identifier.assertKnownKeys(bag, KNOWN_OPTS, E, "x/bad", "unknown "); });
+    plantedRead = bag.beta;
+  } finally {
+    restored = delete Object.prototype.beta;
+  }
+  check("a KNOWN option planted on Object.prototype reads as unset", plantedRead === undefined);
+  check("and the call still runs rather than failing on every invocation",
+    plantedAccepted === "NO-THROW");
+  check("the pollution vector leaves Object.prototype as it found it",
+    restored === true && !("beta" in Object.prototype));
+
+  // The caller's OWN field wins over a planted one of the same name: it is not shadowed, because
+  // its descriptor is on the object that was passed.
+  var ownWins, restored2;
+  Object.defineProperty(Object.prototype, "beta", { value: true, writable: true, configurable: true, enumerable: false });
+  try {
+    ownWins = identifier.optionsObject({ alpha: 1, beta: false }, E, "x/bad", "verb: opts").beta;
+  } finally { restored2 = delete Object.prototype.beta; }
+  check("a caller's own value wins over a planted one of the same name", ownWins === false);
+  check("the second pollution vector cleans up too", restored2 === true);
+
+  // CONTROL: with nothing planted the caller's object comes back untouched, which is every call
+  // outside a process something has written to.
+  var clean = { alpha: 1, beta: true };
+  check("CONTROL: with nothing planted the caller's own bag is what comes back",
+    identifier.optionsObject(clean, E, "x/bad", "verb: opts") === clean);
+
+  // A prototype the CALLER supplied is how a defaults bag is written, and it is untouched: those
+  // names are the caller's, whatever their type. A function option is the case that matters,
+  // because a verb handed no transport reaches for the built-in network client instead.
+  var injected = function () { return "injected"; };
+  var defaults = Object.create({ alpha: injected, beta: true });
+  defaults.gammaOwn = 1;
+  var overDefaults = identifier.optionsObject(defaults, E, "x/bad", "verb: opts");
+  check("a defaults object the caller put under their bag still supplies its options",
+    overDefaults.alpha === injected && overDefaults.beta === true && overDefaults.gammaOwn === 1);
+
+  // ...and a defaults bag in a polluted process keeps its own options while the planted one is
+  // still dropped, so the two rules do not trade against each other.
+  var bothRead, restored3;
+  Object.defineProperty(Object.prototype, "beta", { value: "planted", writable: true, configurable: true, enumerable: false });
+  try {
+    var mixed = Object.create({ alpha: injected });
+    mixed.gammaOwn = 1;
+    var settledMixed = identifier.optionsObject(mixed, E, "x/bad", "verb: opts");
+    bothRead = { alpha: settledMixed.alpha, beta: settledMixed.beta, gammaOwn: settledMixed.gammaOwn };
+  } finally { restored3 = delete Object.prototype.beta; }
+  check("a defaults bag keeps its options while a planted name still reads as unset",
+    bothRead.alpha === injected && bothRead.gammaOwn === 1 && bothRead.beta === undefined);
+  check("the third pollution vector cleans up too", restored3 === true);
+
+  // A verb that forwards its options builds the forwarded set by copying own keys, so the bag that
+  // comes back has to carry the caller's fields as its own. One whose fields had all become
+  // inherited arrives at the inner call carrying none of them, and the verb reports the caller
+  // omitted an option they passed.
+  var forwarded, restored4;
+  Object.defineProperty(Object.prototype, "beta", { value: true, writable: true, configurable: true, enumerable: false });
+  try {
+    var passed = { alpha: 1, gammaOwn: 2 };
+    var got = identifier.optionsObject(passed, E, "x/bad", "verb: opts");
+    var copy = Object.create(null);
+    Reflect.ownKeys(got).forEach(function (k) { copy[k] = got[k]; });
+    forwarded = { alpha: copy.alpha, gammaOwn: copy.gammaOwn, beta: copy.beta };
+  } finally { restored4 = delete Object.prototype.beta; }
+  check("the caller's fields survive a verb that forwards by copying own keys",
+    forwarded.alpha === 1 && forwarded.gammaOwn === 2);
+  check("...while the planted name is not among them", forwarded.beta === undefined);
+  check("the fourth pollution vector cleans up too", restored4 === true);
+
+  // A function is not an options bag at all, so Function.prototype does not arise at this door.
+  // It arises where a flag is read off a caller's FUNCTION, which is a separate door with its own
+  // vectors (the transport's blocksPrivateAddresses declaration, in path-validate.test.js).
+  check("a function is not an options bag",
+    codeOf(function () { identifier.optionsObject(function () { }, E, "x/bad", "verb: opts"); }) === "x/bad");
 }
 
 // guard.identifier.assertCallable -- an injectable callback option is refused unless it is callable.
