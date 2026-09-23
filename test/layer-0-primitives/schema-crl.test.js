@@ -183,6 +183,20 @@ function testExtensionStrictness() {
   })());
   // cRLNumber is INTEGER (0..MAX) — a negative value is malformed.
   check("negative cRLNumber rejected", parseCode(crl({ version: 1n, crlExtensions: [ext("2.5.29.20", b.integer(-1n))] })) === "crl/bad-extension-value");
+  // Which extensions the PARSE decodes in place is a closed set, and it is not the set the CRL
+  // profile names. deltaCRLIndicator is profiled at CRL scope by RFC 5280 sec. 5.2.4 and is still
+  // handed back as its bytes, because a parse that decoded it would refuse a CRL whose value is
+  // malformed, and `pki.lint.crl` exists to REPORT on exactly that CRL rather than be unable to
+  // open it. The three the parse does decode are shipped surface and stay.
+  check("deltaCRLIndicator is handed back as its bytes, not decoded by the parse", (function () {
+    var m = pki.schema.crl.parse(crl({ version: 1n, crlExtensions: [ext("2.5.29.27", b.integer(5n)), ext("2.5.29.20", b.integer(9n))] }));
+    var e = m.crlExtensions.filter(function (x) { return x.oid === "2.5.29.27"; })[0];
+    return e && Buffer.isBuffer(e.value);
+  })());
+  check("a deltaCRLIndicator whose value is not an INTEGER at all still parses, so a linter can open it",
+    parseCode(crl({ version: 1n, crlExtensions: [ext("2.5.29.27", b.sequence([])), ext("2.5.29.20", b.integer(9n))] })) === "NO-THROW");
+  check("...and so does a negative one, which is a profile fault rather than a parse fault",
+    parseCode(crl({ version: 1n, crlExtensions: [ext("2.5.29.27", b.integer(-1n)), ext("2.5.29.20", b.integer(9n))] })) === "NO-THROW");
   // cRLNumber is INTEGER — encoded as ENUMERATED (which shares INTEGER's content
   // encoding) it is a type mismatch, not a valid cRLNumber (fail-open avoided).
   check("cRLNumber as ENUMERATED rejected (cRLNumber is INTEGER)",
