@@ -6175,6 +6175,61 @@ async function testFetchingChecker() {
     rOld.valid === true && rNew.valid === true);
   check("F66. ...the second key's own list is fetched", tRotate.calls.length === 2);
 
+  // A certificate may name a delta location and no base one. `crlChecker` treats an unmerged delta
+  // that lists the serial as authoritative, so the delta is worth asking for on its own rather
+  // than only alongside a base that answered.
+  var DELTA_ONLY = "http://crl.example/delta-only.crl";
+  var freshestOnly = ext("2.5.29.46", false, b.sequence([b.sequence([b.contextConstructed(0,
+    b.contextConstructed(0, b.contextPrimitive(6, Buffer.from(DELTA_ONLY, "ascii"))))])]));
+  var leafDeltaOnly = await mkCert({ subject: "DeltaOnlyLeaf", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 80, extensions: [freshestOnly] });
+  var deltaRevoking = await mkCrl({ issuer: "Root", signWith: "ed25519",
+    revoked: [{ serial: SER + 80, date: new Date("2027-01-01T00:00:00Z") }],
+    extensions: [crlNumberExt(70), ext("2.5.29.27", true, b.integer(69n))] });
+  var tDeltaOnly = (function () { var o = {}; o[DELTA_ONLY] = ok(deltaRevoking, "application/pkix-crl"); return stub(o); })();
+  var rDeltaOnly = await run([leafDeltaOnly], fetching(tDeltaOnly));
+  check("F67. a certificate naming only a delta location has it asked for",
+    tDeltaOnly.calls.length === 1 && tDeltaOnly.calls[0].url === DELTA_ONLY);
+  check("F68. ...and the delta listing the serial is a revocation, not an undetermined status",
+    rDeltaOnly.valid === false && rowOf(rDeltaOnly, 0, "revocation").code === "path/revoked");
+
+  // `nonce` turns on replay binding, so a value that is not the boolean it documents must not read
+  // as off: an operator who wrote `nonce: "true"` asked for the control and would get none.
+  var nonceTypes = ["true", 1, {}, [], "yes"];
+  var refusedTypes = 0;
+  for (var nt = 0; nt < nonceTypes.length; nt++) {
+    try {
+      pki.path.fetchingChecker({ transport: stub({}), nonce: nonceTypes[nt] });
+    } catch (e) { if (e.code === "path/bad-input") refusedTypes += 1; }
+  }
+  check("F69. a nonce setting that is not a boolean is refused rather than read as off",
+    refusedTypes === nonceTypes.length);
+  check("F70. CONTROL: both booleans and an absent value are accepted",
+    typeof pki.path.fetchingChecker({ transport: stub({}), nonce: true }).check === "function" &&
+    typeof pki.path.fetchingChecker({ transport: stub({}), nonce: false }).check === "function" &&
+    typeof pki.path.fetchingChecker({ transport: stub({}) }).check === "function");
+
+  // The cache is read before the fetch and written after it, so the two have to be keyed from the
+  // same place. A CRL whose issuer Name is the same DN in a different string encoding is accepted
+  // by the name comparison, and keying the write off the CRL's own bytes would file the entry
+  // under a name the next lookup never forms.
+  var ENC_URL = "http://crl.example/encoding.crl";
+  var printableRoot = [b.set([b.sequence([b.oid("2.5.4.3"), b.printable("EncRoot")])])];
+  var utf8Root = [b.set([b.sequence([b.oid("2.5.4.3"), b.utf8("EncRoot")])])];
+  var encAnchor = await mkAnchor("ed25519", utf8Root);
+  var leafEnc = await mkCert({ subject: "EncLeaf", issuer: utf8Root, signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 90,
+    extensions: [cdpExt([distPoint(dpnFull([gnUri(ENC_URL)]))])] });
+  var crlPrintable = await mkCrl({ issuer: printableRoot, signWith: "ed25519", extensions: [crlNumberExt(80)] });
+  var tEnc = (function () { var o = {}; o[ENC_URL] = ok(crlPrintable, "application/pkix-crl"); return stub(o); })();
+  var encChecker = pki.path.fetchingChecker({ transport: tEnc, retries: 0 });
+  var rEnc1 = await run([leafEnc], { time: T2027, trustAnchors: encAnchor, revocationChecker: encChecker });
+  await run([leafEnc], { time: T2027, trustAnchors: encAnchor, revocationChecker: encChecker });
+  check("F71. a CRL whose issuer Name is the same DN in another encoding still answers",
+    rEnc1.valid === true);
+  check("F72. ...and is kept where the next lookup will find it, so it is fetched once",
+    tEnc.calls.length === 1);
+
   // A nonce asks this responder this question now, so a kept answer cannot be the answer to it.
   var nonceAsks = 0;
   var tNonceCache = (function () {
