@@ -2029,10 +2029,29 @@ function testNoDuplicateCodeBlocks() {
         "lib/schema-attrcert.js:<top>", "lib/tls-cert-compress.js:<top>",
         "lib/schema-crl.js:<top>", "lib/schema-ocsp.js:<top>",
         "lib/cmp-build.js:<top>", "lib/crmf-sign.js:<top>", "lib/key.js:<top>", "lib/sigstore.js:<top>",
-        "lib/ip-utils.js:<top>", "lib/guard-encoding.js:_alphabet",
+        "lib/ip-utils.js:<top>", "lib/pkcs11-uri.js:<top>", "lib/guard-encoding.js:_alphabet",
       ],
       mode: "family-subset",
       reason: "The per-module capture header binds each module's subset of guard-intrinsic to local names at load. The repeated shape is a deliberate convention so the set is comparable across modules; the subsets differ per module and a shared indirection would put back the call-site property read the capture removes. The regex-free character scanners (the IP-literal parser, the base-N alphabet-table builder) share the same captured-primitive binding run and char-code-loop idiom while doing genuinely different work.",
+    },
+    {
+      // The ASCII character-range idiom a regex-free scanner is written in: `c >= 0x30 && c <= 0x39`
+      // and its letter equivalents, repeated across readers that scan genuinely different grammars
+      // (a percent-encoder, a base64 filter, a URI attribute reader, an IP-literal parser, a digit
+      // predicate). What was genuinely shared here was the whole four-range hex-nibble function,
+      // and that IS extracted, to guard.encoding.hexNibble, which all three former copies now call;
+      // guard.encoding.isAlphanumericByte holds the letter-and-digit base the same way. What is left
+      // is the idiom itself, five tokens wide, and wrapping a single range comparison in a call
+      // would put a function invocation in a per-character loop for no rule anyone could get wrong.
+      // family-subset so any 3+ of the scanners match as more are written.
+      mode: "family-subset",
+      files: [
+        "lib/http-digest.js:_pctEncodeUtf8", "lib/schema-pkix.js:_keepBase64",
+        "lib/pkcs11-uri.js:_attribute", "lib/pkcs11-uri.js:_decimal",
+        "lib/guard-encoding.js:hexNibble", "lib/guard-encoding.js:isAlphanumericByte",
+        "lib/ip-utils.js:_isDigitCode", "lib/pki-build.js:_isDigitCode",
+      ],
+      reason: "The ASCII range idiom a regex-free character scanner is written in. The shareable whole-function duplication (hex-nibble decoding) is extracted to guard.encoding.hexNibble and the letter-and-digit base to guard.encoding.isAlphanumericByte; what repeats after that is a single range comparison inside per-character loops over different grammars.",
     },
     {
       // The per-format-module PEM footer: pemDecode / pemEncode are thin one-line
@@ -3236,14 +3255,14 @@ function testGuardReadsRuntimeLive() {
     "lib/crmf-sign.js": 36,
     "lib/path-validate.js": 109,
     "lib/webauthn.js": 169,
-    "lib/asn1-der.js": 112,
+    "lib/asn1-der.js": 105,
     "lib/trust.js": 108,
     "lib/cms-sign.js": 60,
     "lib/webauthn-mds.js": 90,
     "lib/attrcert-sign.js": 89,
     "lib/tsp-sign.js": 50,
     "lib/http-digest.js": 73,
-    "lib/pkcs12-build.js": 64,
+    "lib/pkcs12-build.js": 63,
     "lib/ct.js": 76,
     "lib/cms-verify.js": 19,
     "lib/cms-encrypt.js": 66,

@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.8.6",
+  "packageVersion": "0.8.7",
   "surface": {
     "C": {
       "kind": "object",
@@ -2392,6 +2392,10 @@
           "kind": "function",
           "arity": 3
         },
+        "Pkcs11Error": {
+          "kind": "function",
+          "arity": 3
+        },
         "Pkcs12Error": {
           "kind": "function",
           "arity": 3
@@ -2949,6 +2953,19 @@
         "verifyOcspResponse": {
           "kind": "function",
           "arity": 5
+        }
+      }
+    },
+    "pkcs11": {
+      "kind": "object",
+      "members": {
+        "formatUri": {
+          "kind": "function",
+          "arity": 1
+        },
+        "parseUri": {
+          "kind": "function",
+          "arity": 1
         }
       }
     },
@@ -3830,6 +3847,8 @@
     "pki.path.ocspChecker": "0.1.32",
     "pki.path.verifyOcspResponse": "0.2.22",
     "pki.path.build": "0.3.7",
+    "pki.pkcs11.parseUri": "0.8.7",
+    "pki.pkcs11.formatUri": "0.8.7",
     "pki.pkcs12.build": "0.3.11",
     "pki.pkcs12.verifyMac": "0.3.11",
     "pki.pkcs12.open": "0.3.12",

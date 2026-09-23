@@ -401,6 +401,15 @@ function testBuildEncoder() {
   check("build-textString rejects a lone high surrogate", code(function () { b.textString(loneHigh); }) === "cbor/bad-utf8");
   check("build-textString rejects a lone low surrogate", code(function () { b.textString(loneLow); }) === "cbor/bad-utf8");
   check("build-textString accepts a valid surrogate pair", r.textString(d(b.textString(pair))) === pair);
+  // A text builder encodes the caller's text. Turning something else into text encodes a value the
+  // caller never named: an object arrives as its default string form and a list as its members
+  // joined with a comma.
+  check("build-textString refuses an object", code(function () { b.textString({ a: 1 }); }) === "cbor/bad-argument");
+  check("build-textString refuses a list", code(function () { b.textString(["a", "b"]); }) === "cbor/bad-argument");
+  check("build-textString refuses a number", code(function () { b.textString(7); }) === "cbor/bad-argument");
+  check("build-textString refuses a value that is not there",
+    code(function () { b.textString(null); }) === "cbor/bad-argument" &&
+    code(function () { b.textString(undefined); }) === "cbor/bad-argument");
   // array + map compose; map keys are sorted + deduped (decode enforces the same, so decode accepts).
   var arr = b.array([b.uint(1n), b.textString("a"), b.byteString(Buffer.from([0xaa]))]);
   check("build-array head + child count", hex(arr).slice(0, 2) === "83" && d(arr).children.length === 3);

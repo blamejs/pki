@@ -92,6 +92,7 @@ jobs:
           - cms-verify
           - cms-digest
           - dn-string
+          - pkcs11-uri
           - csr-verify
           - crmf-verify
           - attrcert-verify

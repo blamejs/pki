@@ -34,7 +34,12 @@ var C8 = path.join(ROOT, "node_modules", "c8", "bin", "c8.js");
 var INCLUDE = ["--include=lib/**", "--include=index.js"];
 var detail = process.argv.indexOf("--detail") >= 0;
 
-fs.rmSync(COV, { recursive: true, force: true });
+// A file-syncing client or an indexer holding a handle on a directory this run created makes the
+// removal fail with EPERM or EBUSY on Windows. Both are retryable, so every removal here waits
+// for the handle to close rather than ending the run.
+var RM = { recursive: true, force: true, maxRetries: 20, retryDelay: 150 };
+
+fs.rmSync(COV, RM);
 fs.mkdirSync(MERGE, { recursive: true });
 
 // One coverage layer: run its entrypoint under node with NODE_V8_COVERAGE pointed at a PER-LAYER directory,
@@ -45,18 +50,18 @@ fs.mkdirSync(MERGE, { recursive: true });
 function layer(opts) {
   process.stdout.write("\n[coverage-unified] === " + opts.label + " ===\n");
   var layerDir = path.join(COV, "tmp-" + opts.slug);
-  fs.rmSync(layerDir, { recursive: true, force: true });
+  fs.rmSync(layerDir, RM);
   fs.mkdirSync(layerDir, { recursive: true });
   var env = Object.assign({}, process.env, { NODE_V8_COVERAGE: layerDir });
   var r = spawnSync(process.execPath, opts.cmd, { cwd: opts.cwd || ROOT, stdio: "inherit", env: env });
   if (r.status !== 0) {
-    fs.rmSync(layerDir, { recursive: true, force: true });   // discard a failed layer's coverage -- never merge it
+    fs.rmSync(layerDir, RM);   // discard a failed layer's coverage -- never merge it
     if (opts.required) { process.stderr.write("[coverage-unified] " + opts.label + " FAILED (exit " + r.status + ") -- required layer\n"); process.exit(r.status || 1); }
     process.stderr.write("[coverage-unified] " + opts.label + " skipped (exit " + r.status + ") -- coverage discarded, continuing\n");
     return false;
   }
   fs.readdirSync(layerDir).forEach(function (fn) { fs.renameSync(path.join(layerDir, fn), path.join(MERGE, fn)); });
-  fs.rmSync(layerDir, { recursive: true, force: true });
+  fs.rmSync(layerDir, RM);
   return true;
 }
 

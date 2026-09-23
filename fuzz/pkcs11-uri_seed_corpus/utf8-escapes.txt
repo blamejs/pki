@@ -1,0 +1,1 @@
+pkcs11:token=%C3%A9%E2%82%AC;object=%F0%9F%94%91;id=%00%FF

@@ -357,6 +357,26 @@ security-only patches after the next major releases.
   a hash or trusts a certificate, and it rejects a `SigningCertificateV2` hash
   algorithm encoded equal to its DEFAULT as non-canonical DER, closing an
   encode ambiguity a signature check would otherwise have to tolerate.
+- **A PKCS #11 URI that names a module or a PIN the operator did not intend.** A
+  `pkcs11:` URI arrives as a command-line argument, a config field or an
+  environment variable, so `pki.pkcs11.parseUri` reads the RFC 7512 sec. 2.3 and
+  sec. 2.4 grammar rather than a general URI reader. A character a component
+  admits only percent-encoded, a truncated or non-hexadecimal escape, a value
+  that is not valid UTF-8, an empty attribute between two delimiters, and an
+  attribute repeated where the RFC admits it once are each a typed `pkcs11/*`
+  refusal. Two more are the refusals sec. 2.4 asks a consumer for: a URI
+  carrying both `pin-source` and `pin-value` leaves which PIN applies
+  undecided, and a `module-path` that is not absolute lets the shared object a
+  process loads depend on the directory it is started from. An attribute name
+  and a `type` value are folded with the ASCII fold the grammar is written in,
+  so a name carrying a character Unicode folds onto an ASCII letter, such as
+  the Kelvin sign onto `k`, is refused rather than read as the standard
+  attribute it resembles and then held to none of that attribute's rules.
+  `pki.pkcs11.formatUri` is held to the same rules and reads each component
+  once before it writes anything, and a vendor attribute name is held to the
+  vendor grammar and refused when a standard attribute owns it, so a name
+  carrying a delimiter cannot put an attribute into the URI that the caller
+  never named. Nothing here loads a PKCS #11 module or talks to a token.
 
 ### Keys, secrets, and the crypto engine
 

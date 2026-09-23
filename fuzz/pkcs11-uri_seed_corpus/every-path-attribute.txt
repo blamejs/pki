@@ -1,0 +1,1 @@
+pkcs11:token=A;manufacturer=B;serial=C;model=D;library-manufacturer=E;library-description=F;library-version=2.30;object=G;type=private;id=%01%02%FE;slot-manufacturer=H;slot-description=I;slot-id=42
