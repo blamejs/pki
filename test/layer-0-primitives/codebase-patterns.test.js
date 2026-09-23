@@ -3278,7 +3278,7 @@ function testGuardReadsRuntimeLive() {
     "lib/x509-sign.js": 26,
     "lib/schema-attrcert.js": 26,
     "lib/tls-cert-compress.js": 18,
-    "lib/schema-crl.js": 10,
+    "lib/schema-crl.js": 7,
     "lib/schema-ocsp.js": 9,
   };
   var counts = {};
