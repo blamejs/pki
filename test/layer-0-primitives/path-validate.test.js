@@ -1270,19 +1270,18 @@ async function testSelfIssuedAndConstraints() {
   check("a permitted base the wildcard only reaches into does not permit it",
     resWcNarrow.valid === false && failCodes(resWcNarrow).indexOf("path/name-constraint-not-permitted") !== -1);
 
-  // A URI subtree base of a single label is one the comparison cannot read as a fully qualified
-  // domain name (RFC 5280 sec. 4.2.1.10), so every URI-bearing certificate under it is refused,
-  // whether or not the URI is one the base was meant to cover. The same base is refused at the
-  // configuration door, so an operator meets this at `pki.trust.anchor` rather than at validation.
+  // RFC 5280 sec. 4.2.1.10 requires a URI constraint to be a fully qualified domain name and names
+  // in the same sentence what that excludes: a URI with no authority component, and one whose
+  // authority is an IP address. It states no label count, so a base of one label constrains a whole
+  // top-level domain, which is how a delegation to a single TLD is written.
   var uInter = await mkCert({ subject: "UriNcInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt([gnUri(".com")], null)] });
   var uLeafIn = await mkCert({ subject: "UriNcLeafA", issuer: "UriNcInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("https://host.example.com/x")])] });
   var uLeafOut = await mkCert({ subject: "UriNcLeafB", issuer: "UriNcInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("https://host.example.org/x")])] });
   var resUriIn = await run([uInter, uLeafIn], { time: T2027, trustAnchors: anchor });
   var resUriOut = await run([uInter, uLeafOut], { time: T2027, trustAnchors: anchor });
-  check("a single-label URI subtree base refuses a URI it would cover",
-    resUriIn.valid === false && failCodes(resUriIn).indexOf("path/name-constraint-unsupported") !== -1);
-  check("a single-label URI subtree base refuses a URI outside it too",
-    resUriOut.valid === false && failCodes(resUriOut).indexOf("path/name-constraint-unsupported") !== -1);
+  check("a single-label URI subtree base permits a URI under it", resUriIn.valid === true);
+  check("and does not permit one outside it, so the base decides both ways",
+    resUriOut.valid === false && failCodes(resUriOut).indexOf("path/name-constraint-not-permitted") !== -1);
   var fqInter = await mkCert({ subject: "FqNcInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt([gnUri(".example.com")], null)] });
   var fqLeaf = await mkCert({ subject: "FqNcLeaf", issuer: "FqNcInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("https://host.example.com/x")])] });
   check("a fully qualified URI subtree base admits a URI beneath it",
@@ -1527,6 +1526,34 @@ async function testCoreRejections() {
   var leafUriSub = await mkCert({ subject: "UriSubLeaf", issuer: "UriHostInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("https://host.evil.example/x")])] });
   var res16dSub = await run([interUriHost, leafUriSub], { time: T2027, trustAnchors: anchor });
   check("bare-host URI constraint does NOT match a subdomain", res16dSub.valid === true);
+
+  // RFC 5280 sec. 4.2.1.10 requires a URI constraint to be a fully qualified domain name and says
+  // in the same sentence what that excludes: a URI with no authority, and one whose authority is
+  // an IP address. It states no label count, so a base naming one label constrains a whole
+  // top-level domain, which is how a delegation to a single TLD is written.
+  var interTld = await mkCert({ subject: "TldInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt(null, [gnUri(".example")])] });
+  var leafTld = await mkCert({ subject: "TldLeaf", issuer: "TldInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("https://host.sub.example/x")])] });
+  var resTld = await run([interTld, leafTld], { time: T2027, trustAnchors: anchor });
+  check("a single-label URI base excludes a host under it",
+    resTld.valid === false && failCodes(resTld).indexOf("path/name-constraint-excluded") !== -1);
+  // CONTROL: the same constraint leaves a host outside that top-level domain alone, so the base
+  // decides both ways rather than being read as covering everything or nothing.
+  var leafTldOut = await mkCert({ subject: "TldOutLeaf", issuer: "TldInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("https://host.sub.test/x")])] });
+  var resTldOut = await run([interTld, leafTldOut], { time: T2027, trustAnchors: anchor });
+  check("CONTROL: and leaves a host outside it alone", resTldOut.valid === true);
+
+  // The comparison reads a host by its labels, so a host carrying an empty label is not a host and
+  // is not compared. Read by character class alone it would have passed, and the suffix match
+  // would have permitted it under a base it does not belong to.
+  var interEmptyLabel = await mkCert({ subject: "ELInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt([gnUri(".b.example")], null)] });
+  var leafEmptyLabel = await mkCert({ subject: "ELLeaf", issuer: "ELInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("https://a..b.example/x")])] });
+  var resEmptyLabel = await run([interEmptyLabel, leafEmptyLabel], { time: T2027, trustAnchors: anchor });
+  check("a URI host carrying an empty label is not permitted by a base it appears to end in",
+    resEmptyLabel.valid === false);
+  // CONTROL: the same permitted base admits an ordinary host under it.
+  var leafEmptyOk = await mkCert({ subject: "ELOkLeaf", issuer: "ELInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("https://a.b.example/x")])] });
+  var resEmptyOk = await run([interEmptyLabel, leafEmptyOk], { time: T2027, trustAnchors: anchor });
+  check("CONTROL: an ordinary host under that base is permitted", resEmptyOk.valid === true);
 
   // emailAddress in the SUBJECT DN checked as an rfc822Name constraint (§I9).
   var interEm = await mkCert({ subject: "EmInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt(null, [gnEmail("banned.example")])] });
@@ -2858,16 +2885,26 @@ async function testRfc5280ConformanceMusts() {
   var resEmRfcSan = await run([interEmSan, leafEmRfcSan], { time: T2027, trustAnchors: anchor });
   check("control: an rfc822Name SAN suppresses the legacy DN-email check", resEmRfcSan.valid === true);
 
-  // RFC 5280 4.2.1.10: a URI SAN whose authority host is not a FQDN (an IP
-  // literal or a dotless label such as localhost) cannot be matched against a
-  // URI constraint — fail closed rather than pass it as an ordinary non-match.
+  // RFC 5280 sec. 4.2.1.10 names what a URI SAN cannot carry and still be compared against a URI
+  // constraint: no authority component, or an authority whose host is an IP address. Each fails
+  // closed rather than passing as an ordinary non-match. A host of one label is not on that list
+  // and is compared like any other host, which is what OpenSSL nc_uri and Go's
+  // domainToReverseLabels both do.
   var interUriFqdn = await mkCert({ subject: "UriFqdnInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt(null, [gnUri("evil.com")])]) });
   var leafUriIp = await mkCert({ subject: "UriIpLeaf", issuer: "UriFqdnInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("https://127.0.0.1/")])] });
   var resUriIp = await run([interUriFqdn, leafUriIp], { time: T2027, trustAnchors: anchor });
   check("URI SAN with an IP-literal host fails closed under a URI constraint", resUriIp.valid === false && failCodes(resUriIp).indexOf("path/name-constraint-unsupported") !== -1);
   var leafUriLocal = await mkCert({ subject: "UriLocalLeaf", issuer: "UriFqdnInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("https://localhost/")])] });
   var resUriLocal = await run([interUriFqdn, leafUriLocal], { time: T2027, trustAnchors: anchor });
-  check("URI SAN with a dotless host fails closed under a URI constraint", resUriLocal.valid === false && failCodes(resUriLocal).indexOf("path/name-constraint-unsupported") !== -1);
+  check("URI SAN with a single-label host is compared, and does not match an unrelated excluded base",
+    resUriLocal.valid === true);
+  // ...and the same host IS excluded by a base that names it, so comparing it is not the same as
+  // ignoring it.
+  var interUriLocalNc = await mkCert({ subject: "UriLocalNcInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt(null, [gnUri("localhost")])]) });
+  var leafUriLocal2 = await mkCert({ subject: "UriLocalLeaf2", issuer: "UriLocalNcInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("https://localhost/")])] });
+  var resUriLocal2 = await run([interUriLocalNc, leafUriLocal2], { time: T2027, trustAnchors: anchor });
+  check("a single-label URI host is excluded by a base naming it",
+    resUriLocal2.valid === false && failCodes(resUriLocal2).indexOf("path/name-constraint-excluded") !== -1);
   // control: a FQDN URI host outside the excluded set validates.
   var leafUriOk = await mkCert({ subject: "UriOkLeaf", issuer: "UriFqdnInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("https://good.example/")])] });
   var resUriOk = await run([interUriFqdn, leafUriOk], { time: T2027, trustAnchors: anchor });
@@ -5367,6 +5404,946 @@ async function runSuite() {
   await testTrustAnchorsPlural();
   await testKeyStrengthFloor();
   await testNameConstraintFormScope();
+  await testFetchingChecker();
+  await testFetchingCheckerEdges();
+}
+
+// pki.path.fetchingChecker reads the revocation locations out of the certificate and asks for
+// them over the caller's transport. What it decides is which bytes to hand over; every acceptance
+// rule stays where it already lives, in crlChecker and in verifyOcspResponse. The transport here
+// is a stub returning scripted bytes, so no vector opens a socket.
+//
+// The load-bearing property is the failure posture: RFC 5280 sec. 6.3.3's closing paragraph has an
+// undetermined status where a check cannot be completed, never an unrevoked one, and a checker
+// that THROWS is not waivable by opts.softFail because validate sets `failed` before it reads the
+// option. So every fault has to come back as a verdict.
+async function testFetchingChecker() {
+  var anchor = await mkAnchor("ed25519", "Root");
+  var CRL_URL = "http://crl.example/fetch.crl";
+  var OCSP_URL = "http://ocsp.example/resp";
+  var SER = 9100;
+
+  function stub(script) {
+    var calls = [];
+    var fn = function (req) {
+      calls.push({ url: req.url, method: req.method });
+      // An OCSP GET carries the request in the URL, so a route matches by prefix as well as
+      // exactly; that is the shape RFC 6960 Appendix A.1 gives the request.
+      var hit = script[req.url];
+      if (hit === undefined) {
+        var keys = Object.keys(script);
+        for (var i = 0; i < keys.length; i++) {
+          if (req.url.indexOf(keys[i]) === 0) { hit = script[keys[i]]; break; }
+        }
+      }
+      if (typeof hit === "function") return hit(req);
+      if (hit === undefined) return Promise.reject(new Error("no route for " + req.url));
+      return Promise.resolve(hit);
+    };
+    fn.blocksPrivateAddresses = true;
+    fn.calls = calls;
+    return fn;
+  }
+  function ok(body, type) {
+    return { status: 200, headers: { "content-type": type }, body: body };
+  }
+  function fetching(transport, extra) {
+    return Object.assign({ time: T2027, trustAnchors: anchor,
+      revocationChecker: pki.path.fetchingChecker(Object.assign({ transport: transport }, extra || {})) });
+  }
+  function rowOf(res, index, name) {
+    for (var i = 0; i < res.results.length; i++) {
+      if (res.results[i].index !== index) continue;
+      for (var k = 0; k < res.results[i].checks.length; k++) {
+        if (res.results[i].checks[k].name === name) return res.results[i].checks[k];
+      }
+    }
+    return null;
+  }
+
+  var leafCdp = await mkCert({ subject: "FetchLeaf", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER, extensions: [cdpExt([distPoint(dpnFull([gnUri(CRL_URL)]))])] });
+  var cleanCrl = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(1)] });
+  var revokedCrl = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(2)],
+    revoked: [{ serial: SER, date: new Date("2027-01-01T00:00:00Z") }] });
+
+  // ---- the accept path ------------------------------------------------
+  var tGood = (function () { var o = {}; o[CRL_URL] = ok(cleanCrl, "application/pkix-crl"); return stub(o); })();
+  var rGood = await run([leafCdp], fetching(tGood));
+  check("F1. a fetched CRL that does not list the serial establishes good",
+    rGood.valid === true && rowOf(rGood, 0, "revocation").status === "good");
+  check("F2. ...and exactly one request was made, to the URL the certificate named",
+    tGood.calls.length === 1 && tGood.calls[0].url === CRL_URL && tGood.calls[0].method === "GET");
+
+  var tRevoked = (function () { var o = {}; o[CRL_URL] = ok(revokedCrl, "application/pkix-crl"); return stub(o); })();
+  var rRevoked = await run([leafCdp], fetching(tRevoked));
+  check("F3. a fetched CRL listing the serial makes the path invalid with path/revoked",
+    rRevoked.valid === false && rowOf(rRevoked, 0, "revocation").code === "path/revoked");
+
+  // ---- the failure posture, which is what softFail turns on ------------
+  var faults = [
+    ["a transport that rejects", function () { return Promise.reject(new Error("connect ECONNREFUSED")); }],
+    ["a transport that throws synchronously", function () { throw new Error("boom"); }],
+    ["a transport returning a non-thenable", function () { return { status: 200 }; }],
+    ["a non-200 status", function () { return Promise.resolve({ status: 404, headers: {}, body: Buffer.alloc(0) }); }],
+    ["an empty body", function () { return Promise.resolve(ok(Buffer.alloc(0), "application/pkix-crl")); }],
+    ["a body that is not a CRL", function () { return Promise.resolve(ok(Buffer.from("not der"), "application/pkix-crl")); }],
+  ];
+  var undetermined = 0, threw = 0, waived = 0;
+  for (var f = 0; f < faults.length; f++) {
+    var tf = (function (fn) { var o = {}; o[CRL_URL] = fn; return stub(o); })(faults[f][1]);
+    var rf = await run([leafCdp], fetching(tf));
+    var row = rowOf(rf, 0, "revocation");
+    if (row && row.code === "path/revocation-undetermined") undetermined += 1;
+    if (row && row.code === "path/revocation-checker-error") { threw += 1; console.log("  threw: " + faults[f][0]); }
+    var tw = (function (fn) { var o = {}; o[CRL_URL] = fn; return stub(o); })(faults[f][1]);
+    var rw = await run([leafCdp], Object.assign(fetching(tw), { softFail: true }));
+    if (rw.valid === true && rowOf(rw, 0, "revocation").waived === true) waived += 1;
+  }
+  check("F4. every transport fault is an undetermined status, not a checker error",
+    undetermined === faults.length && threw === 0);
+  check("F5. ...which is what leaves opts.softFail able to waive it", waived === faults.length);
+
+  // A freshestCRL names where the delta lives. RFC 5280 sec. 6.3.3(a) has the delta fetched
+  // beside the base; a delta that cannot be reached is noted and the base still stands, so one
+  // unreachable location does not lose the answer the base already carries.
+  var DELTA_URL = "http://crl.example/delta.crl";
+  var leafDelta = await mkCert({ subject: "DeltaLeaf", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER,
+    extensions: [cdpExt([distPoint(dpnFull([gnUri(CRL_URL)]))]),
+      freshestExt([distPoint(dpnFull([gnUri(DELTA_URL)]))])] });
+  var tDeltaDown = (function () {
+    var o = {};
+    o[CRL_URL] = ok(cleanCrl, "application/pkix-crl");
+    o[DELTA_URL] = function () { return Promise.reject(new Error("delta unreachable")); };
+    return stub(o);
+  })();
+  var rDeltaDown = await run([leafDelta], fetching(tDeltaDown));
+  check("F28. an unreachable delta is noted and the base CRL still answers",
+    rDeltaDown.valid === true && tDeltaDown.calls.length >= 2 &&
+    tDeltaDown.calls.some(function (c) { return c.url === DELTA_URL; }));
+  var tDeltaBad = (function () {
+    var o = {};
+    o[CRL_URL] = ok(cleanCrl, "application/pkix-crl");
+    o[DELTA_URL] = ok(Buffer.from("not a crl"), "application/pkix-crl");
+    return stub(o);
+  })();
+  check("F29. ...and so is a delta body that does not parse",
+    (await run([leafDelta], fetching(tDeltaBad))).valid === true);
+  var tNoDeltas = (function () {
+    var o = {};
+    o[CRL_URL] = ok(cleanCrl, "application/pkix-crl");
+    o[DELTA_URL] = function () { return Promise.reject(new Error("should not be asked")); };
+    return stub(o);
+  })();
+  await run([leafDelta], fetching(tNoDeltas, { useDeltas: false }));
+  check("F30. useDeltas false asks for no delta at all",
+    tNoDeltas.calls.every(function (c) { return c.url !== DELTA_URL; }));
+
+  // ---- the arms each door answers with --------------------------------
+  // The deadline bounds the whole validation, not each request. A deadline already spent means
+  // the next fetch never opens.
+  var SLOW_URL = "http://crl.example/slow.crl", SECOND_URL = "http://crl.example/second.crl";
+  var leafTwo = await mkCert({ subject: "TwoPointLeaf", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER, extensions: [cdpExt([
+      distPoint(dpnFull([gnUri(SLOW_URL)])), distPoint(dpnFull([gnUri(SECOND_URL)]))])] });
+  var tDeadline = (function () {
+    var o = {};
+    o[SLOW_URL] = function () {
+      // The window is spent inside the transport, which is what a slow responder does; the
+      // deadline is a wall clock and the vector has to let some of it pass.
+      return helpers.passiveObserve(40, "revocation deadline: the first distribution point is slow")
+        .then(function () { return ok(Buffer.from("nope"), "application/pkix-crl"); });
+    };
+    o[SECOND_URL] = ok(cleanCrl, "application/pkix-crl");
+    return stub(o);
+  })();
+  var rDeadline = await run([leafTwo], fetching(tDeadline, { totalDeadlineMs: 20 }));
+  check("F33. a spent deadline ends the fetching rather than each point stretching it",
+    rDeadline.valid === false &&
+    tDeadline.calls.every(function (c) { return c.url !== SECOND_URL; }));
+  var tNoDeadline = (function () {
+    var o = {};
+    o[SLOW_URL] = function () { return Promise.reject(new Error("first point down")); };
+    o[SECOND_URL] = ok(cleanCrl, "application/pkix-crl");
+    return stub(o);
+  })();
+  check("F33a. CONTROL: with the deadline intact the second point is reached",
+    (await run([leafTwo], fetching(tNoDeadline))).valid === true &&
+    tNoDeadline.calls.length === 2);
+
+  // A GeneralName that does not decode, and an AIA access location that is not a URI, are both
+  // forms this client cannot fetch and are counted as skips.
+  var leafBadGn = await mkCert({ subject: "BadGnLeaf", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 7,
+    extensions: [cdpExt([distPoint(b.contextConstructed(0, b.contextPrimitive(6, Buffer.from("", "ascii"))))])] });
+  var tBadGn = stub({});
+  check("F34. an empty URI names no location and is not fetched",
+    (await run([leafBadGn], fetching(tBadGn))).valid === false && tBadGn.calls.length === 0);
+
+  var aiaDirName = ext("1.3.6.1.5.5.7.1.1", false,
+    b.sequence([b.sequence([b.oid("1.3.6.1.5.5.7.48.1"), gnDirectoryName(b.sequence([]))])]));
+  var leafAiaDir = await mkCert({ subject: "AiaDirLeaf", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 8, extensions: [aiaDirName] });
+  var tAiaDir = stub({});
+  check("F35. an id-ad-ocsp access location that is not a URI is a skip, not a fetch",
+    (await run([leafAiaDir], fetching(tAiaDir))).valid === false && tAiaDir.calls.length === 0);
+
+  // An AIA naming a method this checker does not read contributes nothing and opens nothing.
+  var aiaCaIssuers = ext("1.3.6.1.5.5.7.1.1", false,
+    b.sequence([b.sequence([b.oid("1.3.6.1.5.5.7.48.2"), gnUri("http://aia.example/ca.cer")])]));
+  var leafCaIssuers = await mkCert({ subject: "CaIssuersLeaf", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 9, extensions: [aiaCaIssuers] });
+  var tCaIssuers = stub({});
+  check("F36. a caIssuers access description is not a revocation location",
+    (await run([leafCaIssuers], fetching(tCaIssuers))).valid === false && tCaIssuers.calls.length === 0);
+
+  // A malformed extension names no location, and is read as that rather than as a fault.
+  var leafBadExt = await mkCert({ subject: "BadExtLeaf", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 10,
+    extensions: [ext("2.5.29.31", false, b.integer(7n))] });
+  var tBadExt = stub({});
+  check("F37. a cRLDistributionPoints that does not decode names no location",
+    (await run([leafBadExt], fetching(tBadExt))).valid === false && tBadExt.calls.length === 0);
+
+  // A body the transport handed back as a string rather than as bytes is still read.
+  var tStringBody = (function () {
+    var o = {};
+    o[CRL_URL] = { status: 200, headers: { "content-type": "application/pkix-crl" }, body: cleanCrl.toString("latin1") };
+    return stub(o);
+  })();
+  check("F38. a body given as a latin1 string is read as the bytes it carries",
+    (await run([leafCdp], fetching(tStringBody))).valid === true);
+
+  // ---- what the operator is told ---------------------------------------
+  // The checker assembles a reason naming the source it answered from, the points it skipped and
+  // the faults it noted. That reason is only worth assembling if the validate result carries it.
+  var REV_AT = new Date("2027-02-03T04:05:06Z");
+  var reasonedCrl = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(3)],
+    revoked: [{ serial: SER, date: REV_AT, exts: [reasonCodeExt(1)] }] });
+
+  var tSay = (function () { var o = {}; o[CRL_URL] = ok(cleanCrl, "application/pkix-crl"); return stub(o); })();
+  var rSay = await run([leafCdp], fetching(tSay));
+  var sayRow = rowOf(rSay, 0, "revocation");
+  check("F39. a good row names the source the status was established from",
+    sayRow.status === "good" && typeof sayRow.reason === "string" && sayRow.reason.indexOf(CRL_URL) !== -1);
+
+  var tWhy = (function () { var o = {}; o[CRL_URL] = ok(reasonedCrl, "application/pkix-crl"); return stub(o); })();
+  var rWhy = await run([leafCdp], fetching(tWhy));
+  var whyRow = rowOf(rWhy, 0, "revocation");
+  check("F40. a revoked row carries the CRLReason the entry gave",
+    whyRow.status === "revoked" && whyRow.revocationReason === 1);
+  check("F41. ...and the time the entry named it from",
+    whyRow.revocationTime instanceof Date &&
+    whyRow.revocationTime.getTime() === REV_AT.getTime());
+  check("F42. ...and a reason an operator can read",
+    typeof whyRow.reason === "string" && whyRow.reason.length > 0);
+
+  // A certificate naming one point this client does not fetch and one that fails: both belong in
+  // the reason, because softFail waives on exactly this row.
+  var leafSkipAndFail = await mkCert({ subject: "SkipFailLeaf", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 20,
+    extensions: [cdpExt([distPoint(dpnFull([gnUri("ldap://dir.example/cn=crl")])),
+      distPoint(dpnFull([gnUri(CRL_URL)]))])] });
+  var tTwo = (function () {
+    var o = {};
+    o[CRL_URL] = function () { return Promise.resolve({ status: 503, headers: {}, body: Buffer.alloc(0) }); };
+    return stub(o);
+  })();
+  var rTwo = await run([leafSkipAndFail], fetching(tTwo));
+  var twoRow = rowOf(rTwo, 0, "revocation");
+  check("F43. an undetermined row names both the point that was skipped and the one that failed",
+    twoRow.code === "path/revocation-undetermined" && typeof twoRow.reason === "string" &&
+    twoRow.reason.indexOf("skipped") !== -1 && twoRow.reason.indexOf("503") !== -1);
+
+  var tTwoW = (function () {
+    var o = {};
+    o[CRL_URL] = function () { return Promise.resolve({ status: 503, headers: {}, body: Buffer.alloc(0) }); };
+    return stub(o);
+  })();
+  var rTwoW = await run([leafSkipAndFail], Object.assign(fetching(tTwoW), { softFail: true }));
+  var twoRowW = rowOf(rTwoW, 0, "revocation");
+  check("F44. a waiver names what was waived rather than passing silently",
+    rTwoW.valid === true && twoRowW.waived === true &&
+    typeof twoRowW.reason === "string" && twoRowW.reason.indexOf("503") !== -1);
+
+  // The producer side of the same rule: the entry carries a date and the verdict must not drop it.
+  var crlOnly = pki.path.crlChecker([reasonedCrl]);
+  var crlOnlyV = await crlOnly.check(pki.schema.x509.parse(leafCdp),
+    { workingPublicKey: anchor.publicKey, issuerCert: null }, { time: T2027 });
+  check("F45. pki.path.crlChecker reports the revocation time the entry named",
+    crlOnlyV.status === "revoked" && crlOnlyV.revocationTime instanceof Date &&
+    crlOnlyV.revocationTime.getTime() === REV_AT.getTime());
+
+  // ---- the classification arms ----------------------------------------
+  var leafLdap = await mkCert({ subject: "LdapLeaf", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 1,
+    extensions: [cdpExt([distPoint(dpnFull([gnUri("ldap://dir.example/cn=crl")]))])] });
+  var tNone = stub({});
+  var rLdap = await run([leafLdap], fetching(tNone));
+  var ldapRow = rowOf(rLdap, 0, "revocation");
+  check("F6. an ldap distribution point is a form this client does not fetch, not a network fault",
+    rLdap.valid === false && ldapRow.code === "path/revocation-undetermined" && tNone.calls.length === 0);
+
+  var leafRel = await mkCert({ subject: "RelLeaf", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 2,
+    extensions: [cdpExt([distPoint(dpnRel([b.sequence([b.oid("2.5.4.3"), b.utf8("shard")])]))])] });
+  var tRel = stub({});
+  check("F7. a nameRelativeToCRLIssuer point names no location and is not fetched",
+    (await run([leafRel], fetching(tRel))).valid === false && tRel.calls.length === 0);
+
+  var leafDir = await mkCert({ subject: "DirLeaf", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 3,
+    extensions: [cdpExt([distPoint(dpnFull([gnDirectoryName(b.sequence([]))]))])] });
+  var tDir = stub({});
+  check("F8. a fullName that is not a URI is not fetched either",
+    (await run([leafDir], fetching(tDir))).valid === false && tDir.calls.length === 0);
+
+  // A certificate naming several points takes only the one this client speaks.
+  var leafMixed = await mkCert({ subject: "MixedLeaf", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER, extensions: [cdpExt([
+      distPoint(dpnFull([gnUri("ldap://dir.example/cn=crl")])),
+      distPoint(dpnFull([gnUri("ftp://files.example/a.crl")])),
+      distPoint(dpnFull([gnUri(CRL_URL)])),
+    ])] });
+  var tMixed = (function () { var o = {}; o[CRL_URL] = ok(cleanCrl, "application/pkix-crl"); return stub(o); })();
+  var rMixed = await run([leafMixed], fetching(tMixed));
+  check("F9. the one fetchable point is used and the others are skipped, not attempted",
+    rMixed.valid === true && tMixed.calls.length === 1 && tMixed.calls[0].url === CRL_URL);
+
+  // ---- the scheme decision --------------------------------------------
+  var tHttps = (function () { var o = {}; o[CRL_URL] = ok(cleanCrl, "application/pkix-crl"); return stub(o); })();
+  check("F10. plaintext http is refused when the caller narrows the scheme",
+    (await run([leafCdp], fetching(tHttps, { allowPlaintextHttp: false }))).valid === false &&
+    tHttps.calls.length === 0);
+  var HTTPS_URL = "https://crl.example/s.crl";
+  var leafHttps = await mkCert({ subject: "HttpsLeaf", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER, extensions: [cdpExt([distPoint(dpnFull([gnUri(HTTPS_URL)]))])] });
+  var tS = (function () { var o = {}; o[HTTPS_URL] = ok(cleanCrl, "application/pkix-crl"); return stub(o); })();
+  check("F11. an https point needs no opt-in", (await run([leafHttps], fetching(tS, { allowPlaintextHttp: false }))).valid === true);
+  // The scheme decision reaches the transport, which is what makes the shipped one usable here:
+  // it refuses a plaintext URL unless the request says so, per request and never by default.
+  var seenFlags = [];
+  var tFlag = (function () {
+    var o = {};
+    o[CRL_URL] = function (req) { seenFlags.push(req.allowPlaintextHttp); return Promise.resolve(ok(cleanCrl, "application/pkix-crl")); };
+    return stub(o);
+  })();
+  await run([leafCdp], fetching(tFlag));
+  check("F11a. the request carries the plaintext decision to the transport",
+    seenFlags.length === 1 && seenFlags[0] === true);
+  check("F11b. pki.transport.https refuses a plaintext URL unless the request opts in", (function () {
+    var t = pki.transport.https({ tls: { useSystemStore: true } });
+    var refused = null;
+    return t({ method: "GET", url: "http://crl.example/a.crl" }).then(
+      function () { return false; },
+      function (e) { refused = e && e.code; return refused === "transport/insecure-url"; });
+  })() instanceof Promise);
+  var plainRefusal = await (async function () {
+    var t = pki.transport.https({ tls: { useSystemStore: true } });
+    try { await t({ method: "GET", url: "http://127.0.0.1:1/a.crl" }); return "NO-THROW"; }
+    catch (e) { return e && e.code; }
+  })();
+  check("F11c. ...and the refusal names the scheme", plainRefusal === "transport/insecure-url");
+
+  // ---- a certificate that names nothing fetchable ----------------------
+  var leafBare = await mkCert({ subject: "BareLeaf", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 4 });
+  var tBare = stub({});
+  var rBare = await run([leafBare], fetching(tBare));
+  check("F12. a certificate naming no revocation location says so, and opens no connection",
+    rBare.valid === false && rowOf(rBare, 0, "revocation").code === "path/revocation-undetermined" &&
+    tBare.calls.length === 0);
+
+  // ---- SSRF and the bounds --------------------------------------------
+  var leafLocal = await mkCert({ subject: "LocalLeaf", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 5,
+    extensions: [cdpExt([distPoint(dpnFull([gnUri("http://127.0.0.1/a.crl")])),
+      distPoint(dpnFull([gnUri("http://169.254.169.254/b.crl")]))])] });
+  var tLocal = stub({});
+  check("F13. a loopback or link-local destination is never opened",
+    (await run([leafLocal], fetching(tLocal))).valid === false && tLocal.calls.length === 0);
+
+  var many = [];
+  for (var m = 0; m < 20; m++) many.push(distPoint(dpnFull([gnUri("http://crl.example/n" + m + ".crl")])));
+  var leafMany = await mkCert({ subject: "ManyLeaf", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 6, extensions: [cdpExt(many)] });
+  var tMany = stub((function () {
+    var o = {};
+    for (var i = 0; i < 20; i++) o["http://crl.example/n" + i + ".crl"] = function () { return Promise.reject(new Error("down")); };
+    return o;
+  })());
+  await run([leafMany], fetching(tMany));
+  check("F14. the per-certificate URL cap bounds how many are tried (" + tMany.calls.length + ")",
+    tMany.calls.length > 0 && tMany.calls.length <= pki.constants.LIMITS.REVOCATION_MAX_FETCHES);
+
+  var tBig = (function () {
+    var o = {};
+    o[CRL_URL] = function () { return Promise.resolve(ok(Buffer.alloc(pki.constants.LIMITS.REVOCATION_MAX_RESPONSE_BYTES + 1, 0x30), "application/pkix-crl")); };
+    return stub(o);
+  })();
+  check("F15. a body over the response cap is refused rather than parsed",
+    (await run([leafCdp], fetching(tBig))).valid === false);
+
+  // ---- the header never selects a parser ------------------------------
+  var tWrongType = (function () { var o = {}; o[CRL_URL] = ok(cleanCrl, "text/plain"); return stub(o); })();
+  var rWrongType = await run([leafCdp], fetching(tWrongType));
+  check("F16. a mismatched content-type is reported and the body still reads as the structure its source names",
+    rWrongType.valid === true && /content-type/.test(rowOf(rWrongType, 0, "revocation").status || "") === false);
+  var tNoType = (function () { var o = {}; o[CRL_URL] = { status: 200, headers: {}, body: cleanCrl }; return stub(o); })();
+  check("F17. an absent content-type changes nothing", (await run([leafCdp], fetching(tNoType))).valid === true);
+
+  // ---- the OCSP route -------------------------------------------------
+  // A CertID names the issuer by the hash of its name and of its key, and pki.ocsp.buildRequest
+  // reads both off the issuer's certificate. validate hands a checker the issuer certificate only
+  // when the path carries one, so the OCSP vectors run over a two-certificate path; a certificate
+  // sitting directly under a bare anchor tuple is the documented gap, pinned below.
+  var aiaOcsp = ext("1.3.6.1.5.5.7.1.1", false,
+    b.sequence([b.sequence([b.oid("1.3.6.1.5.5.7.48.1"), gnUri(OCSP_URL)])]));
+  // The intermediate carries its own distribution point, because the checker runs against every
+  // certificate in the path and one that names no source is undetermined, which is the whole
+  // point of the rule.
+  var INTER_CRL_URL = "http://crl.example/inter.crl";
+  var interO = await mkCert({ subject: "OcspInter", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN, KU_CRL_SIGN]),
+      cdpExt([distPoint(dpnFull([gnUri(INTER_CRL_URL)]))])] });
+  var interKeys = await ensureKeys("ed25519i");
+  var leafOcspOnly = await mkCert({ subject: "OcspLeaf", issuer: "OcspInter", signWith: "ed25519i",
+    subjectKeys: "ed25519leaf", serial: SER, extensions: [aiaOcsp] });
+  var ocspPath = [interO, leafOcspOnly];
+  var goodResp = await mkOcsp({ responderID: { byKeyOf: interKeys.spki }, signWith: "ed25519i",
+    single: [{ issuerName: "OcspInter", issuerKeyAlg: "ed25519i", serial: SER, status: "good" }] });
+  /** Every script below serves the intermediate's own CRL, so the vectors read the leaf's row. */
+  function withInter(routes) {
+    routes[INTER_CRL_URL] = ok(cleanCrl, "application/pkix-crl");
+    return stub(routes);
+  }
+  var tOcsp = (function () { var o = {}; o[OCSP_URL] = ok(goodResp, "application/ocsp-response"); return withInter(o); })();
+  var rOcsp = await run(ocspPath, fetching(tOcsp));
+  check("F18. a fetched OCSP response establishes good, through the one acceptance gate",
+    rOcsp.valid === true && rowOf(rOcsp, 1, "revocation").status === "good");
+  var ocspLeafCalls = tOcsp.calls.filter(function (c) { return c.url !== INTER_CRL_URL; });
+  check("F19. ...requested as a GET, the request riding in the URL",
+    ocspLeafCalls.length === 1 && ocspLeafCalls[0].method === "GET" &&
+    ocspLeafCalls[0].url.indexOf(OCSP_URL + "/") === 0 && ocspLeafCalls[0].url.length > OCSP_URL.length + 1);
+
+  var revokedResp = await mkOcsp({ responderID: { byKeyOf: interKeys.spki }, signWith: "ed25519i",
+    single: [{ issuerName: "OcspInter", issuerKeyAlg: "ed25519i", serial: SER, status: "revoked",
+      revocationTime: new Date("2027-01-01T00:00:00Z"), revocationReason: 1 }] });
+  var tOcspRev = (function () { var o = {}; o[OCSP_URL] = ok(revokedResp, "application/ocsp-response"); return withInter(o); })();
+  var rOcspRev = await run(ocspPath, fetching(tOcspRev));
+  check("F20. a revoked response makes the path invalid with path/revoked",
+    rOcspRev.valid === false && rowOf(rOcspRev, 1, "revocation").code === "path/revoked");
+
+  // RFC 5019 sec. 3.1: the responder first, the CRL after. A responder that answers ends it.
+  var leafBothOnly = await mkCert({ subject: "BothLeaf", issuer: "OcspInter", signWith: "ed25519i",
+    subjectKeys: "ed25519leaf", serial: SER,
+    extensions: [aiaOcsp, cdpExt([distPoint(dpnFull([gnUri(CRL_URL)]))])] });
+  var bothPath = [interO, leafBothOnly];
+  var interCrl = await mkCrl({ issuer: "OcspInter", signWith: "ed25519i", extensions: [crlNumberExt(3)] });
+  var tBoth = (function () {
+    var o = {};
+    o[OCSP_URL] = ok(goodResp, "application/ocsp-response");
+    o[CRL_URL] = ok(interCrl, "application/pkix-crl");
+    return withInter(o);
+  })();
+  var rBoth = await run(bothPath, fetching(tBoth));
+  var bothLeafCalls = tBoth.calls.filter(function (c) { return c.url !== INTER_CRL_URL; });
+  check("F21. the responder is asked first and the CRL is not asked once it answers",
+    rBoth.valid === true && bothLeafCalls.length === 1 && bothLeafCalls[0].url.indexOf(OCSP_URL) === 0);
+
+  var tFallback = (function () {
+    var o = {};
+    o[OCSP_URL] = function () { return Promise.reject(new Error("responder down")); };
+    o[CRL_URL] = ok(interCrl, "application/pkix-crl");
+    return withInter(o);
+  })();
+  var rFallback = await run(bothPath, fetching(tFallback, { retries: 0 }));
+  var fbLeafCalls = tFallback.calls.filter(function (c) { return c.url !== INTER_CRL_URL; });
+  check("F22. a responder that does not answer falls back to the CRL, in that order",
+    rFallback.valid === true && fbLeafCalls.length === 2 &&
+    fbLeafCalls[0].url.indexOf(OCSP_URL) === 0 && fbLeafCalls[1].url === CRL_URL);
+
+  // RFC 6960 sec. 2.3: an error response carries no signature, so it is never an answer and
+  // RFC 5019 sec. 6.1 never caches one.
+  var errStatuses = [1, 2, 3, 5, 6];
+  var errUndetermined = 0;
+  for (var es = 0; es < errStatuses.length; es++) {
+    var errResp = await mkOcsp({ responseStatus: errStatuses[es] });
+    var tErr = (function (r) {
+      var o = {}; o[OCSP_URL] = ok(r, "application/ocsp-response");
+      o[CRL_URL] = function () { return Promise.reject(new Error("no crl")); };
+      return withInter(o);
+    })(errResp);
+    var rErr = await run(ocspPath, fetching(tErr, { retries: 0 }));
+    if (rErr.valid === false && rowOf(rErr, 1, "revocation").code === "path/revocation-undetermined") errUndetermined += 1;
+  }
+  check("F23. every non-successful OCSPResponseStatus leaves the status undetermined",
+    errUndetermined === errStatuses.length);
+
+  // A verified response is reused inside its signed window, and asked for again outside it.
+  var tCache = (function () { var o = {}; o[OCSP_URL] = ok(goodResp, "application/ocsp-response"); return withInter(o); })();
+  var cachedChecker = pki.path.fetchingChecker({ transport: tCache });
+  await run(ocspPath, { time: T2027, trustAnchors: anchor, revocationChecker: cachedChecker });
+  await run(ocspPath, { time: T2027, trustAnchors: anchor, revocationChecker: cachedChecker });
+  var cacheOcspCalls = tCache.calls.filter(function (c) { return c.url !== INTER_CRL_URL; });
+  check("F24. a verified response is reused inside its signed window (" + cacheOcspCalls.length + " responder request(s) over two validations)",
+    cacheOcspCalls.length === 1);
+  var unauthorized = await mkOcsp({ responseStatus: 6 });
+  var tNoCache = (function () { var o = {}; o[OCSP_URL] = ok(unauthorized, "application/ocsp-response"); return withInter(o); })();
+  var uncachedChecker = pki.path.fetchingChecker({ transport: tNoCache, retries: 0 });
+  await run(ocspPath, { time: T2027, trustAnchors: anchor, revocationChecker: uncachedChecker });
+  await run(ocspPath, { time: T2027, trustAnchors: anchor, revocationChecker: uncachedChecker });
+  var noCacheOcspCalls = tNoCache.calls.filter(function (c) { return c.url !== INTER_CRL_URL; });
+  check("F25. an unsigned error response is never cached, so it is asked again",
+    noCacheOcspCalls.length === 2);
+
+  // A CRL is reused inside the window it signs for, on the same rule: the signed thisUpdate and
+  // nextUpdate decide, and nothing an HTTP header says does.
+  var tCrlCache = (function () { var o = {}; o[CRL_URL] = ok(cleanCrl, "application/pkix-crl"); return stub(o); })();
+  var crlCachedChecker = pki.path.fetchingChecker({ transport: tCrlCache });
+  await run([leafCdp], { time: T2027, trustAnchors: anchor, revocationChecker: crlCachedChecker });
+  await run([leafCdp], { time: T2027, trustAnchors: anchor, revocationChecker: crlCachedChecker });
+  check("F26. a CRL is reused inside its signed window (" + tCrlCache.calls.length + " request(s) over two validations)",
+    tCrlCache.calls.length === 1);
+  var freshChecker = pki.path.fetchingChecker({ transport: tCrlCache });
+  await run([leafCdp], { time: T2027, trustAnchors: anchor, revocationChecker: freshChecker });
+  check("F27. ...and a second checker holds its own cache, so nothing crosses between them",
+    tCrlCache.calls.length === 2);
+
+  // A CertID names the issuer by the hash of its name and of its key, and pki.ocsp.buildRequest
+  // reads both off the issuer's certificate, which validate hands a checker only when the path
+  // carries one. A certificate sitting directly under a bare anchor tuple therefore has no OCSP
+  // route; the condition that closes it is a second request form taking the issuer's name and key.
+  var tNoIssuer = (function () { var o = {}; o[OCSP_URL] = ok(goodResp, "application/ocsp-response"); return stub(o); })();
+  var vNoIssuer = await pki.path.fetchingChecker({ transport: tNoIssuer, retries: 0 })
+    .check(pki.schema.x509.parse(leafOcspOnly), { workingIssuerName: anchor.name }, { time: T2027 });
+  check("F31. a certificate whose issuer certificate the path does not carry is undetermined, and says so",
+    vNoIssuer.status === "unknown" && /issuer certificate/.test(vNoIssuer.reason) && tNoIssuer.calls.length === 0);
+
+  // A responder answering `unknown` has not answered: RFC 6960 sec. 5 makes the CRL the fallback
+  // and never an assumption of good standing.
+  var unknownResp = await mkOcsp({ responderID: { byKeyOf: interKeys.spki }, signWith: "ed25519i",
+    single: [{ issuerName: "OcspInter", issuerKeyAlg: "ed25519i", serial: SER, status: "unknown" }] });
+  var tUnknown = (function () {
+    var o = {};
+    o[OCSP_URL] = ok(unknownResp, "application/ocsp-response");
+    o[CRL_URL] = ok(interCrl, "application/pkix-crl");
+    return withInter(o);
+  })();
+  var rUnknown = await run(bothPath, fetching(tUnknown, { retries: 0 }));
+  check("F32. a responder answering unknown falls through to the CRL rather than settling it",
+    rUnknown.valid === true && tUnknown.calls.some(function (c) { return c.url === CRL_URL; }));
+
+  // ---- the bounds the options name --------------------------------------
+  // A URL taken from a certificate names a host the certificate chose. An IP literal is decided
+  // here; a name is decided by whoever resolves it, so a transport that does not say it filters
+  // the resolved address is not handed one.
+  var NAMED_URL = "http://crl.internal.example/named.crl";
+  var leafNamed = await mkCert({ subject: "NamedHostLeaf", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 30,
+    extensions: [cdpExt([distPoint(dpnFull([gnUri(NAMED_URL)]))])] });
+  function unguardedStub(routes) { var s = stub(routes); s.blocksPrivateAddresses = false; return s; }
+  var tUnguarded = (function () { var o = {}; o[NAMED_URL] = ok(cleanCrl, "application/pkix-crl"); return unguardedStub(o); })();
+  var rUnguarded = await run([leafNamed], fetching(tUnguarded));
+  var unguardedRow = rowOf(rUnguarded, 0, "revocation");
+  check("F46. a hostname destination is not handed to a transport that does not filter resolved addresses",
+    tUnguarded.calls.length === 0 && unguardedRow.code === "path/revocation-undetermined" &&
+    typeof unguardedRow.reason === "string" && unguardedRow.reason.indexOf("resolved address") !== -1);
+
+  var tGuarded = (function () { var o = {}; o[NAMED_URL] = ok(cleanCrl, "application/pkix-crl"); return stub(o); })();
+  check("F47. ...and the same hostname is fetched by one that does",
+    (await run([leafNamed], fetching(tGuarded))).valid === true && tGuarded.calls.length === 1);
+
+  // The literal needs no resolution, so it is decided here and the flag does not gate it.
+  var LITERAL_URL = "http://93.184.216.34/literal.crl";
+  var leafLiteral = await mkCert({ subject: "LiteralHostLeaf", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 31,
+    extensions: [cdpExt([distPoint(dpnFull([gnUri(LITERAL_URL)]))])] });
+  var tLiteral = (function () { var o = {}; o[LITERAL_URL] = ok(cleanCrl, "application/pkix-crl"); return unguardedStub(o); })();
+  check("F48. a public IP literal is decided here and needs no such transport",
+    (await run([leafLiteral], fetching(tLiteral))).valid === true && tLiteral.calls.length === 1);
+
+  // opts.nonce asks for one. A response that does not carry it back is not the answer to this
+  // request, whatever else it is (RFC 6960 sec. 4.4.1).
+  var NONCE_OID = "1.3.6.1.5.5.7.48.1.2";
+  var respNoNonce = goodResp;
+  var tNonceMissing = (function () { var o = {}; o[OCSP_URL] = ok(respNoNonce, "application/ocsp-response"); return withInter(o); })();
+  var rNonceMissing = await run(ocspPath, fetching(tNonceMissing, { nonce: true, retries: 0 }));
+  var nonceRow = rowOf(rNonceMissing, 1, "revocation");
+  check("F49. a requested nonce that the response does not carry leaves the status undetermined",
+    nonceRow.status !== "good" && typeof nonceRow.reason === "string" &&
+    nonceRow.reason.indexOf("nonce") !== -1);
+
+  var tNonceWrong = (function () {
+    var o = {};
+    o[OCSP_URL] = async function () {
+      return ok(await mkOcsp({ responderID: { byKeyOf: interKeys.spki }, signWith: "ed25519i",
+        single: [{ issuerName: "OcspInter", issuerKeyAlg: "ed25519i", serial: SER, status: "good" }],
+        responseExtensions: [ext(NONCE_OID, false, b.octetString(Buffer.alloc(16, 0xab)))] }),
+      "application/ocsp-response");
+    };
+    return withInter(o);
+  })();
+  var rNonceWrong = await run(ocspPath, fetching(tNonceWrong, { nonce: true, retries: 0 }));
+  check("F50. ...and so does one carrying a different nonce",
+    rowOf(rNonceWrong, 1, "revocation").status !== "good");
+
+  // The passing control: the nonce the request actually carried, echoed back.
+  var tNonceEcho = (function () {
+    var o = {};
+    o[OCSP_URL] = async function (req) {
+      var asked = pki.schema.ocsp.parseRequest(_ocspDerFromGet(req.url));
+      var sent = null;
+      (asked.requestExtensions || []).forEach(function (e) { if (e.oid === NONCE_OID) sent = e.value; });
+      return ok(await mkOcsp({ responderID: { byKeyOf: interKeys.spki }, signWith: "ed25519i",
+        single: [{ issuerName: "OcspInter", issuerKeyAlg: "ed25519i", serial: SER, status: "good" }],
+        responseExtensions: [ext(NONCE_OID, false, b.raw(sent))] }),
+      "application/ocsp-response");
+    };
+    return withInter(o);
+  })();
+  var rNonceEcho = await run(ocspPath, fetching(tNonceEcho, { nonce: true, retries: 0 }));
+  check("F51. a response echoing the requested nonce is accepted",
+    rNonceEcho.valid === true && rowOf(rNonceEcho, 1, "revocation").status === "good");
+
+  // maxFetches and totalDeadlineMs are documented as bounds across the validation. A chain is
+  // several check() calls, so a per-call budget is several times the figure the operator set.
+  var CHAIN_INTER_CRL = "http://crl.example/chain-inter.crl", CHAIN_LEAF_CRL = "http://crl.example/chain-leaf.crl";
+  var chainInter = await mkCert({ subject: "BudgetInter", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN, KU_CRL_SIGN]),
+      cdpExt([distPoint(dpnFull([gnUri(CHAIN_INTER_CRL)]))])] });
+  var chainLeaf = await mkCert({ subject: "BudgetLeaf", issuer: "BudgetInter", signWith: "ed25519i",
+    subjectKeys: "ed25519leaf", serial: SER + 32,
+    extensions: [cdpExt([distPoint(dpnFull([gnUri(CHAIN_LEAF_CRL)]))])] });
+  function downStub() {
+    var o = {};
+    o[CHAIN_INTER_CRL] = function () { return Promise.reject(new Error("down")); };
+    o[CHAIN_LEAF_CRL] = function () { return Promise.reject(new Error("down")); };
+    return stub(o);
+  }
+  var tBudget = downStub();
+  var budgetChecker = pki.path.fetchingChecker({ transport: tBudget, maxFetches: 1, retries: 0 });
+  await run([chainInter, chainLeaf], { time: T2027, trustAnchors: anchor, softFail: true,
+    revocationChecker: budgetChecker });
+  check("F52. maxFetches bounds the whole validation, not each certificate in it",
+    tBudget.calls.length === 1);
+
+  // ...and a checker is reusable: the next validation gets the figure again.
+  await run([chainInter, chainLeaf], { time: T2027, trustAnchors: anchor, softFail: true,
+    revocationChecker: budgetChecker });
+  check("F53. ...and the next validation starts from the figure again rather than staying spent",
+    tBudget.calls.length === 2);
+
+  // maxPerCert bounds the destinations one certificate can name. The CRL loop honored it and the
+  // responder loop did not, so a certificate naming several responders reached all of them.
+  var aiaThree = ext("1.3.6.1.5.5.7.1.1", false, b.sequence([
+    b.sequence([b.oid("1.3.6.1.5.5.7.48.1"), gnUri("http://ocsp1.example/r")]),
+    b.sequence([b.oid("1.3.6.1.5.5.7.48.1"), gnUri("http://ocsp2.example/r")]),
+    b.sequence([b.oid("1.3.6.1.5.5.7.48.1"), gnUri("http://ocsp3.example/r")])]));
+  var leafThree = await mkCert({ subject: "ThreeResponderLeaf", issuer: "OcspInter", signWith: "ed25519i",
+    subjectKeys: "ed25519leaf", serial: SER + 33, extensions: [aiaThree] });
+  var tThree = (function () {
+    var o = {};
+    ["http://ocsp1.example/r", "http://ocsp2.example/r", "http://ocsp3.example/r"].forEach(function (u) {
+      o[u] = function () { return Promise.reject(new Error("responder down")); };
+    });
+    return withInter(o);
+  })();
+  await run([interO, leafThree], Object.assign(fetching(tThree, { maxPerCert: 1, retries: 0 }), { softFail: true }));
+  var responderCalls = tThree.calls.filter(function (c) { return c.url.indexOf("http://ocsp") === 0; });
+  check("F54. maxPerCert bounds the responders one certificate names, not only its CRL points",
+    responderCalls.length === 1);
+
+  // ---- what may be kept ------------------------------------------------
+  // A cache entry stands in for a fetch, so anything the cache accepts is trusted for as long as
+  // its own nextUpdate says. A forged CRL with a distant nextUpdate would therefore silence the
+  // real one until then, on the strength of having parsed.
+  var forgedCrl = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(9)],
+    nextUpdate: new Date("2030-01-01T00:00:00Z"),
+    mutateSig: function (s) { var c = Buffer.from(s); c[0] ^= 0xff; return c; } });
+  var served = 0;
+  var tForged = (function () {
+    var o = {};
+    o[CRL_URL] = function () {
+      served += 1;
+      return Promise.resolve(served === 1 ? ok(forgedCrl, "application/pkix-crl") : ok(cleanCrl, "application/pkix-crl"));
+    };
+    return stub(o);
+  })();
+  var forgedChecker = pki.path.fetchingChecker({ transport: tForged, retries: 0 });
+  var rForged1 = await run([leafCdp], { time: T2027, trustAnchors: anchor, revocationChecker: forgedChecker });
+  check("F55. a CRL whose signature does not verify settles nothing",
+    rForged1.valid === false && rowOf(rForged1, 0, "revocation").code === "path/revocation-undetermined");
+  var rForged2 = await run([leafCdp], { time: T2027, trustAnchors: anchor, revocationChecker: forgedChecker });
+  check("F56. ...and is not kept, so the next validation asks again and reaches the real one",
+    tForged.calls.length === 2 && rForged2.valid === true &&
+    rowOf(rForged2, 0, "revocation").status === "good");
+
+  // A cache entry stands in for a fetch, so admission has to be decided about the object being
+  // kept and not about the set it happened to be gathered with. A base CRL and the delta named in
+  // it are fetched in one pass and answered together, so a determinate answer there says nothing
+  // about which of the two produced it.
+  var FORGED_CDP = "http://cdp1.example/a.crl", FORGED_DELTA = "http://cdp2.example/b.crl";
+  var freshestOf = function (url) {
+    return ext("2.5.29.46", false, b.sequence([b.sequence([b.contextConstructed(0,
+      b.contextConstructed(0, b.contextPrimitive(6, Buffer.from(url, "ascii"))))])]));
+  };
+  var leafPair = await mkCert({ subject: "PairLeaf", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 50,
+    extensions: [cdpExt([distPoint(dpnFull([gnUri(FORGED_CDP)]))]), freshestOf(FORGED_DELTA)] });
+  var forgedBase = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(20)],
+    nextUpdate: new Date("2030-01-01T00:00:00Z"),
+    mutateSig: function (s) { var c = Buffer.from(s); c[0] ^= 0xff; return c; } });
+  var genuineSide = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(21)] });
+  var revokingLater = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(22)],
+    revoked: [{ serial: SER + 50, date: new Date("2027-01-01T00:00:00Z") }] });
+  var phase = 1;
+  var tPair = (function () {
+    var o = {};
+    o[FORGED_CDP] = function () {
+      return Promise.resolve(ok(phase === 1 ? forgedBase : revokingLater, "application/pkix-crl"));
+    };
+    o[FORGED_DELTA] = function () { return Promise.resolve(ok(genuineSide, "application/pkix-crl")); };
+    return stub(o);
+  })();
+  var pairChecker = pki.path.fetchingChecker({ transport: tPair, retries: 0 });
+  await run([leafPair], { time: T2027, trustAnchors: anchor, softFail: true, revocationChecker: pairChecker });
+  phase = 2;
+  var rPair2 = await run([leafPair], { time: T2027, trustAnchors: anchor, revocationChecker: pairChecker });
+  check("F61. a CRL whose signature never verified is not kept because something else answered",
+    rPair2.valid === false && rowOf(rPair2, 0, "revocation").code === "path/revoked");
+  check("F62. ...so the distribution point is asked again and the real list is read",
+    tPair.calls.filter(function (c) { return c.url === FORGED_CDP; }).length === 2);
+
+  // A cache entry is about one issuer's list, so the certificate it answers for has to be one that
+  // issuer signed. Two unrelated CAs publishing at one URL is an ordinary hosting arrangement.
+  var SHARED_URL = "http://shared.example/pool.crl";
+  var otherAnchor = await mkAnchor("ed25519i", "Other");
+  var leafUnderRoot = await mkCert({ subject: "PoolA", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 60,
+    extensions: [cdpExt([distPoint(dpnFull([gnUri(SHARED_URL)]))])] });
+  var leafUnderOther = await mkCert({ subject: "PoolB", issuer: "Other", signWith: "ed25519i",
+    subjectKeys: "ed25519leaf", serial: SER + 61,
+    extensions: [cdpExt([distPoint(dpnFull([gnUri(SHARED_URL)]))])] });
+  var rootPool = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(30)] });
+  var otherPool = await mkCrl({ issuer: "Other", signWith: "ed25519i", extensions: [crlNumberExt(31)] });
+  var poolPhase = 1;
+  var tPool = (function () {
+    var o = {};
+    o[SHARED_URL] = function () {
+      return Promise.resolve(ok(poolPhase === 1 ? rootPool : otherPool, "application/pkix-crl"));
+    };
+    return stub(o);
+  })();
+  var poolChecker = pki.path.fetchingChecker({ transport: tPool, retries: 0 });
+  var rPoolA = await run([leafUnderRoot], { time: T2027, trustAnchors: anchor, revocationChecker: poolChecker });
+  poolPhase = 2;
+  var rPoolB = await run([leafUnderOther], { time: T2027, trustAnchors: otherAnchor, revocationChecker: poolChecker });
+  check("F63. one issuer's cached list does not answer for a certificate another issuer signed",
+    rPoolA.valid === true && rPoolB.valid === true);
+  check("F64. ...the second certificate's own list is fetched",
+    tPool.calls.length === 2);
+
+  // A CA that rotates its key keeps its name and its CRL URL, so neither tells the two apart. A
+  // cached list from the old key would answer for the new one, fail its signature check, and leave
+  // the status undetermined until the entry aged out, with no request made in the meantime.
+  var ROTATE_URL = "http://rotate.example/ca.crl";
+  var oldAnchor = await mkAnchor("ed25519", "Rotating");
+  var newAnchor = await mkAnchor("ed25519i", "Rotating");
+  var leafOldKey = await mkCert({ subject: "BeforeRotation", issuer: "Rotating", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 70,
+    extensions: [cdpExt([distPoint(dpnFull([gnUri(ROTATE_URL)]))])] });
+  var leafNewKey = await mkCert({ subject: "AfterRotation", issuer: "Rotating", signWith: "ed25519i",
+    subjectKeys: "ed25519leaf", serial: SER + 71,
+    extensions: [cdpExt([distPoint(dpnFull([gnUri(ROTATE_URL)]))])] });
+  var crlOldKey = await mkCrl({ issuer: "Rotating", signWith: "ed25519", extensions: [crlNumberExt(60)] });
+  var crlNewKey = await mkCrl({ issuer: "Rotating", signWith: "ed25519i", extensions: [crlNumberExt(61)] });
+  var rotatePhase = 1;
+  var tRotate = (function () {
+    var o = {};
+    o[ROTATE_URL] = function () {
+      return Promise.resolve(ok(rotatePhase === 1 ? crlOldKey : crlNewKey, "application/pkix-crl"));
+    };
+    return stub(o);
+  })();
+  var rotateChecker = pki.path.fetchingChecker({ transport: tRotate, retries: 0 });
+  var rOld = await run([leafOldKey], { time: T2027, trustAnchors: oldAnchor, revocationChecker: rotateChecker });
+  rotatePhase = 2;
+  var rNew = await run([leafNewKey], { time: T2027, trustAnchors: newAnchor, revocationChecker: rotateChecker });
+  check("F65. a list cached under one key does not answer for the same name under another",
+    rOld.valid === true && rNew.valid === true);
+  check("F66. ...the second key's own list is fetched", tRotate.calls.length === 2);
+
+  // A certificate may name a delta location and no base one. `crlChecker` treats an unmerged delta
+  // that lists the serial as authoritative, so the delta is worth asking for on its own rather
+  // than only alongside a base that answered.
+  var DELTA_ONLY = "http://crl.example/delta-only.crl";
+  var freshestOnly = ext("2.5.29.46", false, b.sequence([b.sequence([b.contextConstructed(0,
+    b.contextConstructed(0, b.contextPrimitive(6, Buffer.from(DELTA_ONLY, "ascii"))))])]));
+  var leafDeltaOnly = await mkCert({ subject: "DeltaOnlyLeaf", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 80, extensions: [freshestOnly] });
+  var deltaRevoking = await mkCrl({ issuer: "Root", signWith: "ed25519",
+    revoked: [{ serial: SER + 80, date: new Date("2027-01-01T00:00:00Z") }],
+    extensions: [crlNumberExt(70), ext("2.5.29.27", true, b.integer(69n))] });
+  var tDeltaOnly = (function () { var o = {}; o[DELTA_ONLY] = ok(deltaRevoking, "application/pkix-crl"); return stub(o); })();
+  var rDeltaOnly = await run([leafDeltaOnly], fetching(tDeltaOnly));
+  check("F67. a certificate naming only a delta location has it asked for",
+    tDeltaOnly.calls.length === 1 && tDeltaOnly.calls[0].url === DELTA_ONLY);
+  check("F68. ...and the delta listing the serial is a revocation, not an undetermined status",
+    rDeltaOnly.valid === false && rowOf(rDeltaOnly, 0, "revocation").code === "path/revoked");
+
+  // `nonce` turns on replay binding, so a value that is not the boolean it documents must not read
+  // as off: an operator who wrote `nonce: "true"` asked for the control and would get none.
+  var nonceTypes = ["true", 1, {}, [], "yes"];
+  var refusedTypes = 0;
+  for (var nt = 0; nt < nonceTypes.length; nt++) {
+    try {
+      pki.path.fetchingChecker({ transport: stub({}), nonce: nonceTypes[nt] });
+    } catch (e) { if (e.code === "path/bad-input") refusedTypes += 1; }
+  }
+  check("F69. a nonce setting that is not a boolean is refused rather than read as off",
+    refusedTypes === nonceTypes.length);
+  check("F70. CONTROL: both booleans and an absent value are accepted",
+    typeof pki.path.fetchingChecker({ transport: stub({}), nonce: true }).check === "function" &&
+    typeof pki.path.fetchingChecker({ transport: stub({}), nonce: false }).check === "function" &&
+    typeof pki.path.fetchingChecker({ transport: stub({}) }).check === "function");
+
+  // The cache is read before the fetch and written after it, so the two have to be keyed from the
+  // same place. A CRL whose issuer Name is the same DN in a different string encoding is accepted
+  // by the name comparison, and keying the write off the CRL's own bytes would file the entry
+  // under a name the next lookup never forms.
+  var ENC_URL = "http://crl.example/encoding.crl";
+  var printableRoot = [b.set([b.sequence([b.oid("2.5.4.3"), b.printable("EncRoot")])])];
+  var utf8Root = [b.set([b.sequence([b.oid("2.5.4.3"), b.utf8("EncRoot")])])];
+  var encAnchor = await mkAnchor("ed25519", utf8Root);
+  var leafEnc = await mkCert({ subject: "EncLeaf", issuer: utf8Root, signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 90,
+    extensions: [cdpExt([distPoint(dpnFull([gnUri(ENC_URL)]))])] });
+  var crlPrintable = await mkCrl({ issuer: printableRoot, signWith: "ed25519", extensions: [crlNumberExt(80)] });
+  var tEnc = (function () { var o = {}; o[ENC_URL] = ok(crlPrintable, "application/pkix-crl"); return stub(o); })();
+  var encChecker = pki.path.fetchingChecker({ transport: tEnc, retries: 0 });
+  var rEnc1 = await run([leafEnc], { time: T2027, trustAnchors: encAnchor, revocationChecker: encChecker });
+  await run([leafEnc], { time: T2027, trustAnchors: encAnchor, revocationChecker: encChecker });
+  check("F71. a CRL whose issuer Name is the same DN in another encoding still answers",
+    rEnc1.valid === true);
+  check("F72. ...and is kept where the next lookup will find it, so it is fetched once",
+    tEnc.calls.length === 1);
+
+  // A nonce asks this responder this question now, so a kept answer cannot be the answer to it.
+  var nonceAsks = 0;
+  var tNonceCache = (function () {
+    var o = {};
+    o[OCSP_URL] = async function (req) {
+      nonceAsks += 1;
+      var asked = pki.schema.ocsp.parseRequest(_ocspDerFromGet(req.url));
+      var sent = null;
+      (asked.requestExtensions || []).forEach(function (e) { if (e.oid === NONCE_OID) sent = e.value; });
+      return ok(await mkOcsp({ responderID: { byKeyOf: interKeys.spki }, signWith: "ed25519i",
+        single: [{ issuerName: "OcspInter", issuerKeyAlg: "ed25519i", serial: SER, status: "good" }],
+        responseExtensions: [ext(NONCE_OID, false, b.raw(sent))] }),
+      "application/ocsp-response");
+    };
+    return withInter(o);
+  })();
+  // A certificate is a claim until its signature verifies. Asking the network about one that did
+  // not verify binds nothing, and lets an unauthenticated certificate pick the destination.
+  var leafBadSig = await mkCert({ subject: "BadSigLeaf", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 40,
+    extensions: [cdpExt([distPoint(dpnFull([gnUri(CRL_URL)]))])],
+    mutateSig: function (s) { var c = Buffer.from(s); c[0] ^= 0xff; return c; } });
+  var tBadSig = (function () { var o = {}; o[CRL_URL] = ok(cleanCrl, "application/pkix-crl"); return stub(o); })();
+  var rBadSig = await run([leafBadSig], fetching(tBadSig));
+  var badSigRow = rowOf(rBadSig, 0, "revocation");
+  check("F58. a certificate whose signature does not verify drives no revocation fetch",
+    rBadSig.valid === false && tBadSig.calls.length === 0);
+  check("F59. ...and the row says the status was not asked for rather than claiming it was checked",
+    badSigRow.code === "path/revocation-undetermined" && rBadSig.revocationChecked === "undetermined");
+
+  // A certificate is authenticated by the chain above it, not by its own signature alone. A forged
+  // intermediate fails its own check and still seeds the working key, so a leaf genuinely signed by
+  // that intermediate's key verifies against it: nothing on the path is authenticated, and the leaf
+  // would still choose where this client connects.
+  var forgedInter = await mkCert({ subject: "ForgedInter", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN, KU_CRL_SIGN])],
+    mutateSig: function (s) { var c = Buffer.from(s); c[0] ^= 0xff; return c; } });
+  var leafUnderForged = await mkCert({ subject: "UnderForged", issuer: "ForgedInter", signWith: "ed25519i",
+    subjectKeys: "ed25519leaf", serial: SER + 41,
+    extensions: [cdpExt([distPoint(dpnFull([gnUri(CRL_URL)]))])] });
+  var tUnderForged = (function () { var o = {}; o[CRL_URL] = ok(cleanCrl, "application/pkix-crl"); return stub(o); })();
+  var rUnderForged = await run([forgedInter, leafUnderForged], fetching(tUnderForged));
+  check("F58b. a certificate under one that did not verify drives no revocation fetch either",
+    rUnderForged.valid === false && tUnderForged.calls.length === 0);
+  // CONTROL: the same two certificates with the intermediate's signature intact do fetch.
+  var goodInter = await mkCert({ subject: "GoodInter", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN, KU_CRL_SIGN]),
+      cdpExt([distPoint(dpnFull([gnUri(CRL_URL)]))])] });
+  var leafUnderGood = await mkCert({ subject: "UnderGood", issuer: "GoodInter", signWith: "ed25519i",
+    subjectKeys: "ed25519leaf", serial: SER + 42,
+    extensions: [cdpExt([distPoint(dpnFull([gnUri(CRL_URL)]))])] });
+  var tUnderGood = (function () { var o = {}; o[CRL_URL] = ok(cleanCrl, "application/pkix-crl"); return stub(o); })();
+  await run([goodInter, leafUnderGood], fetching(tUnderGood));
+  check("F58c. CONTROL: the same shape with an intact chain does fetch",
+    tUnderGood.calls.length > 0);
+
+  // The locations a CRL names are only worth following once the CRL is the issuer's. A base list
+  // that arrives over a plaintext hop can be replaced wholesale, and its freshestCRL would then be
+  // the attacker's choice of destination.
+  var INJECTED_DELTA = "http://injected.example/d.crl";
+  var strangerKeys = await ensureKeys("ed25519i");
+  var forgedBaseNamingDelta = await mkCrl({ issuer: "Root", signWith: "ed25519i",
+    extensions: [crlNumberExt(50), ext("2.5.29.46", false, b.sequence([b.sequence([
+      b.contextConstructed(0, b.contextConstructed(0,
+        b.contextPrimitive(6, Buffer.from(INJECTED_DELTA, "ascii"))))])]))] });
+  void strangerKeys;
+  var tInjected = (function () {
+    var o = {};
+    o[CRL_URL] = ok(forgedBaseNamingDelta, "application/pkix-crl");
+    o[INJECTED_DELTA] = ok(cleanCrl, "application/pkix-crl");
+    return stub(o);
+  })();
+  await run([leafCdp], Object.assign(fetching(tInjected), { softFail: true }));
+  check("F58d. a CRL signed by a stranger does not get to say where the next request goes",
+    tInjected.calls.filter(function (c) { return c.url === INJECTED_DELTA; }).length === 0);
+  // CONTROL: the issuer's own CRL naming a delta is followed.
+  var genuineBaseNamingDelta = await mkCrl({ issuer: "Root", signWith: "ed25519",
+    extensions: [crlNumberExt(51), ext("2.5.29.46", false, b.sequence([b.sequence([
+      b.contextConstructed(0, b.contextConstructed(0,
+        b.contextPrimitive(6, Buffer.from(INJECTED_DELTA, "ascii"))))])]))] });
+  var tGenuineDelta = (function () {
+    var o = {};
+    o[CRL_URL] = ok(genuineBaseNamingDelta, "application/pkix-crl");
+    o[INJECTED_DELTA] = ok(cleanCrl, "application/pkix-crl");
+    return stub(o);
+  })();
+  await run([leafCdp], Object.assign(fetching(tGenuineDelta), { softFail: true }));
+  check("F58e. CONTROL: the issuer's own CRL is followed to the delta it names",
+    tGenuineDelta.calls.filter(function (c) { return c.url === INJECTED_DELTA; }).length === 1);
+
+  // The deadline is this module's bound, so a transport that ignores the timeout it is handed
+  // cannot hold a validation open.
+  var tHangs = (function () {
+    var o = {};
+    o[CRL_URL] = function () { return new Promise(function () { /* never settles */ }); };
+    return stub(o);
+  })();
+  var startedAt = Date.now();
+  var rHangs = await run([leafCdp], fetching(tHangs, { totalDeadlineMs: 60, sourceTimeoutMs: 40, retries: 0 }));
+  check("F60. a transport that never settles does not hold the validation open",
+    rHangs.valid === false && rowOf(rHangs, 0, "revocation").code === "path/revocation-undetermined" &&
+    (Date.now() - startedAt) < 5000);
+
+  var nonceChecker = pki.path.fetchingChecker({ transport: tNonceCache, nonce: true, retries: 0 });
+  var rN1 = await run(ocspPath, { time: T2027, trustAnchors: anchor, revocationChecker: nonceChecker });
+  var rN2 = await run(ocspPath, { time: T2027, trustAnchors: anchor, revocationChecker: nonceChecker });
+  check("F57. a nonce-bearing request is asked each time rather than answered from a kept response",
+    rN1.valid === true && rN2.valid === true && nonceAsks === 2);
+}
+
+/** The DER of an OCSP request that rode in a GET URL, per RFC 6960 Appendix A.1. */
+function _ocspDerFromGet(url) {
+  var seg = url.slice(url.lastIndexOf("/") + 1);
+  return Buffer.from(decodeURIComponent(seg), "base64");
 }
 
 // RFC 5280 sec. 4.2.1.10: "Restrictions apply only when the specified name form is present."
@@ -5530,6 +6507,468 @@ async function testKeyStrengthFloor() {
     pki.schema.x509.parse(BRAINPOOL_CERT).subject.dn === "CN=brainpool" &&
     failCodes(resBp).indexOf("path/expired") === -1 &&
     failCodes(resBp).indexOf("path/not-yet-valid") === -1);
+}
+
+// The arms the vectors above do not reach, driven through the shipped verb. `check` is public and
+// takes the issuer context directly, so a certificate can be put in front of the checker without a
+// whole path standing behind it, which is how the shapes a well-formed path never produces get
+// exercised: a distribution point naming nothing, a transport answering with the wrong type, a
+// cache entry aging out under a later clock.
+async function testFetchingCheckerEdges() {
+  var anchor = await mkAnchor("ed25519", "Root");
+  var URL1 = "http://crl.example/e1.crl";
+  var URL2 = "http://crl.example/e2.crl";
+  var SER = 9300;
+
+  function tx(fn) { fn.blocksPrivateAddresses = true; return fn; }
+  function ok200(body, type) {
+    return { status: 200, headers: type === null ? null : { "content-type": type }, body: body };
+  }
+  var issuerCtx = { workingPublicKey: anchor.publicKey, workingIssuerName: anchor.name, issuerCert: null };
+  function ctxAt(time) { return { time: time || T2027, historicalMode: false }; }
+  async function verdictFor(cert, transport, opts, ctx) {
+    var checker = pki.path.fetchingChecker(Object.assign({ transport: transport }, opts || {}));
+    return checker.check(pki.schema.x509.parse(cert), issuerCtx, ctx || ctxAt());
+  }
+
+  var cleanCrl = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(1)] });
+  var leaf1 = await mkCert({ subject: "EdgeLeaf", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER,
+    extensions: [cdpExt([distPoint(dpnFull([gnUri(URL1)]))])] });
+
+  // ---- the distribution point shapes that name nothing --------------------
+  // A fullName holding a GeneralName that does not decode at all.
+  var leafUndecodable = await mkCert({ subject: "UndecodableDp", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 1,
+    extensions: [cdpExt([distPoint(dpnFull([b.raw(Buffer.from([0x86, 0x7f]))]))])] });
+  // A certificate naming a location nobody can read is not a certificate naming none: the first
+  // has a revocation source an operator has to go and look at, the second has nothing to look at.
+  // Both end undetermined, so the difference is the reason and nothing else.
+  var vUndec = await verdictFor(leafUndecodable, tx(function () { return Promise.reject(new Error("never")); }));
+  check("E1. an unreadable cRLDistributionPoints says so rather than reading as naming nothing",
+    vUndec.status === "unknown" && /cRLDistributionPoints extension does not decode/.test(vUndec.reason || ""));
+
+  // A fullName that decodes to a non-context tag is not a GeneralName, and the whole extension
+  // goes with it: RFC 5280 sec. 4.2.1.6 admits only a context tag there.
+  var leafNonContext = await mkCert({ subject: "NonContextDp", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 2,
+    extensions: [cdpExt([distPoint(dpnFull([b.integer(5n)]))])] });
+  var vNonCtx = await verdictFor(leafNonContext, tx(function () { return Promise.reject(new Error("never")); }));
+  check("E2. a fullName entry whose tag is not a context tag is reported the same way",
+    vNonCtx.status === "unknown" && /does not decode/.test(vNonCtx.reason || "") &&
+    /GeneralName/.test(vNonCtx.reason || ""));
+
+  // An empty fullName: sec. 4.2.1.13 has at least one GeneralName.
+  var leafEmptyFull = await mkCert({ subject: "EmptyFullDp", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 3,
+    extensions: [cdpExt([distPoint(dpnFull([]))])] });
+  var vEmpty = await verdictFor(leafEmptyFull, tx(function () { return Promise.reject(new Error("never")); }));
+  check("E3. an empty fullName is reported with the rule it broke",
+    vEmpty.status === "unknown" && /at least 1 element/.test(vEmpty.reason || ""));
+
+  // CONTROL: a certificate carrying no such extension at all reads differently, which is the whole
+  // point of recording the refusal.
+  var leafNoCdpCtl = await mkCert({ subject: "NoCdpControl", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 12 });
+  var vNoCdpCtl = await verdictFor(leafNoCdpCtl, tx(function () { return Promise.reject(new Error("never")); }));
+  check("E3b. CONTROL: a certificate with no such extension says nothing about decoding",
+    vNoCdpCtl.status === "unknown" && /does not decode/.test(vNoCdpCtl.reason || "") === false);
+
+  // An authorityInfoAccess that does not decode is reported against its own extension.
+  var leafBadAia = await mkCert({ subject: "BadAiaEdge", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 13,
+    extensions: [ext("1.3.6.1.5.5.7.1.1", false, b.integer(4n))] });
+  var vBadAia = await verdictFor(leafBadAia, tx(function () { return Promise.reject(new Error("never")); }));
+  check("E3c. an unreadable authorityInfoAccess is named as that extension, not as the other one",
+    vBadAia.status === "unknown" && /authorityInfoAccess extension does not decode/.test(vBadAia.reason || ""));
+
+  // ---- the URL forms this client does not open ----------------------------
+  var leafBadUrls = await mkCert({ subject: "BadUrlDp", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 4,
+    extensions: [cdpExt([
+      distPoint(dpnFull([gnUri("")])),
+      distPoint(dpnFull([gnUri("http://[not a url")])),
+      distPoint(dpnFull([gnUri("http://127.0.0.1/a.crl")])),
+      distPoint(dpnFull([gnUri("http://[::1]/a.crl")]))])] });
+  var tNever = tx(function () { return Promise.reject(new Error("never")); });
+  var vBadUrls = await verdictFor(leafBadUrls, tNever);
+  check("E4. an empty URI, an unparsable one, a loopback literal and a bracketed loopback are each skipped",
+    vBadUrls.status === "unknown" && tNever.callCount === undefined);
+
+  // An id-ad-ocsp access location this client does not open is a skip with its own wording.
+  var aiaLoopback = ext("1.3.6.1.5.5.7.1.1", false,
+    b.sequence([b.sequence([b.oid("1.3.6.1.5.5.7.48.1"), gnUri("http://127.0.0.1/ocsp")])]));
+  var leafAiaLoop = await mkCert({ subject: "AiaLoopback", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 5, extensions: [aiaLoopback] });
+  var vAiaLoop = await verdictFor(leafAiaLoop, tNever);
+  check("E5. an id-ad-ocsp URI this client does not open is a skip naming the URI",
+    vAiaLoop.status === "unknown" && /id-ad-ocsp/.test(vAiaLoop.reason || ""));
+
+  // ---- the transport answering with shapes a real one does not ------------
+  var shapes = [
+    ["a resolved undefined", function () { return Promise.resolve(undefined); }],
+    ["a 200 with a null body", function () { return Promise.resolve(ok200(null, "application/pkix-crl")); }],
+    ["a 200 with no headers at all", function () { return Promise.resolve(ok200(Buffer.from("x"), null)); }],
+    ["a 200 carrying unrelated headers", function () {
+      return Promise.resolve({ status: 200, headers: { "x-other": "1", "content-length": "2" }, body: Buffer.from("x") });
+    }],
+    // A rejection carrying no message at all: the reason still has to say something.
+    ["a rejection with a string", function () { return Promise.reject("down"); }],
+    ["a rejection with no message", function () { return Promise.reject({}); }],
+    // The rejection value is the transport's, so reading it is reading caller-controlled data.
+    // A checker that throws is not waivable by opts.softFail, which is what makes this a verdict
+    // question rather than a formatting one.
+    ["a rejection whose message is a Symbol", function () { return Promise.reject({ message: Symbol("nope") }); }],
+    ["a rejection whose message getter throws", function () {
+      var v = {};
+      Object.defineProperty(v, "message", { get: function () { throw new Error("read refused"); } });
+      return Promise.reject(v);
+    }],
+    ["a rejection whose message getter throws the value itself", function () {
+      var v = {};
+      Object.defineProperty(v, "message", { get: function () { throw v; } });
+      return Promise.reject(v);
+    }],
+    ["a rejection whose message stringifies by throwing", function () {
+      return Promise.reject({ message: { toString: function () { throw new Error("no string"); } } });
+    }],
+    ["a rejection that is a Proxy refusing every read", function () {
+      return Promise.reject(new Proxy({}, { get: function () { throw new Error("proxy refused"); } }));
+    }],
+    ["a transport that throws the hostile value synchronously", function () {
+      var v = {};
+      Object.defineProperty(v, "message", { get: function () { throw v; } });
+      throw v;
+    }],
+  ];
+  var allUnknown = true;
+  for (var s = 0; s < shapes.length; s++) {
+    var vS;
+    try { vS = await verdictFor(leaf1, tx(shapes[s][1])); }
+    catch (e) {
+      allUnknown = false;
+      console.log("  THREW on " + shapes[s][0] + ": " + (e && e.name));
+      continue;
+    }
+    if (vS.status !== "unknown") { allUnknown = false; console.log("  settled on " + shapes[s][0]); }
+    if (typeof vS.reason !== "string") { allUnknown = false; console.log("  no reason string on " + shapes[s][0]); }
+  }
+  check("E6. a transport answering with a shape a real one does not is undetermined, never good",
+    allUnknown === true);
+
+  // ---- the deadline reached before a request rather than during one -------
+  var spent = tx(function () { return Promise.resolve(ok200(cleanCrl, "application/pkix-crl")); });
+  var vSpent = await verdictFor(leaf1, spent, { totalDeadlineMs: 1 });
+  await helpers.passiveObserve(20, "letting the one-millisecond deadline pass");
+  check("E7. a deadline already spent is a verdict rather than a request",
+    vSpent.status === "good" || vSpent.status === "unknown");
+
+  // ---- the cache's own arms ----------------------------------------------
+  // An entry is read back only inside the window the object signed for. The same checker asked
+  // after nextUpdate fetches again rather than serving what it kept.
+  var shortCrl = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(2)],
+    thisUpdate: new Date("2027-01-01T00:00:00Z"), nextUpdate: new Date("2027-02-01T00:00:00Z") });
+  var laterCrl = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(3)],
+    thisUpdate: new Date("2027-01-01T00:00:00Z"), nextUpdate: new Date("2028-06-01T00:00:00Z") });
+  var served = 0;
+  var tAging = tx(function () {
+    served += 1;
+    return Promise.resolve(ok200(served === 1 ? shortCrl : laterCrl, "application/pkix-crl"));
+  });
+  var agingChecker = pki.path.fetchingChecker({ transport: tAging });
+  var parsedLeaf1 = pki.schema.x509.parse(leaf1);
+  var a1 = await agingChecker.check(parsedLeaf1, issuerCtx, ctxAt(new Date("2027-01-15T00:00:00Z")));
+  var a2 = await agingChecker.check(parsedLeaf1, issuerCtx, ctxAt(new Date("2027-01-16T00:00:00Z")));
+  var a3 = await agingChecker.check(parsedLeaf1, issuerCtx, ctxAt(new Date("2027-03-01T00:00:00Z")));
+  check("E8. an entry is reused inside its signed window and refetched once the window has passed",
+    a1.status === "good" && a2.status === "good" && a3.status === "good" && served === 2);
+
+  // The cache also refuses to keep a single object larger than its whole byte ceiling. Nothing can
+  // reach that arm while the response cap is the lower of the two, because a body over the response
+  // cap never becomes an object at all. Pinning the ordering is what makes the claim checkable:
+  // raising the response cap above the cache ceiling would make an object bigger than the cache
+  // possible, and this fails instead of the arm quietly becoming live.
+  check("E9. a single object can never exceed the cache ceiling, because the response cap is lower",
+    pki.constants.LIMITS.REVOCATION_MAX_RESPONSE_BYTES <= pki.constants.LIMITS.REVOCATION_CACHE_MAX_BYTES);
+
+  // The entry count is reachable, and what it does when reached is evict: an entry the cache let
+  // go is fetched again rather than answered from a stale slot.
+  var MANY = pki.constants.LIMITS.REVOCATION_CACHE_MAX_ENTRIES + 4;
+  var evictAsked = {};
+  var tEvict = tx(function (req) {
+    evictAsked[req.url] = (evictAsked[req.url] || 0) + 1;
+    return Promise.resolve(ok200(cleanCrl, "application/pkix-crl"));
+  });
+  var evictChecker = pki.path.fetchingChecker({ transport: tEvict });
+  var firstUrl = "http://crl.example/evict-0.crl";
+  var evictLeaves = [];
+  for (var m = 0; m < MANY; m++) {
+    evictLeaves.push(await mkCert({ subject: "Evict" + m, issuer: "Root", signWith: "ed25519",
+      subjectKeys: "ed25519leaf", serial: SER + 100 + m,
+      extensions: [cdpExt([distPoint(dpnFull([gnUri("http://crl.example/evict-" + m + ".crl")]))])] }));
+  }
+  for (var m2 = 0; m2 < MANY; m2++) {
+    await evictChecker.check(pki.schema.x509.parse(evictLeaves[m2]), issuerCtx, ctxAt());
+  }
+  check("E9b. every distinct destination was asked exactly once while the cache had room",
+    Object.keys(evictAsked).length === MANY && evictAsked[firstUrl] === 1);
+  await evictChecker.check(pki.schema.x509.parse(evictLeaves[0]), issuerCtx, ctxAt());
+  check("E9c. an entry the cache evicted is fetched again rather than answered from a dropped slot",
+    evictAsked[firstUrl] === 2);
+
+  // ---- the second distribution point, reached when the first settles nothing
+  var thirdParty = await mkCrl({ issuer: "Other", signWith: "ed25519", extensions: [crlNumberExt(5)] });
+  var leafTwoPoints = await mkCert({ subject: "TwoPointEdge", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 6,
+    extensions: [cdpExt([distPoint(dpnFull([gnUri(URL1)])), distPoint(dpnFull([gnUri(URL2)]))])] });
+  var route = {};
+  route[URL1] = ok200(thirdParty, "application/pkix-crl");
+  route[URL2] = ok200(cleanCrl, "application/pkix-crl");
+  var asked = [];
+  var tTwo = tx(function (req) { asked.push(req.url); return Promise.resolve(route[req.url]); });
+  var vTwo = await verdictFor(leafTwoPoints, tTwo);
+  check("E10. a point whose CRL settles nothing is followed by the next one",
+    vTwo.status === "good" && asked.length === 2 && asked[0] === URL1 && asked[1] === URL2);
+
+  // The same URL named twice is one destination.
+  var leafDup = await mkCert({ subject: "DupPointEdge", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 7,
+    extensions: [cdpExt([distPoint(dpnFull([gnUri(URL1), gnUri(URL1)]))])] });
+  var dupAsked = [];
+  var tDup = tx(function (req) { dupAsked.push(req.url); return Promise.resolve(ok200(cleanCrl, "application/pkix-crl")); });
+  check("E11. one URL named twice is asked once",
+    (await verdictFor(leafDup, tDup)).status === "good" && dupAsked.length === 1);
+
+  // ---- the delta route ----------------------------------------------------
+  // A base CRL naming a delta in its own freshestCRL, and the delta failing to arrive: the base
+  // still answers, and the failure is a note rather than a verdict.
+  var DELTA_URL = "http://crl.example/edge-delta.crl";
+  var baseWithFreshest = await mkCrl({ issuer: "Root", signWith: "ed25519",
+    extensions: [crlNumberExt(6), ext("2.5.29.46", false,
+      b.sequence([b.sequence([b.contextConstructed(0, b.contextConstructed(0, b.contextPrimitive(6, Buffer.from(DELTA_URL, "ascii"))))])]))] });
+  var dRoute = {};
+  dRoute[URL1] = ok200(baseWithFreshest, "application/pkix-crl");
+  dRoute[DELTA_URL] = function () { return Promise.reject(new Error("delta down")); };
+  var tDelta = tx(function (req) {
+    var hit = dRoute[req.url];
+    return typeof hit === "function" ? hit() : Promise.resolve(hit);
+  });
+  var vDelta = await verdictFor(leaf1, tDelta);
+  check("E12. a base CRL answers although the delta it names never arrives",
+    vDelta.status === "good" && /delta CRL fetch failed/.test(vDelta.reason || ""));
+
+  // useDeltas false: the delta the base names is not asked for at all.
+  var noDeltaAsked = [];
+  var tNoDelta = tx(function (req) {
+    noDeltaAsked.push(req.url);
+    return Promise.resolve(req.url === URL1 ? ok200(baseWithFreshest, "application/pkix-crl") : ok200(cleanCrl, "application/pkix-crl"));
+  });
+  check("E13. useDeltas false asks for no delta the base names",
+    (await verdictFor(leaf1, tNoDelta, { useDeltas: false })).status === "good" &&
+    noDeltaAsked.length === 1 && noDeltaAsked[0] === URL1);
+
+  // A delta already asked for as a distribution point is not asked again.
+  var leafDeltaDup = await mkCert({ subject: "DeltaDupEdge", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 8,
+    extensions: [cdpExt([distPoint(dpnFull([gnUri(URL1)])), distPoint(dpnFull([gnUri(DELTA_URL)]))])] });
+  var dupDeltaAsked = [];
+  var tDupDelta = tx(function (req) {
+    dupDeltaAsked.push(req.url);
+    return Promise.resolve(req.url === URL1 ? ok200(baseWithFreshest, "application/pkix-crl") : ok200(cleanCrl, "application/pkix-crl"));
+  });
+  await verdictFor(leafDeltaDup, tDupDelta);
+  var deltaTimes = dupDeltaAsked.filter(function (u) { return u === DELTA_URL; }).length;
+  check("E14. a URL reached as both a distribution point and a delta is asked once", deltaTimes === 1);
+
+  // ---- the OCSP arms a settled path does not reach ------------------------
+  var interKeys = await ensureKeys("ed25519i");
+  var interEdge = await mkCert({ subject: "EdgeInter", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN, KU_CRL_SIGN])] });
+  var OCSP_EDGE = "http://ocsp.example/edge";
+  var aiaEdge = ext("1.3.6.1.5.5.7.1.1", false,
+    b.sequence([b.sequence([b.oid("1.3.6.1.5.5.7.48.1"), gnUri(OCSP_EDGE)])]));
+  var leafOcspEdge = await mkCert({ subject: "OcspEdgeLeaf", issuer: "EdgeInter", signWith: "ed25519i",
+    subjectKeys: "ed25519leaf", serial: SER + 9, extensions: [aiaEdge] });
+  var edgeIssuerCtx = { workingPublicKey: interKeys.spki, workingIssuerName: pki.schema.x509.parse(interEdge).subject,
+    issuerCert: pki.schema.x509.parse(interEdge) };
+  async function ocspVerdict(transport, opts) {
+    return pki.path.fetchingChecker(Object.assign({ transport: transport }, opts || {}))
+      .check(pki.schema.x509.parse(leafOcspEdge), edgeIssuerCtx, ctxAt());
+  }
+
+  // A responder whose response does not pass the acceptance gate: the reason names the refusal.
+  var wrongSigner = await mkOcsp({ responderID: { byKeyOf: anchor.publicKey }, signWith: "ed25519",
+    single: [{ issuerName: "EdgeInter", issuerKeyAlg: "ed25519i", serial: SER + 9, status: "good" }] });
+  var vWrong = await ocspVerdict(tx(function () { return Promise.resolve(ok200(wrongSigner, "application/ocsp-response")); }),
+    { retries: 0 });
+  check("E15. a response the acceptance gate refuses is undetermined and says it was not accepted",
+    vWrong.status === "unknown" && /was not accepted/.test(vWrong.reason || ""));
+
+  // A responder answering unknown for a certificate that names no CRL: the reason carries the
+  // responder's own answer rather than a bare undetermined.
+  var unknownEdge = await mkOcsp({ responderID: { byKeyOf: interKeys.spki }, signWith: "ed25519i",
+    single: [{ issuerName: "EdgeInter", issuerKeyAlg: "ed25519i", serial: SER + 9, status: "unknown" }] });
+  var vUnknownEdge = await ocspVerdict(tx(function () { return Promise.resolve(ok200(unknownEdge, "application/ocsp-response")); }),
+    { retries: 0 });
+  check("E16. a responder answering unknown leaves the status undetermined and names the answer",
+    vUnknownEdge.status === "unknown" && /unknown/.test(vUnknownEdge.reason || ""));
+
+  // A mismatched content-type on the responder route is noted and the body still reads.
+  var goodEdge = await mkOcsp({ responderID: { byKeyOf: interKeys.spki }, signWith: "ed25519i",
+    single: [{ issuerName: "EdgeInter", issuerKeyAlg: "ed25519i", serial: SER + 9, status: "good" }] });
+  var vTypeEdge = await ocspVerdict(tx(function () { return Promise.resolve(ok200(goodEdge, "text/plain")); }), { retries: 0 });
+  check("E17. a mismatched responder content-type is a note, not a refusal",
+    vTypeEdge.status === "good");
+
+  // ---- a certificate naming nothing this client fetches -------------------
+  var leafBare = await mkCert({ subject: "BareEdge", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 10 });
+  var vBare = await verdictFor(leafBare, tNever);
+  check("E18. a certificate naming no revocation location reads as that, not as a failed fetch",
+    vBare.status === "unknown" && /names no revocation location/.test(vBare.reason || ""));
+
+  // A certificate whose cRLDistributionPoints does not decode at all.
+  var leafBadCdp = await mkCert({ subject: "BadCdpEdge", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 11, extensions: [ext("2.5.29.31", false, b.integer(3n))] });
+  check("E19. an unreadable cRLDistributionPoints names no location rather than faulting",
+    (await verdictFor(leafBadCdp, tNever)).status === "unknown");
+
+  // ---- check with no ctx at all -------------------------------------------
+  var checkerNoCtx = pki.path.fetchingChecker({ transport: tx(function () { return Promise.resolve(ok200(cleanCrl, "application/pkix-crl")); }) });
+  var vNoCtx = await checkerNoCtx.check(parsedLeaf1, issuerCtx, { time: T2027 });
+  check("E20. a ctx naming no validation run is a validation of its own", vNoCtx.status === "good");
+
+  // A bracketed IPv6 literal that is NOT private is a destination this client opens: the brackets
+  // are URL syntax, and what is inside them is the address the rule is about.
+  // Not 2001:db8::/32, which is the RFC 3849 documentation range and is on the blocklist.
+  var V6_URL = "http://[2606:4700:4700::1111]/v6.crl";
+  var leafV6 = await mkCert({ subject: "V6Leaf", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 16,
+    extensions: [cdpExt([distPoint(dpnFull([gnUri(V6_URL)]))])] });
+  var v6Asked = [];
+  var tV6 = tx(function (req) { v6Asked.push(req.url); return Promise.resolve(ok200(cleanCrl, "application/pkix-crl")); });
+  check("E31. a bracketed public IPv6 literal is opened, the brackets being URL syntax",
+    (await verdictFor(leafV6, tV6)).status === "good" && v6Asked.length === 1);
+
+  // Every point answered with a CRL that does not cover this certificate: the walk runs out rather
+  // than settling, and the verdict says the fetched lists did not answer.
+  var strangerCrl = await mkCrl({ issuer: "Stranger", signWith: "ed25519i", extensions: [crlNumberExt(7)] });
+  var tStranger = tx(function () { return Promise.resolve(ok200(strangerCrl, "application/pkix-crl")); });
+  var vStranger = await verdictFor(leaf1, tStranger);
+  check("E32. a fetched list that covers nothing leaves the status undetermined, with its reason",
+    vStranger.status === "unknown" && typeof vStranger.reason === "string" && vStranger.reason.length > 0);
+
+  // check() called with no ctx at all: the budget is its own, and nothing is opened because there
+  // is no time to read the answer against.
+  var noCtxAsked = 0;
+  var tNoCtxAtAll = tx(function () { noCtxAsked += 1; return Promise.resolve(ok200(cleanCrl, "application/pkix-crl")); });
+  var vNoCtxAtAll = await pki.path.fetchingChecker({ transport: tNoCtxAtAll })
+    .check(parsedLeaf1, issuerCtx, undefined);
+  check("E33. check with no ctx is undetermined rather than a fault, and opens nothing",
+    vNoCtxAtAll.status === "unknown" && noCtxAsked === 0);
+
+  // ---- one URL named by both routes ---------------------------------------
+  // A certificate may name one URL as its responder and as its distribution point. Counting a
+  // destination and trying it are different things: the responder loop asks, and the CRL loop
+  // must still ask, or the certificate loses the fallback the OCSP route is documented to have.
+  var BOTH_URL = "http://both.example/one";
+  var aiaBoth = ext("1.3.6.1.5.5.7.1.1", false,
+    b.sequence([b.sequence([b.oid("1.3.6.1.5.5.7.48.1"), gnUri(BOTH_URL)])]));
+  var leafBoth = await mkCert({ subject: "BothRoutesLeaf", issuer: "EdgeInter", signWith: "ed25519i",
+    subjectKeys: "ed25519leaf", serial: SER + 14,
+    extensions: [aiaBoth, cdpExt([distPoint(dpnFull([gnUri(BOTH_URL)]))])] });
+  var edgeCrl = await mkCrl({ issuer: "EdgeInter", signWith: "ed25519i", extensions: [crlNumberExt(40)] });
+  var bothAsks = [];
+  var tBoth = tx(function (req) {
+    // The responder request rides in the URL, so a GET to the responder and a GET for the CRL are
+    // told apart by what the client asked to accept.
+    var accept = (req.headers || {}).accept;
+    bothAsks.push(accept);
+    if (accept === "application/pkix-crl") {
+      return Promise.resolve(ok200(edgeCrl, "application/pkix-crl"));
+    }
+    return Promise.reject(new Error("no responder here"));
+  });
+  var vBoth = await pki.path.fetchingChecker({ transport: tBoth, retries: 0 })
+    .check(pki.schema.x509.parse(leafBoth), edgeIssuerCtx, ctxAt());
+  check("E21. a URL named by both routes is still asked for the CRL after the responder fails",
+    vBoth.status === "good" &&
+    bothAsks.indexOf("application/ocsp-response") !== -1 &&
+    bothAsks.indexOf("application/pkix-crl") !== -1);
+
+  // ---- what a transport DECLARES, not what it inherits ---------------------
+  // The flag says this transport filters the address it resolved. A value it merely inherits was
+  // not declared by whoever wrote the transport, and in a process carrying a prototype-pollution
+  // primitive that is the difference between refusing a hostname and opening it.
+  var plainFn = function (_req) { return Promise.resolve(ok200(cleanCrl, "application/pkix-crl")); };
+  var pollutedCalls = 0, restoredFnProto;
+  var countingFn = function (req) { pollutedCalls += 1; return plainFn(req); };
+  var leafNamedHost = await mkCert({ subject: "NamedHostEdge", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 15,
+    extensions: [cdpExt([distPoint(dpnFull([gnUri("http://crl.internal.example/x.crl")]))])] });
+  Object.defineProperty(Function.prototype, "blocksPrivateAddresses", {
+    value: true, writable: true, configurable: true, enumerable: false,
+  });
+  var vPolluted;
+  try {
+    vPolluted = await pki.path.fetchingChecker({ transport: countingFn })
+      .check(pki.schema.x509.parse(leafNamedHost), issuerCtx, ctxAt());
+  } finally {
+    restoredFnProto = delete Function.prototype.blocksPrivateAddresses;
+  }
+  check("E22. a flag reached through Function.prototype is not a declaration, so no hostname is opened",
+    pollutedCalls === 0 && vPolluted.status === "unknown" &&
+    /does not declare it filters/.test(vPolluted.reason || ""));
+  check("E23. the pollution vector leaves Function.prototype as it found it",
+    restoredFnProto === true && !("blocksPrivateAddresses" in Function.prototype));
+  // CONTROL: a transport that really declares it is handed the same hostname.
+  var declaredCalls = 0;
+  var declaredFn = tx(function (req) { declaredCalls += 1; return plainFn(req); });
+  check("E24. CONTROL: a transport that declares the flag itself is handed the hostname",
+    (await pki.path.fetchingChecker({ transport: declaredFn })
+      .check(pki.schema.x509.parse(leafNamedHost), issuerCtx, ctxAt())).status === "good" &&
+    declaredCalls === 1);
+
+  // ---- the OCSP acceptance gate's own options door -------------------------
+  // verifyOcspResponse takes the nonce the request carried. A misspelled option is a nonce that
+  // was never asked about, and an accessor is a value that can differ between the check and the
+  // comparison; both end with a response accepted against bytes it never echoed.
+  var NONCE_A = Buffer.alloc(32, 0x07), NONCE_B = Buffer.alloc(32, 0xcc);
+  var echoA = await mkOcsp({ responderID: { byKeyOf: interKeys.spki }, signWith: "ed25519i",
+    single: [{ issuerName: "EdgeInter", issuerKeyAlg: "ed25519i", serial: SER + 9, status: "good" }],
+    responseExtensions: [ext("1.3.6.1.5.5.7.48.1.2", false, b.octetString(NONCE_A))] });
+  var leafParsed = pki.schema.x509.parse(leafOcspEdge);
+  var interParsed = pki.schema.x509.parse(interEdge);
+  async function gateOf(opts) {
+    try { return await pki.path.verifyOcspResponse(echoA, leafParsed, interParsed, T2027, opts); }
+    catch (e) { return { threw: e.code || e.name }; }
+  }
+  check("E25. CONTROL: the nonce the response echoed is accepted",
+    (await gateOf({ requestNonce: NONCE_A })).status === "good");
+  check("E26. CONTROL: a different nonce is not",
+    (await gateOf({ requestNonce: NONCE_B })).status === "unknown");
+  check("E27. a misspelled option is refused rather than leaving the nonce unasked",
+    (await gateOf({ requestNonces: NONCE_A })).threw === "path/bad-input");
+  var reads = 0;
+  var accessorOpts = {};
+  Object.defineProperty(accessorOpts, "requestNonce", {
+    enumerable: true, configurable: true,
+    get: function () { reads += 1; return reads >= 3 ? NONCE_A : NONCE_B; },
+  });
+  check("E28. an option supplied through an accessor is refused, so no read can differ from another",
+    (await gateOf(accessorOpts)).threw === "path/bad-input");
+  check("E29. a non-object options argument is refused rather than read as none",
+    (await gateOf("requestNonce")).threw === "path/bad-input" &&
+    (await gateOf(42)).threw === "path/bad-input");
+
+  // Every verdict says what it found about the nonce, including the ones decided before the
+  // response is looked at: absent is not the same answer as null.
+  var unrelated = await mkCert({ subject: "Unrelated", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN])] });
+  var unboundVerdict = await pki.path.verifyOcspResponse(echoA, leafParsed,
+    pki.schema.x509.parse(unrelated), T2027, { requestNonce: NONCE_A });
+  check("E30. a verdict reached before the response is read still reports the nonce outcome",
+    unboundVerdict.status === "unknown" && "nonceMatched" in unboundVerdict);
 }
 
 module.exports = { run: runSuite };

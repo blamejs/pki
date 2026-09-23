@@ -1999,6 +1999,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/cms-digest.js:_digest", "lib/cms-digest.js:_verifyDigest",
         "lib/cms-digest.js:digest", "lib/cms-digest.js:verifyDigest", "lib/cms-digest.js:_digestName",
         "lib/cmp-build.js:_resolveProtection", "lib/pkcs12-build.js:_normalizeSpec",
+        "lib/identity-match.js:match", "lib/ocsp.js:httpRequest",
       ],
       reason: "The options door a public verb opens with: settle the caller's options object, then refuse any key the verb does not accept. Both steps ARE the shared primitives, already factored into guard-identifier, so what repeats is the pair of calls and nothing else; the arguments differ at every site, since each verb has its own accepted-key table and its own label. Settling has to happen at the verb, before it reads anything, so the call cannot move inside the key check. family-subset so any 3+ match as more verbs adopt the door.",
     },
@@ -2030,6 +2031,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/schema-crl.js:<top>", "lib/schema-ocsp.js:<top>",
         "lib/cmp-build.js:<top>", "lib/crmf-sign.js:<top>", "lib/key.js:<top>", "lib/sigstore.js:<top>",
         "lib/ip-utils.js:<top>", "lib/pkcs11-uri.js:<top>", "lib/guard-encoding.js:_alphabet",
+        "lib/identity-match.js:<top>", "lib/identity-match.js:E",
       ],
       mode: "family-subset",
       reason: "The per-module capture header binds each module's subset of guard-intrinsic to local names at load. The repeated shape is a deliberate convention so the set is comparable across modules; the subsets differ per module and a shared indirection would put back the call-site property read the capture removes. The regex-free character scanners (the IP-literal parser, the base-N alphabet-table builder) share the same captured-primitive binding run and char-code-loop idiom while doing genuinely different work.",
@@ -2046,7 +2048,7 @@ function testNoDuplicateCodeBlocks() {
       // family-subset so any 3+ of the scanners match as more are written.
       mode: "family-subset",
       files: [
-        "lib/http-digest.js:_pctEncodeUtf8", "lib/schema-pkix.js:_keepBase64",
+        "lib/http-digest.js:_pctEncodeUtf8",
         "lib/pkcs11-uri.js:_attribute", "lib/pkcs11-uri.js:_decimal",
         "lib/guard-encoding.js:hexNibble", "lib/guard-encoding.js:isAlphanumericByte",
         "lib/ip-utils.js:_isDigitCode", "lib/pki-build.js:_isDigitCode",
@@ -2355,7 +2357,8 @@ function testNoDuplicateCodeBlocks() {
       // under their own namespace prefix + error class. The decoders + makeNS already
       // live in pkix (composed identically by path-validate); the two-line header repeats
       // in shape without being extractable (each binds a different prefix/error class).
-      files: ["lib/inspect.js:<top>", "lib/lint.js:<top>", "lib/webauthn.js:<top>", "lib/cmp-verify.js:<top>", "lib/trust.js:<top>"],
+      files: ["lib/inspect.js:<top>", "lib/lint.js:<top>", "lib/webauthn.js:<top>", "lib/cmp-verify.js:<top>", "lib/trust.js:<top>",
+        "lib/identity-match.js:<top>", "lib/revocation-fetch.js:<top>"],
       mode: "family-subset",
       reason: "consumer-module header run: require the codec/oid/schema/guard/framework-error core + declare a `var NS = pkix.makeNS(prefix, ErrorClass, oid)` namespace (inspect/lint/webauthn compose pkix.certExtensionDecoders under it; cmp-verify composes pkix.pbmac1Params under it; trust its own decoders). The makeNS + require idiom lives in pkix and each binds a different prefix/error class, so the header composition is not further extractable. family-subset so any 3+ match.",
     },
@@ -3249,14 +3252,14 @@ function testGuardReadsRuntimeLive() {
   // budget nobody tightens is a number that stops meaning anything, and the next reader would take
   // it for the real count. A module reaching zero is deleted from the map and held to zero forever.
   var MIGRATING = {
-    "lib/acme.js": 201,
-    "lib/est.js": 167,
+    "lib/acme.js": 193,
+    "lib/est.js": 166,
     "lib/cmp-build.js": 135,
     "lib/crmf-sign.js": 36,
-    "lib/path-validate.js": 109,
-    "lib/webauthn.js": 169,
+    "lib/path-validate.js": 104,
+    "lib/webauthn.js": 165,
     "lib/asn1-der.js": 105,
-    "lib/trust.js": 108,
+    "lib/trust.js": 106,
     "lib/cms-sign.js": 60,
     "lib/webauthn-mds.js": 90,
     "lib/attrcert-sign.js": 89,
@@ -3264,14 +3267,14 @@ function testGuardReadsRuntimeLive() {
     "lib/http-digest.js": 73,
     "lib/pkcs12-build.js": 63,
     "lib/ct.js": 76,
-    "lib/cms-verify.js": 19,
+    "lib/cms-verify.js": 16,
     "lib/cms-encrypt.js": 66,
     "lib/crl-sign.js": 66,
-    "lib/cmc-build.js": 58,
+    "lib/cmc-build.js": 57,
     "lib/pki-build.js": 34,
     "lib/hpke.js": 41,
     "lib/cms-decrypt.js": 49,
-    "lib/cmc-verify.js": 38,
+    "lib/cmc-verify.js": 34,
     "lib/x509-sign.js": 26,
     "lib/schema-attrcert.js": 26,
     "lib/tls-cert-compress.js": 18,
@@ -4092,6 +4095,40 @@ function testLibRegexHitsLexing() {
   check("_libRegexHits reads division on the next statement after a bare break as division", hitBreakThenDiv === 0);
 }
 
+function testCallerArrayCopiedLive() {
+  // class: caller-array-copied-live
+  // A caller's array copied or walked with `.slice(` / `.map(` / `.filter(` / `.forEach(` reaches
+  // Array.prototype through the caller's own object, so an own method on that array -- or a
+  // replacement installed on Array.prototype by anything sharing the realm -- decides the elements
+  // the toolkit goes on to treat as its private copy. The `Array.isArray(x)` beside the walk is what
+  // marks the receiver as the caller's: the test proves the value came in from outside, and the walk
+  // then asks that same value to produce its own contents. Every later read trusts the result, so a
+  // substitution does not merely corrupt one field, it silently redirects the rule the snapshot was
+  // taken for (pki.cms.verify copied opts.requiredEku this way, and a substituted slice traded the
+  // purpose the caller demanded for one the signer happened to carry).
+  // Take the copy with guard.list.snapshot / guard.list.copyMap, which read `length` once and write
+  // each element as an own data property, so neither an own method nor a prototype replacement is
+  // consulted. The shape is the COPY: the array-test and the walk stand in one expression, joined by
+  // a `?`, an assignment or a `return`, which is what says the walk is producing the value the rest
+  // of the function will treat as its own. A test followed by an unrelated walk of a value the
+  // toolkit decoded is a different question and belongs to the live-read budget, not here.
+  var SHAPES = [
+    /\.isArray\(\s*([\w.$]+)\s*\)[^\n]{0,80}?(?:[?=]|\breturn\b)[^\n]{0,80}?\b\1\.(?:slice|map|filter)\(/,
+    /\.isArray\([^\n)]*\)\s*\?[^\n]{0,80}?\)\s*\.(?:slice|map|filter)\(/,
+  ];
+  var bad = [], seen = Object.create(null);
+  SHAPES.forEach(function (shape) {
+    _scanLib(shape, { skipComments: true }).forEach(function (m) {
+      var at = m.file + ":" + m.line;
+      if (seen[at]) return;
+      seen[at] = true;
+      bad.push(m);
+    });
+  });
+  bad = _filterMarkers(bad, "caller-array-copied-live");
+  _report("a caller's array is copied through guard.list, never through its own slice/map/filter/forEach", bad);
+}
+
 function testNoInstanceofArrayBuffer() {
   // class: no-instanceof-arraybuffer
   // The realm-safe way to ask "is this an ArrayBuffer?" is `guard.bytes.isByteSource` (any of the four byte
@@ -4220,6 +4257,7 @@ function run() {
   testNoRegexInLib();
   testLibRegexHitsLexing();
   testNoInstanceofArrayBuffer();
+  testCallerArrayCopiedLive();
   testNoPartialByteAcceptance();
   testEverySigningFileProvesItsSignature();
   testNoDuplicateCodeBlocks();

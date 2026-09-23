@@ -98,6 +98,28 @@ stopwords = [
 ]
 
 [[allowlists]]
+description = "RFC 7468 PEM labels mapped to this toolkit's format names"
+# The PEM label table (lib/schema-pkix.js) and the format registry
+# (lib/schema-all.js) map each RFC 7468 sec. 3 armor label to the name of the
+# parser that reads it. A row whose label ends in "PRIVATE KEY" or "PUBLIC KEY"
+# puts a quoted string immediately after the word KEY, which is the shape
+# generic-api-key looks for; the value it extracts is a format name such as
+# `pkcs8-encrypted` or `pkcs1-public`. Both halves are public constants: the
+# label is what the armor says on the wire and the format name is what
+# pki.schema.parse reports, documented in the operator-facing surface. A real
+# key is never a bare quoted token on one line, so the shape below cannot
+# match one.
+# regexTarget = "line": the rule extracts the format name as the "secret", so a
+# regex left on the default target would have to enumerate the format names.
+# Matching the whole line states the actual rule, and keeps covering the table
+# when a label is added.
+regexTarget = "line"
+regexes = [
+  '''"[A-Z0-9 #]*(?:PRIVATE|PUBLIC) KEY"\s*:\s*"[a-z0-9-]+"''',
+  '''label:\s*"[A-Z0-9 #]*(?:PRIVATE|PUBLIC) KEY",\s*name:\s*"[a-z0-9-]+"''',
+]
+
+[[allowlists]]
 description = "RSA algorithm registry names that trip generic-api-key entropy"
 # The CMP keySpec RSA-family classifier (lib/cmp-session.js) enumerates the
 # standard RSA algorithm identifiers by their registry name so "other than RSA"

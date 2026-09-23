@@ -1,6 +1,6 @@
 {
   "version": "0.8.5",
-  "date": "2026-09-25",
+  "date": "2026-09-20",
   "headline": "A key this process cannot export can sign, and every verb that signs proves its signature first.",
   "summary": "The one key door accepted a WebCrypto `CryptoKey`, a PKCS#8 private key, and nothing else, so no key held in a hardware security module, a cloud key management service, a PKCS#11 token, a PIV slot or a Trusted Platform Module could sign anything this toolkit builds. A signer `{ algorithm, publicKey, sign }` now goes wherever a private key goes, at the door every signing verb already routes through. Because the bytes a signer returns come from outside the toolkit, the proof that a signature verifies against the key the artifact names stops being a backstop and becomes the guarantee, so the three verbs that were not performing it now do.",
   "sections": {

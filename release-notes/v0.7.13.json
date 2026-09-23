@@ -1,6 +1,6 @@
 {
   "version": "0.7.13",
-  "date": "2026-09-10",
+  "date": "2026-09-11",
   "headline": "The certificate signer refuses a pre-encoded extension whose criticality RFC 5280 fixes.",
   "summary": "pki.x509.sign accepts an array of pre-encoded Extension DER, and that path never checked the criticality flag against the clauses that fix it. A certificate could be signed carrying a non-critical nameConstraints. A relying party that does not recognize an extension marked non-critical may ignore it, so a sub-CA issued to be name-constrained was not constrained in the hands of that verifier. pki.lint.certificate already graded such a certificate error; the signer emitted it anyway.",
   "sections": {

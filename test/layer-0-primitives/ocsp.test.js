@@ -816,6 +816,46 @@ async function run() {
   check("revoked with no revocationReason still verifies revoked", (await verify(w, revNoReason)).status === "revoked");
   check("revoked with an unknown revocationReason name -> ocsp/bad-input",
     (await codeOfAsync(function () { return pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: { revoked: new Date(), revocationReason: "notARealReason" }, thisUpdate: TU, nextUpdate: NU }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 }); })) === "ocsp/bad-input");
+  // The URL this verb returns is handed to a transport, which parses it. RFC 3986 sec. 5.2.4
+  // removes a `.` or `..` path segment during that parse, so a responder URL carrying one would
+  // have the request sent to a path other than the one built here. The base is normalized before
+  // the segment is appended, so what comes back is what goes on the wire.
+  var dotty = pki.ocsp.httpRequest(Buffer.alloc(40, 1), "http://ocsp.example/./a/../b");
+  check("a responder URL carrying dot segments survives the transport's own parse",
+    new URL(dotty.url).href === dotty.url);
+  check("...and the normalized path is what the request rides on",
+    dotty.url.indexOf("http://ocsp.example/b/") === 0);
+  var trailingDot = pki.ocsp.httpRequest(Buffer.alloc(40, 1), "http://ocsp.example/.");
+  check("a responder URL that is only a dot segment normalizes the same way",
+    new URL(trailingDot.url).href === trailingDot.url);
+  // A POST names the same destination, normalized the same way, so both methods reach one place.
+  var bigPost = pki.ocsp.httpRequest(Buffer.alloc(400, 1), "http://ocsp.example/./p");
+  check("a POST names the normalized responder URL too",
+    bigPost.method === "POST" && new URL(bigPost.url).href === bigPost.url &&
+    bigPost.url === "http://ocsp.example/p");
+  // CONTROL: a URL with nothing to normalize is returned unchanged.
+  check("CONTROL: a URL needing no normalization is unchanged",
+    pki.ocsp.httpRequest(Buffer.alloc(400, 1), "http://ocsp.example/p").url === "http://ocsp.example/p");
+
+  // RFC 5019 sec. 5 bounds the whole encoded URL at 255 BYTES. A character above US-ASCII is more
+  // than one byte on the wire, so a responder URL carrying one would be measured short and a GET
+  // sent for a URL over the bound. RFC 3986 sec. 2 builds a URI out of US-ASCII alone, so such a
+  // URL is refused rather than converted, which is RFC 3987 work this toolkit does not do.
+  // Built at runtime so this file stays pure ASCII on disk: U+00E9 is one character and two UTF-8
+  // bytes, which is the whole point of the check.
+  var accented = "http://ocsp.example/" + new Array(31).join(String.fromCharCode(0xe9));
+  check("a responder URL outside US-ASCII is refused rather than measured as characters",
+    (await codeOfAsync(function () {
+      return Promise.resolve(pki.ocsp.httpRequest(Buffer.alloc(80, 1), accented));
+    })) === "ocsp/bad-input");
+  // CONTROL: the same URL percent-encoded is accepted, and its length decides the method.
+  var encoded = "http://ocsp.example/" + new Array(31).join("%C3%A9");
+  var encodedReq = pki.ocsp.httpRequest(Buffer.alloc(80, 1), encoded);
+  check("CONTROL: the percent-encoded form is accepted and is over the bound, so it is a POST",
+    encodedReq.method === "POST" && encodedReq.url === encoded);
+  check("CONTROL: a short ASCII responder URL still rides in a GET",
+    pki.ocsp.httpRequest(Buffer.alloc(80, 1), "http://o.example/r").method === "GET");
+
   // requestNonce given as a non-Buffer -> never matches (fails closed, not a throw).
   check("a non-Buffer requestNonce never matches -> unknown", (await verify(w, goodN, { requestNonce: "not-a-buffer" })).status === "unknown");
 
@@ -1128,7 +1168,87 @@ async function run() {
   var refusalMsg = await signResp({ status: "good", singleExtensions: [ext("ocspServiceLocator", false, b.sequence([b.sequence([])]))] }).then(function () { return ""; }, function (e) { return e.message; });
   check("...naming the clause", refusalMsg.indexOf("RFC 6960 4.4.6") > 0 || refusalMsg.indexOf("sec. 4.4.6") > 0);
 
+  await testHttpRequest(w);
+
   console.log("CHECKS " + helpers.getChecks());
+}
+
+// RFC 6960 Appendix A.1 gives the request two HTTP shapes and RFC 5019 sec. 5 says which to use:
+// a GET carrying the base64 of the DER, percent-encoded into one path segment, when the whole
+// encoded URL is 255 bytes or fewer, and a POST otherwise. The measurement is over the URL as it
+// goes on the wire, which is why the function shapes the request rather than only encoding it.
+async function testHttpRequest(w) {
+  var req = await pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer },
+    { profile: "lightweight" });
+  function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return e.code || e.name; } }
+
+  var short = Buffer.alloc(30, 0x41);
+  var g = pki.ocsp.httpRequest(short, "http://ocsp.example");
+  check("H1. a request that fits is a GET whose URL carries it",
+    g.method === "GET" && g.body === null && g.url.indexOf("http://ocsp.example/") === 0);
+  check("H2. the request rides in a path segment, not a query",
+    g.url.indexOf("?") === -1 && g.url.indexOf("#") === -1);
+  check("H3. the segment is the percent-encoded base64 of the DER", (function () {
+    var b64 = short.toString("base64");
+    return g.url === "http://ocsp.example/" + b64.replace(/\+/g, "%2B").replace(/\//g, "%2F").replace(/=/g, "%3D");
+  })());
+  check("H4. the URL carries no CR and no LF, which RFC 5019 sec. 5 states as a MUST NOT",
+    g.url.indexOf("\r") === -1 && g.url.indexOf("\n") === -1);
+  check("H5. a responder URL already ending in a slash does not gain a second one",
+    pki.ocsp.httpRequest(short, "http://ocsp.example/").url.indexOf("//" + "ocsp.example//") === -1);
+  check("H6. a GET asks for the response media type",
+    g.headers.accept === "application/ocsp-response" && g.headers["content-type"] === undefined);
+
+  // The boundary is measured over the whole encoded URL, so the same request is a GET under a
+  // short responder name and a POST under a long one.
+  var atBoundary = null, justOver = null;
+  for (var n = 1; n < 400 && (atBoundary === null || justOver === null); n++) {
+    var r = pki.ocsp.httpRequest(Buffer.alloc(n, 0x41), "http://o.example");
+    if (r.method === "GET") atBoundary = r;
+    else if (justOver === null) justOver = r;
+  }
+  check("H7. the decision is the 255-byte measurement over the whole URL",
+    atBoundary !== null && atBoundary.url.length <= 255 && justOver !== null);
+  check("H8. ...and a request too long for a URL is a POST carrying the DER",
+    justOver.method === "POST" && Buffer.isBuffer(justOver.body) &&
+    justOver.headers["content-type"] === "application/ocsp-request");
+  check("H9. a POST sends the DER unchanged and leaves the URL alone", (function () {
+    var big = Buffer.alloc(400, 0x41);
+    var p = pki.ocsp.httpRequest(big, "http://ocsp.example/path");
+    return p.url === "http://ocsp.example/path" && p.body.equals(big);
+  })());
+  check("H10. the same responder is a GET or a POST depending only on the request length",
+    pki.ocsp.httpRequest(short, "http://" + new Array(230).join("a") + ".example").method === "POST");
+
+  check("H11. a real lightweight request shapes into one of the two forms", (function () {
+    var real = pki.ocsp.httpRequest(req, "http://ocsp.example/");
+    return (real.method === "GET" && real.body === null) ||
+      (real.method === "POST" && real.body.equals(Buffer.from(req)));
+  })());
+  check("H12. opts.method overrides the measurement when the request still fits",
+    pki.ocsp.httpRequest(short, "http://ocsp.example/", { method: "POST" }).method === "POST");
+  check("H13. ...and a GET asked for on a request too long is refused, not truncated",
+    code(function () { pki.ocsp.httpRequest(Buffer.alloc(400, 0x41), "http://o.example", { method: "GET" }); }) === "ocsp/bad-input");
+  check("H14. an unknown method and an unknown option are refused",
+    code(function () { pki.ocsp.httpRequest(short, "http://o.example", { method: "PUT" }); }) === "ocsp/bad-input" &&
+    code(function () { pki.ocsp.httpRequest(short, "http://o.example", { retries: 1 }); }) === "ocsp/bad-input");
+  check("H15. a responder URL carrying a query or a fragment is refused",
+    code(function () { pki.ocsp.httpRequest(short, "http://o.example/?a=1"); }) === "ocsp/bad-input" &&
+    code(function () { pki.ocsp.httpRequest(short, "http://o.example/#f"); }) === "ocsp/bad-input");
+  check("H16. a responder URL with no scheme or no host is refused",
+    code(function () { pki.ocsp.httpRequest(short, "ocsp.example"); }) === "ocsp/bad-input" &&
+    code(function () { pki.ocsp.httpRequest(short, "http:///path"); }) === "ocsp/bad-input" &&
+    code(function () { pki.ocsp.httpRequest(short, ""); }) === "ocsp/bad-input");
+  check("H17. an empty or non-byte request is refused",
+    code(function () { pki.ocsp.httpRequest(Buffer.alloc(0), "http://o.example"); }) === "ocsp/bad-input" &&
+    code(function () { pki.ocsp.httpRequest("der", "http://o.example"); }) === "ocsp/bad-input");
+  check("H18. an https responder is shaped the same way",
+    pki.ocsp.httpRequest(short, "https://ocsp.example").url.indexOf("https://ocsp.example/") === 0);
+  check("H19. the headers are frozen, so a caller cannot rewrite what it is about to send",
+    Object.isFrozen(g.headers) && (function () {
+      try { g.headers.accept = "*/*"; } catch (_e) { /* frozen */ }
+      return g.headers.accept === "application/ocsp-response";
+    })());
 }
 
 module.exports = { run: run };

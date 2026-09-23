@@ -583,6 +583,35 @@ async function testProxyConnect() {
       check("PX-22b a qop-less challenge is answered when the caller opts in", rNoQop.status === 200 && rNoQop.body.toString() === "TUNNELED");
     } finally { pxNoQopOk.srv.close(); }
 
+    // PX-23 allowPlaintextHttp with a proxy. The tunnel is opened to the origin's own port and the
+    // request rides it as plain HTTP: a CONNECT defaulting to 443, or a TLS handshake started
+    // inside the tunnel, would each reach the wrong thing.
+    var plainOrigin = await new Promise(function (res) {
+      var srv = require("node:http").createServer(function (req, r) { r.end("PLAINTUNNELED"); });
+      srv.listen(0, "127.0.0.1", function () { res({ srv: srv, port: srv.address().port }); });
+    });
+    var pxPlain = await startConnectProxy({});
+    try {
+      var rPlain = await t({ method: "GET", url: "http://127.0.0.1:" + plainOrigin.port + "/x",
+        allowPlaintextHttp: true, proxy: { url: "http://127.0.0.1:" + pxPlain.port } });
+      check("PX-23 a plaintext origin through a proxy reaches the origin over the tunnel",
+        rPlain.status === 200 && rPlain.body.toString() === "PLAINTUNNELED");
+      check("PX-23b the CONNECT named the origin's own port, not 443",
+        pxPlain.seen.length === 1 &&
+        pxPlain.seen[0].requestLine.indexOf("127.0.0.1:" + plainOrigin.port) !== -1);
+    } finally { pxPlain.srv.close(); plainOrigin.srv.close(); }
+
+    // PX-23c an origin URL stating no port takes its own scheme's default. The upstream connect
+    // then fails (nothing is listening there in a test), which is why the assertion is on what the
+    // proxy was asked to open rather than on the response.
+    var pxPort = await startConnectProxy({});
+    try {
+      await codeOf(t({ method: "GET", url: "http://127.0.0.1/x", allowPlaintextHttp: true,
+        proxy: { url: "http://127.0.0.1:" + pxPort.port } }));
+      check("PX-23c an http origin naming no port tunnels to 80, not 443",
+        pxPort.seen.length === 1 && pxPort.seen[0].requestLine === "CONNECT 127.0.0.1:80 HTTP/1.1");
+    } finally { pxPort.srv.close(); }
+
     // PX-3 an open http proxy (no auth) is tunnel-only and still works
     var pxOpen = await startConnectProxy({});
     try {

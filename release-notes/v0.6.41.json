@@ -1,6 +1,6 @@
 {
   "version": "0.6.41",
-  "date": "2026-09-05",
+  "date": "2026-09-06",
   "headline": "A lookup table answers from its own entries, so a name taken off the wire cannot resolve to something the table never registered.",
   "summary": "A table written as an ordinary object literal inherits from Object.prototype, so looking a name up in it can return a member nobody put there. Asking such a table for constructor returns a function; asking for any name something else in the process left on Object.prototype returns whatever that is. When the name comes off the wire, the message picks which entry the table answers with. A WebAuthn attestation naming constructor as its format reached the verifier table and was handed Object's own constructor to run as a verifier, and a C509 certificate naming an unregistered public-key algorithm parsed as valid instead of being rejected.\n\nEvery module-level table in the toolkit now carries no prototype, from the signature-scheme and content-encryption registries to the name tables pki.C.NAMES exposes. A name the table does not hold answers undefined, which is what each caller's miss handling already expects.\n\nA module-level table declared as an object literal now fails the build, so the next table written that way is caught where it is written.",
   "sections": {

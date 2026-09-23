@@ -1576,10 +1576,12 @@ embedding it is responsible for.
   section 4.2.1.10 requires: an `rfc822Name` constraint applies to an
   `emailAddress` attribute in the subject when the certificate has no subject
   alternative name. A `dNSName` constraint does not apply to a subject
-  `commonName`, and `pki.path.validate` matches no name against a reference
-  identity of your own. RFC 9525 section 1.3 retires `commonName` as a source of
-  hostname identity: take the identity from a `dNSName` or `iPAddress` subject
-  alternative name and compare it yourself.
+  `commonName`. RFC 9525 section 2 forbids reading a service identity from the
+  `commonName` or from any other relative distinguished name, and
+  `pki.identity.match` reads neither: it compares your reference identities
+  against the subject alternative name and nothing else. Pass the same reference
+  identities to `pki.path.validate` as `opts.identity` to have the path verdict
+  carry the result.
 - **Integrity of state the caller stores between calls.** A `pki.cmp.session`
   `resumeToken` carries no secret, and a resumed poll still verifies, nonce-binds
   and key-binds every response. Its fields are what the resumed exchange is held

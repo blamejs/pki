@@ -65,6 +65,61 @@ function run() {
   testBase64();
   testHex();
   testAuthoringBounds();
+  testPercentEncode();
+}
+
+// RFC 3986 sec. 2.1 writes a percent-encoding as `%` and two hexadecimal digits, and sec. 2.3
+// names the unreserved set that is never encoded. Everything else is, which is what keeps a value
+// inside the component it was placed in: a `/`, a `?`, a `#` or a percent of its own cannot reach
+// past its own path segment. `encodeURIComponent` is not this function, because it reads a
+// JavaScript string rather than bytes and leaves the sub-delims of sec. 2.2 unescaped.
+function testPercentEncode() {
+  function E(code, message) { var e = new Error(message); e.code = code; return e; }
+  function enc(v) { return encoding.percentEncode(v, E, "test/bad"); }
+  function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return e.code || e.name; } }
+
+  check("the unreserved set passes through unchanged",
+    enc(Buffer.from("ABCabc019-._~")) === "ABCabc019-._~");
+  check("every reserved character becomes a triplet",
+    enc(Buffer.from("/?#[]@!$&'()*+,;=")) === "%2F%3F%23%5B%5D%40%21%24%26%27%28%29%2A%2B%2C%3B%3D");
+  check("a space, a percent and a colon are encoded too",
+    enc(Buffer.from(" %:")) === "%20%25%3A");
+  check("the hex digits are upper case, which RFC 3986 sec. 2.1 names the canonical form",
+    enc(Buffer.from([0xab, 0xcd, 0xef])) === "%AB%CD%EF");
+  check("a zero byte and a high byte are encoded, not dropped",
+    enc(Buffer.from([0x00, 0x7f, 0x80, 0xff])) === "%00%7F%80%FF");
+  check("an empty input encodes to an empty string", enc(Buffer.alloc(0)) === "");
+  // Every byte value, decoded by the inverse of what sec. 2.1 defines rather than by
+  // `decodeURIComponent`, which reads a triplet as UTF-8 and throws on `%80` through `%FF`.
+  check("every one of the 256 byte values survives a round trip", (function () {
+    var all = Buffer.alloc(256);
+    for (var i = 0; i < 256; i++) all[i] = i;
+    var out = enc(all);
+    var back = [], k = 0;
+    while (k < out.length) {
+      if (out.charAt(k) === "%") { back.push(parseInt(out.slice(k + 1, k + 3), 16)); k += 3; }
+      else { back.push(out.charCodeAt(k)); k += 1; }
+    }
+    if (back.length !== 256) return false;
+    for (var j = 0; j < 256; j++) if (back[j] !== j) return false;
+    return true;
+  })());
+  check("...and the encoding of that whole range carries no character outside the unreserved set and %",
+    /^[A-Za-z0-9\-._~%0-9A-F]*$/.test(enc(Buffer.from([0x00, 0x41, 0x2f, 0xff]))));
+  check("a base64 body's three special characters are all escaped",
+    enc(Buffer.from("aB+/c=")) === "aB%2B%2Fc%3D");
+
+  check("uriPathSegment reads a string as its latin1 bytes",
+    encoding.uriPathSegment("a/b", E, "test/bad") === "a%2Fb" &&
+    encoding.uriPathSegment("", E, "test/bad") === "");
+  check("a segment cannot carry a delimiter out of its own component",
+    encoding.uriPathSegment("../../etc/passwd", E, "test/bad") === "..%2F..%2Fetc%2Fpasswd");
+  check("a value that is not a string is refused by uriPathSegment",
+    code(function () { encoding.uriPathSegment(Buffer.from("x"), E, "test/bad"); }) === "test/bad");
+  check("a value that is not bytes is refused by percentEncode",
+    code(function () { enc("x"); }) === "test/bad" && code(function () { enc(null); }) === "test/bad");
+  check("an error factory is required, and a class is a configuration fault",
+    code(function () { encoding.percentEncode(Buffer.from("x"), null, "c"); }) === "TypeError");
 }
 
 module.exports = { run: run };

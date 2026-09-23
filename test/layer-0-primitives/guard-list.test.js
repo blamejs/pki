@@ -201,6 +201,83 @@ function run() {
     return threw(function () { list.append(frozen, "x"); }) === "TypeError" && frozen.length === 0;
   })());
 
+  // ---- snapshot / copyMap: a copy the caller's array cannot decide the contents of ----
+  // `caller.slice()` and `caller.map(fn)` call a method the caller's own object carries, so an own
+  // method on that array, or a replacement installed on Array.prototype, chooses the elements the
+  // toolkit then treats as its private copy. Both verbs read `length` once and write each element
+  // as an own data property, so neither the method nor an inherited index accessor is consulted.
+  function underCopySubstitution(fn) {
+    var realSlice = Array.prototype.slice;
+    var realMap = Array.prototype.map;
+    Array.prototype.slice = function () { return ["substituted"]; };
+    Array.prototype.map = function () { return ["substituted"]; };
+    try { return fn(); }
+    finally { Array.prototype.slice = realSlice; Array.prototype.map = realMap; }
+  }
+
+  check("40. snapshot copies the elements the list holds", (function () {
+    var src = ["a", "b", "c"];
+    var copy = list.snapshot(src);
+    return copy !== src && copy.length === 3 && copy.join("|") === "a|b|c";
+  })());
+  check("41. ...and the copy is independent of the source", (function () {
+    var src = ["a"], copy = list.snapshot(src);
+    src[0] = "changed";
+    return copy[0] === "a";
+  })());
+  check("42. snapshot ignores a replaced Array.prototype.slice",
+    underCopySubstitution(function () { return list.snapshot(["kept"]).join("|"); }) === "kept");
+  check("43. copyMap ignores a replaced Array.prototype.map",
+    underCopySubstitution(function () {
+      return list.copyMap(["kept"], function (v) { return v + "!"; }).join("|");
+    }) === "kept!");
+  check("44. snapshot ignores an OWN slice the caller installed on its array", (function () {
+    var hostile = ["kept"];
+    hostile.slice = function () { return ["substituted"]; };
+    return list.snapshot(hostile).join("|") === "kept";
+  })());
+  check("45. copyMap ignores an OWN map the caller installed on its array", (function () {
+    var hostile = ["kept"];
+    hostile.map = function () { return ["substituted"]; };
+    return list.copyMap(hostile, function (v) { return v; }).join("|") === "kept";
+  })());
+  check("46. copyMap passes the element and its index", (function () {
+    var seen = [];
+    var out = list.copyMap(["x", "y"], function (v, i) { seen.push(v + i); return v + i; });
+    return seen.join("|") === "x0|y1" && out.join("|") === "x0|y1";
+  })());
+  // `.slice()` carries a hole across as a hole, so every later read of that index consults
+  // Array.prototype and an accessor installed after the copy answers it. Both verbs settle each
+  // index to an own data property at copy time, so the value a later read sees is the value the
+  // copy was taken from.
+  check("47. a hole is settled to an own property, so a later prototype accessor cannot answer it", (function () {
+    var sparse = ["a", , "c"];   // eslint-disable-line no-sparse-arrays
+    var copy = list.snapshot(sparse);
+    var realOne = Object.getOwnPropertyDescriptor(Array.prototype, "1");
+    var read, sliced, slicedRead;
+    sliced = sparse.slice();
+    Object.defineProperty(Array.prototype, "1", { configurable: true, get: function () { return "decoy"; } });
+    try { read = copy[1]; slicedRead = sliced[1]; }
+    finally {
+      if (realOne) Object.defineProperty(Array.prototype, "1", realOne);
+      else delete Array.prototype[1];
+    }
+    return read === undefined && Object.prototype.hasOwnProperty.call(copy, 1) && slicedRead === "decoy";
+  })());
+  check("48. snapshot carries the whole length, trailing holes included", (function () {
+    var trailing = ["a"];
+    trailing.length = 3;
+    var copy = list.snapshot(trailing);
+    return copy.length === 3 && Object.prototype.hasOwnProperty.call(copy, 2) && copy[2] === undefined;
+  })());
+  check("49. both verbs refuse a receiver that is not an array",
+    threw(function () { list.snapshot({ length: 0 }); }) === "TypeError" &&
+    threw(function () { list.snapshot(null); }) === "TypeError" &&
+    threw(function () { list.copyMap({ length: 0 }, function (v) { return v; }); }) === "TypeError");
+  check("50. copyMap refuses a callback that is not a function",
+    threw(function () { list.copyMap([], null); }) === "TypeError" &&
+    threw(function () { list.copyMap(["a"], "notAFunction"); }) === "TypeError");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

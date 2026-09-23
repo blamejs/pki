@@ -1,6 +1,6 @@
 {
   "version": "0.6.48",
-  "date": "2026-09-07",
+  "date": "2026-09-06",
   "headline": "A CMC enrollment request can be authenticated by a shared secret instead of a signature.",
   "summary": "RFC 5272 gives a Full PKI Request two carriers. One is a CMS SignedData, which needs a key and a certificate the client already holds. The other is a CMS AuthenticatedData, whose MAC a secret shared with the authority keys, and it exists for the client that holds neither yet. pki.cmc.build could only produce the first, so a device enrolling for its first certificate under a shared secret had to assemble the message itself.\n\nPassing opts.mac in place of the signer now produces the AuthenticatedData carrier, and pki.cmc.verify reads a response MACed the same way. The key derivation RFC 5272 states, the identifier followed by the secret, is applied at both ends, so a caller names what it enrolled with rather than concatenating by hand.",
   "sections": {

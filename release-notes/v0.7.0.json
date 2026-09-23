@@ -1,6 +1,6 @@
 {
   "version": "0.7.0",
-  "date": "2026-09-09",
+  "date": "2026-09-10",
   "headline": "A Sigstore bundle signed over an artifact's own bytes is verified, not just one wrapping an attestation.",
   "summary": "cosign sign-blob produces a bundle whose content is a signature over the artifact itself rather than a DSSE-wrapped statement about it. pki.sigstore.verifyBundle now reads that arm. The caller supplies the artifact, it is held to the hash the transparency-log entry records, and only then is the signature checked over its bytes. The supported Node floor moves to 24.21.0, which is what makes RFC 8879 zstd certificate compression safe to offer in pki.tls.",
   "sections": {

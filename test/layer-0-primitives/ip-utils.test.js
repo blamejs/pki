@@ -114,6 +114,43 @@ function run() {
   vectors.forEach(function (v) { if ((net.isIP(v) !== 0) !== ip.isIpLiteral(v)) mism++; });
   check("isIpLiteral matches node:net.isIP across the vector set", mism === 0);
 
+  // ---- textFromOctets / canonicalizeIpv6: the inverse of packIpLiteral -----
+  // What an `iPAddress` entry's octets say, for a verdict that reports which identity it
+  // compared. RFC 9110 sec. 4.3.5 has length as the only version discriminator, so a value
+  // of any other length names no address at all.
+  check("textFromOctets writes four octets as a dotted quad",
+    ip.textFromOctets(Buffer.from([192, 0, 2, 1])) === "192.0.2.1");
+  check("textFromOctets writes sixteen octets in the RFC 5952 form",
+    ip.textFromOctets(Buffer.from("20010db8000000000000000000000001", "hex")) === "2001:db8::1");
+  check("...with the longest zero run elided and a run of one written out",
+    ip.textFromOctets(Buffer.from("20010db8000000010000000000000001", "hex")) === "2001:db8:0:1::1");
+  check("...and a lone zero group written out, which RFC 5952 sec. 4.2.2 requires",
+    ip.textFromOctets(Buffer.from("20010db8000000010002000300040005", "hex")) === "2001:db8:0:1:2:3:4:5");
+  check("textFromOctets round-trips every address packIpLiteral produces", (function () {
+    var cases = ["192.0.2.1", "0.0.0.0", "255.255.255.255", "2001:db8::1", "::1", "::", "fe80::1"];
+    for (var i = 0; i < cases.length; i++) {
+      var back = ip.textFromOctets(ip.packIpLiteral(cases[i]));
+      if (ip.packIpLiteral(back) === null) return false;
+      if (!ip.packIpLiteral(back).equals(ip.packIpLiteral(cases[i]))) return false;
+    }
+    return true;
+  })());
+  check("a length no IP version defines names no address",
+    ip.textFromOctets(Buffer.alloc(8)) === null && ip.textFromOctets(Buffer.alloc(5)) === null &&
+    ip.textFromOctets(Buffer.alloc(0)) === null);
+  check("a value that is not bytes names no address",
+    ip.textFromOctets(null) === null && ip.textFromOctets("192.0.2.1") === null &&
+    ip.textFromOctets({}) === null);
+
+  check("canonicalizeIpv6 lowers case and strips leading zeros",
+    ip.canonicalizeIpv6("2001:0DB8:0000:0000:0000:0000:0000:0001") === "2001:db8::1");
+  check("...and answers a value already canonical with itself",
+    ip.canonicalizeIpv6("2001:db8::1") === "2001:db8::1");
+  check("...reads the dotted-quad tail form", ip.canonicalizeIpv6("::ffff:192.0.2.1") === "::ffff:c000:201");
+  check("...and answers null for text that is not eight groups",
+    ip.canonicalizeIpv6("2001:db8") === null && ip.canonicalizeIpv6("not-an-address") === null &&
+    ip.canonicalizeIpv6(7) === null && ip.canonicalizeIpv6(null) === null);
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

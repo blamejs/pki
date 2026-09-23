@@ -4,6 +4,46 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.8 — 2026-09-23
+
+A key moves in and out in the encodings operators hold it in, and a PEM file is walked once from the front.
+
+### Added
+
+- `pki.schema.pem.decodeBundle(text, opts)` reads every object in a PEM file: a `fullchain.pem` of a leaf and its intermediates, a `ca-certificates.crt` of hundreds of anchors, a file holding a key beside its certificate. Each row carries the label that named the object, the DER it decoded to, its position in the file and the offset its boundary started at, so a fault in a file of hundreds names the one object it is about. The offset counts into the text this verb read: a BufferSource is read as latin1, so one character is one byte and the offset is the byte offset into the file, while a string a caller decoded itself is counted in that string's own characters. Explanatory text before, between and after the blocks is text, which is what a bundle a real tool wrote carries, and a label this toolkit has no parser for is a row like any other. `opts.route` checks each label's claim against the structure its bytes carry and adds `format` to every row, covering the certificate, CRL, request, CMS, attribute-certificate and PKCS#12 labels and the four key labels, `PRIVATE KEY`, `ENCRYPTED PRIVATE KEY`, `RSA PRIVATE KEY`, `RSA PUBLIC KEY` and `EC PRIVATE KEY`, each against its own structure, so bytes armored under the label of something they are not are refused rather than routed. `opts.maxBlocks` and `opts.maxDecodedBytes` bound how many objects a file may hold and how many bytes they may decode to across the whole file; each defaults to a new `C.LIMITS` figure, may be tightened by a caller, and may not be raised above the toolkit's own.
+- `pki.schema.pem.encodeBundle(objects)` writes an ordered list of `{ label, der }` back to one text, which `decodeBundle` reads to the list that went in. The reader takes every label RFC 7468 sec. 3 admits, including lowercase and the empty one; the writer takes the uppercase form this toolkit emits, so a label carrying a boundary cannot put a block into the file that the caller never named.
+- `pki.schema.pkcs1` reads and writes the RFC 8017 Appendix A.1 `RSAPrivateKey` and `RSAPublicKey`, the `RSA PRIVATE KEY` and `RSA PUBLIC KEY` blocks OpenSSL wrote by default for years and appliances still emit. Every relation the specification states between the components is checked in the pass that reads them: the version against whether other prime infos are present, each component as a positive integer, the public exponent inside `3 <= e < n` and odd, and the private exponent, the two CRT exponents and the coefficient below the modulus or their own prime.
+- `pki.schema.sec1` reads and writes the RFC 5915 `ECPrivateKey`, the `EC PRIVATE KEY` block. The curve is what fixes the scalar's width, so the parameters field is required for a key read on its own and a scalar of the wrong width is refused rather than padded into place. The field carries a named curve and nothing else: a specified curve and an implicit curve are each refused by name, which RFC 5480 sec. 2.1.1 states as a MUST NOT. The stored public point is surfaced as the bytes it carries, and a verb that needs the public half derives it from the scalar.
+- `pki.key.import` and `pki.key.export` take `opts.format` of `pkcs1`, `sec1` or `jwk`, so a key an operator holds in one of those encodings moves in and out without a conversion step outside this toolkit. Neither DER encoding names an algorithm, so `opts.algorithm` is required with both and nothing is inferred. A SEC1 key written out is given the `[0] parameters` field the standalone form needs, which RFC 5915 sec. 3 omits while the key sits inside a PKCS#8. A multi-prime RSA key reads as a structure and is refused on import with `key/unsupported-key`. Both PKCS#1 armor labels are read, `RSA PRIVATE KEY` and `RSA PUBLIC KEY`, with the structure the bytes carry required to agree with the label, so a key armored under the label of the half it is not is refused instead of being read as the other. A JWK export reaches a `CryptoKey` from another WebCrypto implementation the same three ways a DER export does, so a key that exports one way exports the other.
+- `pki.identity.match(cert, references, opts)` answers whether a certificate presents a name the client was trying to reach (RFC 9525, which obsoletes RFC 6125). It is a separate answer from whether the certificate chains, and section 1.2 has an application need both: `pki.path.validate` takes the same reference forms as `opts.identity`, reports the outcome as `identityChecked` beside a named check row on the leaf, and runs it in addition to the RFC 5280 section 6.1 checks rather than in place of any of them. Four reference forms are read. A domain name is a DNS-ID, compared label by label under an ASCII-only fold with one trailing dot normalized on both sides; an A-label is compared as the ASCII it is and never decoded. A textual IP address or a 4- or 16-octet BufferSource is an IP-ID, compared octet for octet against an `iPAddress` entry, never against a `dNSName` carrying the same address as text, and with no prefix or mask. `{ type: "srv", service: "_imap", value: "example.com" }` is an SRV-ID read against an RFC 4985 SRVName, the leading underscore part of the service name. `{ type: "uri", scheme: "https", value: "www.example.com" }` is a URI-ID read against the scheme and host of a `uniformResourceIdentifier`, ignoring userinfo, port, path, query and fragment. A record carries its service type and its domain together, so no comparison can pair the service of one reference with the domain of another. The subject `commonName` is never consulted, under any option or fallback, including when the certificate carries no subjectAltName at all, and neither is any other relative distinguished name. Wildcards are on and `opts.wildcards: false` turns them off: one wildcard, the whole of the left-most label, reaching exactly one reference label, and a presented name failing those rules is ignored with the search continuing rather than refusing the certificate. The verdict names which reference matched, so a caller can use it as the validated identity of the service, and lists every entry that was skipped with the reason. Two limits are stated rather than implied: a reference identity carrying a character outside ASCII is refused with `identity/unsupported-reference`, this toolkit shipping no IDNA implementation to perform the section 6.3 U-label conversion, and a wildcard spanning an administrative boundary such as `*.co.uk` is out of scope as it is in section 7.1, no public-suffix list shipping here.
+- `pki.path.fetchingChecker(opts)` is a revocation checker that reads the revocation locations out of the certificate and asks for them over `opts.transport`, for `pki.path.validate`'s `opts.revocationChecker`. The checkers that shipped before it are handed their CRLs and responses; this one fetches. It is off unless an operator builds it and passes it, the way opts.fetchAia is, so the default validation touches no network, and it runs during validate and not during build, because RFC 5019 section 3.2 has a status check requested only after the chain signatures are validated. OCSP is attempted first and a CRL after it, which section 3.1 directs. The responder URL comes from an authorityInfoAccess AccessDescription whose accessMethod is id-ad-ocsp; the CRL URLs come from cRLDistributionPoints and never from authorityInfoAccess, which RFC 5280 section 4.2.2.1 states outright. A distribution point is fetched only as a fullName carrying a URI whose scheme this client speaks, so an ldap or ftp point, a nameRelativeToCRLIssuer and a point naming a cRLIssuer and no location are each counted as a skip: a certificate naming nothing fetchable reads as that and never as a failed fetch. Nothing is trusted by having been fetched. A CRL goes to pki.path.crlChecker and a response to pki.path.verifyOcspResponse, which are the one place the issuer match, the cRLSign authorization, the IDP scope, the section 6.3.3(b) correspondence, the CertID match, the responder authorization and both currency windows live, and the structure a body is parsed as is decided by which extension named the URL, so a Content-Type mismatch is reported and never selects a parser. Every fault is an undetermined status carrying its reason and check throws nothing, which is what leaves opts.softFail able to waive one. Plaintext http is accepted by default, a CRL and an OCSP response being signed objects this toolkit verifies and an https-only fetch needing the responder certificate validated first; allowPlaintextHttp: false narrows it to https, and the SSRF guards do not move either way: no private, loopback or link-local destination, no redirect followed, a response-size cap, a per-certificate URL cap, a total fetch count and a wall-clock deadline across the validation. The two destination forms are decided in different places, because an address literal is in the URL and a name is whatever resolves it: a literal is refused here when it is private, loopback or link-local, and a hostname is a skip unless the transport declares blocksPrivateAddresses, which pki.transport.https does and backs by filtering the resolved address and pinning it for the connection. maxPerCert counts the distinct destinations one certificate names across the responder and distribution-point routes together, and maxFetches and totalDeadlineMs bound a validation rather than a certificate, so the certificates of one path and every anchor tried share one budget while a reusable checker starts each validation from the figures again. Nothing a fetched CRL says is acted on before the CRL is shown to be the issuer's: its signature is checked against the key the path is working with, and only then are the delta locations it names followed or the object kept. A base that merely parsed would otherwise choose the next destination, which over a plaintext hop is whoever replaced it. A verified response is cached in process on its CertID and responder URL, and a CRL on its request URL together with the issuer the certificate names and the key that has to verify it, so neither one URL serving several issuers' lists nor a CA that rotated its key hands one certificate's list to another; reuse is decided from the signed thisUpdate and nextUpdate and from nothing the HTTP caching headers say. A certificate naming a freshestCRL and no distribution point has that location asked for on its own, because an unmerged delta listing the serial is a revocation the checkers already treat as authoritative. nonce is true or false and anything else is `path/bad-input`, a control read as off being one an operator asked for and did not get; nonce: true asks the responder for a fresh nonce on every request, which the response must echo or the status is undetermined, and a nonce-bearing request is asked each time rather than answered from the cache, the two being alternatives in RFC 5019. The timeout each request carries is a field the transport is asked to honor, and the deadline is enforced here as well, so a transport that never settles is refused at the bound rather than holding the validation open. An ldap distribution point is not fetched, which is a second protocol client rather than a flag, and re-opens when an operator presents a deployment whose only distribution point is one; ftp is a permanent non-goal.
+- `pki.ocsp.httpRequest(der, responderUrl, opts)` shapes a DER OCSPRequest into the HTTP request RFC 6960 Appendix A.1 defines, without opening a socket: the method, the URL, the headers and the body a caller hands to its own transport. A GET carries the request as the base64 of the DER percent-encoded into one path segment, and RFC 5019 section 5 requires GET when the whole encoded URL is 255 bytes or fewer counting the scheme, the delimiters, the server name and the encoded request, which is what is measured; anything longer is a POST carrying content-type application/ocsp-request. The base64 carries no CR and no LF, which that section also requires, and the encoding escapes every byte outside RFC 3986 section 2.3's unreserved set, so the plus, slash and equals of base64 become triplets and a request cannot reach past the segment it was placed in. The size bound counts bytes, and a URI is US-ASCII by RFC 3986 section 2, so a responder URL carrying anything above that is refused with `ocsp/bad-input` rather than measured as though a character were a byte; percent-encode it first. The URL that comes back is the one a transport will open: the responder URL is normalized before the request is appended, so a path carrying a `.` or `..` segment, which RFC 3986 section 5.2.4 removes when any client parses the URL, does not end up building one address and sending another.
+
+### Changed
+
+- A verb that reads one object refuses a PEM file holding several, with `pem/multiple-blocks` naming how many it holds and the verb that reads a file of them. Every parse door, every `pemDecode`, and every verb taking a certificate or a message as PEM previously read the first block and reported nothing about the rest, so a `fullchain.pem` passed where a certificate was wanted was read as its leaf and the chain was dropped in silence. A boundary that opens after the first object and never closes is an object too, and is refused as `pem/unterminated-block`. Read a file of several objects with `pki.schema.pem.decodeBundle`, and pass one object where one is wanted. Explanatory text around a single block is unaffected, which is what an `openssl x509 -text` dump carries.
+- `pki.cms.sign`, `pki.cms.verify` and `pki.tsp.sign` read a certificate or a message given as PEM through the same scanner every parse door reads through. They used a second scanner that searched the raw text, so a boundary marker sitting inside explanatory text opened a block, a body carrying characters outside the base64 alphabet was stripped down to what decoded rather than refused, and a file of several objects was read as its first. Each of those is a file every parse door already refused, so the same bytes were an object to one verb and malformed to the next. The verbs keep their own error codes (`cms/bad-input`, `tsp/bad-input`) and the message names what the file is.
+- `pki.path.validate` does not ask a revocation checker about a certificate no signature on the path has authenticated. A certificate is a claim until the chain above it verifies, so the serial and issuer a responder would answer about are ones nothing has bound to a key, and a checker that reaches the network would let that certificate choose the destination and spend the fetch budget. A forged issuer is the case that matters: its own check fails and its key still becomes the working key, so everything under it verifies against a key nothing vouched for. The `revocation` row reports `path/revocation-undetermined` with a reason naming whether it was this certificate's signature or one above it, and `revocationChecked` reads `"undetermined"`. The path already fails as `path/bad-signature`, so `valid` is unchanged; what changes is that an unauthenticated certificate no longer produces a revocation answer.
+- `pki.path.verifyOcspResponse` reads its options through the door every other verb's go through: an unknown option is `path/bad-input` naming what was passed, and a field supplied through an accessor is refused rather than read more than once. It took its options unchecked, so a misspelled `requestNonce` left the nonce unasked and the response was accepted against bytes nothing compared, and an accessor could answer one value to the check and another to the comparison. Every verdict it returns now carries `nonceMatched`, including the ones decided before the response is read, where the field was absent rather than reporting an outcome.
+- `pki.path.verifyOcspResponse` takes `opts.requestNonce`, the nonce bytes the request carried, and reports `nonceMatched`. A response that does not echo it answers an earlier question, so a `good` becomes undetermined; a `revoked` keeps its status and carries `nonceMatched: false`, a stale revocation being no safer to accept. The comparison is constant-time. `pki.ocsp.verify` reads the rule from there rather than applying its own, so every caller reaching the acceptance gate gets it: before, a caller using the lower-level verb passed a nonce that nothing compared.
+- A request to `pki.transport.https` takes `allowPlaintextHttp`, which is the one thing that moves the https floor, per request and never as a default. It exists for the two objects whose integrity does not come from the transport: a CRL and an OCSP response carry their own signatures, which this toolkit verifies after the fetch, and an https-only revocation fetch needs the responder's own certificate validated first, which is the loop the plaintext form breaks. A request that does not set it is refused with `transport/insecure-url` exactly as before. Every other guard holds on a plaintext hop: the private, loopback and link-local address refusal, the response-size cap, the declared content-length pre-check, the timeout, and the refusal to follow a redirect, which is what would otherwise turn one plaintext hop into a downgrade of the next. A trust anchor is required only where a certificate is negotiated, so the `transport/no-trust-anchors` refusal applies to an https request and not to a plaintext one, which pins nothing because there is nothing to pin. Through a configured proxy, the CONNECT names the origin's own authority with its scheme's default port, and the request rides the tunnel as plain HTTP rather than starting a TLS handshake inside it.
+
+### Fixed
+
+- A `uniformResourceIdentifier` name constraint whose base names a single label, such as `.com` or `com`, is accepted by `pki.trust.anchor` and by the `pki.path.validate` subtree seeds, and enforced by the comparison. It was refused with `trust/bad-input`, so a delegation to a single top-level domain could not be written at all. A base naming an IP address is still refused, that being what sec. 4.2.1.10 excludes by name, and the `dNSName` arm is unchanged.
+- A certificate whose URI subject alternative name carries a single-label host, such as `https://localhost/`, is compared against a URI constraint rather than reported as `path/name-constraint-unsupported`. It is excluded by a base that names it and left alone by one that does not, which is what OpenSSL and Go both do.
+- A PEM file is recognized as PEM however long the text before its first block is. The reader decided from the first 4096 bytes, so a certificate behind a longer header was handed to the DER decoder and refused as malformed DER when it was passed as a `Buffer`, while the same bytes passed as a string parsed.
+- A certificate's `revocation` check row carries what the checker decided on rather than the status alone. `reason` names the source that answered, the locations that were skipped and the faults that were noted; a revoked row adds `revocationReason`, the CRLReason integer, and `revocationTime`. A `softFail` waiver now names what it waived, and a revocation says why and when. `pki.path.crlChecker` reports `revocationTime` from the revoked entry's revocationDate, and a revocation `pki.path.fetchingChecker` establishes from a CRL carries its CRLReason, which was reported as absent.
+- A block whose closing boundary names a different label than its opening one is refused as `pem/label-mismatch`. The reader looked for the opening label's own end marker, so such a block ran on to the next matching end, swallowing any block between them, and the file was reported as `pem/bad-base64`. One legacy-labeled block in a bundle no longer decides the verdict for a well-formed neighbor. A boundary is read only when it is the whole of its own line, so text quoting one mid-sentence is text, and an opening boundary with no closing one is refused rather than skipped in favor of a later block. Whitespace after a boundary's closing hyphens belongs to the line ending, which is what RFC 7468 section 3's parsing grammar writes, so a file whose boundaries carry trailing spaces or tabs reads as the objects it holds rather than as prose. A byte-order mark before the first boundary is read in either form it arrives in, the three bytes of a latin1 read or the single character of a UTF-8 one.
+
+### Security
+
+- Reading a PEM file costs time proportional to its length. The scanner advanced one character past a boundary it could not close and searched the rest of the text again, so a file of unterminated boundary lines cost time proportional to the square of its length: 3200 such lines took 34 ms, and the 16 MiB a parse accepts holds about 600,000 of them. Every parse door takes PEM from wherever its caller got it. The scanner now makes one forward pass over the lines, and the same 3200 lines take 1 ms.
+- The host a URI constraint is compared against is read by its labels rather than by which characters it holds. A host carrying an empty label, such as `a..b.example`, or a hyphen at a label edge, such as `bad-.example`, was accepted by the comparison while the configuration door refused the same value. Under a permitted subtree of `.b.example` the first of those matched by suffix and was permitted, although no such name exists. Both are now refused at the comparison, and the door and the comparison read one definition, so neither can accept what the other refuses.
+- An option a verb was never passed is no longer read from a prototype the caller does not own. A verb reads its options with `opts.name`, which walks the prototype chain, so a name written to `Object.prototype` answered as though it had been supplied: `pki.path.validate` with a planted `historicalMode` treated a revocation as not yet in force and reported a revoked certificate as a valid path, and a planted `softFail` waived an undetermined revocation status. The unknown-option refusal already walked the chain and caught a planted name that is not an option at all, but a name spelled like a real option passed it. Such a name now reads as unset, so the verb behaves as though nobody supplied it, while the caller's own field of that name still wins and the call still runs. A prototype the caller supplied is untouched, which is how a defaults object under an options bag keeps supplying its options. Every verb that takes options is covered, not only the path verbs.
+- A transport is asked whether it filters the address it resolved by reading the declaration off the transport itself. `blocksPrivateAddresses` was read through the object, so a value written to `Function.prototype` answered for every function in the process, and a transport that declares nothing was handed a hostname destination taken from a certificate. That reading covered the revocation fetcher and the `pki.path.build` caIssuers fetch alike; both now read the slot. A transport that sets the flag on itself is unaffected.
+- Every verb that takes a list in its options copied that list with the list's own slice or map before using it, so a method the caller's array carried, or a replacement installed on Array.prototype by anything sharing the process, decided the contents of the copy the rule was then applied to. pki.cms.verify holding requiredEku: ["clientAuth"] reported a signer asserting emailProtection alone as trusted when the copy came back carrying emailProtection, and the same reach covered the trust anchors beside it. Seventeen copies across eight modules now read the list length once and write each element as an own property: the CMS trust anchors and required key purposes, the CMC body part identifiers, paths and returned certificates, the CMC signer list, the EST responder certificates, the CMP certificate lists, the transport trust anchors, the WebAuthn root certificates, expected origins and allowed algorithms, and the relative distinguished names of a copied trust-store name.
+
 ## v0.8.7 — 2026-09-23
 
 A PKCS #11 URI names a token and an object on it, read and written to the RFC 7512 grammar.
@@ -23,7 +63,7 @@ A PKCS #11 URI names a token and an object on it, read and written to the RFC 75
 - Parsing follows the sec. 2.3 and sec. 2.4 grammar rather than a general URI reader, and refuses with its own `pkcs11/*` code rather than guessing: a character the component admits only percent-encoded, a truncated or non-hexadecimal escape, a value that is not valid UTF-8, an empty attribute between two delimiters, an attribute that appears twice where the RFC admits it once, a percent-escape inside `type`, `slot-id` or `library-version`, whose grammar is literal alternatives and digit runs, a `type` outside the five the RFC enumerates, a `library-version` component above 255, each being one byte in the `CK_INFO` structure sec. 2.3 points at, a URI carrying both `pin-source` and `pin-value`, and a `module-path` that is not absolute on any platform this toolkit runs on. The last two are what sec. 2.4 asks a consumer to treat as invalid: one leaves which PIN applies undecided, and the other decides which shared object a process loads from wherever it happens to be running.
 - Writing is held to the same rules, so the formatter never emits a URI the parser would refuse. A vendor attribute name is held to the vendor grammar and refused when a standard attribute owns it, which is what keeps a name carrying a delimiter from putting an attribute into the URI that the caller never named and that the standard attribute's own checks never saw. A vendor name given no value, or given an empty list, is refused rather than dropped, so the URI that comes back carries every attribute that was asked for or the call fails. Every component of the record is read once, before anything is written, and a text attribute must be given a string rather than a value turned into one, so nothing a caller passes can run code partway through a write and add an attribute to a component whose checks have already passed.
 
-## v0.8.6 — 2026-09-25
+## v0.8.6 — 2026-09-20
 
 A node:crypto KeyObject signs, without being asked to export its private half.
 
@@ -36,7 +76,7 @@ A node:crypto KeyObject signs, without being asked to export its private half.
 
 - `pki.x509.sign` and the other signing verbs no longer refuse a `node:crypto` `KeyObject` with the message naming it as not a `CryptoKey`. A caller matching on that message to detect the refusal will stop seeing it, because the key now signs.
 
-## v0.8.5 — 2026-09-25
+## v0.8.5 — 2026-09-20
 
 A key this process cannot export can sign, and every verb that signs proves its signature first.
 
@@ -49,7 +89,7 @@ A key this process cannot export can sign, and every verb that signs proves its 
 
 - `pki.ocsp.sign`, `pki.ocsp.buildRequest` and `pki.cms.sign`'s countersignature path verify the signature they produced against the public key the artifact declares, which the other signing verbs already did. A signer holding a key that does not match the certificate it signs under produced an OCSP response, an OCSP request or a countersignature that no relying party could validate, and the emitting side reported success.
 
-## v0.8.4 — 2026-09-25
+## v0.8.4 — 2026-09-20
 
 A decode cap bounds every structure a parse reads, and a refusal caused by a cap is no longer reported as malformed input.
 
@@ -68,7 +108,7 @@ A decode cap bounds every structure a parse reads, and a refusal caused by a cap
 - `pki.schema.cmc.parse` applies the caller's caps to the `PKIData` or `PKIResponse` body. It read the caps, bounded the CMS carrier with them, and then decoded the body that carries the request or response with the built-in defaults.
 - A parse cannot return a result after a decode limit has refused something inside that parse, whatever the code between the two does with the failure. A parser that catches a resource refusal and re-throws its own typed error is the common shape, and that shape previously carried the parse past the latch the budget sets. The door now reads the latch on the failure path as well as on the success path.
 
-## v0.8.3 — 2026-09-25
+## v0.8.3 — 2026-09-20
 
 A parser takes decode caps from its caller, and a resource refusal says so instead of reading as malformed input.
 
@@ -90,7 +130,7 @@ A parser takes decode caps from its caller, and a resource refusal says so inste
 
 - The caps bound the decode of the input a parser is given, which is what bounds a parse overall, since everything a parse reads comes from those bytes. A structure decoded separately from inside that input keeps the built-in `pki.C.LIMITS` defaults rather than a tighter figure the caller named.
 
-## v0.8.2 — 2026-09-25
+## v0.8.2 — 2026-09-20
 
 A distinguished name can be read back from its string form, and twelve attributes the name table published can finally be encoded.
 
@@ -178,7 +218,7 @@ A signature-protected CMP message fills an omitted sender with the signer's subj
 
 - pki.cmp.build fills a header sender the caller omits under signature protection with the signer certificate's subject (RFC 9483 sec. 3.1), so a message built without one is receivable rather than refused. A sender the caller states is left as given, matching the signer or not. A signer certificate with an empty subject names itself by a subjectAltName entry, which the builder cannot choose for the caller, so an omitted sender there is still refused with cmp/bad-input. MAC-protected messages carry no signer and are unchanged.
 
-## v0.7.44 — 2026-09-12
+## v0.7.44 — 2026-09-13
 
 A JWS whose embedded jwk carries a private key is refused on verify.
 
@@ -430,7 +470,7 @@ A certificate request can name every extension its subject owns.
 - The pki.csr.sign extensionRequest takes msCertificateTemplate, msEnrollCertType, msApplicationPolicies, subjectInfoAccess and subjectDirectoryAttributes, with the same spec shapes and the same rules pki.x509.sign applies, because one encoder serves both verbs: the same spec yields identical bytes and criticality in the request and in the certificate, and a fault is reported with a csr/* code.
 - A request naming an extension the issuing CA assigns as a spec key is refused by name rather than encoded and ignored: authorityKeyIdentifier names the CA's key, precertificatePoison and signedCertificateTimestampList are the CA's exchange with a log, msCaVersion and msPreviousCertHash are the CA's own, and ocspNoCheck is the CA's decision about a responder. The pre-encoded Extension array is unchanged: it carries whatever well-formed extension a caller assembles, as it always has.
 
-## v0.7.23 — 2026-09-11
+## v0.7.23 — 2026-09-12
 
 Subject information access, subject directory attributes and the OCSP no-check marker are read and written.
 
@@ -551,7 +591,7 @@ Every option a verify verb decides with is taken once.
 - pki.jose.verify took opts.key seven times: a type gate, the RFC 7638 thumbprint comparison against the jwk the JWS embeds, and the key the signature is verified under. An accessor-backed opts.key could satisfy the comparison with the embedded key and hand a different one to the verification, so a JWS naming a signer the caller did not pin returned a verdict of keySource "opts.key" instead of the jose/key-mismatch refusal a plain object gets. The option is taken once, so the key compared is the key used.
 - pki.webauthn.parseClientData took each expected* option twice: once to decide whether to compare, once for the value compared, and the returned checked field then recorded that the comparison ran. An accessor-backed expectedChallenge could enter the branch on the challenge a ceremony issued and be compared against the challenge the response carried, returning checked.challenge true for a comparison that never ran against the caller's value. expectedType and expectedOrigin behaved the same way. Each option is taken once, so checked answers for the value the caller supplied. pki.webauthn.verify and pki.webauthn.verifyAssertion already copied their inputs and were not affected.
 
-## v0.7.13 — 2026-09-10
+## v0.7.13 — 2026-09-11
 
 The certificate signer refuses a pre-encoded extension whose criticality RFC 5280 fixes.
 
@@ -563,7 +603,7 @@ The certificate signer refuses a pre-encoded extension whose criticality RFC 528
 
 - pki.x509.sign and pki.csr.sign now refuse a pre-encoded extension carrying a criticality RFC 5280 does not permit, throwing x509/bad-input or csr/bad-input with the governing clause in the message. Nine extensions leave the issuer no choice. authorityKeyIdentifier (section 4.2.1.1), subjectKeyIdentifier (section 4.2.1.2), subjectDirectoryAttributes (section 4.2.1.8), freshestCRL (section 4.2.1.15), authorityInfoAccess (section 4.2.2.1) and subjectInfoAccess (section 4.2.2.2) must be non-critical. nameConstraints (section 4.2.1.10), policyConstraints (section 4.2.1.11) and inhibitAnyPolicy (section 4.2.1.14) must be critical. The check covers the pre-encoded array form on both verbs, which is the only way to supply these six extensions.
 
-## v0.7.12 — 2026-09-10
+## v0.7.12 — 2026-09-11
 
 An issuer can draw a certificate serial number before signing with it.
 
@@ -693,7 +733,7 @@ A wildcard name in a certificate is held to an excluded name constraint it can r
 
 - pki.path.validate refuses a certificate whose wildcard dNSName reaches a name an excluded subtree forbids. An excluded subtree states the names a certificate must not present, and a wildcard subject alternative name stands for every name one label below its parent rather than for the literal text. Comparing the text alone let a leaf carrying only *.example.com pass an exclusion of bar.example.com, which is a name that leaf presents. Any chain whose certificate authority relies on an excluded dNSName subtree to keep a subordinate away from a name was affected, in every version that shipped name-constraint validation. The permitted direction is unchanged and is not widened by this: a permitted subtree still has to cover the whole of a wildcard, so a base of foo.com admits *.foo.com while a base of bar.example.com does not admit *.example.com. A wildcard reaches exactly one label, so an excluded name deeper than that is out of its reach and is not refused: *.example.com is still admitted against an exclusion of deep.bar.example.com.
 
-## v0.7.0 — 2026-09-09
+## v0.7.0 — 2026-09-10
 
 A Sigstore bundle signed over an artifact's own bytes is verified, not just one wrapping an attestation.
 
@@ -726,7 +766,7 @@ A Sigstore bundle signed over an artifact's own bytes is verified, not just one 
 
 - pki.webauthn.verifyMetadataBlob reads opts.previousNo once, so the rollback comparison and the result it reports run on the same baseline. The option was read separately by the comparison and by the result, and a baseline that answered absent at the comparison and present afterwards skipped the comparison entirely: a metadata BLOB whose sequence number did not advance past the held baseline was accepted, and the result stated rollbackChecked true and named the baseline it had not compared against. A caller that holds its baseline in a plain value was never affected. Every option the verb reads is now taken once at entry.
 
-## v0.6.55 — 2026-09-07
+## v0.6.55 — 2026-09-08
 
 A Diffie-Hellman key proves possession by agreeing a secret with the authority, without signing anything.
 
@@ -873,7 +913,7 @@ A key that cannot sign for itself can still prove possession, by answering the a
 - pki.schema.cms.parse refuses a key-agreement recipient that names no encrypted key. Such a recipient names nobody, so nothing could open the content it is attached to; it now fails with cms/bad-recipient-encrypted-keys while parsing rather than reaching a decrypt that has nothing to try.
 - pki.cms.decrypt takes the curve of a key-agreement originator that omitted its parameters from the recipient's own private key. RFC 5753 section 7.1 allows the originator to omit them because the recipient knows the curve, but the curve was read only from a recipient certificate, so a caller decrypting with a key alone was refused with cms/unsupported-algorithm.
 
-## v0.6.48 — 2026-09-07
+## v0.6.48 — 2026-09-06
 
 A CMC enrollment request can be authenticated by a shared secret instead of a signature.
 
@@ -949,7 +989,7 @@ A trust anchor carries the namespace a root program trusts a root for, so a cert
 
 - pki.path.validate refuses a subtree in opts.initialPermittedSubtrees, opts.initialExcludedSubtrees, or a trust anchor's nameConstraints whose base is outside the form its tag names, with path/bad-input. Tag 1 is a mailbox, a host name, or a host name written as a subtree with a leading dot, and a mailbox may name its domain as a bracketed IPv4 or IPv6 address literal; tags 2 and 6 are host names, and a tag-6 base is the dotted host a certificate's URI is compared by rather than a URI; tag 4 names at least one relative name, with dotted-decimal object identifier types and string values; tag 7 is 8 bytes for IPv4 or 32 for IPv6. A host name is labels of letters, digits and hyphens, with a hyphen at neither edge of a label, 63 characters to a label and 253 to the name. An anchor whose nameConstraints names no subtree at all is refused the same way. Such a base previously reached the comparison, where it either matched every name, so a permitted subtree restricted nothing, or matched none, so an excluded subtree kept nothing out. A certificate's own nameConstraints extension is unaffected and is compared as the certificate wrote it.
 
-## v0.6.41 — 2026-09-05
+## v0.6.41 — 2026-09-06
 
 A lookup table answers from its own entries, so a name taken off the wire cannot resolve to something the table never registered.
 
@@ -1027,7 +1067,7 @@ A natively signed C509 certificate is refused when it writes an extension in the
 - pki.schema.c509.encode resolves an extension named only by its OID to the matching registry identifier. It looked the identifier up by name alone, so an extension supplied without one was written in the generic OID form even where a compact encoding carried it.
 - pki.schema.c509 decides what belongs to the C509 registries by dotted OID rather than by the name pki.oid.register maps that OID to. Registering a different name for a built-in OID previously changed what the toolkit emitted for an unrelated certificate, and for commonName, a curve, ecPublicKey or an ECDSA signature algorithm it stopped a certificate converting to C509 at all.
 
-## v0.6.36 — 2026-09-04
+## v0.6.36 — 2026-09-05
 
 A natively signed C509 certificate is refused when it spells an algorithm generically instead of using the registry entry that names the same value.
 
@@ -1169,7 +1209,7 @@ A caller option of an unexpected type now yields the module's typed error, not a
 
 - An option of an unexpected type passed to a build, sign, export, or enrollment verb (a BigInt, an object with no primitive form, or one whose Symbol.toPrimitive throws) is reported as the module's typed bad-input error instead of a native TypeError leaking from a diagnostic string, a lookup-table key, a Date conversion, or a numeric coercion. This covers the timestamp, OCSP, CMP, CMC, SCEP, EST, ACME, PKCS#12, S/MIME, attribute-certificate, HPKE, Certificate Transparency, and Sigstore APIs.
 
-## v0.6.23 — 2026-09-01
+## v0.6.23 — 2026-09-02
 
 The SCEP client can carry a PKIOperation over HTTP GET for a CA that does not support POST.
 
@@ -1177,7 +1217,7 @@ The SCEP client can carry a PKIOperation over HTTP GET for a CA that does not su
 
 - pki.scep.enroll / renew / getCert / getCrl accept httpMethod: "POST" (default) or "GET". Under "GET" the client sends the PKIOperation message as GET SCEPPATH?operation=PKIOperation&message=<base64-CMS> with no body (RFC 8894 sec. 4.1), for a CA that does not advertise POST support. POST stays the default and the recommended transport; a bad httpMethod is refused with scep/bad-input.
 
-## v0.6.22 — 2026-09-01
+## v0.6.22 — 2026-09-02
 
 pki.acme.client gains scheduleRenewal, the RFC 9773 auto-sleeping certificate-renewal loop.
 
@@ -1263,7 +1303,7 @@ Verifying a Sigstore bundle no longer matches a pinned identity against a non-te
 
 - Verifying a Sigstore bundle no longer reads a non-text subjectAltName otherName value as the certificate identity. The value is surfaced as null, and an identity policy that pins the san field fails closed against it. A value whose raw bytes matched a pinned identity could previously satisfy the policy.
 
-## v0.6.14 — 2026-08-31
+## v0.6.14 — 2026-09-01
 
 pki.scep.getNextCACert retrieves a SCEP CA's next (rollover) certificate and authenticates it against the current CA key, so a client can obtain and hold the CA certificate to install before the current one expires.
 
@@ -1271,7 +1311,7 @@ pki.scep.getNextCACert retrieves a SCEP CA's next (rollover) certificate and aut
 
 - pki.scep.getNextCACert(baseUrl, opts) performs the RFC 8894 sec. 4.7 GetNextCACert exchange for CA key rollover: a GET for the CA's next certificate whose SignedData response is verified and pinned to the current CA certificate (opts.caCertificate) before the next CA certificate(s) are returned in certificates. opts.caCertificate is required, and a response signed by any key other than the current CA is refused (scep/untrusted-signer), so a rollover certificate that would become a future trust anchor is never returned without authentication.
 
-## v0.6.13 — 2026-08-31
+## v0.6.13 — 2026-09-01
 
 pki.sigstore.verifyBundle now reports which transparency-log entry attested a bundle: the verdict carries `logIndex` and `logId` so a caller can locate the exact Rekor record it verified against.
 
@@ -1279,7 +1319,7 @@ pki.sigstore.verifyBundle now reports which transparency-log entry attested a bu
 
 - pki.sigstore.verifyBundle's verdict carries `logIndex` (the attested Rekor entry's global log index) and `logId` (the log's key id, hex) beside `integratedTime`, so a caller can fetch or audit the exact transparency-log record the bundle was verified against instead of re-deriving it.
 
-## v0.6.12 — 2026-08-31
+## v0.6.12 — 2026-09-01
 
 Three verify verbs that returned a bare boolean now return a verdict object naming the checks they had hidden, a canonical `valid` field is present on every object verify verdict so `if (res.valid)` reads the same everywhere, and revocation, digest, and provenance data omitted before is surfaced.
 
@@ -1368,7 +1408,7 @@ pki.kem establishes a shared secret with composite ML-KEM (draft-ietf-lamps-pq-c
 - pki.kem.encapsulate(publicKey) establishes a 256-bit shared secret for a recipient's composite ML-KEM SubjectPublicKeyInfo, returning the secret and a ciphertext to send to the recipient (draft-ietf-lamps-pq-composite-kem).
 - pki.kem.decapsulate(privateKey, ciphertext) recovers the shared secret from a composite ML-KEM ciphertext and the composite PKCS#8 private key. The twelve algorithms pair ML-KEM-768 and ML-KEM-1024 with RSA-OAEP 2048/3072/4096, ECDH over P-256/P-384/P-521 and brainpoolP256r1/P384r1, X25519, and X448.
 
-## v0.6.5 — 2026-08-30
+## v0.6.5 — 2026-08-31
 
 pki.cmp.build assembles a CMP key-recovery request (krr) body: a CertReqMessages under PKIBody tag [9], the key-recovery counterpart of an initialization request (RFC 9810 sec. 5.3.7).
 
@@ -1376,7 +1416,7 @@ pki.cmp.build assembles a CMP key-recovery request (krr) body: a CertReqMessages
 
 - pki.cmp.build accepts a { krr } body arm (RFC 9810 sec. 5.3.7): a key-recovery request, a CertReqMessages built through pki.crmf.build under PKIBody tag [9], identical in syntax to an initialization request. The proof-of-possession key is a key field on the arm spec, and any proof-of-possession arm the CRMF builder produces is permitted, including a private-key-transport encryptedKey proof.
 
-## v0.6.4 — 2026-08-30
+## v0.6.4 — 2026-08-31
 
 The ACME client gains account update and order listing: pki.acme.client updates an account's contacts (RFC 8555 sec. 7.3.2) and fetches the account's orders list, following the paginated Link: rel="next" chain (sec. 7.1.2.1).
 
@@ -1433,7 +1473,7 @@ The toolkit's public APIs graduate to stable, and pki.ocsp.verifyRequest verifie
 
 - The public APIs that previously carried an experimental status are now stable and covered by the stable-upgrade policy: a deprecation warning ships at least one minor release before any removal, and a minor release makes no silent breaking change. The graduation bar is a settled governing standard, a wire format proven correct, and a frozen public surface. Where a surface graduates without fully meeting that bar, the relaxation is named here. On interop: pki.tls certificate compression (RFC 8879), pki.ocsp.verifyRequest, and the CMC surface (pki.cmc and pki.schema.cmc, RFC 5272) have no independent implementation in the interop harness, so their own decoders are their only cross-check. On the shared network transport: the EST (pki.est), ACME (pki.acme), and networked CMP (pki.cmp) clients and pki.path.build's opt-in AIA fetching compose the shared node:https transport (pki.transport), whose fail-closed contract still gains requirements as each client composes it. On the governing standard: pki.schema.c509 tracks the draft-ietf-cose-cbor-encoded-cert Internet-Draft, Certificate Transparency tracks the Experimental RFC 6962 (the standardized CT v2 is RFC 9162), composite post-quantum signature support tracks the LAMPS composite-signature drafts, and Sigstore bundle verification tracks the evolving Sigstore bundle spec rather than a settled RFC. On surface stability: pki.lint ships a representative CA/Browser Forum Baseline Requirements subset that will gain rules over time, pki.webauthn.verifyAssertion's verdict shape is frozen as of this release and grows only additively, and pki.hpke wires the classical DHKEM modes with the post-quantum modes added later. In each case the public surface is stable, and any change a later standard revision, an added rule, or continued transport hardening requires is handled under the deprecation policy.
 
-## v0.5.39 — 2026-08-29
+## v0.5.39 — 2026-08-30
 
 pki.cmc.build and pki.cmp.build verify an embedded PKCS#10 request's proof-of-possession and refuse one whose self-signature does not verify.
 
@@ -1441,7 +1481,7 @@ pki.cmc.build and pki.cmp.build verify an embedded PKCS#10 request's proof-of-po
 
 - pki.cmc.build (`tcr` arm) and pki.cmp.build (`p10cr` arm) verify the embedded PKCS#10 request's proof-of-possession before signing or protecting the enrollment message: the request's self-signature must verify under the subject public key it carries (RFC 5272 sec. 6.3 for CMC; RFC 9810 sec. 5.3.3 for CMP, over the PKCS#10 structure of RFC 2986). A request whose signature does not verify is refused with a typed `cmc/bad-popo` or `cmp/bad-popo` error naming the offending request; a request with a valid proof-of-possession builds unchanged.
 
-## v0.5.38 — 2026-08-29
+## v0.5.38 — 2026-08-30
 
 Builder verbs reject a sparse or nullish array argument with a typed error instead of a native one.
 
@@ -1449,7 +1489,7 @@ Builder verbs reject a sparse or nullish array argument with a typed error inste
 
 - The array arguments of pki.pkcs12.build (SafeContents bags), pki.ocsp.buildRequest and pki.ocsp.sign (the query and response batches), pki.cmc.build (requests and the CMS and other-message sequences), pki.crl.sign (revoked entries and the issuing-distribution-point and freshest-CRL general names), pki.crmf.build (controls and registration info), and pki.cms.encrypt (authenticated attributes) are checked for holes and nullish entries up front. A sparse or nullish array is now the verb's own typed `<domain>/bad-input` error naming the index, in place of the native `TypeError` the hole previously produced at the encoder. A valid (dense) array is unaffected and its emitted structure is byte-for-byte identical.
 
-## v0.5.37 — 2026-08-29
+## v0.5.37 — 2026-08-30
 
 pki.cms.decrypt can return the recovered content as an async iterable of plaintext chunks.
 
@@ -1510,7 +1550,7 @@ The parse verbs accept their DER input as any BufferSource: an ArrayBuffer, a Da
 
 - A private key, a password, and other secret byte inputs keep their existing contract of a `Buffer`, a `Uint8Array`, a PEM string, or a `CryptoKey` where one is accepted. A secret input still refuses an `ArrayBuffer` with a typed error, because widening the secret ownership paths is a separate decision.
 
-## v0.5.31 — 2026-08-24
+## v0.5.31 — 2026-08-25
 
 The signing verbs accept a WebCrypto CryptoKey as the signing key, and a subjectAltName entry may be a bare string classified into its GeneralName form.
 
@@ -1553,7 +1593,7 @@ pki.path.validate refuses a mis-shaped trust anchor instead of returning a verdi
 - A trust anchor passed as a parsed certificate is recognized as a certificate before any tuple field is read, so a value reached through the object's prototype -- such as a polluted `Object.prototype` supplying `name`, `publicKey`, and `algorithm` -- cannot reclassify the certificate as a hand-built tuple and bind a substituted key. The certificate's own key is always the one used.
 - A trust anchor supplied as a `Proxy`, or one whose `purposes` / `distrustAfter` constraint map is a `Proxy`, is refused with `path/bad-input`. A `Proxy`'s traps can answer a field read differently on successive lookups or report a field absent while forwarding the rest, so no field-by-field normalization can trust it to describe itself -- a `Proxy` could report `purposes` absent while carrying the other fields, or a `Proxy` distrust map could report no keys, dropping a `{ serverAuth: false }` restriction or an expired-cutoff date the caller attached and validating a path the anchor forbids. A normal anchor -- a plain tuple, a parsed certificate, or an object inheriting from one, with plain-object constraint maps -- is not a `Proxy` and is unaffected.
 
-## v0.5.28 — 2026-08-22
+## v0.5.28 — 2026-08-23
 
 Importing the toolkit is now silent, and a key's WebCrypto algorithm can no longer change under a signature once the key has been created.
 
@@ -1565,7 +1605,7 @@ Importing the toolkit is now silent, and a key's WebCrypto algorithm can no long
 
 - A `CryptoKey`'s `algorithm` is immutable once the key is created: the property is non-writable so it cannot be replaced, and its value is frozen so its fields cannot be changed. This engine reads `key.algorithm.hash` at sign time, and a mutable algorithm let the hash checked against a JWS `alg` (an `RS256` header signs under SHA-256) be rewritten between that check and the signature -- by swapping the whole object or a field of it, including from a microtask during the signing await -- producing a JWS whose signature does not match the algorithm its header advertises. The frozen value is a copy, so a caller's own `importKey` parameters object is left untouched. A key adopted from another WebCrypto implementation is re-imported from its own algorithm; the keys this engine mints, which is what the enrollment builders sign with, carry the immutable one.
 
-## v0.5.27 — 2026-08-22
+## v0.5.27 — 2026-08-23
 
 A mistyped option passed to pki.trust.anchor or the pki.acme.client constructor is now refused, naming it, instead of being read as absent and silently defaulted.
 
@@ -1578,7 +1618,7 @@ A mistyped option passed to pki.trust.anchor or the pki.acme.client constructor 
 
 - An unrecognized option is a fail-closed error rather than a silent default. The prior behavior meant a security-relevant option -- a shorter redirect budget, a specific trust purpose -- that was misspelled took no effect and raised no error, so a caller could believe a stricter setting was in force when the default was.
 
-## v0.5.26 — 2026-08-22
+## v0.5.26 — 2026-08-23
 
 Revoking a certificate and asking a certification authority what it offers now go through the same verified CMP transaction as enrollment.
 
@@ -1648,7 +1688,7 @@ An ACME certificate download is now bound to the order that asked for it, so a c
 - The names a certificate carries survive a replaced built-in. Every operation the shared PKIX decoders traverse, convert, copy and compare names with is bound when the module loads, and the tables that decide which GeneralName alternative a tag selects, which string types are DisplayText, and which decoder an extension OID resolves to hold no prototype. Replacing `Array.prototype.map`, `Buffer.prototype.toString`, `Buffer.concat`, `Array.prototype.push` or `Array.prototype.forEach` after load, or planting a name on `Object.prototype`, could otherwise present a subject alternative name or a subject common name the encoded certificate does not carry -- which any comparison downstream, including the certificate binding above, would then answer about.
 - Every guard module freezes its exports. A boundary reaches its fail-closed check as a property of the guard object at the moment of the call, and the module registry hands every caller the same object, so a single assignment would have replaced a check -- a constant-time comparison, a size cap, a secret wipe -- in every module at once.
 
-## v0.5.23 — 2026-08-20
+## v0.5.23 — 2026-08-21
 
 The tables that decide which status codes, revocation reasons, trust bits and extensions this toolkit recognizes now answer from an operation taken at load, and an unsupported HTTP Digest algorithm is refused rather than read off a prototype.
 
@@ -1661,7 +1701,7 @@ The tables that decide which status codes, revocation reasons, trust bits and ex
 - An HTTP Digest challenge naming an unsupported algorithm is refused with a typed error. The algorithm registry was an ordinary object, so a name matching any member of `Object.prototype` answered the supported-algorithm gate with a value the registry never held: the refusal was skipped and the call ended in an untyped `TypeError`. The registry now carries a null prototype.
 - OCSP response statuses and revocation reasons, CRL reason codes, CCADB trust bits, attribute-certificate critical extensions and object-digest types, Certificate Transparency log states, and the repeated-parameter check on an HTTP Digest challenge all decide membership through a captured operation, so replacing the runtime's own membership test after load cannot widen what they accept.
 
-## v0.5.22 — 2026-08-20
+## v0.5.22 — 2026-08-21
 
 The list tests that decide whether a caller's argument is refused, and which form an extension spec is in, now answer from operations taken at load rather than read when they run.
 
@@ -1675,7 +1715,7 @@ The list tests that decide whether a caller's argument is refused, and which for
 - `pki.x509.sign` picks which form the caller's extension spec is in with a captured test. That choice decides which fields are read and therefore what is signed into the certificate: answering wrongly sends an object down the list arm, and the extensions it carries are never seen. The same test decides whether the spec asserts keyCertSign, which is what makes the issued certificate a CA.
 - The name, key-usage and GeneralNames builders refuse a non-list argument under a captured test, as do certification-path validation's own list doors.
 
-## v0.5.21 — 2026-08-20
+## v0.5.21 — 2026-08-21
 
 The check that holds the crypto engine to load-time captures could be satisfied around, so nine modules had taken the safe primitive at one site and were never held to it anywhere else.
 
@@ -1794,7 +1834,7 @@ A failed integrity check destroys the plaintext it recovered, AuthEnvelopedData 
 - `pki.cms.encrypt` validates the authenticated attributes a caller supplies for an `AuthEnvelopedData` before it MACs them. Each must be a well-formed `Attribute SEQUENCE { type, non-empty SET OF value }` with no repeated type (RFC 5652 sec. 5.3). `AuthenticatedData` had enforced this all along; `AuthEnvelopedData` accepted whatever it was handed and emitted it, so a malformed attribute reached the wire with the MAC already computed over it and the operator learned of it from a peer's parser rather than from the builder.
 - `pki.cms.encrypt` refuses a `message-digest` attribute in an `AuthEnvelopedData`'s `authAttrs`. Its value is the unencrypted one-way hash of the plaintext, so disclosing it alongside the ciphertext enables content tracking and confirms a guessed plaintext against a message that was encrypted to prevent exactly that (RFC 5083 sec. 2.1 and sec. 5). Decryption still accepts one, since another implementation may legitimately emit it; the toolkit will not produce one. `AuthenticatedData` is unaffected -- it builds and MACs its own `message-digest` by design (RFC 5652 sec. 9.2).
 
-## v0.5.16 — 2026-08-19
+## v0.5.16 — 2026-08-20
 
 `pki.cmp.verify` reads every option at the call, and every guard takes what it needs from the runtime when it loads, so code a caller runs afterwards cannot change what a verification decides.
 
@@ -1883,7 +1923,7 @@ A failed integrity check destroys the plaintext it recovered, AuthEnvelopedData 
 
 - `pki.crl.isRevoked` takes a third argument. It is optional and every existing call keeps its behavior and its answer: without `time` the verb is the structural lookup it has always been, and its documentation now names the question that then goes unasked, so `null` reads as "not listed on this CRL" rather than "not revoked". An option it does not read is refused rather than ignored.
 
-## v0.5.11 — 2026-08-18
+## v0.5.11 — 2026-08-19
 
 An option a verb never reads is now refused, so a misspelled `password` on key export can no longer leave a private key unprotected.
 
@@ -1944,7 +1984,7 @@ The documentation and the package's own source comments settle on one spelling o
 
 - Documentation and source comments now use the US spellings behavior, recognize, unrecognized, labeled, honored, license, defense, neighbor, authorize, initialization, enrollment, signaled, modeled, favor and fulfill. 267 occurrences across 98 files no longer carry a second spelling: the README, the security policy, thirteen release notes and the changelog generated from them, the status-lifecycle record, the comments and error text in lib/, the test suite, and the release and wiki tooling. That figure counts words whose spelling changed, so a line edited for another reason that happened to contain one of these words is not counted twice. One word settles the other way: catalogue, which this repository already used by 185 uses to 32, so the checked form is that one and the US spelling is what now reports. Simple Certificate Enrolment Protocol is RFC 8894's title, quoted as published and allowed only on a line carrying that title in full, so the exception cannot spread to the word.
 
-## v0.5.9 — 2026-08-17
+## v0.5.9 — 2026-08-18
 
 A certificate can now carry an internationalized email address, which this toolkit could read and never write.
 
@@ -1957,7 +1997,7 @@ A certificate can now carry an internationalized email address, which this toolk
 
 - pki.smime.verify's sender binding is now exercised against certificates carrying an otherName. Two behaviors that previously had no conformance vector are pinned: a certificate whose subjectAltName carries an SmtpUTF8Mailbox does not let a legacy subject distinguished-name emailAddress speak for it, and an otherName unrelated to email, such as a Microsoft user principal name, neither erases a matching rfc822Name nor turns a definite non-match into an undecidable one.
 
-## v0.5.8 — 2026-08-17
+## v0.5.8 — 2026-08-18
 
 Four verdicts that answered a question nobody had asked now say what they checked, and an email domain comparison no longer folds two registrable domains into one identity.
 
@@ -1998,7 +2038,7 @@ A CMS signature made over signed attributes can no longer be re-presented as one
 - A producing verb reads its arguments once, at entry. Every one of them does work across more than one promise turn, so a caller still holding a spec, an options object or a signer could change a field after the call returned and have a later turn read the new value: the checks ran against one input and the artifact was built from another. Every argument of pki.cms.sign, pki.cms.countersign, pki.x509.sign, pki.csr.sign, pki.crl.sign, pki.attrcert.sign, pki.crmf.build, pki.cmc.build, pki.cmp.build, pki.ocsp.buildRequest, pki.ocsp.sign, pki.tsp.sign and pki.pkcs12.build is now copied whole at entry, at every depth, and each copy is cleared when the call settles. Reachable cases included flipping signedAttributes from true to false to skip the content check the entry above describes, rewriting a certificate's key identifier or a CRL's authority key identifier between the check and the encoding, changing the encoding pki.x509.sign returns after the signature came back, rewriting the PKCS#12 password partway through so the file's MAC and its bag encryption were keyed to two different values, and rewriting the nested pki.cmp.build MAC secret so the message went out authenticated under a value the caller never supplied. Copying at one level does not cover the last of those and copying without clearing duplicates the secret, so both halves are the rule. A parsed structure passed inside a spec keeps its identity, so it still satisfies the verbs that require parser provenance, and a CryptoKey is used as it stands, never cloned.
 - The verbs documented as returning a Promise now run their body at the call, and no longer a turn later. Ten of them deferred everything, including reading the caller's arguments, until after the call had already returned, which left the window above open even for a verb that copies its input on the first line. They still report a fault by rejecting and never by throwing; only the timing of the work changed.
 
-## v0.5.6 — 2026-08-15
+## v0.5.6 — 2026-08-16
 
 A CMS SignedData is verified over the bytes it was parsed from, an omitted PKCS#12 password is refused and never encoded as the empty one, and a verb documented as returning a Promise rejects instead of throwing past your .catch.
 
@@ -2060,7 +2100,7 @@ A path verdict says whether revocation was ever established, a trust anchor's ow
 - A certificate's keyUsage is read the same way at every boundary that asks what the certificate may do. keyUsage is a NamedBitList, so DER drops its trailing zero bits (X.690 sec. 11.2.2) and RFC 5280 sec. 4.2.1.3 requires at least one bit set. The shared extension decoder enforces both rules, which is why the issuing side and pki.path.validate already applied them. Four boundaries read the bits themselves and applied neither, so one certificate could be authorized here and called malformed everywhere else: pki.crl.verify accepting a CRL signer, pki.tsp.verify accepting a timestamp authority, pki.cms.encrypt accepting a recipient, and the FIDO metadata reader accepting the leaf that signs a catalogue. All four now route through the decoder, so a certificate this toolkit refuses to issue is a certificate it refuses to trust.
 - An issuingDistributionPoint scope flag is read under the encoding rules that define it, in both the CRL verbs and the path validator, and no longer by inspecting a content byte. Each flag is an IMPLICIT BOOLEAN, so DER admits exactly one content octet of 0x00 or 0xFF; a byte test read an empty flag as absent and a multi-octet one by whichever byte it indexed, and absent is the reading that lets a CRL whose scope cannot be established answer a serial anyway. Signing rejects a pre-encoded issuingDistributionPoint on the same terms, so this toolkit cannot emit a CRL whose scope a relying party would read differently.
 
-## v0.5.3 — 2026-08-14
+## v0.5.3 — 2026-08-15
 
 pki.webauthn checks the ceremony at registration, withholds a revoked model's anchors, and refuses a name comparison it cannot perform.
 
@@ -2090,7 +2130,7 @@ pki.webauthn checks the ceremony at registration, withholds a revoked model's an
 - A metadata BLOB signed with RSASSA-PSS, EdDSA or ML-DSA verifies. The reader carried its own six-row JWS algorithm table beside the toolkit's registry, and only the registry had been extended, so PS256 was accepted as an ACME signature and refused as a metadata signature. The table is derived from pki.jose's registry now and is total over it, so an algorithm the toolkit verifies cannot be one this reader rejects: an X.509 SubjectPublicKeyInfo carries an Edwards key (RFC 8410) and an ML-DSA key (RFC 9881) as readily as an EC one. EdDSA names a scheme without fixing a curve, so the certificate decides whether it is Ed25519 or Ed448. An x5c leaf carrying an id-RSASSA-PSS key verifies a PS256/384/512 BLOB, and the restriction that certificate places on the key is enforced in both directions: the key may not verify an RSASSA-PKCS1-v1_5 signature, and where the certificate pins a single hash, a signature under any other is refused.
 - The android-safetynet service chain reaches its anchors through the same walk as every other certificate chain in the namespace, and no longer through a second copy of it. An x5c ending in a cross-signed form of the pinned root (the ordinary shape during a CA rotation) now chains, where the local copy left it in the path to fail against a root that never issued it.
 
-## v0.5.2 — 2026-08-12
+## v0.5.2 — 2026-08-13
 
 pki.cms.verify gains a trust seam: name the roots you accept, and the verdict says whether the signer chained to one.
 
@@ -2160,7 +2200,7 @@ CMC (Certificate Management over CMS) ships end to end: build a Full PKI Request
 - An OCSP response whose nonce does not echo the request no longer downgrades a revoked verdict to unknown. pki.ocsp.verify applies that downgrade to good only. Revocation does not go stale the way non-revocation does, so discarding a signed, current, authorized revoked response because it was replayed would hand a soft-failing caller the certificate the responder just refused: the anti-replay defense would become the thing that accepts it. The verdict was also self-contradictory, reporting status unknown while carrying revocationReason keyCompromise. nonceMatched: false still reports that the response was not bound to this request, and the field is now three-state and always present (true bound, false not bound, null when the client sent no nonce), so a caller can tell a check that ran from one that was never asked for.
 - Corrections to the repository documentation, each of which would have misled a reader who acted on it. SUPPORT.md described additive APIs as minor releases; pre-1.0 they ship as patches, and a minor is an explicit decision recorded in the release notes. ARCHITECTURE.md, CONTRIBUTING.md and the interop test guide showed pki.x509.parse, which does not exist: parsing is pki.schema.x509.parse, and pki.<format> is the issuing half throughout. ARCHITECTURE.md listed namespaces as future that have shipped, and omitted the schema, guard and validator families entirely. THREAT-MODEL.md marked path validation, signature verification, CMS decryption and ML-KEM decapsulation as targeted when all four have shipped, and linked to a section that no longer exists. ROADMAP.md reported CRL reason-shard accumulation and delta-CRL merge as planned in one entry while describing them as shipped in another. ML-KEM encapsulation and decapsulation were described as roadmap items; both ship and are what the CMS KEMRecipientInfo arm rides on. The interoperability acceptance gate was described as running against NSS, Windows CAPI and macOS Keychain alongside OpenSSL; only the OpenSSL cross-checks are wired, and the others are roadmap. The format detectors behind pki.schema.parse were described as mutually exclusive regardless of registration order; order is load-bearing where two overlap, so a CMP PKIMessage sits ahead of the OCSP-request probe and a v1 attribute certificate ahead of X.509. The fuzzing guide listed 27 of the 55 harnesses. The README carried two separate entries for pki.tls. The published pki.transport response contract named three fields where the transport returns four: the omitted tls field is what pki.est.serverkeygen reads to assert the channel can protect a server-generated private key, and a transport that reports no cipher is trusted, so an operator injecting a substitute built to the documented contract silently skipped that check. EST channel binding was described as shipped; the challengePassword builder and the server-instruction flag ship, but nothing produces the RFC 5929 tls-unique value and the shared transport does not expose it, so the attribute cannot be driven end to end.
 
-## v0.4.15 — 2026-08-10
+## v0.4.15 — 2026-08-11
 
 A CA that partitions revocations by reason code, or publishes a delta CRL alongside its base, now gets a real answer instead of "undetermined".
 
@@ -2216,7 +2256,7 @@ Every key-establishment secret this library allocates is now wiped when it stops
 - Every site that builds a PKCS#12 password encoding clears it: store integrity on both sides, and legacy-PBE decryption. The clear happens only when this library allocated the encoding. A password supplied as a Buffer is passed through that encoder unchanged, so it stays borrowed and is never written to, exactly as on the CMS paths.
 - Deriving a key clears the transient bits it derives once they have been imported into the key object, including when the import itself rejects.
 
-## v0.4.13 — 2026-08-09
+## v0.4.13 — 2026-08-10
 
 A KEM shared secret and the key it derives are now wiped as soon as they stop being needed. The failing path clears them too, and that is the path an attacker chooses.
 
@@ -2235,7 +2275,7 @@ A KEM shared secret and the key it derives are now wiped as soon as they stop be
 
 - The roadmap attributed two rules to NIST SP 800-227 that it does not state: implicit rejection and re-encapsulation are FIPS 203's, reached through SP 800-227's requirement to comply with the KEM's own standard, and SP 800-227 sec. 4.3 explicitly permits a shared secret to be used directly, truncated, or split into segments. The unconditional key-derivation requirement comes from RFC 9629 sec. 5. The entry now states what each document requires.
 
-## v0.4.12 — 2026-08-09
+## v0.4.12 — 2026-08-10
 
 A CMS message can no longer declare one content cipher and be opened with another: the declared algorithm's mode is now bound to the container that carries it, so an EnvelopedData naming an authenticated cipher is refused. It used to be opened, unauthenticated, under a result that reported it as authenticated.
 
@@ -2282,7 +2322,7 @@ A WebAuthn attestation can now be bound to the roots the authenticator's own mod
 
 - An invalid opts.time passed to pki.webauthn.verify for an android-safetynet attestation raised an untyped internal error instead of the typed webauthn/bad-input verdict. Every failure from the verifier is a typed error again, so a caller catching pki.errors.PkiError no longer has a hole on that path.
 
-## v0.4.10 — 2026-08-08
+## v0.4.10 — 2026-08-09
 
 A TPM attestation now reports the credential key's own object attributes and access policy, so a relying party can require the properties it cares about (a key bound to one TPM, generated by that TPM, not duplicable) instead of taking the attestation on trust.
 
@@ -2298,7 +2338,7 @@ A TPM attestation now reports the credential key's own object attributes and acc
 
 - Calendar dates without a time are now read through the same strict reader as full timestamps. A date that does not exist is rejected: the thirtieth of February is refused, where the language would have rolled it into the following month and silently made it the second of March. A parsed date is anchored to UTC, so a freshness or expiry comparison does not shift with the host's time zone.
 
-## v0.4.9 — 2026-08-08
+## v0.4.9 — 2026-08-09
 
 A WebAuthn compound attestation now verifies, and every nested statement must pass, so a wrapper cannot launder a failed attestation behind one that succeeds. The certificate chains an attestation carries are also bounded by count, not only by size.
 
@@ -2392,7 +2432,7 @@ pki.tls encodes and decodes RFC 8879 compressed certificate messages (the larges
 - pki.cms.decompress refuses a stream carrying bytes after the end of the compressed data. A decompressor stops at the end of the first complete frame and ignores whatever follows, so arbitrary bytes, or a second entire frame, could be appended and the same content still recovered. That gave one content unboundedly many encodings, so a digest over the compressed object no longer identified what it decompressed to. The whole octet string must now be exactly one frame, which is what the DER layer already required of its own encodings.
 - An unusable hash is now refused when a key is created, and no longer at its first use. pki.webcrypto.subtle.importKey and generateKey recorded the requested hash without resolving it, so a name this engine cannot use produced a CryptoKey that failed only at its first sign, verify or wrap, after the caller had already paid for the key generation. The name is now resolved at the entry point, through the same table the operations use, so what a key can be created with and what it can be used with cannot diverge.
 
-## v0.4.2 — 2026-08-07
+## v0.4.2 — 2026-08-08
 
 A NumericString attribute value no longer shares distinguished-name identity with a printable or UTF-8 value of the same characters. That comparison decides name chaining, revocation-issuer matching and name constraints. Alongside it, several C509 name-encoding conformance fixes and a move to Node 24.19.0.
 
@@ -2409,7 +2449,7 @@ A NumericString attribute value no longer shares distinguished-name identity wit
 - The rendered distinguished-name string now escapes its values (RFC 4514 sec. 2.4), so an attribute value containing a comma can no longer read as though the name held several attributes, and a control byte can no longer reach a log line unescaped.
 - An empty issuer name is now refused (RFC 5280 sec. 4.1.2.4 requires a non-empty issuer). It previously parsed and rebuilt a certificate that this toolkit's own certificate parser declines to load. An empty subject is still accepted; the profile pairs that with a subject alternative name, which this codec does not yet require.
 
-## v0.4.1 — 2026-08-07
+## v0.4.1 — 2026-08-08
 
 pki.schema.c509 encodes and decodes the compact subjectDirectoryAttributes value form: a C509 certificate's subject directory attributes ride their draft-20 registry integers (or unwrapped OIDs) with their directory-string values, so a conformant C509 implementation reads them.
 
@@ -2440,7 +2480,7 @@ CRL issuance and verification, PKCS#12 build and open, attribute-certificate iss
 
 - The C509 encoder now bounds the basicConstraints path length and the inhibitAnyPolicy and policyConstraints skip counts to the same non-negative 31-bit range the toolkit's own certificate decoders enforce. A native C509 carrying one of these counts past that range now fails closed with a typed C509Error and no longer reconstructs a DER that an X.509 decoder, this toolkit's included, would then reject.
 
-## v0.3.33 — 2026-08-05
+## v0.3.33 — 2026-08-06
 
 pki.schema.c509 encodes and decodes the compact certificatePolicies value form. A C509 certificate's policy identifiers ride their draft-20 registry integers (or unwrapped OIDs) and their CPS-URI and UserNotice qualifiers ride the specific compact CBOR shape, so the certificate interoperates with a conformant C509 implementation.
 
@@ -2523,7 +2563,7 @@ pki.cmp.verify checks the protection on an incoming CMP PKIMessage. It verifies 
 
 - The EST and ACME clients (pki.est / pki.acme) now reset the origin-specific tls.servername (SNI) on a cross-origin redirect / request even when no mTLS client certificate is set, so the trusted host's SNI is never sent to a different origin. A caller's tls.checkServerIdentity pin is retained across the origin boundary and re-evaluated against the redirected host, so a certificate / SPKI pin keeps applying and is never silently bypassed by dropping the callback.
 
-## v0.3.25 — 2026-07-26
+## v0.3.25 — 2026-07-27
 
 pki.path.build can now fetch a missing intermediate over the network: opt in with `fetchAia` and it discovers the issuer from a certificate's AIA caIssuers URL, so a chain with a gap in the supplied pool still builds.
 
@@ -2581,7 +2621,7 @@ A Certificate Transparency log-list live-fetch client ships. pki.ct.fetchLogList
 - pki.ct.fetchLogList(opts) fetches the Certificate Transparency log list live and returns the trusted-log set only after the detached signature verifies against the caller-pinned distributor key. It GETs opts.url (the log_list.json) and the detached opts.sigUrl (the log_list.sig, by default opts.url with a .json path suffix rewritten to .sig) over the shared pki.transport (or an injected opts.transport), verifies pki.ct.verifyLogListSignature over the raw JSON bytes against opts.signerKey, and only on a valid signature ingests the same bytes through pki.ct.parseLogList, returning { logs, byLogId, version, timestamp, raw, status, contentType, tls }. No baked-in vendor URL and no baked-in key (both are caller-pinned); explicit TLS trust (an anchor set or an opts.tls.useSystemStore opt-in, rejectUnauthorized always on); each GET is size-capped before verify/parse; every fetch / verify / parse failure is a typed CtError. RFC 6962.
 - pki.ct.parseLogList now also returns the document's version (a string or null) and timestamp (the parsed log_list_timestamp as a Date, or null when absent/unparseable). That is the freshness surface a caller polices, read leniently from the same document. Existing callers of the { logs, byLogId } shape are unaffected.
 
-## v0.3.20 — 2026-07-25
+## v0.3.20 — 2026-07-26
 
 PKCS#12 public-key privacy ships: encrypt a store's contents to a recipient public key with pki.pkcs12.build/open, plus a webcrypto RSA algorithm-name fix.
 
@@ -2594,7 +2634,7 @@ PKCS#12 public-key privacy ships: encrypt a store's contents to a recipient publ
 
 - pki.webcrypto now emits the WebCrypto-registered casing on a CryptoKey's algorithm.name for RSASSA-PKCS1-v1_5 (lowercase v), matching the standard and the mixed-case Ed25519 / Ed448 it already emitted, so the toolkit's own RSASSA-PKCS1-v1_5 CryptoKey can be passed as an x509 signer key. The x509 signer's algorithm-name match is now ASCII-case-folded as well (WebCrypto algorithm names are case-insensitive), so a CryptoKey from any source with equivalent casing is accepted.
 
-## v0.3.19 — 2026-07-25
+## v0.3.19 — 2026-07-26
 
 The CMP HTTP transfer client ships: pki.cmp.transfer carries a protected PKIMessage to a CMP endpoint over the shared node:https transport (RFC 9811).
 
@@ -2621,7 +2661,7 @@ The ACME client ships. pki.acme drives the full RFC 8555 certificate-issuance fl
 
 - The EST enrollment client now measures a string response body as UTF-8 (the width it is decoded at), so a non-ASCII body cannot undercount its byte length and slip past the response-size cap. The built-in node:https transport was unaffected (it returns raw bytes); this hardens a custom injected transport that returns string bodies.
 
-## v0.3.17 — 2026-07-24
+## v0.3.17 — 2026-07-25
 
 Refresh two development-only tooling dependencies to clear newly-disclosed advisories.
 
@@ -2629,7 +2669,7 @@ Refresh two development-only tooling dependencies to clear newly-disclosed advis
 
 - Refresh the development/fuzzing-only brace-expansion (5.0.7 -> 5.0.8, GHSA-mh99-v99m-4gvg) and tar (7.5.19 -> 7.5.22, GHSA-r292-9mhp-454m) tooling dependencies to versions clear of two newly-disclosed advisories. Both are used only by the development and fuzzing harnesses and are never part of the published package (the toolkit has zero runtime dependencies), so installed contents are unchanged.
 
-## v0.3.16 — 2026-07-24
+## v0.3.16 — 2026-07-25
 
 The EST enrollment client ships: pki.est fetches CA certificates and enrolls certificates over the wire (RFC 7030), on a new shared node:https transport.
 
@@ -2647,7 +2687,7 @@ PKCS#12 public-key integrity is produced and verified (RFC 7292 sec. 4).
 - pki.pkcs12.build produces a public-key-integrity PKCS#12 store (RFC 7292 sec. 4). With opts.integrity { mode: 'public-key', signer: { cert, key, digestAlgorithm?, pss? } | signers: [ ... ], sid?, signingTime?, certificates? } it wraps the AuthenticatedSafe in a CMS SignedData whose id-data eContent is the byte-exact AuthenticatedSafe, signed by any pki.cms.sign signer algorithm (RSA PKCS#1 v1.5 / RSASSA-PSS, ECDSA, EdDSA, ML-DSA, SLH-DSA, composite ML-DSA), with no MacData. Combining opts.mac with public-key integrity, or building with no signer, is a config-time pkcs12/bad-integrity-mode or pkcs12/bad-input. Privacy is unchanged: opts.password still PBES2-encrypts the bags.
 - pki.pkcs12.open verifies a public-key-integrity store. It runs pki.cms.verify over the store's CMS SignedData authSafe before decrypting any bag, the same integrity gate the MAC provides for password mode, and returns nothing on a failure (pkcs12/signature-invalid). The result bundle gains signers, the per-signer verdict [{ ok, sid, cert }] (null in password / MAC-less mode); the signer certificate is surfaced but never chained to a trust anchor; anchoring it is the caller's pki.path.validate step. opts.signerCerts supplies the signer certificate for a store built with certificates: false. The bags then decrypt under the caller password exactly as in password mode (privacy is independent of integrity); a wrong bag password is the uniform pkcs12/decrypt-failed.
 
-## v0.3.14 — 2026-07-23
+## v0.3.14 — 2026-07-24
 
 CMS AuthenticatedData is produced and verified (RFC 5652 sec. 9).
 
@@ -2656,7 +2696,7 @@ CMS AuthenticatedData is produced and verified (RFC 5652 sec. 9).
 - pki.cms.authenticate(content, recipients, opts) produces a CMS AuthenticatedData (RFC 5652 sec. 9): cleartext content authenticated by an HMAC-SHA-256/384/512 MAC, with the fresh MAC key wrapped for each recipient through the same RecipientInfo model pki.cms.encrypt uses (key-transport RSAES-OAEP, key-agreement ECDH/X25519/X448, ML-KEM ori, password pwri, key-wrap kekri). By default it MACs the authenticated attributes (content-type + message-digest of the content) re-tagged to the EXPLICIT SET OF (sec. 9.2); opts.authenticatedAttributes false MACs the content octets directly (id-data only). opts.macAlgorithm selects the HMAC hash and opts.digestAlgorithm the message-digest hash. Returns a DER Buffer or, with opts.pem, a PEM string. RFC 5652 sec. 9, RFC 2104, RFC 4231.
 - pki.cms.decrypt verifies a CMS AuthenticatedData. It recovers the MAC key through the matching RecipientInfo, recomputes the HMAC over the exact RFC 5652 section 9.2 preimage, and, when authenticated attributes are present, independently recomputes digest(content) and confirms it equals the message-digest attribute (section 9.3, do not trust the originator's digest), before releasing the content with authenticated true and macAlgorithm / digestAlgorithm in place of contentEncryptionAlgorithm. Every secret-dependent failure (a wrong recipient key, a forged or tampered MAC, a message-digest mismatch) collapses to the one uniform cms/decrypt-failed verdict, so a MAC failure is indistinguishable from a key-unwrap failure and leaks no unwrap-success bit. A weak or unknown macAlgorithm (HMAC-SHA-1) is refused with a distinct cms/unsupported-algorithm before any key step.
 
-## v0.3.13 — 2026-07-23
+## v0.3.13 — 2026-07-24
 
 CMS gains countersignatures and unsigned attributes (RFC 5652 sec. 11.4).
 
@@ -2666,7 +2706,7 @@ CMS gains countersignatures and unsigned attributes (RFC 5652 sec. 11.4).
 - pki.cms.verify surfaces countersignatures and unsigned attributes per signer. Each res.signers[i] carries countersignatures and unsignedAttrs. countersignatures is an array of per-countersignature verdicts { ok, sid, cert, digestAlgorithm, ... }, each verified over the exact RFC 5652 section 11.4 preimage and nested for a countersignature of a countersignature; unsignedAttrs holds the decoded unsigned attributes with their type names. Both are unauthenticated by definition (an unsigned attribute is outside the signature) and never change signers[i].ok or res.valid; a present-but-invalid countersignature is surfaced ok:false, never silently dropped.
 - pki.cms.sign gains an unsignedAttributes option: an array of { type, values } unsigned attributes placed in each SignerInfo, outside the signature. It is the vehicle for attaching an RFC 3161 timestamp token (id-aa-timeStampToken) or another unsigned attribute at signing time. content-type, message-digest, and signing-time are rejected as unsigned attributes (RFC 5652 sec. 11), as is a duplicate attribute type.
 
-## v0.3.12 — 2026-07-23
+## v0.3.12 — 2026-07-24
 
 pki.pkcs12.open reads and decrypts a password-integrity PKCS#12 store (RFC 7292, RFC 9579).
 
@@ -2716,7 +2756,7 @@ Human-readable inspection extends to CRLs, CSRs, and CMS messages, with a pki.sc
 - pki.inspect.crl / .csr / .cms render a certificate revocation list, a PKCS#10 certification request, and a CMS message as OpenSSL-familiar text reports (openssl crl -text / req -text / cms -cmsout -print), and pki.inspect.any detects the format of a DER/PEM input and routes it to the matching report. Each composes the certificate inspector's shipped field renderers, resolves every extension/attribute/algorithm/content-type OID through the registry (unknown -> dotted, undecodable value -> raw octets), and is best-effort: a malformed part hex-dumps without failing the report, and only entry-point coercion throws (inspect/bad-crl / inspect/bad-csr / inspect/bad-cms / inspect/unsupported-format). Cross-checked field-for-field against OpenSSL. RFC 5280 / RFC 2986 / RFC 5652.
 - pki.schema.detectFormat(input) returns the registered PKI format name a DER Buffer or PEM string encodes (one of pki.schema.all()) without parsing it, or null when it matches no registered format. It is the detection half of pki.schema.parse, over the same authoritative format ordering.
 
-## v0.3.7 — 2026-07-17
+## v0.3.7 — 2026-07-18
 
 Certification path building arrives as pki.path.build, and pki.lint gains seven RFC 5280 extension-criticality and CA-scope lints.
 
@@ -2780,7 +2820,7 @@ pki.csr.sign issues PKCS#10 certification requests, self-signed by the subject k
 
 - The certificate and certification-request distinguished-name and extension encoders now reject an unrecognized attribute, extended-key-usage purpose, or certificate-policy name at build time with a typed error, so no malformed object identifier is emitted. An unknown name in a pki.x509.sign or pki.csr.sign spec fails closed and produces no unparseable structure.
 
-## v0.3.0 — 2026-07-16
+## v0.3.0 — 2026-07-17
 
 pki.x509.sign issues self-signed and CA-signed X.509 certificates over every signature algorithm the toolkit supports, from RSA and ECDSA through EdDSA, ML-DSA, and SLH-DSA.
 
@@ -2793,7 +2833,7 @@ pki.x509.sign issues self-signed and CA-signed X.509 certificates over every sig
 
 - The Sigstore bundle verifier now routes an Ed25519 or Ed448 key through the shared full-order, on-curve Edwards-point gate at the raw signature-verification sink as well as at key parsing. A low-order or off-curve key that would verify a forged EdDSA signature is refused wherever a verify path handles one. This completes the defense across every EdDSA verification sink in the toolkit.
 
-## v0.2.33 — 2026-07-16
+## v0.2.33 — 2026-07-17
 
 Attribute certificates now decode their RFC 5755 attribute values and attribute-certificate extensions alongside the certificate structure.
 
@@ -2901,7 +2941,7 @@ CMS content encryption arrives as pki.cms.encrypt and pki.cms.decrypt: Enveloped
 - pki.cms.decrypt(input, keyMaterial, opts) decrypts an EnvelopedData / AuthEnvelopedData / EncryptedData (DER or PEM). It selects the recipient the key material { key, cert } / { password } / { kek } / { cek } targets, acquires the content-encryption key through the matching arm (RSA-OAEP or PKCS#1 v1.5 decrypt-only under the RFC 3218 implicit-rejection countermeasure, ECDH / X25519 / X448, AES key-unwrap, PBKDF2, ML-KEM decapsulation), and decrypts + authenticates the content, returning { content, contentType, contentTypeName, recipientType, recipientIndex, contentEncryptionAlgorithm, authenticated }. Every secret-dependent failure collapses to one uniform cms/decrypt-failed verdict (Bleichenbacher / EFAIL / password-oracle freedom); a PBKDF2 iteration cap bounds password-based decryption work.
 - The WebCrypto engine gains ML-KEM key encapsulation (SubtleCrypto.encapsulateBits / decapsulateBits over FIPS 203) and the ANSI-X9.63 single-step key-derivation function (the X963KDF derive algorithm), the two primitives the post-quantum and elliptic-curve CMS recipient arms compose.
 
-## v0.2.22 — 2026-07-15
+## v0.2.22 — 2026-07-16
 
 The RFC 6960 OCSP producer and relying-party surface arrives as pki.ocsp: build and sign OCSP requests and responses, mint unsigned error responses, and verify a response end to end against the same hardened responder-authorization, signature, CertID, currency, and nonce gates the certification-path revocation checker runs.
 
@@ -2911,7 +2951,7 @@ The RFC 6960 OCSP producer and relying-party surface arrives as pki.ocsp: build 
 - pki.ocsp.verify(response, opts) verifies an OCSP response as a relying party, fail-closed: it binds the supplied issuer certificate to the target certificate (the target's issuer name must equal the issuer's subject and the target's signature must verify under the issuer's key), recomputes the CertID under its own hash algorithm to bind the checked certificate to its issuer, requires an authorized responder (the issuing CA, or a CA-issued delegate bearing id-kp-OCSPSigning and id-pkix-ocsp-nocheck that passes the full out-of-path certificate gates), verifies the signature over tbsResponseDataBytes, enforces thisUpdate / nextUpdate currency, and binds the request nonce (RFC 9654) under a constant-time comparison. A revoked status shadows good within a response; an unbound issuer, an unauthorized responder, a mismatched CertID, or a stale or unverifiable response returns { status: "unknown" } with granular responderAuthorized / signatureValid / matched flags, never a silent accept. It runs the exact responder-authorization, signature, and currency gates pki.path.ocspChecker runs, through one shared core.
 - pki.path.verifyOcspResponse(parsedResponse, cert, issuerCert, time, opts) is the lower-level primitive pki.ocsp.verify composes: it verifies a single already-parsed OCSP response for one certificate against its already-parsed issuer, returning the same fail-closed granular verdict, for callers that have already decoded their inputs.
 
-## v0.2.21 — 2026-07-15
+## v0.2.21 — 2026-07-16
 
 ML-KEM public keys in X.509 certificates and PKCS#8 private keys (RFC 9935 / FIPS 203) become a first-class, fail-closed surface: certification-path validation enforces the keyEncipherment-only key usage, key import validates the private-key CHOICE and rejects an inconsistent key with a typed error, and pki.lint gains the RFC 9935 certificate rows.
 
@@ -2968,7 +3008,7 @@ Composite ML-DSA signatures join CMS SignedData: pki.cms.sign and pki.cms.verify
 
 - EdDSA (Ed25519 / Ed448) public keys are validated as a canonical, on-curve, full-order Edwards point before any signature is verified with them, across certification-path validation (pki.path.validate, whether a certificate signature or a CRL / OCSP-response signature checked during revocation), composite CMS SignerInfo components, and JWS verification (pki.jose.verify). A low-order key (for example the identity point, which the underlying platform imports without complaint and which verifies a forged signature for every message) is rejected up front, so it can no longer certify a forged certificate chain, forge a CRL or OCSP response, satisfy the traditional half of a composite signature, or make a forged JWS verify. Certificate and revocation verification share one key-import routine, so the check cannot be applied to one surface and skipped on another.
 
-## v0.2.17 — 2026-07-13
+## v0.2.17 — 2026-07-14
 
 Post-quantum SLH-DSA joins CMS SignedData: pki.cms.sign and pki.cms.verify now sign and verify with all twelve FIPS 205 SLH-DSA parameter sets (RFC 9814), freely mixed with the classical and ML-DSA signers in one message.
 
@@ -2981,7 +3021,7 @@ Post-quantum SLH-DSA joins CMS SignedData: pki.cms.sign and pki.cms.verify now s
 
 - CMS signature verification's one-shot signer-key agreement check (a single algorithm identifier naming both the key and the signature) now covers SLH-DSA alongside EdDSA and ML-DSA: an SLH-DSA SignerInfo whose signer certificate public-key parameter set disagrees with the signatureAlgorithm fails closed with a typed error.
 
-## v0.2.16 — 2026-07-13
+## v0.2.16 — 2026-07-14
 
 Post-quantum ML-DSA joins CMS SignedData: pki.cms.sign and pki.cms.verify now sign and verify with ML-DSA-44/65/87 (RFC 9882), freely mixed with the classical signers in one message.
 
@@ -2994,7 +3034,7 @@ Post-quantum ML-DSA joins CMS SignedData: pki.cms.sign and pki.cms.verify now si
 
 - CMS signature verification now requires a one-shot signer (EdDSA or ML-DSA, where a single algorithm identifier names both the key and the signature) to present a signer certificate whose public-key algorithm matches the SignerInfo signatureAlgorithm; a disagreement fails closed with a typed error and no longer surfaces as an opaque import failure.
 
-## v0.2.15 — 2026-07-13
+## v0.2.15 — 2026-07-14
 
 CMS SignedData signing arrives as pki.cms.sign, and RFC 3161 timestamp token creation as pki.tsp.sign: the producing sides of the CMS and timestamp verifiers, emitting exactly what pki.cms.verify and OpenSSL cms -verify accept.
 
@@ -3078,7 +3118,7 @@ pki.webcrypto rejects an imported key whose type disagrees with its algorithm, a
 - pki.webcrypto.subtle.importKey now validates that an imported asymmetric key's actual type matches the requested algorithm (an RSA key imported under an Ed25519, ECDSA, or RSA-PSS name is rejected as webcrypto/data), closing an algorithm-confusion path where a mislabeled CryptoKey could later be used under the wrong signature scheme. The EC import path already derived and checked the curve; this extends the same key-is-authority rule to RSA and the Edwards/Montgomery curves.
 - pki.webcrypto AES cipher faults now fail closed with a typed webcrypto/operation error instead of a raw Node exception: a decrypt of a tampered AES-GCM ciphertext (failed authentication tag), bad AES-CBC padding, a non-8-byte-multiple AES-KW wrap/unwrap length, and a malformed cipher parameter all surface as a WebCryptoError, so a caller catching pki.errors.PkiError sees a typed verdict and no bare Node error crosses the API boundary.
 
-## v0.2.6 — 2026-07-12
+## v0.2.6 — 2026-07-13
 
 WebAuthn attestation verification covers Ed448 and the RFC 9864 fully-specified COSE algorithms, and hardens credential-key conformance.
 
@@ -3097,7 +3137,7 @@ WebAuthn attestation verification covers Ed448 and the RFC 9864 fully-specified 
 - The WebAuthn credential public-key point is now validated on its curve, so an off-curve or identity EC/Edwards point fails closed at decode and is never carried into a later verify step.
 - An ECDSA attestation signature is now enforced as a minimally-encoded DER ECDSA-Sig-Value (X.690): a non-minimal, negative, zero, or over-size r/s coordinate is rejected as malformed instead of being stripped and accepted.
 
-## v0.2.5 — 2026-07-12
+## v0.2.5 — 2026-07-13
 
 WebAuthn / passkey attestation verification joins the toolkit as pki.webauthn.
 
@@ -3128,7 +3168,7 @@ Offline Sigstore bundle verification joins the toolkit as pki.sigstore.
 - pki.sigstore.verifyBundle(bundle, opts) verifies a Sigstore bundle offline against caller-supplied trust material (opts.fulcioRoots, the Fulcio CA certificates; opts.rekorKeys, the Rekor log public keys, each with an optional validFor window honored against the log time so a rotated-out key is not used; optional opts.identity policy and opts.time). It returns { verified: true, payload, statement, subjects, predicateType, predicate, identity, integratedTime } on success (payload being the raw verified envelope bytes, never a re-serialization), and throws a typed sigstore/* error on any leg's failure. The transparency-log entry is bound to both the bundle signature and its leaf certificate, and only the v0.1-v0.3 bundle versions this release verifies are accepted (a newer version is recognized and deferred). pki.sigstore.parseBundle(input) decodes and structurally validates a bundle (object, JSON string, or Buffer) fail-closed. pki.sigstore.pae(payloadType, payloadBytes) builds the DSSE Pre-Authentication Encoding a signature covers. DSSE / Sigstore bundle v0.3 / RFC 9162 / SLSA provenance v1.
 - The OID registry gains the Fulcio (Sigstore) certificate-extension arc 1.3.6.1.4.1.57264.1.* (the OIDC issuer, build-signer and source-repository identity claims), honoring the raw-string-vs-DER-UTF8String encoding split by member. The error taxonomy gains SigstoreError (sigstore/*): a malformed or oversize bundle (sigstore/bad-bundle), an unknown media type (sigstore/bad-bundle-version), an unsupported content arm (sigstore/unsupported-content), a DSSE signature that does not verify under the Fulcio leaf key (sigstore/dsse-verify-failed), an inclusion proof that does not reconstruct the tree root (sigstore/inclusion-proof-mismatch) or is malformed (sigstore/bad-inclusion-proof), a tree root not attested by the Rekor key (sigstore/unsigned-root), a log time not attested by the Rekor SET that signs it (sigstore/unattested-time, so an attacker cannot backdate the ephemeral Fulcio certificate into validity), a Fulcio chain that does not terminate at a caller-supplied trust anchor (sigstore/chain-incomplete) or fails validation as of the log time (sigstore/chain-invalid), an undecodable certificate identity (sigstore/bad-certificate), a malformed transparency-log entry (sigstore/bad-tlog-entry), a log entry that does not bind this signature (sigstore/entry-mismatch), an identity that fails the caller policy (sigstore/identity-mismatch), a payload that is not the expected in-toto statement (sigstore/bad-statement), and a predicateType that does not match a caller-pinned one (sigstore/predicate-mismatch). Fulcio CA anchors and Rekor keys honor their trusted-root validity windows so a rotated-out key or CA is not used, and every anchor sharing a subject DN is tried.
 
-## v0.2.2 — 2026-07-11
+## v0.2.2 — 2026-07-12
 
 Hybrid Public Key Encryption (RFC 9180) joins the toolkit as pki.hpke.
 
@@ -3137,7 +3177,7 @@ Hybrid Public Key Encryption (RFC 9180) joins the toolkit as pki.hpke.
 - pki.hpke.setupS(suiteIds, recipientPublicKey, opts) / pki.hpke.setupR(suiteIds, enc, recipientPrivateKey, opts) establish a sender / recipient HPKE context (RFC 9180 sec. 5.1); the returned context exposes seal(aad, pt) / open(aad, ct) with the sequence-counter nonce and a message-limit guard, and export(exporterContext, L) for the secret-export interface. pki.hpke.seal / pki.hpke.open are the single-shot wrappers (sec. 6). pki.hpke.suites carries the RFC 9180 sec. 7 KEM / KDF / AEAD / MODE code points. Keys are node KeyObjects or serialized bytes; the offered suites are DHKEM P-256, P-521, X25519, and X448, HKDF-SHA256 / HKDF-SHA512, the three AEADs plus export-only, and all four modes. RFC 9180.
 - The error taxonomy gains HpkeError (hpke/*): a malformed, low-order, or otherwise invalid encapsulated or KEM key (hpke/bad-key, so a Diffie-Hellman that fails during derivation surfaces as a typed error, never a raw fault), an unknown or unsupported ciphersuite code point (hpke/unknown-suite, never a silent default), an unsupported mode (hpke/unknown-mode, so an out-of-registry mode is rejected before the key schedule), an authenticated mode invoked without the sender's key (hpke/auth-key-required), inconsistent PSK inputs (hpke/inconsistent-psk), an AEAD tag that does not verify (hpke/open-failed, returning no plaintext), a sequence-number overflow (hpke/message-limit, before any nonce reuse), a seal/open against an export-only suite (hpke/export-only), and a wrong-direction context call (hpke/wrong-role, so a recipient context cannot seal nor a sender context open; they share a key and base nonce).
 
-## v0.2.1 — 2026-07-11
+## v0.2.1 — 2026-07-12
 
 Stateful hash-based signature verification (HSS/LMS) joins the toolkit as pki.shbs.
 
@@ -3205,7 +3245,7 @@ Fail-closed hardening of the byte-input and text-decode boundaries.
 - The EST transfer and multipart-mixed decoders enforce their size cap on the raw byte length before decoding the payload to a string, and an HTTP error response body is decoded only up to the prefix shown in the message, closing a single-input string-allocation amplification where an oversized body was materialized in full before the cap rejected it.
 - pki.oid.fromDER rejects a non-Buffer or detached-backed input with a typed oid/bad-input error instead of a raw TypeError.
 
-## v0.1.29 — 2026-07-10
+## v0.1.29 — 2026-07-11
 
 A detached-backed BufferSource now fails closed with a typed error at every byte-input boundary.
 
@@ -3214,7 +3254,7 @@ A detached-backed BufferSource now fails closed with a typed error at every byte
 - pki.webcrypto digest / sign / verify no longer silently process a detached-backed Buffer as empty input (a fail-open where a transferred backing ArrayBuffer left the view zero-length); a detached BufferSource is now rejected with a typed webcrypto/data error, as is getRandomValues.
 - pki.asn1.decode, pki.cbor.decode, and pki.ct.parseSctList reject a detached-backed Buffer or view with a typed error (asn1/not-buffer, cbor/not-buffer, ct/bad-input) instead of a raw TypeError or a misleading truncated-input verdict. The underlying byte-view failure is threaded as the error cause.
 
-## v0.1.28 — 2026-07-10
+## v0.1.28 — 2026-07-11
 
 Merkle transparency proof verification joins the toolkit as pki.merkle.
 
@@ -3226,7 +3266,7 @@ Merkle transparency proof verification joins the toolkit as pki.merkle.
 - The error taxonomy gains MerkleError (merkle/*). A node-count ceiling (C.LIMITS.MERKLE_MAX_PROOF_NODES) rejects a pathologically long proof before any hashing; the precise per-proof guard is the geometry check in each verifier.
 - Fuzz target merkle-verify (both fold algorithms and the hash producers over adversarial coordinates, hashes, and proofs) joins the per-PR and nightly fuzz matrices with a seed corpus.
 
-## v0.1.27 — 2026-07-10
+## v0.1.27 — 2026-07-11
 
 A strict deterministic-CBOR codec joins the toolkit as pki.cbor.
 
@@ -3280,7 +3320,7 @@ EST enrollment joins the toolkit: the RFC 8951 CSR-attributes parser and an RFC 
 - The OID registry gains the RFC 4108 / RFC 7030 / RFC 9908 attribute identifiers: id-aa-decryptKeyID, id-aa-asymmDecryptKeyID, id-aa-certificationRequestInfoTemplate, and id-aa-extensionReqTemplate.
 - Fuzz targets csrattrs-parse and est-transfer (the base64 + multipart codecs) join the per-PR and nightly fuzz matrices with seed corpora.
 
-## v0.1.23 — 2026-07-09
+## v0.1.23 — 2026-07-10
 
 CMS grows authenticated content: RFC 5652 AuthenticatedData, RFC 5083 AuthEnvelopedData, and RFC 9629 KEM recipients (ML-KEM ready), plus a toolkit-wide hardening pass.
 
@@ -3376,7 +3416,7 @@ An RFC 9810 Certificate Management Protocol message parser joins the pki.schema 
 - Certification-path validation bounds the BasicConstraints pathLenConstraint and the PolicyConstraints / InhibitAnyPolicy skip counts before narrowing them to a number, so a certificate carrying a value past the safe-integer range is rejected and the counter cannot round silently to the wrong value (the same exact-or-rejected rule the RSASSA-PSS salt length and PKCS#12 iteration count follow).
 - Certification-path validation rejects a non-empty DER NULL in an RSASSA-PSS hash AlgorithmIdentifier's parameters. A NULL must carry empty content (X.690 8.8.2), so the previous tag-only check accepted a malformed encoding it now fails closed.
 
-## v0.1.18 — 2026-07-08
+## v0.1.18 — 2026-07-09
 
 An RFC 7292 PKCS#12 (PFX) store parser joins the pki.schema family.
 
@@ -3398,7 +3438,7 @@ An RFC 7292 PKCS#12 (PFX) store parser joins the pki.schema family.
 
 - Certification-path validation bounds the RSASSA-PSS saltLength and trailerField before numeric conversion, so an oversized value rejects with path/unsupported-algorithm instead of rounding silently on its way to the verifier, the same exact-or-rejected rule the PKCS#12 MAC parameters follow.
 
-## v0.1.17 — 2026-07-06
+## v0.1.17 — 2026-07-07
 
 An RFC 4211 certificate-request-message parser joins the pki.schema family.
 
@@ -3447,7 +3487,7 @@ CMS EnvelopedData and EncryptedData join the parser, and every documentation exa
 - Two documented API paths that did not resolve at runtime are corrected: pki.webcrypto.CryptoKey (previously reachable only via pki.WebCrypto.CryptoKey) and pki.asn1.read.oid (its comment block labeled the path pki.asn1.readOid, which never existed). Both are now reachable at the documented path.
 - A documentation example for pki.webcrypto.subtle.exportKey referenced an undefined variable; it now generates the key pair it exports.
 
-## v0.1.14 — 2026-07-05
+## v0.1.14 — 2026-07-06
 
 An RFC 5755 attribute-certificate parser joins the pki.schema family.
 
@@ -3457,7 +3497,7 @@ An RFC 5755 attribute-certificate parser joins the pki.schema family.
 - pki.schema.pkix gains a shared GeneralNames validator that the attribute-certificate parser composes for its four GeneralNames-bearing fields, validating every element as a well-formed GeneralName (rejecting a bad tag, a wrong primitive/constructed form, a non-IA5 string, or a mis-sized iPAddress). The sequence no longer surfaces as opaque bytes. It handles both a bare universal SEQUENCE OF GeneralName and a context-tagged IMPLICIT GeneralNames.
 - The OID registry gains the RFC 5755 attribute-certificate object identifiers: the id-aca attribute-type family (authenticationInfo / accessIdentity / chargingIdentity / group), id-at-role and id-at-clearance, the id-ce-targetInformation and id-ce-noRevAvail extensions, and the id-pe-ac-auditIdentity / id-pe-aaControls / id-pe-ac-proxying private extensions, so a parsed attribute certificate's attributes and extensions resolve by name.
 
-## v0.1.13 — 2026-07-05
+## v0.1.13 — 2026-07-06
 
 An RFC 3161 timestamp parser joins the pki.schema family.
 
@@ -3509,7 +3549,7 @@ A PKCS#8 private-key parser joins the pki.schema family.
 - pki.schema.pkcs8.parseEncrypted — recognizes an EncryptedPrivateKeyInfo ('ENCRYPTED PRIVATE KEY') and surfaces its encryptionAlgorithm and raw encryptedData. Decryption (PBES2/PBKDF2 + a passphrase) is a separate concern and is not performed here. This is an explicit call because an EncryptedPrivateKeyInfo shares its SEQUENCE{SEQUENCE, OCTET STRING} shape with a PKCS#1 DigestInfo, so pki.schema.parse does not auto-route it (structure alone cannot classify it without a validated encryption-algorithm discriminator).
 - pki.asn1.read.enumerated's sibling pki.asn1.read.bitStringImplicit and the pki.schema.engine.implicitBitString(tag) leaf — read a context-tagged IMPLICIT BIT STRING (the shape a PKCS#8 OneAsymmetricKey public key [1] takes).
 
-## v0.1.8 — 2026-07-04
+## v0.1.8 — 2026-07-05
 
 A PKCS#10 certification-request parser joins the pki.schema family.
 
@@ -3532,7 +3572,7 @@ A PKCS#10 certification-request parser joins the pki.schema family.
 
 - Replace C.TIME.ms(n) with C.TIME.milliseconds(n). The other C.TIME and C.BYTES helpers are unchanged.
 
-## v0.1.7 — 2026-07-04
+## v0.1.7 — 2026-07-05
 
 A unified pki.schema family: the structure-schema engine, the X.509 parser, a new CRL parser, and a detect-and-route orchestrator.
 

@@ -1,6 +1,6 @@
 {
   "version": "0.8.4",
-  "date": "2026-09-25",
+  "date": "2026-09-20",
   "headline": "A decode cap bounds every structure a parse reads, and a refusal caused by a cap is no longer reported as malformed input.",
   "summary": "Decode caps arrived bounding the input a parser is given. They did not reach the structures a parser decodes from inside that input: an embedded payload, an encapsulated protocol body, an attribute value. Each of those used the built-in `pki.C.LIMITS` defaults, so a caller asking for something stricter than the default got it at the root and nowhere else. They now carry to every decode a parse performs. Two consequences of that plumbing are fixed here as well: `pki.schema.cmc.parse` dropped the caps when it decoded the body, and a resource refusal caught inside a parser was reported under that parser's malformed-value code, which named the bytes as the fault when the cap was.",
   "sections": {

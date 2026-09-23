@@ -169,6 +169,164 @@ function run() {
   testDpnCorresponds();
   testNotCallerReplaceable();
   testUriSchemeIs();
+  testUriHostIsReadByLabel();
+  testPromotedHostReaders();
+  testUriParts();
+}
+
+// The host-label readers and the A-label scanner, read here rather than restated by each
+// consumer. `isHostName` and `hostLabels` are what a label-by-label comparison walks;
+// `isXnLabel` is the RFC 5890 sec. 2.3.2.1 shape, which is checked and never decoded,
+// because RFC 5891 sec. 3.1 rule 2 compares a pair of A-labels as case-insensitive ASCII.
+function testPromotedHostReaders() {
+  check("isHostName accepts a name written as LDH labels",
+    name.isHostName("www.example.com") === true && name.isHostName("a") === true);
+  check("isHostName refuses an empty label, a hyphen at a label edge and an empty name",
+    name.isHostName("a..b") === false && name.isHostName("-a.b") === false &&
+    name.isHostName("a-.b") === false && name.isHostName("") === false);
+  check("isHostName refuses a name past 253 characters and a label past 63",
+    name.isHostName(new Array(64).join("abcd.") + "example.com") === false &&
+    name.isHostName(new Array(66).join("a") + ".example") === false);
+  check("isHostName refuses a value that is not a string",
+    name.isHostName(null) === false && name.isHostName(7) === false);
+  check("isHostName refuses a trailing dot, which the caller strips through stripTrailingDot",
+    name.isHostName("example.com.") === false &&
+    name.isHostName(name.stripTrailingDot("example.com.")) === true);
+
+  check("hostLabels splits on the dot in order",
+    name.hostLabels("a.b.c").join("|") === "a|b|c" && name.hostLabels("a").join("|") === "a");
+  check("hostLabels surfaces an empty label rather than dropping it",
+    name.hostLabels("a..b").length === 3 && name.hostLabels("a..b")[1] === "");
+  check("hostLabels counts a leading and a trailing dot as empty labels",
+    name.hostLabels(".a.").join("|") === "|a|" && name.hostLabels(".a.").length === 3);
+
+  check("isXnLabel accepts the A-label shape",
+    name.isXnLabel("xn--bcher-kva") === true && name.isXnLabel("xn--a") === true);
+  check("isXnLabel refuses the prefix with nothing after it, and a group that is empty",
+    name.isXnLabel("xn--") === false && name.isXnLabel("xn--a-") === false &&
+    name.isXnLabel("xn--a--b") === false);
+  check("isXnLabel refuses a label that does not open with the prefix, and a non-string",
+    name.isXnLabel("bcher-kva") === false && name.isXnLabel("xn-a") === false &&
+    name.isXnLabel(null) === false);
+  check("isXnLabel reads lower-case only, since a caller folds before it asks",
+    name.isXnLabel("XN--BCHER-KVA") === false);
+}
+
+// RFC 3986 sec. 3: the scheme up to its colon, and an authority only when `//` follows it.
+// A URI written without the slashes has no host, which RFC 9525 sec. 7.2 has a caller ignore
+// and RFC 5280 sec. 4.2.1.10 has a caller treat as no name; the reader states the fact and
+// each caller decides, so neither has to guess from a null.
+function testUriParts() {
+  function parts(u) { return name.uriParts(u); }
+  check("the scheme is read up to its colon",
+    parts("https://a.example/").scheme === "https" && parts("sip:a@b.example").scheme === "sip");
+  check("an authority is read only when // follows the colon",
+    parts("https://a.example/").hasAuthority === true &&
+    parts("mailto:a@b.example").hasAuthority === false &&
+    parts("mailto:a@b.example").host === null);
+  check("userinfo and port are removed",
+    parts("https://user:pw@a.example:8443/p").host === "a.example");
+  check("the path, query and fragment end the authority",
+    parts("https://a.example/p?q#f").host === "a.example" &&
+    parts("https://a.example?q").host === "a.example" &&
+    parts("https://a.example#f").host === "a.example");
+  check("two userinfo separators are not one authority", parts("https://a@b@c.example/") === null);
+  check("an IPv6 literal's brackets are stripped and reported",
+    parts("https://[2001:db8::1]:443/").host === "2001:db8::1" &&
+    parts("https://[2001:db8::1]:443/").bracketed === true &&
+    parts("https://a.example/").bracketed === false);
+  check("an empty authority carries no host",
+    parts("file:///etc/hosts").hasAuthority === true && parts("file:///etc/hosts").host === null);
+  check("a value with no scheme, or one opening with something that is not a letter, is not a URI",
+    parts("//a.example/") === null && parts("1https://a.example/") === null &&
+    parts("") === null && parts(null) === null && parts("nocolon") === null);
+  check("a percent-escape in the host is left as written, for the caller to decide about",
+    parts("https://ex%61mple.com/").host === "ex%61mple.com");
+  // RFC 3986 sec. 3.2.3 writes `port = *DIGIT`, so a colon with nothing after it is a port.
+  // Leaving the colon on the host makes the authority compare as a name that has one in it,
+  // which no name does, so the entry would be discarded rather than compared.
+  check("an empty port is a port, and the colon goes with it",
+    parts("https://www.example.com:/p").host === "www.example.com" &&
+    parts("https://www.example.com:").host === "www.example.com" &&
+    parts("https://user@www.example.com:/p").host === "www.example.com");
+  check("a bracketed address with an empty port keeps its own colons",
+    parts("https://[2001:db8::1]:/p").host === "2001:db8::1" &&
+    parts("https://[2001:db8::1]:/p").bracketed === true);
+  check("a host that is all digits is a host, not a port",
+    parts("https://1.2.3.4/p").host === "1.2.3.4" && parts("https://12345/p").host === "12345");
+  check("an authority that is only a port carries no host",
+    parts("https://:8443/p").host === null && parts("https://:/p").host === null);
+}
+
+// RFC 5280 sec. 4.2.1.10 holds a URI name constraint to "a fully qualified domain name" and says
+// what that excludes in the same sentence: a URI with no authority component, and one whose
+// authority names an IP address. It states no label count, so a single label is a URI constraint
+// base like any other. What "fully qualified" does require is a host name, and a host name is read
+// by its labels: no empty label, and no hyphen at a label edge.
+function testUriHostIsReadByLabel() {
+  var fqdn = name.isFqdnHost;
+  check("a single label is a host a URI constraint can be compared by", fqdn("com") === true);
+  check("and so is one written absolutely, with the root dot", fqdn("com.") === true);
+  check("CONTROL: two labels still are", fqdn("example.com") === true);
+  check("an empty host is not one", fqdn("") === false);
+  check("an address is not one, which is what sec. 4.2.1.10 excludes by name",
+    fqdn("192.0.2.1") === false);
+  check("an empty label is not a label", fqdn("a..b.com") === false);
+  check("a hyphen at the front of a label is outside the host-name syntax",
+    fqdn("-bad.com") === false);
+  check("and so is one at the end", fqdn("bad-.com") === false);
+  check("CONTROL: a hyphen inside a label is ordinary", fqdn("ba-d.com") === true);
+  check("a non-string is not a host", fqdn(null) === false && fqdn(undefined) === false);
+
+  // The door and the comparison read one rule. A base the door accepts is one the comparison can
+  // use, and a base it refuses is one the comparison would have no verdict for.
+  var refusal = name.constraintBaseRefusal;
+  check("the URI door accepts a single-label base", refusal(6, "com") === null);
+  check("and the subtree form of it", refusal(6, ".com") === null);
+  check("CONTROL: it still accepts a two-label base", refusal(6, "example.com") === null);
+  check("it still refuses an address", typeof refusal(6, "192.0.2.1") === "string");
+  check("it still refuses an empty label", typeof refusal(6, "a..b.com") === "string");
+  check("it still refuses a hyphen at a label edge", typeof refusal(6, "bad-.com") === "string");
+  // One trailing dot makes a name absolute; two leave an empty label. The base is stripped of its
+  // leading dot here and of its one trailing dot inside isFqdnHost, so a base stripped twice would
+  // read as one ending in neither.
+  check("one trailing dot is accepted", refusal(6, "example.com.") === null);
+  check("two trailing dots are refused", typeof refusal(6, "example.com..") === "string");
+  check("and a base that is only dots is refused",
+    typeof refusal(6, ".") === "string" && typeof refusal(6, "..") === "string");
+  // The door and the comparison are one rule. The door is what `pki.trust.anchor` goes through and
+  // the comparison is what `uriMatch` applies to a base a certificate carries, so a base either
+  // accepts at both or refuses at both. Anything else is a base an operator can configure and the
+  // validator will not enforce, or one the validator enforces and an operator cannot state.
+  check("no base is accepted by one of the two and refused by the other", (function () {
+    var pieces = ["", "a", "com", "9", "-", "a-b", "-a", "a-", "127", "xn--e1afmkfd", "A", "a_b", "a b", "a..b"];
+    var bases = ["192.0.2.1", ".192.0.2.1", "1.2.3.4.5", "https://example.com", "example.com:443", "user@example.com"];
+    for (var i = 0; i < pieces.length; i++) {
+      bases.push(pieces[i]);
+      for (var j = 0; j < pieces.length; j++) {
+        bases.push(pieces[i] + "." + pieces[j], "." + pieces[i] + "." + pieces[j],
+          pieces[i] + "." + pieces[j] + ".", pieces[i] + "." + pieces[j] + "..");
+      }
+    }
+    var accepted = 0;
+    for (var k = 0; k < bases.length; k++) {
+      var b = String(bases[k]).toLowerCase();
+      var body = b.charAt(0) === "." ? b.slice(1) : b;
+      var doorOk = refusal(6, bases[k]) === null;
+      if (doorOk) accepted += 1;
+      if (doorOk !== name.isFqdnHost(body)) return false;
+    }
+    return accepted > 0;   // and the corpus is not one the door refuses wholesale
+  })());
+  check("the two arms now differ only where the clause says they do", (function () {
+    var same = ["com", ".com", "example.com", "example.com.", "example.com..", "bad-.com", "a..b.com", ""];
+    for (var i = 0; i < same.length; i++) {
+      if ((refusal(6, same[i]) === null) !== (refusal(2, same[i]) === null)) return false;
+    }
+    return refusal(2, "192.0.2.1") === null && typeof refusal(6, "192.0.2.1") === "string";
+  })());
+  check("the dNSName door is unchanged, accepting a single label as before",
+    refusal(2, "com") === null);
 }
 
 // The scheme is compared without regard to ASCII case (RFC 3986 sec. 3.1) and must be followed by

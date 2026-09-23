@@ -66,6 +66,12 @@ var spki = b.sequence([algId("1.2.840.10045.2.1"), b.bitString(Buffer.from([4, 1
 var csrAttrs = b.contextConstructed(0, Buffer.concat([b.sequence([b.oid("1.2.840.113549.1.9.14"), b.set([b.sequence([])])])]));
 var csrDer = b.sequence([b.sequence([b.integer(0n), name("S"), spki, csrAttrs]), algId(SIG), b.bitString(Buffer.from([0]), 0)]);
 var pkcs8Der = b.sequence([b.integer(0n), algId("1.2.840.10045.2.1"), b.octetString(Buffer.from([1, 2, 3]))]);
+// A real RSA key, since every component relation RFC 8017 states has to hold for the example to run.
+var pkcs1Der = require("node:crypto").generateKeyPairSync("rsa", { modulusLength: 2048 })
+  .privateKey.export({ type: "pkcs1", format: "der" });
+// A real EC key, since the scalar has to be the curve's own width for the example to run.
+var sec1Der = require("node:crypto").generateKeyPairSync("ec", { namedCurve: "prime256v1" })
+  .privateKey.export({ type: "sec1", format: "der" });
 // A SignedData with one (IAS) signerInfo over id-data content, so the documented
 // example's cms.signerInfos[0].sid.serialNumberHex resolves.
 var cmsSigner = b.sequence([b.integer(1n), iasn("Signer", 7), algId(DIG), algId(SIG), b.octetString(Buffer.from([1, 2, 3]))]);
@@ -186,6 +192,8 @@ var FMT = {
   "pki.schema.crl":      { der: crlDer, label: "X509 CRL" },
   "pki.schema.csr":      { der: csrDer, label: "CERTIFICATE REQUEST" },
   "pki.schema.pkcs8":    { der: pkcs8Der, label: "PRIVATE KEY" },
+  "pki.schema.pkcs1":    { der: pkcs1Der, label: "RSA PRIVATE KEY" },
+  "pki.schema.sec1":     { der: sec1Der, label: "EC PRIVATE KEY" },
   "pki.schema.cms":      { der: cmsDer, label: "CMS" },
   "pki.schema.ocsp":     { der: ocspDer, label: "OCSP REQUEST" },
   "pki.schema.tsp":      { der: tspDer, label: "TIMESTAMP" },

@@ -727,19 +727,27 @@ async function testRealCertdataSlice() {
     ncEx.valid === false && failCodes(ncEx).indexOf("path/name-constraint-excluded") !== -1);
   // A URI subtree base is held to more than a dNSName one, and the difference is RFC 5280 sec.
   // 4.2.1.10's: the URI paragraph says "The constraint MUST be specified as a fully qualified domain
-  // name", and the dNSName paragraph above it says no such thing. So a single label is a valid
-  // dNSName base and is not a valid URI base, and the refusal names the clause rather than the shape.
+  // name", and names what that excludes in the same sentence, a URI with no authority component and
+  // one whose authority is an IP address. The dNSName paragraph above it says no such thing. Neither
+  // states a label count, so a base of one label constrains a top-level domain in either form.
   check("T28b: a dNSName overlay subtree naming a single label is accepted",
     !!pki.trust.anchor(entryA, { purpose: "serverAuth",
       nameConstraints: { permitted: [{ tag: 2, base: ".com" }] } }).nameConstraints);
-  var uriSingle = codeOf(function () {
-    return pki.trust.anchor(entryA, { purpose: "serverAuth",
-      nameConstraints: { permitted: [{ tag: 6, base: ".com" }] } });
-  });
-  check("T28b: a URI overlay subtree naming a single label is refused", uriSingle === "trust/bad-input");
+  check("T28b: a URI overlay subtree naming a single label is accepted too",
+    !!pki.trust.anchor(entryA, { purpose: "serverAuth",
+      nameConstraints: { permitted: [{ tag: 6, base: ".com" }] } }).nameConstraints);
   check("T28b: and a URI subtree naming a fully qualified domain name is accepted",
     !!pki.trust.anchor(entryA, { purpose: "serverAuth",
       nameConstraints: { permitted: [{ tag: 6, base: ".example.com" }] } }).nameConstraints);
+  // What the URI arm still refuses is what the clause names: an address in place of a host name.
+  var uriAddress = codeOf(function () {
+    return pki.trust.anchor(entryA, { purpose: "serverAuth",
+      nameConstraints: { permitted: [{ tag: 6, base: "192.0.2.1" }] } });
+  });
+  check("T28b: a URI overlay subtree naming an address is refused", uriAddress === "trust/bad-input");
+  check("T28b: CONTROL: the dNSName arm takes that same base, having no such rule",
+    !!pki.trust.anchor(entryA, { purpose: "serverAuth",
+      nameConstraints: { permitted: [{ tag: 2, base: "192.0.2.1" }] } }).nameConstraints);
 
   // An anchor with no overlay is what it was before the option existed, and says so.
   check("T28: an anchor with no overlay carries no nameConstraints field",
@@ -807,9 +815,10 @@ async function testRealCertdataSlice() {
   check("T28: a host rfc822Name base is accepted", ncCode({ excluded: [{ tag: 1, base: "example.com" }] }) === "NO-THROW");
   check("T28: a subtree rfc822Name base is accepted", ncCode({ excluded: [{ tag: 1, base: ".example.com" }] }) === "NO-THROW");
   // A URI subtree is compared against the host of the URI in a certificate, so its base is a host
-  // rather than a URI, and the comparison needs a name with a dot in it that is not an address.
+  // rather than a URI, and the comparison needs a host name that is not an address.
   check("T28: a URI base holding a URI is refused", ncCode({ excluded: [{ tag: 6, base: "https://example.com" }] }) === "trust/bad-input");
-  check("T28: a single-label URI base is refused", ncCode({ excluded: [{ tag: 6, base: "localhost" }] }) === "trust/bad-input");
+  check("T28: a single-label URI base is accepted, sec. 4.2.1.10 stating no label count",
+    ncCode({ excluded: [{ tag: 6, base: "localhost" }] }) === "NO-THROW");
   check("T28: an address-shaped URI base is refused", ncCode({ excluded: [{ tag: 6, base: "127.0.0.1" }] }) === "trust/bad-input");
   // A host name is labels, and a label is letters, digits and hyphens with a hyphen at neither
   // edge. A base outside that grammar names a host no certificate can carry, so an exclusion

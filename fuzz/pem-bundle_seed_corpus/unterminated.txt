@@ -1,0 +1,5 @@
+-----BEGIN CERTIFICATE-----
+MAUCAQEFAA==
+-----END CERTIFICATE-----
+-----BEGIN CERTIFICATE-----
+nope

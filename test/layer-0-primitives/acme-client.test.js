@@ -838,6 +838,28 @@ async function testReadyAndRelativeRedirect() {
   var acmeClean = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sClean));
   await acmeClean.newAccount({});
   check("#13 a clean PEM chain downloads", Buffer.isBuffer((await acmeClean.downloadCertificate(A.URLS.certificate, NO_BIND)).certificate));
+  // The chain reader and the reader every other door uses are the same scanner, so a file
+  // neither of them calls a chain is refused here too: a block under another label among the
+  // certificates, and a boundary line the scan walks past because it is not the whole line.
+  var keyPem = pki.schema.pkcs8.pemEncode(
+    require("crypto").generateKeyPairSync("ec", { namedCurve: "prime256v1" })
+      .privateKey.export({ format: "der", type: "pkcs8" }), "PRIVATE KEY").replace(/\n$/, "");
+  var sKeyInChain = A.acmeServer({ certPems: [chainPem + "\n" + keyPem] });
+  var acmeKeyInChain = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sKeyInChain));
+  await acmeKeyInChain.newAccount({});
+  check("#13 a private key among the certificates fails closed",
+    (await codeOf(acmeKeyInChain.downloadCertificate(A.URLS.certificate, NO_BIND))) === "acme/bad-certificate-chain");
+  var sMidLine = A.acmeServer({ certPems: ["x -----BEGIN CERTIFICATE-----" + chainPem.slice(chainPem.indexOf("\n"))] });
+  var acmeMidLine = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sMidLine));
+  await acmeMidLine.newAccount({});
+  check("#13 a boundary opened inside a line is not a certificate",
+    (await codeOf(acmeMidLine.downloadCertificate(A.URLS.certificate, NO_BIND))) === "acme/bad-certificate-chain");
+  // Two certificates, which is what a real chain is, still reads as two.
+  var chain2 = A.acmeServer({ certPems: [chainPem + "\n" + chainPem] });
+  var acmeChain2 = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, chain2));
+  await acmeChain2.newAccount({});
+  check("#13 a two-certificate chain downloads with its issuer",
+    (await acmeChain2.downloadCertificate(A.URLS.certificate, NO_BIND)).chain.length === 1);
 
   // (x) an ERROR status from newNonce (a rate limit) fails closed rather than using the error's nonce.
   var sBadNonce = A.acmeServer({ newNonceStatus: 429 });

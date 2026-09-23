@@ -51,6 +51,21 @@ async function testTsaCertificateProfile() {
   await rejects("a TSA certificate whose keyUsage lacks digitalSignature", function () { return pki.tsp.sign(imprint("sha256"), tsaWith([signing.keyUsageExt("keyEncipherment"), eku(["timeStamping"], true)]), opts); }, "tsp/bad-key-usage");
   check("CONTROL: a conforming TSA certificate signs", Buffer.isBuffer(await pki.tsp.sign(imprint("sha256"), tsaWith([ku, eku(["timeStamping"], true)]), opts)));
   check("CONTROL: a conforming TSA certificate without a keyUsage extension signs", Buffer.isBuffer(await pki.tsp.sign(imprint("sha256"), tsaWith([eku(["timeStamping"], true)]), opts)));
+  // The TSA certificate may arrive as PEM, and a file holding more than one object is a
+  // question the signer cannot answer by reading the first: which certificate is the TSA's.
+  var conforming = tsaWith([ku, eku(["timeStamping"], true)]);
+  var tsaPem = pki.schema.x509.pemEncode(conforming.cert, "CERTIFICATE");
+  check("CONTROL: the same certificate given as PEM signs",
+    Buffer.isBuffer(await pki.tsp.sign(imprint("sha256"), { cert: tsaPem, key: conforming.key }, opts)));
+  await rejects("a TSA certificate file holding two certificates",
+    function () { return pki.tsp.sign(imprint("sha256"), { cert: tsaPem + tsaPem, key: conforming.key }, opts); },
+    "tsp/bad-input");
+  await rejects("a TSA certificate whose boundary is opened inside explanatory text",
+    function () {
+      var body = tsaPem.slice(tsaPem.indexOf("\n") + 1);
+      return pki.tsp.sign(imprint("sha256"), { cert: "note: -----BEGIN CERTIFICATE-----\n" + body, key: conforming.key }, opts);
+    },
+    "tsp/bad-input");
   // An accuracy naming no field asserts a zero deviation the caller never stated.
   await rejects("an empty accuracy object", function () { return pki.tsp.sign(imprint("sha256"), makeTsa("ec-p256"), { policy: "1.2.3", serialNumber: 1, accuracy: {} }); }, "tsp/bad-input");
 }

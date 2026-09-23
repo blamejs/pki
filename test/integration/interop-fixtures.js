@@ -747,4 +747,70 @@ module.exports = {
       },
     },
   ],
+
+  // ---- pki.schema.pkcs1.parse : the components openssl reads out of the same key ----
+  "pki.schema.pkcs1.parse": [
+    {
+      desc: "parse agrees with `openssl rsa` on the modulus, and openssl reads back what encode writes",
+      run: function (ctx) {
+        var crypto = require("node:crypto");
+        var der = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 })
+          .privateKey.export({ type: "pkcs1", format: "der" });
+        var key = ctx.pki.schema.pkcs1.parse(der);
+        var tmps = [];
+        function T(bytes, ext) { var p = ctx.tmpFile(bytes, ext); tmps.push(p); return p; }
+        try {
+          var keyP = T(_pem(der, "RSA PRIVATE KEY"), "k.pem");
+          // openssl prints the modulus as uppercase hex with a `Modulus=` prefix.
+          var out = String(ctx.runOpenssl(["rsa", "-in", keyP, "-noout", "-modulus"]));
+          var hex = (/Modulus=([0-9A-Fa-f]+)/.exec(out) || [])[1] || "";
+          ctx.check("the modulus agrees with openssl", hex.toLowerCase() === key.modulus.toString(16));
+
+          // The bytes this toolkit writes are the bytes openssl reads: a key encoded from the
+          // parsed structure loads, and its modulus is still the same one.
+          var roundP = T(_pem(ctx.pki.schema.pkcs1.encode(key), "RSA PRIVATE KEY"), "r.pem");
+          var out2 = String(ctx.runOpenssl(["rsa", "-in", roundP, "-noout", "-modulus"]));
+          ctx.check("openssl reads a key this toolkit encoded, with the same modulus",
+            ((/Modulus=([0-9A-Fa-f]+)/.exec(out2) || [])[1] || "").toLowerCase() === key.modulus.toString(16));
+
+          // The public half travels the same way.
+          var pubDer = ctx.pki.schema.pkcs1.encodePublic({ modulus: key.modulus, publicExponent: key.publicExponent });
+          var pubP = T(_pem(pubDer, "RSA PUBLIC KEY"), "p.pem");
+          var out3 = String(ctx.runOpenssl(["rsa", "-RSAPublicKey_in", "-in", pubP, "-noout", "-modulus"]));
+          ctx.check("openssl reads the public half this toolkit encoded",
+            ((/Modulus=([0-9A-Fa-f]+)/.exec(out3) || [])[1] || "").toLowerCase() === key.modulus.toString(16));
+        } finally { tmps.forEach(function (p) { try { ctx.fs.unlinkSync(p); } catch (_e) { /* best-effort */ } }); }
+      },
+    },
+  ],
+
+  // ---- pki.schema.sec1.parse : the curve and the scalar openssl reads ----------
+  "pki.schema.sec1.parse": [
+    {
+      desc: "parse agrees with `openssl ec` on the curve, and openssl reads back what encode writes",
+      run: function (ctx) {
+        var crypto = require("node:crypto");
+        var tmps = [];
+        function T(bytes, ext) { var p = ctx.tmpFile(bytes, ext); tmps.push(p); return p; }
+        try {
+          [["prime256v1", "prime256v1"], ["secp384r1", "secp384r1"], ["secp521r1", "secp521r1"]].forEach(function (c) {
+            var der = crypto.generateKeyPairSync("ec", { namedCurve: c[0] })
+              .privateKey.export({ type: "sec1", format: "der" });
+            var key = ctx.pki.schema.sec1.parse(der);
+            ctx.check("the curve this toolkit read is " + c[1], key.curve === c[1]);
+
+            var keyP = T(_pem(ctx.pki.schema.sec1.encode(key), "EC PRIVATE KEY"), "e.pem");
+            var text = String(ctx.runOpenssl(["ec", "-in", keyP, "-noout", "-text"]));
+            ctx.check("openssl reads a " + c[1] + " key this toolkit encoded, naming the same curve",
+              text.indexOf(c[1]) !== -1);
+            // The scalar openssl prints is the one that was read, so the encoding did not shift it.
+            var privHex = (/priv:\s*([0-9a-f:\s]+?)\n\s*pub:/m.exec(text) || [])[1] || "";
+            var flat = privHex.replace(/[^0-9a-f]/g, "");
+            ctx.check("the scalar agrees with openssl on " + c[1],
+              flat.replace(/^00/, "") === key.privateKey.toString("hex").replace(/^00/, ""));
+          });
+        } finally { tmps.forEach(function (p) { try { ctx.fs.unlinkSync(p); } catch (_e) { /* best-effort */ } }); }
+      },
+    },
+  ],
 };
