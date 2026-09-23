@@ -683,8 +683,12 @@ security-only patches after the next major releases.
   is validated on-curve and full-order before verification, so a low-order key —
   for example the identity point, which the platform imports without complaint
   and which verifies a forged signature for every message — cannot certify a
-  forged chain or forge a CRL or OCSP response. The certificate-policy tree
-  carries a hard node cap and fails closed at it (CVE-2023-0464), and an invalid
+  forged chain or forge a CRL or OCSP response. Certificate policies are
+  processed as the RFC 9618 `valid_policy_graph`, whose size is linear in the
+  policies and mappings on the path where RFC 5280 §6.1's tree was exponential
+  in the path length (CVE-2023-0464); the node cap remains and still fails
+  closed, now bounding the number of policies a path names rather than growing
+  with its length. An invalid
   policy OID is surfaced rather than silently dropped (CVE-2023-0465). Name
   comparison rejects embedded NUL and control bytes so a truncated name cannot
   compare equal (CVE-2009-2408), and it refuses input it cannot compare rather

@@ -1404,7 +1404,7 @@ async function testSelfIssuedAndConstraints() {
   var leafP = await mkCert({ subject: "PLeaf", issuer: "PInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt([P1])] });
   var resP = await run([interP, leafP], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true });
   check("explicit policy satisfied validates", resP.valid === true);
-  check("policy tree survives", resP.validPolicyTree !== null && resP.validPolicyTree !== undefined);
+  check("policy graph survives", resP.validPolicyGraph !== null && resP.validPolicyGraph !== undefined);
 }
 
 // ---------------------------------------------------------------------------
@@ -2661,18 +2661,20 @@ async function testRfc5280ConformanceMusts() {
   var resC32c = await run([leafC32c], { time: T2027, trustAnchors: anchor });
   check("PSS hashAlgorithm NULL parameters with non-empty content rejected", resC32c.valid === false && failCodes(resC32c).indexOf("path/unsupported-algorithm") !== -1);
 
-  // the returned validPolicyTree must be acyclic: no internal
-  // `parent` back-pointer, so a caller can JSON.stringify(result) on a
-  // policy-bearing chain without throwing on a circular reference.
+  // the returned validPolicyGraph must be acyclic, so a caller can
+  // JSON.stringify(result) on a policy-bearing chain without throwing on a
+  // circular reference. The graph links its nodes by index for that reason.
   var P33 = "1.3.6.1.4.1.99999.33";
   var interC33 = await mkCert({ subject: "C33i", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([cpExt([P33])]) });
   var leafC33 = await mkCert({ subject: "C33l", issuer: "C33i", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt([P33])] });
   var resC33 = await run([interC33, leafC33], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true, userInitialPolicySet: [P33] });
   var c33Serialized = true;
-  try { JSON.stringify(resC33.validPolicyTree); } catch (_e) { c33Serialized = false; }
-  check("policy tree is JSON-serializable (acyclic, no circular parent)", resC33.valid === true && resC33.validPolicyTree !== null && c33Serialized);
-  var c33NoParent = (function noParent(node) { if (!node) return true; if ("parent" in node) return false; return node.children.every(noParent); });
-  check("returned policy tree carries no parent back-pointer", c33NoParent(resC33.validPolicyTree));
+  try { JSON.stringify(resC33.validPolicyGraph); } catch (_e) { c33Serialized = false; }
+  check("policy graph is JSON-serializable (acyclic, linked by index)", resC33.valid === true && resC33.validPolicyGraph !== null && c33Serialized);
+  var c33NoParent = resC33.validPolicyGraph.nodes.every(function (nd) {
+    return nd.parent === undefined && nd.parents.every(function (id) { return typeof id === "number"; });
+  });
+  check("returned policy graph carries no object back-pointer", c33NoParent);
 
   // RFC 5280 requires basicConstraints (4.2.1.9),
   // nameConstraints (4.2.1.10), policyConstraints (4.2.1.11) and
@@ -4023,7 +4025,13 @@ async function testInitialInputsAndTargetGates() {
   var resIpmi = await run([interMapI, leafMapped], { time: T2027, trustAnchors: anchor, initialPolicyMappingInhibit: true, initialExplicitPolicy: true });
   check("initialPolicyMappingInhibit forces the (b)(2) deletion arm", resIpmi.valid === false && failCodes(resIpmi).indexOf("path/policy-required") !== -1);
   var resIpmiCtl = await run([interMapI, leafMapped], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true });
-  check("control: without the inhibit the mapped chain validates", resIpmiCtl.valid === true && resIpmiCtl.userConstrainedPolicySet.indexOf(Pq2) !== -1);
+  // The policy that reaches the caller is the ISSUER domain policy Pq1, not the subject domain
+  // policy Pq2 it was mapped to. RFC 5280 6.1.5(g)(iii)(1) and RFC 9618 5.5 step (g)(2) both read
+  // the nodes whose parent is the anyPolicy node, which is Pq1's node at depth 1; Pq2's node hangs
+  // below it and is not in the set. Mapping exists so a relying party can ask about the anchor's
+  // own policy space, so naming Pq2 here would answer in the wrong domain.
+  check("control: without the inhibit the mapped chain validates in the issuer's policy domain",
+    resIpmiCtl.valid === true && resIpmiCtl.userConstrainedPolicySet.join(",") === Pq1);
 
   // ---- 6.1.3(d)(2): expansion children carry AP-Q ---------------------------
   // The anyPolicy entry's qualifier set (AP-Q) must ride on every (d)(2)
@@ -4032,7 +4040,8 @@ async function testInitialInputsAndTargetGates() {
   var interQ = await mkCert({ subject: "ApqInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([cpQualExt([ANY_POLICY], "https://cps.example/cps")]) });
   var leafQ = await mkCert({ subject: "ApqLeaf", issuer: "ApqInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt([Pq1])] });
   var resApq = await run([interQ, leafQ], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true });
-  var apqNode = resApq.validPolicyTree && resApq.validPolicyTree.children[0];
+  var apqNode = resApq.validPolicyGraph &&
+    resApq.validPolicyGraph.nodes[resApq.validPolicyGraph.nodes[0].children[0]];
   check("(d)(2) expansion node carries the anyPolicy qualifiers (AP-Q)",
     resApq.valid === true && !!apqNode && apqNode.validPolicy === ANY_POLICY &&
     apqNode.qualifierSet.length === 1 && Buffer.isBuffer(apqNode.qualifierSet[0]) && apqNode.qualifierSet[0].equals(cpsQual));
