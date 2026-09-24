@@ -1,6 +1,6 @@
 {
   "version": "0.8.13",
-  "date": "2026-09-23",
+  "date": "2026-09-24",
   "headline": "A trust anchor list published as RFC 5914 drives path validation, constraints and all.",
   "summary": "RFC 5914 is the IETF's interchange format for a trust anchor: not a certificate, but the anchor's key and the constraints a root program otherwise states out of band, the namespace it is trusted for, the policies it may assert, and how far below it a path may run. The toolkit read two vendor formats and not this one. It now reads and writes it, and RFC 5937 section 3.2 says how each constraint reaches RFC 5280 section 6.1 validation: the stricter of the anchor's value and the caller's always wins, so an anchor may narrow what a caller asked for and never widen it.",
   "sections": {
