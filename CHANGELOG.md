@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.14 — 2026-09-24
+
+The 0.8.14 tarball is the one to install for everything 0.8.13 added.
+
+### Fixed
+
+- The changelog entry for this release is dated by the UTC day its commit landed on, which is the day the release tooling and the entry now agree on.
+
 ## v0.8.13 — 2026-09-24
 
 A trust anchor list published as RFC 5914 drives path validation, constraints and all.

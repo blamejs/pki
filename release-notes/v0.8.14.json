@@ -1,0 +1,11 @@
+{
+  "version": "0.8.14",
+  "date": "2026-09-24",
+  "headline": "The 0.8.14 tarball is the one to install for everything 0.8.13 added.",
+  "summary": "0.8.13 was tagged but never published: its changelog entry carried the day its commit fell on locally rather than the UTC day the release gate reads, and the publish run stopped on the mismatch. The tag cannot be moved, so this release carries the same contents under a version that ships. Everything listed under 0.8.13 arrives here; install 0.8.14.",
+  "sections": {
+    "Fixed": [
+      "The changelog entry for this release is dated by the UTC day its commit landed on, which is the day the release tooling and the entry now agree on."
+    ]
+  }
+}
