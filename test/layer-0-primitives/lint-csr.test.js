@@ -203,8 +203,13 @@ async function run() {
     has(brokenExt, "lint/rfc5280/extension-undecodable"));
 
   // The weak-digest row reads a name, so an algorithm the registry does not name passed silently.
+  // shaWithRSAEncryption is the original SHA, now SHA-0: its NAME carries no digest substring at
+  // all, which is why the weak set is named outright rather than read out of the name.
   [["md2WithRSAEncryption", "md2"], ["md4WithRSAEncryption", "md4"],
-    ["md4WithRSAEncryption-pkcs1", "md4"], ["dsaWithSha1", "sha1"]]
+    ["md4WithRSAEncryption-pkcs1", "md4"], ["dsaWithSha1", "sha1"],
+    ["shaWithRSAEncryption", "sha0"], ["md2WithRSASignature", "md2"],
+    ["md5WithRSASignature", "md5"], ["sha1WithRSASignature", "sha1"],
+    ["md4WithRSA", "md4"], ["md5WithRSA", "md5"], ["ecdsaWithSHA1", "sha1"]]
     .forEach(function (pair) {
       var alg = b.sequence([b.oid(pki.oid.byName(pair[0])), Buffer.from([0x05, 0x00])]);
       var one = b.sequence([b.raw(rsaNode.children[0].bytes), b.raw(alg), b.raw(rsaNode.children[2].bytes)]);
