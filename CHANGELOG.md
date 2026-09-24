@@ -4,6 +4,23 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.21 — 2026-09-24
+
+A qualified certificate is linted against the statements it carries, not just their syntax.
+
+### Added
+
+- `pki.lint.certificate(der, { profile: "etsi-qc" })` runs the ETSI EN 319 412-5 v2.4.1 profile, and the rows reach a certificate unprompted because carrying the extension is what the clause governs.
+- The qcStatements extension must not be marked critical, and a certificate names one and only one of the three purposes the clause defines: electronic signature, electronic seal and web site authentication. The clause limits the certificate, so the purposes are counted across every QcType statement it carries and two statements naming one each break it as surely as one naming two. The syntax admits identifiers beyond those three, so one of them is not a second purpose and is not counted.
+- A QcPDS statement must provide an https URL. The clause asks for one as a minimum, so a plain URL beside a secure one satisfies it. Under the requirements an EU qualified certificate carries, that statement must also name a document in English and must not name more than one per language.
+- The semantics identifiers of ETSI EN 319 412-1 v1.5.1 are read, and a subject attribute they govern is held to the structure they require: a three-character identity type reference, a two-character country code, a hyphen-minus and an identifier. A natural person identifier governs the subject serialNumber and admits PAS, IDC, PNO, TAX and TIN; a legal person identifier governs the subject organizationIdentifier and admits VAT, NTR, PSD and LEI. An LEI value must carry the country code XG. A TAX reference is reported as deprecated, which the standard states at a lower strength than the rest, so the finding is a warning.
+- Either identifier may instead name a locally defined reference, two characters and a colon, and one of those requires a nameRegistrationAuthorities element carrying a uniformResourceIdentifier, since that is what makes the local scheme resolvable.
+
+### Changed
+
+- The four semantics identifiers of ETSI EN 319 412-1 section 5.1.2 resolve through `pki.oid`, and a decoded SemanticsInformation carries `semanticsIdentifierName` beside the identifier, the way a QcType carries `typeNames` and a QcIdentMethod `methodNames`. It is null for an identifier the registry does not name.
+- Every statement of a kind is graded, not the first of that kind. RFC 3739 section 3.2.6 puts no cardinality on QCStatements, so a certificate may carry two disclosure statements or two semantics statements, and the order they sit in the extension decides nothing.
+
 ## v0.8.20 — 2026-09-24
 
 An extended validation code signing certificate is held to the subject its own section requires.
