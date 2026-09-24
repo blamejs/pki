@@ -1,0 +1,19 @@
+{
+  "version": "0.8.25",
+  "date": "2026-09-24",
+  "headline": "A dated permission that lapses is a requirement, and a certificate's own extended key usages name the purpose it was issued for.",
+  "summary": "The Apple Root Program Policy ships as `apple-root`, the last of the four root programs, named and never detected like the others. Its Appendix A defines seven Trust Purposes as extended key usage sets, and its rules are dated: a subordinate CA certificate needs an extKeyUsage extension from 1 August 2026 and must be dedicated to one purpose from 1 July 2027, while a subscriber certificate's permission to mix purposes is written as a permission that expires on that same date.",
+  "sections": {
+    "Added": [
+      "`pki.lint.certificate(der, { profile: \"apple-root\" })` runs the Apple Root Program Policy v2.0 profile. Naming it is the only way to reach these rows, and passing no profile leaves every one of them inert.",
+      "Appendix A's seven Trust Purposes, each a required extended key usage set: Server Authentication, Legacy TLS, Secure Email, Legacy S/MIME, Client Authentication, Time Stamping and VMC. A certificate is dedicated to a purpose when its extKeyUsage is not empty and names nothing outside that purpose's set, which is how the appendix states it: a subordinate CA \"MUST contain only the EKU(s) specified for that Trust Purpose\".",
+      "The section 1.7 rules over a subordinate CA certificate, each gated on the signing date the clause defines for itself, which it says a renewal, a re-key and a cross-sign each produce afresh. From 1 August 2026 the extKeyUsage extension is required and `anyExtendedKeyUsage` is not permitted. In the window that runs to 1 July 2027 the clause admits either dedication to one purpose or three conditions together, of which one is in the certificate: that it names no extended key usage belonging to a purpose. So a certificate naming one of those identifiers has already failed that arm, and if its set spans two purposes it has failed the other, which is what a single certificate settles. From 1 July 2027 the second arm is gone and dedication is required outright, so a certificate for a use the appendix does not list is reported then and passed over before.",
+      "Section 2.3's rule that a subscriber certificate carrying `id-kp-emailProtection` and signed on or after 1 February 2027 names at least one rfc822Name in its subjectAltName, and Appendix A's last note read as what it is: a permission for a subscriber certificate signed before 1 July 2027 to carry extended key usages spanning more than one purpose. A permission bounded by a date binds once the date passes. `anyExtendedKeyUsage` is in scope for that rule even though the appendix's table does not list it, because RFC 5280 section 4.2.1.12 makes it a certificate not restricted to any specific key purpose: it names every purpose rather than none, and conforms to no single one. That is what separates it from a purpose the table does not list at all, such as code signing, which leaves a certificate under no trust purpose and outside the rule.",
+      "Section 1.5's floor for a root certificate, an RSA modulus of at least 4096 bits or a curve of at least NIST P-384. The clause names those two families and no others, so a key outside both is reported as well.",
+      "`id-kp-BrandIndicatorforMessageIdentification` (`1.3.6.1.5.5.7.3.31`) joins the OID registry, under IANA's own spelling for it, so the VMC purpose resolves by name like the other six."
+    ],
+    "Changed": [
+      "`pki.lint.rules()` enumerates the new rows, which stay inert under the default rule set because each one asks whether the caller named the profile."
+    ]
+  }
+}
