@@ -133,6 +133,18 @@ async function run() {
   });
   check("C11. CONTROL: id-kp-serverAuth alone draws none of the four (" + soloIds.join(",") + ")",
     soloIds.length === 0);
+  // The clause reaches a NON-TLS branch, and that is its purpose rather than an overreach: it
+  // governs "all corresponding unexpired and unrevoked subordinate CA certificates operated
+  // beneath an existing root included in the Chrome Root Store", and it exists "to align all PKI
+  // hierarchies included in the Chrome Root Store on the principle of serving only TLS server
+  // authentication use cases". A code signing intermediate beneath such a root is the
+  // multi-purpose hierarchy the section phases out, so it is reported on both counts. Pinned so
+  // the reading is a decision rather than a drift.
+  var codeSigningSub = lint(await subordinate(["codeSigning"]));
+  check("C11b. a code signing subordinate CA is reported, which is what this clause phases out",
+    has(codeSigningSub, "lint/chrome-root/subordinate-ca-eku-server-auth-missing") &&
+    findingsOf(codeSigningSub, "lint/chrome-root/subordinate-ca-eku-not-tls")
+      .some(function (f) { return f.context.purpose === "codeSigning"; }));
 
   // ---- C12-C17: sec. 1.3.2, subscriber certificates, gated on the issuance date ---------------
   var earlyIds = ids(lint(await subscriber(null, BEFORE_CUTOVER))).filter(function (id) {
