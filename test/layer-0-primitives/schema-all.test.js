@@ -24,6 +24,7 @@ var DETECTORS = {
   "crmf":          require("../../lib/schema-crmf").matches,
   "cmp":           require("../../lib/schema-cmp").matches,
   "csrattrs":      require("../../lib/schema-csrattrs").matches,
+  "trustanchor":   require("../../lib/schema-trustanchor").matches,
   "ocsp-request":  require("../../lib/schema-ocsp").matchesRequest,
   "ocsp-response": require("../../lib/schema-ocsp").matchesResponse,
   "pkcs12":        require("../../lib/schema-pkcs12").matches,
@@ -45,7 +46,7 @@ function crlDer() {
 }
 
 function run() {
-  check("all() lists the registered formats in detection order", JSON.stringify(pki.schema.all()) === JSON.stringify(["cms", "tsp", "crmf", "cmp", "csrattrs", "ocsp-request", "ocsp-response", "pkcs12", "pkcs8", "csr", "attrcert", "attrcert-v1", "crl", "x509"]));
+  check("all() lists the registered formats in detection order", JSON.stringify(pki.schema.all()) === JSON.stringify(["cms", "tsp", "crmf", "cmp", "csrattrs", "trustanchor", "ocsp-request", "ocsp-response", "pkcs12", "pkcs8", "csr", "attrcert", "attrcert-v1", "crl", "x509"]));
 
   // A CertReqMessages (RFC 4211) routes to crmf, not to the ocsp-request it sits ahead of.
   var crmfSubject = b.contextConstructed(5, b.set([b.sequence([b.oid("2.5.4.3"), b.utf8("req")])]));
@@ -156,12 +157,20 @@ function run() {
   ]);
   // CsrAttrs ::= SEQUENCE OF AttrOrOID -- one Attribute (rsaEncryption {2048}).
   var csrattrsFixture = b.sequence([b.sequence([b.oid("1.2.840.113549.1.1.1"), b.set([b.integer(2048n)])])]);
+  // TrustAnchorList ::= SEQUENCE SIZE (1..MAX) OF TrustAnchorChoice -- one [2] EXPLICIT
+  // TrustAnchorInfo { pubKey, keyId }. The context tag is what tells the list from a bare
+  // certificate chain, which is a SEQUENCE of untagged Certificates and belongs to x509.
+  var trustanchorFixture = b.sequence([b.explicit(2, b.sequence([
+    b.sequence([b.sequence([b.oid("1.3.101.112")]), b.bitString(Buffer.alloc(32), 0)]),
+    b.octetString(Buffer.alloc(20, 7)),
+  ]))]);
   var MATRIX_FIXTURES = {
     "cms":           cmsFixture,
     "tsp":           tspFixture,
     "crmf":          crmfDer,
     "cmp":           cmpFixture,
     "csrattrs":      csrattrsFixture,
+    "trustanchor":   trustanchorFixture,
     "ocsp-request":  ocspRequestFixture,
     "ocsp-response": ocspResponseFixture,
     "pkcs12":        pkcs12Fixture,

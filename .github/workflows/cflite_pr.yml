@@ -72,6 +72,7 @@ jobs:
           - pkcs8-parse
           - schema-all-parse
           - csrattrs-parse
+          - trustanchor-parse
           - est-transfer
           - scep-parse
           - http-digest-challenge

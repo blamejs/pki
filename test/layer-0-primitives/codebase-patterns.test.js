@@ -162,6 +162,7 @@ var VALID_ALLOW_CLASSES = {
   "validator-without-enforcement": 1,
   "inline-structure-validator": 1,
   "nan-date-comparison-unguarded": 1,
+  "option-bag-read-by-enumerable-key": 1,
   "eddsa-verify-without-loworder-gate": 1,
   "internal-provenance-in-comment": 1,
   // The private-key / secret / password ownership paths keep the two-form (Buffer / Uint8Array)
@@ -2077,6 +2078,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/schema-attrcert.js:<top>", "lib/schema-pkcs12.js:<top>",
         "lib/schema-cmp.js:pemDecode", "lib/schema-cmp.js:pemEncode", "lib/schema-cmp.js:<top>",
         "lib/schema-cmp.js:rawSequence",
+        "lib/schema-trustanchor.js:pemDecode", "lib/schema-trustanchor.js:pemEncode",
       ],
       mode: "family-subset",
       reason: "pemDecode/pemEncode are per-module thin delegations to pkix.pemDecode/pemEncode (label + error class differ); kept separate for their per-function @primitive wiki blocks.",
@@ -2184,6 +2186,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/cms-sign.js:<top>", "lib/tsp-sign.js:<top>", "lib/x509-sign.js:<top>", "lib/csr-sign.js:<top>", "lib/attrcert-sign.js:<top>", "lib/crmf-sign.js:<top>", "lib/cmp-build.js:<top>", "lib/crl-sign.js:<top>",
         "lib/cmc-build.js:<top>", "lib/cmc-verify.js:<top>", "lib/schema-cmc.js:<top>",
         "lib/cms-digest.js:<top>", "lib/cms-digest.js:_err",
+        "lib/trustanchor-build.js:<top>",
         "lib/cms-sign.js:_err", "lib/tsp-sign.js:_err", "lib/x509-sign.js:_err", "lib/csr-sign.js:_err", "lib/attrcert-sign.js:_err", "lib/crmf-sign.js:_err", "lib/cmp-build.js:_err", "lib/crl-sign.js:_err",
         // The run continues past the factories: makeNS(domain) then makeBuilder({...})
         // with that domain's error class and schemas. Same idiom, same reason -- the
@@ -2676,6 +2679,99 @@ function testNumberNarrowsUnboundedInteger() {
   });
   bad = _filterMarkers(bad, "number-narrows-unbounded-integer");
   _report("no Number() narrows an unbounded ASN.1 integer read (silent-rounding vector, codebase-wide)", bad);
+}
+
+function testOptionBagReadByEnumerableKey() {
+  // class: option-bag-read-by-enumerable-key
+  // A caller's options bag is VALIDATED by own key and then CONSUMED by enumerable key, so an
+  // option written with `enumerable: false` passes the door and disappears before it is read. The
+  // door (guard.identifier.assertKnownKeys / optionsObject / assertPlainRecord) walks
+  // Reflect.ownKeys, which reports a non-enumerable own property; `Object.keys` and
+  // `Object.assign` skip it. The gap is silent in both directions: a restriction the caller asked
+  // for is dropped from what gets signed, or a required check is never run, and the caller is told
+  // nothing because the key was accepted. Read such a bag with guard.identifier.optionNames /
+  // ownOptions, which enumerate own keys the way the door did.
+  //
+  // The read has several spellings and the detector covers each: `Object.keys`, `Object.assign`,
+  // `intrinsic.keys` and `for (k in bag)`. It reaches a bag the caller's bag holds, at any depth,
+  // because a nested record is the caller's too. `for-in` is flagged on ANY object in lib/, with no
+  // door required: it skips non-enumerables AND walks the prototype chain, so nothing in this
+  // codebase has a use for it, and the sites it found were bags no door had validated.
+  //
+  // Codebase-wide and rename-proof: the pair is matched by the guard call and the built-in read,
+  // linked through whatever the bag is named in that function, so renaming the variable renames
+  // both halves and the detector still fires. It catches a NEW verb whose options are read this
+  // way, in a file never yet reviewed.
+  var DOOR = /\b(?:assertKnownKeys|optionsObject|assertPlainRecord|assertKnownOpts)\(\s*([A-Za-z_$][\w$]*)/g;
+  var bad = [];
+  _libFiles().forEach(function (f) {
+    var rel = path.relative(REPO_ROOT, f);
+    var src = _stripCommentsAndLiterals(fs.readFileSync(f, "utf8"));
+    var lines = _lines(src);
+    // A name is a parameter of whatever function encloses it, so the same name in two functions is
+    // two bags. Scope every record to the enclosing declaration -- a real boundary, never a line
+    // count -- so one function's validated `policy` cannot vouch for another's.
+    var scopeOf = [];
+    var openScope = 0;
+    for (var s = 0; s < lines.length; s++) {
+      if (/^\s*(?:async\s+)?function\b/.test(lines[s]) ||
+          /^\s*var\s+[\w$]+\s*=\s*(?:async\s+)?function\b/.test(lines[s])) openScope = s + 1;
+      scopeOf[s + 1] = openScope;
+    }
+    var guarded = {};       // scope|name -> first line a door validated it on
+    var derived = {};       // scope|name -> line it was read out of a validated bag on
+    var toolkitBuilt = {};  // scope|name -> line it was built as a fresh null-proto object on
+    function key(line, name) { return scopeOf[line] + "|" + name; }
+    var m;
+    DOOR.lastIndex = 0;
+    while ((m = DOOR.exec(src)) !== null) {
+      var ln = src.slice(0, m.index).split("\n").length;
+      var gk = key(ln, m[1]);
+      if (guarded[gk] === undefined) guarded[gk] = ln;
+    }
+    for (var d = 0; d < lines.length; d++) {
+      // A bag read OUT of a validated bag is the caller's too, and carries the same exposure.
+      // A bag read OUT of a validated bag is the caller's too, and so is one read out of THAT, so
+      // the chain extends at each hop rather than stopping one level below the door.
+      var da = lines[d].match(/\b(?:var\s+)?([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)(?:\.[\w$]+|\[[^\]]+\])\s*;/);
+      if (da) {
+        var srcKey = key(d + 1, da[2]);
+        if ((guarded[srcKey] !== undefined || derived[srcKey] !== undefined) &&
+            derived[key(d + 1, da[1])] === undefined) {
+          derived[key(d + 1, da[1])] = d + 1;
+        }
+      }
+      // A fresh prototype-less object the toolkit filled itself is not a caller bag: every key on
+      // it was written by an ordinary assignment, so enumerating it cannot miss one.
+      var tb = lines[d].match(/\bvar\s+([A-Za-z_$][\w$]*)\s*=\s*(?:Object|intrinsic|_)\.create\(\s*null\s*\)/);
+      if (tb) toolkitBuilt[key(d + 1, tb[1])] = d + 1;
+    }
+    for (var i = 0; i < lines.length; i++) {
+      // `for (k in bag)` skips non-enumerables AND walks the prototype chain. Nothing in this
+      // codebase needs either, so it is flagged wherever it appears, with no door required.
+      var fi = lines[i].match(/\bfor\s*\(\s*(?:var\s+)?[A-Za-z_$][\w$]*\s+in\s+([A-Za-z_$][\w$.]*)/);
+      if (fi) {
+        bad.push({ file: rel, line: i + 1,
+          content: "for-in over '" + fi[1] + "' skips a non-enumerable own property and walks the prototype chain -- enumerate with guard.identifier.optionNames" });
+      }
+      // `Object.keys(bag)` / `intrinsic.keys(bag)` / `Object.assign({}, bag)` — the enumerable-only
+      // reads, over the bag itself or over a bag held on one of its properties.
+      var re = /\b(?:Object|intrinsic|_)\.(?:keys|assign)\(\s*(?:\{\s*\}\s*,\s*)?([A-Za-z_$][\w$]*)(\.[\w$]+)?/g;
+      var hit;
+      while ((hit = re.exec(lines[i])) !== null) {
+        var name = hit[1];
+        var k = key(i + 1, name);
+        if (toolkitBuilt[k] !== undefined && toolkitBuilt[k] <= i + 1) continue;
+        var at = guarded[k] !== undefined ? guarded[k] : derived[k];
+        if (at === undefined || at > i + 1) continue;
+        var shown = name + (hit[2] || "");
+        bad.push({ file: rel, line: i + 1,
+          content: "'" + shown + "' is read by enumerable key, so a non-enumerable own property on it is silently dropped; the option doors accept one, so this is a caller's option disappearing between the check and the use -- read it with guard.identifier.optionNames / ownOptions" });
+      }
+    }
+  });
+  bad = _filterMarkers(bad, "option-bag-read-by-enumerable-key");
+  _report("no options bag validated by own key is read by enumerable key (silent option-drop vector, codebase-wide)", bad);
 }
 
 function testNanDateComparisonUnguarded() {
@@ -3252,27 +3348,28 @@ function testGuardReadsRuntimeLive() {
   // budget nobody tightens is a number that stops meaning anything, and the next reader would take
   // it for the real count. A module reaching zero is deleted from the map and held to zero forever.
   var MIGRATING = {
-    "lib/acme.js": 193,
-    "lib/est.js": 166,
-    "lib/cmp-build.js": 135,
-    "lib/crmf-sign.js": 36,
-    "lib/path-validate.js": 98,
-    "lib/webauthn.js": 165,
+    "lib/acme.js": 187,
+    "lib/est.js": 159,
+    "lib/cmp-build.js": 130,
+    "lib/crmf-sign.js": 35,
+    "lib/path-validate.js": 95,
+    "lib/webauthn.js": 163,
     "lib/asn1-der.js": 105,
-    "lib/trust.js": 106,
+    "lib/schema-engine.js": 45,
+    "lib/trust.js": 99,
     "lib/cms-sign.js": 60,
-    "lib/webauthn-mds.js": 90,
-    "lib/attrcert-sign.js": 87,
+    "lib/webauthn-mds.js": 89,
+    "lib/attrcert-sign.js": 84,
     "lib/tsp-sign.js": 49,
     "lib/http-digest.js": 73,
     "lib/pkcs12-build.js": 63,
-    "lib/ct.js": 76,
+    "lib/ct.js": 74,
     "lib/cms-verify.js": 16,
     "lib/cms-encrypt.js": 66,
-    "lib/crl-sign.js": 66,
+    "lib/crl-sign.js": 65,
     "lib/cmc-build.js": 57,
-    "lib/pki-build.js": 34,
-    "lib/hpke.js": 41,
+    "lib/pki-build.js": 33,
+    "lib/hpke.js": 39,
     "lib/cms-decrypt.js": 49,
     "lib/cmc-verify.js": 34,
     "lib/x509-sign.js": 26,
@@ -4226,6 +4323,7 @@ function run() {
   testRegistryTablesCarryNoPrototype();
   testNumberNarrowsUnboundedInteger();
   testNanDateComparisonUnguarded();
+  testOptionBagReadByEnumerableKey();
   testEddsaVerifyGate();
   testCborMapPairAccessOutsideCodec();
   testOcspResponderAuthReinlined();
