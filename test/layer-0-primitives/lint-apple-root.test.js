@@ -215,6 +215,20 @@ async function run() {
     !has(lint(await subscriber({ extendedKeyUsage: ["serverAuth", "clientAuth"] }, SINGLE_FROM)),
       SUB_MIXES) &&
     !has(lint(await subscriber({ extendedKeyUsage: ["codeSigning"] }, SINGLE_FROM)), SUB_MIXES));
+  // anyExtendedKeyUsage is not in the appendix's table, but it is not outside the table the way
+  // id-kp-codeSigning is: RFC 5280 sec. 4.2.1.12 makes it a certificate "not restricted to any
+  // specific key purpose", so it names EVERY trust purpose rather than none and conforms to no
+  // single one. A subscriber carrying it is in scope, where a Document Signing one is not.
+  check("A21. a subscriber naming anyExtendedKeyUsage is reported from 2027-07-01",
+    has(lint(await subscriber({ extendedKeyUsage: ["anyExtendedKeyUsage"] }, SINGLE_FROM)),
+      SUB_MIXES) &&
+    !has(lint(await subscriber({ extendedKeyUsage: ["anyExtendedKeyUsage"] }, BEFORE_SINGLE)),
+      SUB_MIXES));
+  // On a subordinate CA the same bytes breach two sentences of sec. 1.7, the one naming
+  // anyExtendedKeyUsage outright and the one requiring dedication, so both rows cite their own.
+  var anyCa = lint(await subordinate(["anyExtendedKeyUsage"], SINGLE_FROM));
+  check("A22. a subordinate CA naming anyExtendedKeyUsage breaches both sentences",
+    has(anyCa, EKU_ANY) && has(anyCa, NOT_SINGLE));
 
   console.log("CHECKS " + helpers.getChecks());
 }
