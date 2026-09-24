@@ -49,6 +49,13 @@ async function run() {
   check("C3. bytes that are not a certification request produce one fatal finding, never a throw",
     junk.findings.length === 1 && junk.findings[0].id === "lint/unparseable" &&
     junk.worst === "fatal");
+  var badPem = pki.lint.csr("-----BEGIN CERTIFICATE REQUEST-----\nnot base64!!\n-----END CERTIFICATE REQUEST-----\n");
+  check("C3b. a PEM string that does not decode is the same fatal finding, not a throw",
+    badPem.findings.length === 1 && badPem.findings[0].id === "lint/unparseable" &&
+    badPem.worst === "fatal");
+  var pemOk = pki.lint.csr(pki.schema.csr.pemEncode(plain, "CERTIFICATE REQUEST"));
+  check("C3c. CONTROL: a well-formed PEM request lints the same as its DER",
+    ids(pemOk).join(",") === ids(rep).join(","));
 
   // ---- C4-C7: RFC 5280 sec. 4.1.2.6, the empty subject ------------------------------------
   // "If the subject is a CA ... If subject naming information is present only in the
