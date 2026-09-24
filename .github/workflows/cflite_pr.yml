@@ -89,6 +89,7 @@ jobs:
           - webauthn-parse
           - webauthn-mds
           - lint-certificate
+          - lint-csr
           - lint-crl
           - lint-ocsp
           - cms-verify
