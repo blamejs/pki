@@ -4,6 +4,23 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.23 — 2026-09-24
+
+A root program's requirement is graded by the clause that states it, so the same key purpose is a warning in one place and an error in another.
+
+### Added
+
+- `pki.lint.certificate(der, { profile: "chrome-root" })` runs the Chrome Root Program Policy v1.8 profile. Naming it is the only way to reach these rows, and passing no profile leaves every one of them inert.
+- The section 1.3.2 rules for a subordinate CA certificate, which the policy states as two admitted forms, `id-kp-serverAuth` alone or `id-kp-serverAuth` with `id-kp-clientAuth`. Both forms require the extKeyUsage extension and require `id-kp-serverAuth` in it, and neither admits any other purpose, so those three are errors and `anyExtendedKeyUsage` is reported among the others. Each offending purpose draws its own finding naming that purpose. The second form is open only where the certificate was disclosed to the CCADB before 15 June 2026, which a certificate does not carry, so `id-kp-clientAuth` is reported as a warning whose message names the date that settles it.
+- The same section's rule for a subscriber certificate, which admits `id-kp-serverAuth` alone and is gated on issuance rather than disclosure. The three rows are silent on a certificate whose notBefore precedes 15 March 2027 and report on the same bytes after it, and `id-kp-clientAuth` is an error there rather than the warning it draws on a subordinate CA.
+- The section 1.3.1.3 ceiling of three years on a subordinate CA certificate's validity period, reported as a warning at the strength the clause states it. A ceiling given in years is measured in months, so a 29 February notBefore clamps to 28 February rather than moving into March.
+- The section 1.3.1.2 root CA term limit. The clause determines the age of key material from the earliest certificate that carries the key, and a self-signed root's own notBefore is at or after that date. The schedule is monotone, so the removal date computed from notBefore is the latest one the schedule can give, and a notAfter past it runs beyond the term whatever earlier certificate exists. The finding is a notice carrying the removal date.
+- A subordinate CA is a role in a hierarchy rather than something a certificate states, so the rows that govern one read the certificate's own issuer and subject names and pass over a certificate issued in its own name. That is every root, which those clauses do not govern, and also a rollover CA reissued in its own name, which they do, so the rows under-report rather than reporting a root for carrying no extended key usage.
+
+### Changed
+
+- `pki.lint.rules()` enumerates the new rows, which stay inert under the default rule set because each one asks whether the caller named the profile.
+
 ## v0.8.22 — 2026-09-24
 
 An algorithm identifier is compared as the bytes a root program fixed, not as the algorithm it names.
