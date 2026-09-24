@@ -299,8 +299,42 @@ function testKemParams() {
   check("isDottedDecimal: empty and non-string are not", pki.oid.isDottedDecimal("") === false && pki.oid.isDottedDecimal(42) === false);
 }
 
+/**
+ * The registry is two-way, and its two directions do not agree about a repeated name: `_index`
+ * keeps the FIRST name -> OID it is given and overwrites OID -> name every time. So registering a
+ * name a family already holds silently repoints every `byName` lookup of it at the new OID while
+ * the old OID keeps answering with that name, and nothing says so. A consumer that resolves a
+ * list of names into a set, which is how the RSA classifier in cmp-session builds its off-arc
+ * table, then loses the entry it thought it had.
+ *
+ * One such pair is real and intended: X.501 and X.520 both standardize `clearance`, at 2.5.1.5.55
+ * and 2.5.4.55. Every other name must round-trip, so a new collision fails here rather than in
+ * whatever classifier happens to depend on the name.
+ */
+function testNamesRoundTrip() {
+  var entries = pki.oid.all();
+  var rows = Array.isArray(entries)
+    ? entries
+    : Object.keys(entries).map(function (k) { return { oid: k, name: entries[k] }; });
+  var KNOWN_DUPLICATE_NAMES = ["clearance"];
+  var asymmetric = [];
+  rows.forEach(function (r) {
+    var dotted = r.oid || r.dotted, name = r.name;
+    if (!dotted || !name) return;
+    if (KNOWN_DUPLICATE_NAMES.indexOf(name) !== -1) return;
+    if (pki.oid.byName(name) !== dotted) {
+      asymmetric.push(name + " names " + dotted + " but byName resolves " + pki.oid.byName(name));
+    }
+  });
+  check("every registered OID name resolves back to the OID it names (" + asymmetric.join("; ") + ")",
+    asymmetric.length === 0);
+  check("...and the one standardized duplicate is still registered both ways",
+    pki.oid.name("2.5.1.5.55") === "clearance" && pki.oid.byName("clearance") === "2.5.4.55");
+}
+
 function run() {
   testRegistry();
+  testNamesRoundTrip();
   testEcCurveNames();
   testRegister();
   testArcs();

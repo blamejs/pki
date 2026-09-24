@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.8.15",
+  "packageVersion": "0.8.16",
   "surface": {
     "C": {
       "kind": "object",
@@ -2898,6 +2898,10 @@
           "kind": "function",
           "arity": 2
         },
+        "csr": {
+          "kind": "function",
+          "arity": 2
+        },
         "ocsp": {
           "kind": "function",
           "arity": 2
@@ -2908,7 +2912,7 @@
         },
         "rules": {
           "kind": "function",
-          "arity": 1
+          "arity": 2
         }
       }
     },
@@ -4122,6 +4126,7 @@
     "pki.key.publicFromPrivate": "0.3.10",
     "pki.lint.certificate": "0.2.10",
     "pki.lint.crl": "0.7.9",
+    "pki.lint.csr": "0.8.16",
     "pki.lint.ocsp": "0.7.26",
     "pki.lint.rules": "0.2.10",
     "pki.lint.profiles": "0.2.10",
