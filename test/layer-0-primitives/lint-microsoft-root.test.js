@@ -185,6 +185,13 @@ async function run() {
   check("W14. an issuing CA with neither a distribution point nor an OCSP responder is reported",
     has(lint(await issuingCa({ cRLDistributionPoints: undefined })),
       "lint/microsoft-root/issuing-ca-no-revocation-pointer"));
+  // "an AIA extension to an OCSP responder" is reached by a URL. The shared decoder admits any
+  // GeneralName in an accessLocation, so an entry naming the ocsp accessMethod with a dNSName
+  // beside it satisfies the extension's syntax and points at no responder.
+  check("W14b. an OCSP accessMethod whose location is not a URI does not satisfy the clause",
+    has(lint(await issuingCa({ cRLDistributionPoints: undefined,
+      authorityInfoAccess: [{ accessMethod: "ocsp", accessLocation: { dNSName: "ocsp.example.com" } }] })),
+      "lint/microsoft-root/issuing-ca-no-revocation-pointer"));
   check("W15. CONTROL: either pointer alone satisfies the clause",
     !has(lint(await issuingCa({})), "lint/microsoft-root/issuing-ca-no-revocation-pointer") &&
     !has(lint(await issuingCa({ cRLDistributionPoints: undefined,
