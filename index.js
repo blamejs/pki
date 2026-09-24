@@ -63,6 +63,7 @@ var transport  = require("./lib/http-transport");
 var jose       = require("./lib/jose");
 var acme       = require("./lib/acme");
 var trust      = require("./lib/trust");
+var trustanchorBuild = require("./lib/trustanchor-build");
 var inspect    = require("./lib/inspect");
 var lint       = require("./lib/lint");
 var webauthn   = require("./lib/webauthn");
@@ -213,6 +214,11 @@ module.exports = {
   // root list omits); pki.trust.anchor hands one to pki.path.validate. Offline:
   // the operator supplies the text; no fetch.
   trust:     trust,
+  // `trustanchor` writes the RFC 5914 TrustAnchorList a root program publishes:
+  // each anchor as a certificate, a bare TBSCertificate, or a TrustAnchorInfo
+  // carrying the name it is known by plus the policies, namespace and path
+  // length a relying party applies beneath it. pki.schema.trustanchor reads one.
+  trustanchor: trustanchorBuild,
   // `inspect` is human-readable inspection -- pki.inspect.certificate(pem|der|parsed)
   // renders an OpenSSL-familiar `x509 -text`-style report from the strict parser +
   // OID registry, naming extension/algorithm OIDs OpenSSL shows only as raw bytes.
