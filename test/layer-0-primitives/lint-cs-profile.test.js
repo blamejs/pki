@@ -59,6 +59,13 @@ async function run() {
   var EV = pki.oid.byName("code-signing-ev");
   var TS = pki.oid.byName("code-signing-timestamping");
 
+  // A conforming non-EV subject, from the 7.1.4.2.2 and 7.1.4.2.3 lists, and the EV one that adds
+  // what 7.1.4.2.4 requires on top.
+  var NONEV_SUBJECT = [{ commonName: "Example Corp" }, { organizationName: "Example Corp" },
+    { localityName: "Dover" }, { countryName: "US" }];
+  var EV_SUBJECT = NONEV_SUBJECT.concat([{ businessCategory: "Private Organization" },
+    { jurisdictionCountryName: "US" }, { serialNumber: "R12345" }]);
+
   // A conforming non-EV code signing certificate, from the 7.1.2.3 list.
   function exts(over) {
     var e = {
@@ -80,19 +87,19 @@ async function run() {
   var issuingCa = await pki.x509.sign({ subject: [{ commonName: "Issuing CA" }],
     subjectPublicKey: edPub, notBefore: NB, notAfter: NA,
     extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] } }, { key: edPriv });
-  function sign(over, pub, window) {
+  function sign(over, pub, window, subject) {
     var w = window || {};
-    return pki.x509.sign({ subject: [{ commonName: "A Signer" }], subjectPublicKey: pub || ecPub,
+    return pki.x509.sign({ subject: subject || NONEV_SUBJECT, subjectPublicKey: pub || ecPub,
       notBefore: w.notBefore || NB, notAfter: w.notAfter || NA, extensions: exts(over) },
       { cert: issuingCa, key: edPriv });
   }
   /** Self-signed, so the subject key is the signing key: the signer refuses a self-signature whose
    *  subject key is not the one that made it. */
   function signSelf(over, pub) {
-    return pki.x509.sign({ subject: [{ commonName: "A Signer" }], subjectPublicKey: pub || edPub,
+    return pki.x509.sign({ subject: NONEV_SUBJECT, subjectPublicKey: pub || edPub,
       notBefore: NB, notAfter: NA, extensions: exts(over) }, { key: edPriv });
   }
-  async function lintOver(over, pub, window) { return lint(await sign(over, pub, window)); }
+  async function lintOver(over, pub, window, subject) { return lint(await sign(over, pub, window, subject)); }
 
   /** Splice one extension into a signed certificate's TBS, replacing any of the same OID. The
    *  signer refuses several shapes this profile forbids, which is the signer doing its job; a CA
@@ -339,6 +346,174 @@ async function run() {
     !has(await lintOver({}, dsaSpki(2048, 224)), "lint/cabf-cs/weak-key"));
   check("C35. ...and a DSA key outside the two parameter options is reported",
     has(await lintOver({}, dsaSpki(1024, 160)), "lint/cabf-cs/weak-key"));
+
+  // ---- C36-C48: the subject distinguished name (7.1.4.2.2, 7.1.4.2.3 and 7.1.4.2.4) -----------
+  // Three subsections, scoped by their own headings: (2) covers EV and non-EV code signing, (3)
+  // non-EV alone, (4) EV alone, and none of them names a Timestamp Certificate.
+  var EV_POLICY = { oid: EV };
+  function evSubject(over) {
+    return EV_SUBJECT.filter(function (a) {
+      var k = Object.keys(a)[0];
+      return !(over && Object.prototype.hasOwnProperty.call(over, k) && over[k] === undefined);
+    }).map(function (a) {
+      var k = Object.keys(a)[0];
+      return (over && over[k] !== undefined && over[k] !== null) ? (function () { var o = {}; o[k] = over[k]; return o; })() : a;
+    }).concat(over && over.extra ? over.extra : []);
+  }
+  async function lintEv(subject) { return lint(await sign({ certificatePolicies: [EV_POLICY] }, ecPub, undefined, subject)); }
+  async function lintNonEv(subject) { return lint(await sign({}, ecPub, undefined, subject)); }
+  var evBase = await lintEv(EV_SUBJECT);
+  var nonEvBase = await lintNonEv(NONEV_SUBJECT);
+
+  check("C36. subject:commonName is required",
+    has(await lintNonEv([{ organizationName: "O" }, { localityName: "L" }, { countryName: "US" }]),
+      "lint/cabf-cs/subject-common-name-missing") &&
+    !has(nonEvBase, "lint/cabf-cs/subject-common-name-missing"));
+  check("C37. subject:domainComponent is prohibited",
+    has(await lintNonEv(NONEV_SUBJECT.concat([{ domainComponent: "example" }])),
+      "lint/cabf-cs/subject-domain-component-prohibited") &&
+    !has(nonEvBase, "lint/cabf-cs/subject-domain-component-prohibited"));
+  // "Subject attributes MUST NOT contain only metadata such as '.', '-', and ' ' (i.e. space)
+  // characters", so a value made of nothing else is reported and one carrying anything else is not.
+  var metadataOnly = [];
+  for (var mi = 0; mi < 5; mi++) {
+    var mv = [".", "-", " ", " - . ", "..."][mi];
+    metadataOnly.push(has(await lintNonEv([{ commonName: "Example Corp" }, { organizationName: mv },
+      { localityName: "L" }, { countryName: "US" }]), "lint/cabf-cs/subject-attribute-metadata-only"));
+  }
+  check("C38. a subject attribute of metadata characters alone is reported (" + metadataOnly.join(",") + ")",
+    metadataOnly.every(function (m) { return m === true; }) &&
+    !has(nonEvBase, "lint/cabf-cs/subject-attribute-metadata-only"));
+  check("C38b. CONTROL: a value carrying anything else is not reported",
+    !has(await lintNonEv([{ commonName: "Example Corp" }, { organizationName: "A-1 Ltd." },
+      { localityName: "L" }, { countryName: "US" }]), "lint/cabf-cs/subject-attribute-metadata-only"));
+  check("C39. subject:organizationName is required under both subsections",
+    has(await lintNonEv([{ commonName: "C" }, { localityName: "L" }, { countryName: "US" }]),
+      "lint/cabf-cs/subject-organization-name-missing") &&
+    has(await lintEv(evSubject({ organizationName: undefined })),
+      "lint/cabf-cs/subject-organization-name-missing") &&
+    !has(nonEvBase, "lint/cabf-cs/subject-organization-name-missing") &&
+    !has(evBase, "lint/cabf-cs/subject-organization-name-missing"));
+  // localityName is "Required if the stateOrProvinceName field is absent" and the state row says
+  // the same in the other direction, so one of the two must be there and either alone satisfies it.
+  check("C40. one of subject:localityName and subject:stateOrProvinceName must be present",
+    has(await lintNonEv([{ commonName: "C" }, { organizationName: "O" }, { countryName: "US" }]),
+      "lint/cabf-cs/subject-locality-and-state-absent") &&
+    !has(await lintNonEv([{ commonName: "C" }, { organizationName: "O" },
+      { stateOrProvinceName: "Delaware" }, { countryName: "US" }]),
+      "lint/cabf-cs/subject-locality-and-state-absent") &&
+    !has(nonEvBase, "lint/cabf-cs/subject-locality-and-state-absent"));
+  check("C41. subject:countryName is required",
+    has(await lintNonEv([{ commonName: "C" }, { organizationName: "O" }, { localityName: "L" }]),
+      "lint/cabf-cs/subject-country-name-missing") &&
+    !has(nonEvBase, "lint/cabf-cs/subject-country-name-missing"));
+  // The builder holds countryName to a two-character PrintableString, which is the signer doing its
+  // job, so a longer one is spliced into the signed subject.
+  function dnDer(attrs) {
+    return b.sequence(attrs.map(function (a) {
+      var enc = a.printable ? b.printable(a.value) : b.utf8(a.value);
+      return b.set([b.sequence([b.oid(pki.oid.byName(a.type)), enc])]);
+    }));
+  }
+  function spliceSubject(baseDer, subjectDer) {
+    var cert = pki.asn1.decode(baseDer);
+    var kids = cert.children[0].children.map(function (c, i) {
+      return i === 5 ? b.raw(subjectDer) : b.raw(c.bytes);
+    });
+    return b.sequence([b.sequence(kids), b.raw(cert.children[1].bytes), b.raw(cert.children[2].bytes)]);
+  }
+  var longCountry = dnDer([{ type: "commonName", value: "C" }, { type: "organizationName", value: "O" },
+    { type: "localityName", value: "L" }, { type: "countryName", value: "USA", printable: true }]);
+  check("C42. subject:countryName must be a two-letter code",
+    has(lint(spliceSubject(await sign({}), longCountry)), "lint/cabf-cs/subject-country-name-bad-syntax") &&
+    !has(nonEvBase, "lint/cabf-cs/subject-country-name-bad-syntax"));
+
+  // Subsection 4 alone, so a non-EV certificate is not held to any of it.
+  check("C43. subject:businessCategory is required on an EV certificate and not on a non-EV one",
+    has(await lintEv(evSubject({ businessCategory: undefined })),
+      "lint/cabf-cs/subject-business-category-missing") &&
+    !has(nonEvBase, "lint/cabf-cs/subject-business-category-missing") &&
+    !has(evBase, "lint/cabf-cs/subject-business-category-missing"));
+  // The clause fixes the four strings exactly, so a differing case is a differing string.
+  check("C44. ...and must be one of the four strings the clause names",
+    has(await lintEv(evSubject({ businessCategory: "Private organization" })),
+      "lint/cabf-cs/subject-business-category-invalid") &&
+    has(await lintEv(evSubject({ businessCategory: "Charity" })),
+      "lint/cabf-cs/subject-business-category-invalid"));
+  var categories = [];
+  for (var bc = 0; bc < 4; bc++) {
+    var name = ["Private Organization", "Government Entity", "Business Entity", "Non-Commercial Entity"][bc];
+    categories.push(!has(await lintEv(evSubject({ businessCategory: name })),
+      "lint/cabf-cs/subject-business-category-invalid"));
+  }
+  check("C44b. each of the four is accepted", categories.every(function (c) { return c === true; }));
+  check("C45. subject:jurisdictionCountryName is required on an EV certificate",
+    has(await lintEv(evSubject({ jurisdictionCountryName: undefined })),
+      "lint/cabf-cs/subject-jurisdiction-country-missing") &&
+    !has(evBase, "lint/cabf-cs/subject-jurisdiction-country-missing"));
+  // The clause bounds the jurisdiction fields against the LEVEL the agency operates at, which the
+  // certificate does not carry, and it requires the state at the locality level only "where the
+  // state or province regulates the registration of the entities at the locality level". So a
+  // country with a locality and no state is conformant for such an agency, and no row grades the
+  // relationship. The country is required outright and C45 covers it.
+  var jurisdictionShapes = [
+    [{ jurisdictionLocalityName: "Dover" }],
+    [{ jurisdictionStateOrProvinceName: "Delaware" }],
+    [{ jurisdictionStateOrProvinceName: "Delaware" }, { jurisdictionLocalityName: "Dover" }],
+  ];
+  var jurisdictionQuiet = [];
+  for (var ji = 0; ji < jurisdictionShapes.length; ji++) {
+    var jRep = await lintEv(evSubject({ extra: jurisdictionShapes[ji] }));
+    jurisdictionQuiet.push(jRep.findings.every(function (f) {
+      return f.id.indexOf("lint/cabf-cs/subject-jurisdiction") !== 0 ||
+        f.id === "lint/cabf-cs/subject-jurisdiction-country-missing";
+    }));
+  }
+  check("C46. no row grades a jurisdiction level against an agency level the certificate does not carry",
+    jurisdictionQuiet.every(function (q) { return q === true; }));
+  // A certificate asserting two reserved identifiers claims BOTH, and the order they sit in the
+  // extension is not meaning. Before 15 September 2026 the exactly-one rule does not fire, so
+  // nothing else reports such a certificate and a first-match read would let DER order decide which
+  // rules it answers for.
+  function idsOf(rep) {
+    return rep.findings.map(function (f) { return f.id; }).filter(function (id) {
+      return id.indexOf("lint/cabf-cs/") === 0;
+    }).sort().join(",");
+  }
+  var bothOrders = [[{ oid: CS }, EV_POLICY], [EV_POLICY, { oid: CS }]];
+  var bothReports = [];
+  for (var bo = 0; bo < bothOrders.length; bo++) {
+    bothReports.push(idsOf(lint(await sign({ certificatePolicies: bothOrders[bo] }, ecPub, undefined,
+      NONEV_SUBJECT))));
+  }
+  check("C46b. the rules a certificate answers for do not depend on the order of its policies",
+    bothReports[0] === bothReports[1] &&
+    bothReports[0].indexOf("lint/cabf-cs/subject-business-category-missing") !== -1);
+  // The same for the two arms of the extKeyUsage clause: a certificate claiming both kinds is held
+  // to both required purposes whichever order it names them in.
+  var bothKinds = [[{ oid: CS }, { oid: TS }], [{ oid: TS }, { oid: CS }]];
+  var kindReports = [];
+  for (var bk = 0; bk < bothKinds.length; bk++) {
+    kindReports.push(idsOf(lint(await sign({ certificatePolicies: bothKinds[bk],
+      extendedKeyUsage: ["codeSigning"] }, ecPub, undefined, NONEV_SUBJECT))));
+  }
+  check("C46c. ...and a certificate claiming both kinds answers for both arms, in either order",
+    kindReports[0] === kindReports[1] &&
+    kindReports[0].indexOf("lint/cabf-cs/eku-missing-time-stamping") !== -1);
+  check("C47. subject:serialNumber is required on an EV certificate",
+    has(await lintEv(evSubject({ serialNumber: undefined })),
+      "lint/cabf-cs/subject-serial-number-missing") &&
+    !has(nonEvBase, "lint/cabf-cs/subject-serial-number-missing") &&
+    !has(evBase, "lint/cabf-cs/subject-serial-number-missing"));
+  // None of the three subsections names a Timestamp Certificate, so none of these rows reaches one.
+  var tsBare = await lintOver({ certificatePolicies: [{ oid: TS }], extendedKeyUsage: ["timeStamping"] },
+    ecPub, undefined, [{ commonName: "A Timestamp Authority" }]);
+  check("C48. no subject row reaches a timestamp certificate",
+    ["subject-common-name-missing", "subject-organization-name-missing", "subject-country-name-missing",
+      "subject-locality-and-state-absent", "subject-business-category-missing",
+      "subject-jurisdiction-country-missing", "subject-serial-number-missing",
+      "subject-domain-component-prohibited", "subject-attribute-metadata-only"]
+      .every(function (id) { return !has(tsBare, "lint/cabf-cs/" + id); }));
 
   console.log("CHECKS " + helpers.getChecks());
 }
