@@ -136,6 +136,55 @@ function run() {
   check("38. toDate yields an Invalid Date for a throwing-toPrimitive value without invoking it",
         invalidInstant(guard.toDate(poison)) && hostileSym === 0);
 
+  // A ceiling a specification states in months has no reading in days, so addMonths is the one
+  // place calendar-month arithmetic happens. Its contract: clamp into a shorter target month,
+  // borrow a year in either direction, and carry the time of day through unchanged.
+  function iso(d) { return d.toISOString(); }
+  function plus(s, n) { return iso(guard.addMonths(new Date(s), n, E, "time/bad-input", "validity")); }
+  check("39. addMonths clamps 31 January into a 28-day February",
+        plus("2026-01-31T12:34:56.789Z", 1) === "2026-02-28T12:34:56.789Z");
+  check("40. ...and into a 29-day one in a leap year",
+        plus("2024-01-31T00:00:00.000Z", 1) === "2024-02-29T00:00:00.000Z");
+  check("41. addMonths carries a whole-month ceiling across years",
+        plus("2026-01-01T00:00:00.000Z", 39) === "2029-04-01T00:00:00.000Z" &&
+        plus("2026-04-01T00:00:00.000Z", 135) === "2037-07-01T00:00:00.000Z");
+  check("42. addMonths borrows a year in each direction",
+        plus("2026-12-15T00:00:00.000Z", 1) === "2027-01-15T00:00:00.000Z" &&
+        plus("2026-01-15T00:00:00.000Z", -1) === "2025-12-15T00:00:00.000Z" &&
+        plus("2026-01-15T00:00:00.000Z", -13) === "2024-12-15T00:00:00.000Z");
+  check("43. addMonths keeps the time of day",
+        plus("2026-03-15T23:59:59.999Z", 6) === "2026-09-15T23:59:59.999Z");
+  var badDateCode = (function () {
+    try { guard.addMonths(new Date("nope"), 1, E, "time/bad-input", "validity"); return "NO-THROW"; }
+    catch (e) { return (e && e.code) || "RAW"; }
+  })();
+  check("44. addMonths refuses an invalid Date with the caller's code", badDateCode === "time/bad-input");
+  check("45. addMonths of zero months is the same instant",
+        plus("2024-02-29T00:00:00.000Z", 0) === "2024-02-29T00:00:00.000Z");
+  // A DER time carries years 0000..9999, and Date.UTC reads 0..99 as 1900..1999, so a year below
+  // 100 must survive the arithmetic rather than being remapped into the twentieth century.
+  function lowYear(y, m, d, months) {
+    var start = new Date(0);
+    start.setUTCFullYear(y, m, d);
+    start.setUTCHours(0, 0, 0, 0);
+    return guard.addMonths(start, months, E, "time/bad-input", "validity").toISOString();
+  }
+  check("46. addMonths keeps a year below 100 rather than remapping it to the 1900s",
+        lowYear(50, 0, 1, 39) === "0053-04-01T00:00:00.000Z" &&
+        lowYear(1, 0, 31, 1) === "0001-02-28T00:00:00.000Z");
+  check("47. ...including across the year-100 boundary in each direction",
+        lowYear(99, 11, 15, 1) === "0100-01-15T00:00:00.000Z" &&
+        lowYear(100, 0, 15, -1) === "0099-12-15T00:00:00.000Z");
+  // Year 0 is a leap year under the proleptic Gregorian calendar the Date object uses, where 1900
+  // is not, so a remapped construction would roll 29 February into March.
+  check("48. addMonths clamps into February of year 0, which is a leap year",
+        lowYear(0, 0, 31, 1) === "0000-02-29T00:00:00.000Z");
+  // A DER time carries 0000..9999, so the widest ceiling a certificate can ask for starts at the
+  // last instant that range holds. The target runs past 9999 and is still a representable instant,
+  // which is what keeps the comparison a real one rather than one against an Invalid Date.
+  check("49. the widest ceiling a DER time can ask for is a real instant",
+        plus("9999-12-31T23:59:59.999Z", 135) === "+010011-03-31T23:59:59.999Z");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

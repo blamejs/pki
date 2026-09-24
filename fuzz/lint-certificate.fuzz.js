@@ -30,9 +30,12 @@ var vectors = require("../test/helpers/vectors");
 // the fuzzer's bytes reaching the rule closures after the splice).
 var BASE = pki.schema.x509.pemDecode(vectors.CERT_EC_PEM, "CERTIFICATE");
 
-// Every certificate profile pki.lint.certificate accepts by name, plus the default
-// rule set (undefined), which is the union of them all.
-var PROFILES = [undefined, "rfc5280", "rfc9881", "rfc9909", "rfc9935", "cabf-tls", "cabf-smime"];
+// Every certificate profile pki.lint.certificate accepts by name, plus the default rule set
+// (undefined), which is the union of them all. DERIVED from the registry, so a profile added later
+// is fuzzed without this list being edited: a certificate profile is one the verb accepts.
+var PROFILES = [undefined].concat(pki.lint.profiles().filter(function (name) {
+  try { pki.lint.certificate(BASE, { profile: name }); return true; } catch (_e) { return false; }
+}));
 
 function lintNeverThrows(input) {
   for (var i = 0; i < PROFILES.length; i++) {

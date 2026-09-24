@@ -30,9 +30,12 @@ var pki = require("..");
 // framing keeps the fuzzer's bytes reaching the rule closures after the splice).
 var BASE = fs.readFileSync(path.join(__dirname, "lint-csr_seed_corpus", "full.der"));
 
-// Every certification-request profile pki.lint.csr accepts by name, plus the
-// default rule set (undefined), which runs the structural rows alone.
-var PROFILES = [undefined, "rfc2986", "cabf-tls"];
+// Every certification-request profile pki.lint.csr accepts by name, plus the default rule set
+// (undefined), which runs the structural rows alone. DERIVED from the registry, so a profile added
+// later is fuzzed without this list being edited.
+var PROFILES = [undefined].concat(pki.lint.profiles().filter(function (name) {
+  try { pki.lint.csr(BASE, { profile: name }); return true; } catch (_e) { return false; }
+}));
 
 function lintNeverThrows(input) {
   for (var i = 0; i < PROFILES.length; i++) {

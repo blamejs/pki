@@ -4,6 +4,27 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.19 — 2026-09-24
+
+A code signing certificate is linted against the kind it declares itself to be.
+
+### Added
+
+- `pki.lint.certificate(der, { profile: "cabf-cs" })` runs the Code Signing BR v3.11.0 subscriber profile. The rows reach a certificate unprompted too, because one asserting a reserved identifier has declared itself to be one. Detection reads the decoded extension, so a certificate whose certificatePolicies does not decode declares nothing and is reported for the encoding instead. A certificate issued to a subordinate CA carries a reserved identifier as well under section 7.1.6.3, so it is not read as a subscriber; naming the profile in the call still lints it as one.
+- certificatePolicies (a): the extension is required and should not be critical, and an `id-qt-cps` qualifier must be a HTTP URL. Section 7.1.6.4 requires exactly one reserved identifier for a certificate issued on or after 15 September 2026, gated to the issuance date the certificate states.
+- cRLDistributionPoints (b): the extension is required, must not be critical, and must carry a HTTP URL for the CRL service.
+- authorityInformationAccess (c): the extension is required, must not be critical, must carry an `id-ad-caIssuers` accessMethod, and each location the clause names must be a HTTP URL. Unlike the S/MIME profile, one rule covers both accessMethods, because this clause states one.
+- basicConstraints (d) must not assert `cA`. authorityKeyIdentifier (g) is required and must not be critical.
+- keyUsage (e): the extension is required, must be critical, and must assert `digitalSignature`. `keyCertSign` and `cRLSign` are reported as errors and every other bit as a warning, because the clause states the two lists at different strengths in consecutive sentences.
+- extKeyUsage (f): a code signing certificate must carry `id-kp-codeSigning` and a timestamp certificate `id-kp-timeStamping`, and a timestamp certificate's extKeyUsage must be marked critical, which is the one place this profile requires a critical extKeyUsage. `anyExtendedKeyUsage` and `id-kp-serverAuth` are forbidden. Any other purpose is reported as a warning, leaving the three the clause names as permitted: Lifetime Signing, `id-kp-emailProtection` and Document Signing. Document Signing is read under both identifiers, the `1.3.6.1.4.1.311.10.3.12` Microsoft assigns it and the `1.3.6.1.4.1.311.3.10.3.12` the clause prints, so a certificate carrying either is passed over.
+- The section 6.3.2 ceilings: 39 months for a code signing certificate issued before 1 March 2026, 460 days for one issued on or after it, and 135 months for a timestamp certificate. A ceiling stated in months is measured in months, since how many days 39 months hold depends on which 39.
+- The section 6.1.5.2 floors: an RSA modulus of at least 3072 bits, one of NIST P-256, P-384 and P-521, or a DSA key whose parameters are a length of 2048 bits with a modulus length of 224 or 256. Each family the section names is read on its own terms, and a family it names none of is what the row reports.
+
+### Changed
+
+- The three reserved code signing policy identifiers of section 7.1.6.1 resolve through `pki.oid`, named for the kind each one declares, along with the Microsoft extended key purposes the section 7.1.2.3 (f) clause names as permitted.
+- Severities in this profile are graded against its own clauses, so a certificate can draw an error here and a warning under `cabf-smime` for the same shape: this document requires a non-critical cRLDistributionPoints, a present authorityInformationAccess and a critical keyUsage where the S/MIME one recommends them.
+
 ## v0.8.18 — 2026-09-24
 
 An S/MIME certificate is linted against the generation it declares itself to be.
