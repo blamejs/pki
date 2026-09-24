@@ -4,6 +4,25 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.16 — 2026-09-24
+
+A certification request is linted before it is issued, against the rows its certificate will be held to.
+
+### Added
+
+- `pki.lint.csr(pem | der | parsed, opts?)` lints a PKCS#10 certification request and returns the `LintReport` shape the other lint verbs return. It never throws on the data path: bytes that are not a well-formed request produce a single `fatal` finding `lint/unparseable` carrying the strict parser's own code.
+- The `rfc2986` profile covers what the request asks for: an empty subject that names no identity, an empty subject whose subjectAltName is not critical (RFC 5280 section 4.1.2.6), a request for an extension the issuer determines rather than takes from a request, a request asking for a CA certificate, a request signed under a broken digest, and a challengePassword traveling inside the request.
+- `opts.profile: "cabf-tls"` adds the CA/Browser Forum rows: a commonName no subjectAltName covers, a malformed requested dNSName, a request naming no subjectAltName, and a key below the TLS minimum. They run only when named, because a request carries no extKeyUsage and nothing in its bytes says it is for TLS. Each is the certificate profile's own row, applied to what the request asks for.
+- A request carrying more than one extensionRequest attribute is reported, and each is linted as the request it states. Two parse where they sort in DER order, and a reader asking for an extension by name takes the first match, so a basicConstraints of cA FALSE in one attribute would otherwise hide a cA TRUE in the next and the answer would be decided by how the bytes happened to sort.
+- A requested extension whose value does not decode under its own syntax is reported, by the RFC 5280 section 4.2 row the certificate profile already carries. It counted as a passing check before, because the shared decoder returns null for a value it cannot read and every row asking for an extension by name reads that null as absence.
+- The weak-digest row reads an RSASSA-PSS request's digest from its parameters rather than its algorithm name. RFC 4055 section 3.1 makes the hashAlgorithm field default to SHA-1, so absent parameters and an empty parameter sequence both name SHA-1: the encoding that appears to say nothing names the weakest digest.
+- `pki.lint.rules("rfc2986")` lists the new rows with their citations, and `pki.lint.profiles()` enumerates `rfc2986` alongside the existing names.
+
+### Changed
+
+- `md2WithRSAEncryption`, `md4WithRSAEncryption-pkcs1`, `md5WithRSAEncryption`, `sha1WithRSAEncryption`, `ecdsaWithSHA1` and `dsaWithSha1` resolve through `pki.oid`, so an artifact signed under one reads back with a name instead of a bare dotted string. The weak-digest row reads that name, so an algorithm the registry could not name passed it silently. Nothing signs or verifies from that registry: the signing and verifying paths carry their own tables and neither has a row for these, so naming one does not make it usable. A request or certificate carrying one still fails to verify.
+- Every name in the OID registry resolves back to the OID it names, which is now checked. The registry is two-way and its directions did not agree about a repeated name: the first `name -> OID` registration was kept while `OID -> name` took the last, so adding a name a family already held would silently repoint every lookup of it and leave the original OID still answering with that name. X.501 and X.520 both standardize `clearance`, at 2.5.1.5.55 and 2.5.4.55, and that pair is recorded as the one intended duplicate. PKCS#1's MD4 signature is registered as `md4WithRSAEncryption-pkcs1` for the same reason: the plain name already belongs to the OIW arc's 1.3.14.3.2.4.
+
 ## v0.8.15 — 2026-09-24
 
 The host's own CA bundle becomes trust anchors, and says which set you got.

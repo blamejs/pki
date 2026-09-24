@@ -74,7 +74,7 @@
   "lib/ip-utils.js": "2026-09-23",
   "lib/jose.js": "2026-09-13",
   "lib/key.js": "2026-09-23",
-  "lib/lint.js": "2026-09-23",
+  "lib/lint.js": "2026-09-24",
   "lib/merkle.js": "2026-09-06",
   "lib/mime.js": "2026-09-06",
   "lib/ocsp-request-verify.js": "2026-09-01",
