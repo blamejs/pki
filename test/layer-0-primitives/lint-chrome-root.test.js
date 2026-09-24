@@ -18,8 +18,10 @@
  */
 
 var helpers = require("../helpers");
+var surgery = require("../helpers/der-surgery");
 var check = helpers.check;
 var pki = helpers.pki;
+var b = pki.asn1.build;
 
 var NB = new Date("2026-04-01T00:00:00Z");
 var NA = new Date("2026-06-01T00:00:00Z");
@@ -221,6 +223,54 @@ async function run() {
       notAfter: new Date("2060-01-01T00:00:00Z") })), TERM_ID));
   check("C27. CONTROL: the term limit reads a CA certificate and not a subscriber",
     !has(lint(await subscriber(["serverAuth"], new Date("2005-06-01T00:00:00Z"))), TERM_ID));
+
+  // ---- C28-C30: a certificate issued in its own name is not proof of a root ------------------
+  // A ROLLOVER CA is reissued in its own name with a NEW key and signed by its predecessor, so the
+  // names match while the authorityKeyIdentifier holds a key that is not this certificate's own.
+  // Section 1.3.1.2 governs a root, which this is not.
+  var rollKeys = await pki.key.generate({ name: "ECDSA", namedCurve: "P-256" });
+  var rollPub = await pki.key.export(rollKeys.publicKey);
+  var predecessor = await pki.x509.sign({ subject: [{ commonName: "A Rollover CA" }],
+    subjectPublicKey: ecPub, notBefore: new Date("2000-01-01T00:00:00Z"),
+    notAfter: new Date("2060-01-01T00:00:00Z"),
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] } }, { key: ecPriv });
+  var rollover = await pki.x509.sign({ subject: [{ commonName: "A Rollover CA" }],
+    subjectPublicKey: rollPub, notBefore: new Date("2005-06-01T00:00:00Z"),
+    notAfter: new Date("2060-01-01T00:00:00Z"),
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] } },
+    { cert: predecessor, key: ecPriv });
+  check("C28. a rollover CA reissued in its own name is not held to the root term limit",
+    !has(lint(rollover), TERM_ID));
+  // A self-signed root either omits the extension, which RFC 5280 sec. 4.2.1.1 permits only there,
+  // or names its own subjectKeyIdentifier in it. Both are still reported.
+  var rootNoAki = await root(new Date("2005-06-01T00:00:00Z"), new Date("2060-01-01T00:00:00Z"));
+  var rootWithAki = await pki.x509.sign({ subject: [{ commonName: "A Chrome Root" }],
+    subjectPublicKey: ecPub, notBefore: new Date("2005-06-01T00:00:00Z"),
+    notAfter: new Date("2060-01-01T00:00:00Z"),
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"],
+      authorityKeyIdentifier: true } }, { key: ecPriv });
+  check("C29. CONTROL: a self-signed root is reported whether or not it carries the extension",
+    has(lint(rootNoAki), TERM_ID) && has(lint(rootWithAki), TERM_ID));
+  // The under-report is a stated contract rather than an accident: a rollover CA is governed by
+  // section 1.3.2, and the names do not tell it from a root, so it is passed over on both sides.
+  var rolloverIds = ids(lint(rollover)).filter(function (id) {
+    return id.indexOf("lint/chrome-root/") === 0;
+  });
+  check("C30. a rollover CA draws no chrome-root row at all, which is the stated limit (" +
+    rolloverIds.join(",") + ")", rolloverIds.length === 0);
+  // A keyIdentifier with no readable subjectKeyIdentifier beside it settles nothing, and the row
+  // rests on settling it. The signer refuses to build a CA without the extension, since RFC 5280
+  // sec. 4.2.1.2 requires one, so the fixture is cut by hand from a certificate it did build.
+  var SKI_OID_DER = b.oid(pki.oid.byName("subjectKeyIdentifier"));
+  var brokenSki = surgery.patch(rollover, function (n) {
+    if (!n.constructed || n.tagNumber !== 16 || !n.children || n.children.length !== 2) return undefined;
+    if (!SKI_OID_DER.equals(n.children[0].bytes)) return undefined;
+    return b.sequence([b.raw(SKI_OID_DER), b.octetString(b.sequence([]))]);
+  });
+  var brokenRep = lint(brokenSki);
+  check("C31. an unreadable subjectKeyIdentifier beside a keyIdentifier is not read as a root",
+    !has(brokenRep, TERM_ID) &&
+    has(brokenRep, "lint/rfc5280/extension-undecodable"));
 
   console.log("CHECKS " + helpers.getChecks());
 }
