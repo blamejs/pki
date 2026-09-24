@@ -11,7 +11,11 @@
  * fuzzer's bytes: (1) the raw bytes straight into lint.certificate (exercises the
  * never-throw ingestion boundary), and (2) the bytes spliced over the serial /
  * extension region of a real certificate so the outer framing still parses and the
- * RULE closures run on attacker-controlled decoded structures.
+ * RULE closures run on attacker-controlled decoded structures. Both paths run once
+ * per named profile as well as under the default rule set, because a profile the
+ * caller names runs rows that the default set reaches only for a certificate
+ * asserting the policy identifier or key purpose they are gated on, which random
+ * input does not produce.
  *
  * Contract: lint.certificate(bytes) has exactly ONE acceptable outcome -- it RETURNS
  * a report. Any throw at all (a PkiError the linter should have caught, a RangeError,
@@ -26,11 +30,19 @@ var vectors = require("../test/helpers/vectors");
 // the fuzzer's bytes reaching the rule closures after the splice).
 var BASE = pki.schema.x509.pemDecode(vectors.CERT_EC_PEM, "CERTIFICATE");
 
+// Every certificate profile pki.lint.certificate accepts by name, plus the default
+// rule set (undefined), which is the union of them all.
+var PROFILES = [undefined, "rfc5280", "rfc9881", "rfc9909", "rfc9935", "cabf-tls", "cabf-smime"];
+
 function lintNeverThrows(input) {
-  var report = pki.lint.certificate(input);
-  // A returned report must always be well-formed (findings array + counts).
-  if (!report || !Array.isArray(report.findings) || !report.counts) {
-    throw new Error("lint.certificate returned a malformed report");
+  for (var i = 0; i < PROFILES.length; i++) {
+    var report = PROFILES[i] === undefined
+      ? pki.lint.certificate(input)
+      : pki.lint.certificate(input, { profile: PROFILES[i] });
+    // A returned report must always be well-formed (findings array + counts).
+    if (!report || !Array.isArray(report.findings) || !report.counts) {
+      throw new Error("lint.certificate returned a malformed report");
+    }
   }
 }
 

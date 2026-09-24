@@ -596,6 +596,63 @@ function run() {
   check("pki.lint.profiles() lists the profile names", pki.lint.profiles().indexOf("rfc5280") !== -1 && pki.lint.profiles().indexOf("cabf-tls") !== -1);
   check("pki.lint.rules() enumerates the registry with stable ids", pki.lint.rules().length > 10 && pki.lint.rules().every(function (r) { return typeof r.id === "string" && typeof r.citation === "string"; }));
   check("pki.lint.rules('rfc5280') filters to one profile", pki.lint.rules("rfc5280").every(function (r) { return r.source === "rfc5280"; }));
+  // The data path never throws, and the byte sources it accepts are the ones the parsers accept.
+  // A caller who read the bytes over the network holds a Uint8Array rather than a Buffer, and the
+  // promise that a whole corpus lints without a try/catch has to cover that caller too.
+  var hostileForms = [Buffer.from([255]), new Uint8Array([255]), new Uint8Array([255]).buffer];
+  check("every lint verb returns a report for hostile bytes in any BufferSource form",
+    ["certificate", "csr", "crl", "ocsp"].every(function (verb) {
+      return hostileForms.every(function (form) {
+        var rep = pki.lint[verb](form);
+        return !!rep && Array.isArray(rep.findings) && rep.worst === "fatal" &&
+          rep.findings.some(function (f) { return f.id === "lint/unparseable"; });
+      });
+    }));
+  // A byte source whose backing buffer was detached is still a byte source, and reading it fails
+  // at the door rather than at the parse. The never-throw promise covers it, or one neutered
+  // buffer aborts a corpus scan.
+  function detachedBuffer() {
+    var ab = new ArrayBuffer(8);
+    var view = Buffer.from(ab);
+    structuredClone(ab, { transfer: [ab] });
+    return view;
+  }
+  check("a byte source whose backing buffer was detached returns a report rather than throwing",
+    ["certificate", "csr", "crl", "ocsp"].every(function (verb) {
+      var rep = pki.lint[verb](detachedBuffer());
+      return !!rep && rep.worst === "fatal" &&
+        rep.findings.some(function (f) { return f.id === "lint/unparseable"; });
+    }));
+  check("...and a value that is neither bytes, a PEM string nor a parsed object still throws",
+    ["certificate", "csr", "crl", "ocsp"].every(function (verb) {
+      return throwsCode(function () { pki.lint[verb](42); }) === "lint/bad-input";
+    }));
+  // The lint verbs read "all" and "default" as naming no profile. The enumerator reads them the
+  // same way, so a caller who linted under one can ask which rows it ran.
+  check("pki.lint.rules agrees with the verbs on the names that mean every row",
+    ["all", "default"].every(function (name) {
+      return pki.lint.rules(name).length === pki.lint.rules().length &&
+        pki.lint.rules(name, "csr").length === pki.lint.rules(null, "csr").length;
+    }));
+
+  // Every profile reads extensions BY NAME through the shared decoder, which returns null both for
+  // an extension that is absent and for one whose value does not decode, so a row asking by name
+  // reads a malformed value as a passing absence. Each profile that lints a certificate reports the
+  // encoding itself for that reason. The set is DERIVED: a certificate profile is one
+  // pki.lint.certificate accepts, so a profile added later is covered without editing this vector.
+  // `3003020100` is a BasicConstraints carrying pathLenConstraint with cA unasserted.
+  var undecodableBc = makeCert({ exts: [ext("basicConstraints", true, b.raw(Buffer.from("3003020100", "hex")))] });
+  var certProfiles = [], otherProfiles = [];
+  pki.lint.profiles().forEach(function (p) {
+    var code = throwsCode(function () { pki.lint.certificate(undecodableBc, { profile: p }); });
+    if (code === "NO-THROW") certProfiles.push(p); else otherProfiles.push(p + " -> " + code);
+  });
+  check("a profile for another artifact refuses a certificate by name, which is what separates the two sets (" + otherProfiles.join(", ") + ")",
+    otherProfiles.length > 0 && otherProfiles.every(function (s) { return s.indexOf(" -> lint/unknown-profile") !== -1; }));
+  check("every certificate profile reports an extension whose value does not decode (" + certProfiles.join(",") + ")",
+    certProfiles.length >= 6 && certProfiles.every(function (p) {
+      return has(pki.lint.certificate(undecodableBc, { profile: p }), "lint/rfc5280/extension-undecodable");
+    }));
 
   // ---- RFC 9935 ML-KEM certificate rows ----
   // sec. 5: keyEncipherment MUST be the only key usage set; sec. 4: the SPKI BIT STRING
@@ -713,10 +770,15 @@ function run() {
     !has(unknownReport, "lint/rfc9881/mldsa-key-usage") && !has(unknownReport, "lint/rfc9909/slhdsa-key-usage"));
   check("pki.lint.profiles() lists the two PQC signature profiles",
     pki.lint.profiles().indexOf("rfc9881") !== -1 && pki.lint.profiles().indexOf("rfc9909") !== -1);
+  // A certificate profile carries its own rows plus the shared RFC 5280 extension-syntax row, which
+  // every profile needs because its rows ask for extensions by name.
+  function ownRows(profile) {
+    return pki.lint.rules(profile).filter(function (r) { return r.id !== "lint/rfc5280/extension-undecodable"; });
+  }
   check("pki.lint.rules('rfc9881') filters to that profile",
-    pki.lint.rules("rfc9881").length > 0 && pki.lint.rules("rfc9881").every(function (r) { return r.source === "rfc9881"; }));
+    ownRows("rfc9881").length > 0 && ownRows("rfc9881").every(function (r) { return r.source === "rfc9881"; }));
   check("pki.lint.rules('rfc9909') filters to that profile",
-    pki.lint.rules("rfc9909").length > 0 && pki.lint.rules("rfc9909").every(function (r) { return r.source === "rfc9909"; }));
+    ownRows("rfc9909").length > 0 && ownRows("rfc9909").every(function (r) { return r.source === "rfc9909"; }));
 
   // ---- RFC 5280 4.2.1.4 userNotice DisplayText ----
   // These four rules live here rather than in the decoder because 4.2.1.4 directs certificate users
