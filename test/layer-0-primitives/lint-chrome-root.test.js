@@ -25,6 +25,7 @@ var b = pki.asn1.build;
 
 var NB = new Date("2026-04-01T00:00:00Z");
 var NA = new Date("2026-06-01T00:00:00Z");
+var SUBORDINATE_NA = new Date("2029-04-01T00:00:00Z");
 var SUBSCRIBER_CUTOVER = new Date("2027-03-15T00:00:00Z");
 var BEFORE_CUTOVER = new Date("2027-03-14T00:00:00Z");
 
@@ -47,13 +48,15 @@ async function run() {
     subjectPublicKey: ecPub, notBefore: NB, notAfter: NA,
     extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] } }, { key: ecPriv });
 
-  /** A SUBORDINATE CA certificate: a CA issued by another name, which is what sec. 1.3.2 governs. */
+  /** A SUBORDINATE CA certificate: a CA issued by another name, which is what sec. 1.3.2 governs.
+   *  The default window runs to the three-year ceiling, which also puts it past the date the
+   *  clause begins to reach a certificate. */
   async function subordinate(ekus, window) {
     var w = window || {};
     var e = { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] };
     if (ekus) e.extendedKeyUsage = ekus;
     return pki.x509.sign({ subject: [{ commonName: "A Subordinate CA" }], subjectPublicKey: ecPub,
-      notBefore: w.notBefore || NB, notAfter: w.notAfter || NA, extensions: e },
+      notBefore: w.notBefore || NB, notAfter: w.notAfter || SUBORDINATE_NA, extensions: e },
       { cert: issuingCa, key: ecPriv });
   }
   /** A SUBSCRIBER certificate, which sec. 1.3.2 gates on the issuance date. */
@@ -145,6 +148,16 @@ async function run() {
     has(codeSigningSub, "lint/chrome-root/subordinate-ca-eku-server-auth-missing") &&
     findingsOf(codeSigningSub, "lint/chrome-root/subordinate-ca-eku-not-tls")
       .some(function (f) { return f.context.purpose === "codeSigning"; }));
+  // The clause reaches "all corresponding UNEXPIRED and unrevoked subordinate CA certificates",
+  // and its phase-out begins on 15 June 2026. A certificate already expired on that day was never
+  // among the unexpired ones it names, whatever its extended key usage.
+  var expiredSub = lint(await subordinate(null, { notBefore: new Date("2024-01-01T00:00:00Z"),
+    notAfter: new Date("2026-06-14T00:00:00Z") }));
+  var liveSub = lint(await subordinate(null, { notBefore: new Date("2024-01-01T00:00:00Z"),
+    notAfter: new Date("2026-06-15T00:00:00Z") }));
+  check("C11c. a subordinate CA expired before the clause takes effect is not reported",
+    !has(expiredSub, "lint/chrome-root/subordinate-ca-eku-missing") &&
+    has(liveSub, "lint/chrome-root/subordinate-ca-eku-missing"));
 
   // ---- C12-C17: sec. 1.3.2, subscriber certificates, gated on the issuance date ---------------
   var earlyIds = ids(lint(await subscriber(null, BEFORE_CUTOVER))).filter(function (id) {
@@ -170,6 +183,24 @@ async function run() {
     .filter(function (id) { return id.indexOf("lint/chrome-root/subscriber-") === 0; });
   check("C17. CONTROL: id-kp-serverAuth alone draws none of the three (" + lateSoloIds.join(",") +
     ")", lateSoloIds.length === 0);
+  // The clause governs a SUBSCRIBER certificate, which is not every end entity. A delegated OCSP
+  // responder is an end entity with its own profile in the Baseline Requirements that sec. 1.1.1
+  // binds, and that profile requires id-kp-OCSPSigning and no other purpose, so holding one to
+  // id-kp-serverAuth alone would report a conforming responder.
+  var responderIds = ids(lint(await subscriber(["ocspSigning"], SUBSCRIBER_CUTOVER)))
+    .filter(function (id) { return id.indexOf("lint/chrome-root/subscriber-") === 0; });
+  check("C17b. a delegated OCSP responder is not read as a subscriber certificate (" +
+    responderIds.join(",") + ")", responderIds.length === 0);
+  // The responder profile asks for id-kp-OCSPSigning and NO other purpose, so a certificate naming
+  // it beside others is not one. Exempting on the purpose being present rather than alone would
+  // let a certificate buy its way out of every row by adding it, and no other row here reads the
+  // responder profile: naming chrome-root does not run the cabf-tls set.
+  var mixedResponder = lint(await subscriber(["serverAuth", "clientAuth", "ocspSigning"],
+    SUBSCRIBER_CUTOVER));
+  check("C17c. a certificate naming id-kp-OCSPSigning beside other purposes is still a subscriber",
+    findingsOf(mixedResponder, "lint/chrome-root/subscriber-eku-not-server-auth")
+      .map(function (f) { return f.context.purpose; }).sort().join(",") ===
+      "clientAuth,ocspSigning");
 
   // ---- C18-C21: sec. 1.3.1.3, the three-year subordinate CA ceiling --------------------------
   var VAL_ID = "lint/chrome-root/subordinate-ca-validity-over-three-years";
