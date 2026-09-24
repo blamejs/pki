@@ -1491,8 +1491,11 @@ async function run() {
     return b.sequence([b.raw(criBytes),
       b.sequence([b.oid(NO_SIGNATURE_OID), b.nullValue()]), b.bitString(valueDer, 0)]);
   }
-  var rawValueCsr = noSignatureCsrWithValue(popKeyCsr,
-    nodeCrypto.createHash("sha256").update(pki.asn1.decode(popKeyCsr).children[0].bytes).digest());
+  // The value is an INTEGER rather than a digest. A digest is random bytes, and random bytes read as
+  // a complete OCTET STRING whenever the first two happen to be 04 1E, which is about one run in
+  // 65536: the vector would then present the very shape it asks the reader to refuse. An INTEGER is
+  // never an OCTET STRING, so the refusal is minted from the encoding rather than drawn.
+  var rawValueCsr = noSignatureCsrWithValue(popKeyCsr, b.integer(11n));
   var rawValueTagged = b.contextConstructed(0, Buffer.concat([b.integer(11n), rawValueCsr]));
   var rawValueChallenge = await popChallengeFor(proof, { tagged: rawValueTagged });
   check("EP19j. a no-signature value that is not an OCTET STRING is refused",
