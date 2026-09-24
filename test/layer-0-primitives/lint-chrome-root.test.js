@@ -180,7 +180,7 @@ async function run() {
     !has(lint(await subscriber(["serverAuth"], new Date("2026-04-01T00:00:00Z"))), VAL_ID));
 
   // ---- C22-C27: sec. 1.3.1.2, the root CA term limit -----------------------------------------
-  var TERM_ID = "lint/chrome-root/root-term-limit-outlived";
+  var TERM_ID = "lint/chrome-root/self-signed-ca-term-limit-outlived";
   // The determined key date is at or before this certificate's own notBefore, and the schedule is
   // monotone, so the removal date computed from notBefore is the LATEST the removal can fall. A
   // notAfter past it therefore outlives the term whatever earlier certificate carries the key.
