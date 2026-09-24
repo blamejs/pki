@@ -17,6 +17,7 @@ A certification request is linted before it is issued, against the rows its cert
 - A requested extension whose value does not decode under its own syntax is reported, by the RFC 5280 section 4.2 row the certificate profile already carries. It counted as a passing check before, because the shared decoder returns null for a value it cannot read and every row asking for an extension by name reads that null as absence.
 - The weak-digest row reads an RSASSA-PSS request's digest from its parameters rather than its algorithm name. RFC 4055 section 3.1 makes the hashAlgorithm field default to SHA-1, so absent parameters and an empty parameter sequence both name SHA-1: the encoding that appears to say nothing names the weakest digest.
 - `pki.lint.rules("rfc2986")` lists the new rows with their citations, and `pki.lint.profiles()` enumerates `rfc2986` alongside the existing names.
+- `pki.lint.rules(profile, artifact)` takes an optional second argument, one of `"certificate"`, `"csr"`, `"crl"` or `"ocsp"`. `"cabf-tls"` names a set for both a certificate and a request and the two are not the same rows, so without it a reader asking about the request was given the certificate-only extKeyUsage and validity rows and none of the structural ones. Calls passing one argument are unchanged. Each id now appears once in the listing, including where two artifacts run the same rule.
 
 ### Changed
 

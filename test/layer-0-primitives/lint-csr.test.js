@@ -280,6 +280,42 @@ async function run() {
     twoNotices.counts.pass + " of " + twoNotices.ran.length + ")",
     twoNotices.findings.length === 2 && twoNotices.counts.pass === twoNotices.ran.length - 1);
 
+  // "cabf-tls" names a set for two artifacts and the two are not the same rows, so a reader has
+  // to be able to ask which. Without the selector, tooling was told the CSR run included the
+  // certificate-only EKU and validity rows and none of the structural ones.
+  var certCabf = pki.lint.rules("cabf-tls", "certificate").map(function (r) { return r.id; });
+  var csrCabf = pki.lint.rules("cabf-tls", "csr").map(function (r) { return r.id; });
+  check("C20d. rules('cabf-tls', 'csr') returns what pki.lint.csr runs under that name",
+    csrCabf.indexOf("lint/rfc2986/subject-empty-no-identity") !== -1 &&
+    csrCabf.indexOf("lint/cabf-tls/cn-not-in-san") !== -1 &&
+    csrCabf.indexOf("lint/cabf-tls/eku-missing-serverauth") === -1);
+  check("C20e. ...and the certificate reading of the same name still has the rows only it runs",
+    certCabf.indexOf("lint/cabf-tls/eku-missing-serverauth") !== -1 &&
+    certCabf.indexOf("lint/rfc2986/subject-empty-no-identity") === -1);
+  check("C20f. an unknown artifact is refused",
+    (function () { try { pki.lint.rules("cabf-tls", "nonsense"); return null; }
+      catch (e) { return e.code; } })() === "lint/bad-input");
+
+  // An artifact with no profile asks what that VERB can run, not what the whole registry holds.
+  var csrAll = pki.lint.rules(null, "csr").map(function (r) { return r.id; });
+  check("C20h. rules(null, 'csr') is what pki.lint.csr can run, not the whole registry",
+    csrAll.indexOf("lint/rfc2986/subject-empty-no-identity") !== -1 &&
+    csrAll.indexOf("lint/cabf-tls/cn-not-in-san") !== -1 &&
+    csrAll.indexOf("lint/cabf-tls/validity-too-long") === -1 &&
+    csrAll.indexOf("lint/rfc5280-crl/aki-missing") === -1 &&
+    csrAll.indexOf("lint/rfc6960/signature-empty") === -1);
+  var csrAllDistinct = Object.create(null);
+  csrAll.forEach(function (id) { csrAllDistinct[id] = 1; });
+  check("C20i. ...and names each of its rules once across the profiles that share them",
+    csrAll.length === Object.keys(csrAllDistinct).length);
+
+  // A rule two artifacts share is one rule with one id, so the global listing names it once.
+  var allIds = pki.lint.rules().map(function (r) { return r.id; });
+  var distinct = Object.create(null);
+  allIds.forEach(function (id) { distinct[id] = 1; });
+  check("C20g. every rule id appears once in the global listing (" + allIds.length + " entries)",
+    allIds.length === Object.keys(distinct).length);
+
   check("C21. opts.severity filters the findings while counts stay complete",
     pki.lint.csr(withPassword, { severity: "error" }).findings.every(function (f) {
       return f.severity === "error" || f.severity === "fatal";

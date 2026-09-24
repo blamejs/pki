@@ -2912,7 +2912,7 @@
         },
         "rules": {
           "kind": "function",
-          "arity": 1
+          "arity": 2
         }
       }
     },
