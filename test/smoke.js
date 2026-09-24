@@ -87,10 +87,10 @@ function _runOne(entry) {
       var ms = Date.now() - started;
       var m = /CHECKS\s+(\d+)/.exec(out);
       var checks = m ? parseInt(m[1], 10) : 0;
-      resolve({ entry: entry, code: code, checks: checks, ms: ms, out: out });
+      resolve({ entry: entry, code: code, checks: checks, reported: !!m, ms: ms, out: out });
     });
     child.on("error", function (e) {
-      resolve({ entry: entry, code: 1, checks: 0, ms: Date.now() - started, out: String(e && e.stack || e) });
+      resolve({ entry: entry, code: 1, checks: 0, reported: false, ms: Date.now() - started, out: String(e && e.stack || e) });
     });
   });
 }
@@ -126,16 +126,25 @@ async function _pool(items, worker, concurrency) {
   var currentLayer = "";
   results.forEach(function (r) {
     if (r.entry.layer !== currentLayer) { currentLayer = r.entry.layer; console.log("\n" + currentLayer); }
-    var status = r.code === 0 ? "ok " : "FAIL";
-    console.log("  " + status + "  " + r.entry.name + "  (" + r.ms + "ms, " + r.checks + " checks)");
-    if (r.code === 0) { totalChecks += r.checks; }
+    // A file that exits 0 without printing a CHECKS line never invoked its own run(): the child
+    // loaded it as a module and exited. An exit code alone reads that as a pass, so the gate is
+    // here, where the count is. A file that prints `CHECKS 0` reported deliberately and is left
+    // alone, which is what an all-skipped file does.
+    if (r.code === 0 && !r.reported) {
+      r.reason = "exited 0 without printing a CHECKS line, so none of its checks ran";
+    }
+    var ok = r.code === 0 && !r.reason;
+    console.log("  " + (ok ? "ok " : "FAIL") + "  " + r.entry.name + "  (" + r.ms + "ms, " +
+      (r.reported ? r.checks + " checks" : "no CHECKS line") + ")");
+    if (ok) { totalChecks += r.checks; }
     else { failures.push(r); }
   });
 
   if (failures.length) {
     console.error("\n" + failures.length + " file(s) FAILED:");
     failures.forEach(function (r) {
-      console.error("\n=== " + r.entry.layer + " / " + r.entry.name + " (exit " + r.code + ") ===");
+      console.error("\n=== " + r.entry.layer + " / " + r.entry.name + " (exit " + r.code +
+        (r.reason ? "; " + r.reason : "") + ") ===");
       // The console shows the tail; the log gets the failed child's FULL
       // combined output so the on-disk record is complete without a re-run.
       _logWrite("\n--- full output: " + r.entry.layer + " / " + r.entry.name + " ---\n" + r.out + "\n--- end full output ---\n");
