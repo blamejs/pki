@@ -1146,7 +1146,10 @@ async function testQcStatementsSpec() {
   var all = [
     { statementId: "qcCompliance" },
     { statementId: "qcSSCD" },
-    { statementId: "qcType", info: { types: ["qctEsign", "qctWeb"] } },
+    // One purpose: ETSI EN 319 412-5 clause 4.2.3 admits one and only one of the three, and this
+    // certificate is the one asserted to draw no lint error. The multi-element encoding is
+    // asserted on its own certificate below.
+    { statementId: "qcType", info: { types: ["qctEsign"] } },
     { statementId: "qcIdentMethod", info: { methods: ["1.3.6.1.4.1.99999.3"] } },
     { statementId: "qcRetentionPeriod", info: { years: 10 } },
     { statementId: "qcLimitValue", info: { currency: "EUR", amount: 100000, exponent: 2 } },
@@ -1166,8 +1169,12 @@ async function testQcStatementsSpec() {
   var poNode = asn1.decode(qc.value).children[0];
   check("a presence-only statement omits statementInfo entirely",
     poNode.children.length === 1 && asn1.read.oid(poNode.children[0]) === pki.oid.byName("qcCompliance"));
-  // qcType carries a SEQUENCE OF OID, and a registered ETSI type name resolves.
-  var typeNode = asn1.decode(qc.value).children[2];
+  // qcType carries a SEQUENCE OF OID, and a registered ETSI type name resolves. Two names, so the
+  // multi-element path is driven; the certificate is its own, because naming two of the three
+  // purposes is what clause 4.2.3 forbids and the fixture above is asserted to be clean.
+  var multiTypeDer = await pki.x509.sign(leaf([
+    { statementId: "qcType", info: { types: ["qctEsign", "qctWeb"] } }]), { key: s.key });
+  var typeNode = asn1.decode(qcOf(multiTypeDer).value).children[0];
   check("qcType encodes its value OIDs, resolving the registered ETSI names",
     typeNode.children.length === 2 &&
     asn1.read.oid(typeNode.children[1].children[0]) === pki.oid.byName("qctEsign") &&

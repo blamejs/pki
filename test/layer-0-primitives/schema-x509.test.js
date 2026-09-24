@@ -566,6 +566,10 @@ function testQcStatements() {
   // 16. SemanticsInformation (v1): at least one field; empty rejects.
   var r16 = dec(build.sequence([build.sequence([build.oid(V1), build.sequence([build.oid("1.3.6.1.4.1.99999.9")])])]));
   check("qc: SemanticsInformation decodes semanticsIdentifier", r16[0].info.semanticsIdentifier === "1.3.6.1.4.1.99999.9" && r16[0].info.nameRegistrationAuthorities.length === 0);
+  // The identifier resolves to its registered name the way QcType's and QcIdentMethod's values do,
+  // and stays null for one the registry does not name.
+  check("qc: SemanticsInformation resolves a registered identifier to its name",
+    r16[0].info.semanticsIdentifierName === null);
   check("qc: empty SemanticsInformation -> bad-qc-statement", code(function () { dec(build.sequence([build.sequence([build.oid(V1), build.sequence([])])])); }) === "path/bad-qc-statement");
   // SemanticsInformation with nameRegistrationAuthorities (a SEQUENCE OF GeneralName); a QCStatement of >2 children.
   var rSem = dec(build.sequence([build.sequence([build.oid(V1), build.sequence([build.oid("1.2.3.4"), build.sequence([build.contextPrimitive(6, Buffer.from("https://ra", "ascii"))])])])]));
