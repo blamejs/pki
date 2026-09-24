@@ -1,0 +1,21 @@
+{
+  "version": "0.8.17",
+  "date": "2026-09-24",
+  "headline": "The CA/Browser Forum subscriber certificate profile is linted against its own tables, not a subset of them.",
+  "summary": "The TLS profile held a certificate to six rules, which covered the identity fields and left the rest of section 7.1 unread: a certificate missing the two extensions the profile requires, asserting a key purpose it forbids, or setting a keyUsage bit its key type does not permit passed without a word. The profile now carries nineteen more rules, each derived from a table in section 7.1.2.7 of version 2.3.0 and citing the subsection it comes from.",
+  "sections": {
+    "Added": [
+      "The extension presence and criticality table (section 7.1.2.7.6): `authorityInformationAccess` and `certificatePolicies` are required, `nameConstraints` is forbidden, `authorityInformationAccess` must not be critical, and a `subjectKeyIdentifier` is reported at notice as NOT RECOMMENDED. That last one is the opposite of what RFC 5280 asks of an end-entity certificate, and both ship, each under the profile that states it.",
+      "The authorityInformationAccess table (section 7.1.2.7.7): an accessMethod outside `id-ad-ocsp` and `id-ad-caIssuers` is reported, as is an accessLocation that is not a `uniformResourceIdentifier`.",
+      "basicConstraints (section 7.1.2.7.8): `cA` must be FALSE and `pathLenConstraint` must be absent.",
+      "certificatePolicies (section 7.1.2.7.9): `anyPolicy` is forbidden, exactly one reserved policy identifier must be asserted, counted across all four the profile defines, which are the domain-, organization- and individual-validated identifiers and the Extended Validation one (naming none and naming two are the same fault, and the finding says which), and a policy qualifier other than `id-qt-cps` is forbidden, which includes the userNotice RFC 5280 otherwise allows.",
+      "The extKeyUsage table (section 7.1.2.7.10): `id-kp-codeSigning`, `id-kp-emailProtection`, `id-kp-timeStamping`, `id-kp-OCSPSigning`, `anyExtendedKeyUsage` and the precertificate signing purpose are each forbidden.",
+      "The two Key Usage tables (section 7.1.2.7.11), which differ by key type: a bit the table marks unpermitted for the certificate's own key is reported, so `keyEncipherment` is accepted on an RSA certificate and reported on an ECC one. An ECC certificate must assert `digitalSignature`, and an RSA certificate must set at least one of the bits its table permits. The section gives a table for an RSA key and a table for an ECC key and none for anything else, so a certificate on another key, a post-quantum one among them, is held to neither rather than to the RSA one by default.",
+      "The subjectAltName table (section 7.1.2.7.12): an entry of a type outside `dNSName` and `iPAddress` is reported, a `dNSName` carrying the root zone's zero-length trailing label is reported, and the extension must be critical where the subject is an empty sequence and non-critical otherwise, which one rule measures in both directions."
+    ],
+    "Changed": [
+      "`pki.lint.rules(\"cabf-tls\", \"certificate\")` returns twenty-five rules where it returned six.",
+      "Selecting `opts.profile: \"cabf-tls\"` is documented as what it is: an assertion that the input is a TLS subscriber certificate, not a question asked of it. The section 7.1.2.7 rows then apply whatever the certificate says it is, so naming the profile for a CA certificate reports that CA against subscriber requirements. Left unnamed, those rows reach a certificate only where it asserts id-kp-serverAuth and is not a CA. The CA profiles of section 7.1.2.10 are a separate set this does not yet carry."
+    ]
+  }
+}

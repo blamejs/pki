@@ -339,8 +339,24 @@ function run() {
     !has(pki.lint.certificate(makeCert({ exts: [basicConstraints(true, null, true), keyUsage([5], true), ski()] })), "lint/rfc5280/ski-missing-ee"));
 
   // ---- CABF TLS BR subset (applies to a TLS server cert) ----
-  var tlsCert = makeCert({ subject: dnCN("example.com"), validity: VALID_OK, exts: [eku(["serverAuth"]), san([dnsName("example.com")], false), aki()] });
-  check("a conformant TLS cert has no cabf-tls error", pki.lint.certificate(tlsCert).findings.every(function (f) { return f.source !== "cabf-tls" || (f.severity !== "error" && f.severity !== "fatal"); }));
+  // The profile's MUST extensions, from BR sec. 7.1.2.7.6: a certificate missing
+  // authorityInformationAccess or certificatePolicies is not conformant, whichever rules happen
+  // to be implemented, so the fixture carries both.
+  function aiaOcsp() {
+    return ext("authorityInfoAccess", false, b.sequence([b.sequence([
+      b.oid(oid.byName("ocsp")), b.contextPrimitive(6, Buffer.from("http://ocsp.example", "ascii"))])]));
+  }
+  function reservedPolicy() {
+    return ext("certificatePolicies", false,
+      b.sequence([b.sequence([b.oid(oid.byName("domain-validated"))])]));
+  }
+  var tlsCert = makeCert({ subject: dnCN("example.com"), validity: VALID_OK,
+    exts: [eku(["serverAuth"]), san([dnsName("example.com")], false), aki(), aiaOcsp(), reservedPolicy()] });
+  var tlsErrors = pki.lint.certificate(tlsCert).findings.filter(function (f) {
+    return f.source === "cabf-tls" && (f.severity === "error" || f.severity === "fatal");
+  });
+  check("a conformant TLS cert has no cabf-tls error (" +
+    tlsErrors.map(function (f) { return f.id; }).join(",") + ")", tlsErrors.length === 0);
   check("a TLS cert with no SAN -> san-missing (error)",
     has(pki.lint.certificate(makeCert({ subject: dnCN("example.com"), exts: [eku(["serverAuth"]), aki()] })), "lint/cabf-tls/san-missing"));
   // A SAN that is present but does not decode (or carries no names) is not usable -> missing.
