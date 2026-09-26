@@ -886,7 +886,10 @@ async function testSlhDsa() {
   var shk = surgery.replaceLastAlgId(pShk, pki.oid.byName("shake128"),
     function (n) { return surgery.algIdWithParams(n.children[0].bytes, b.nullValue()); });
   check("SLH-DSA shake128 digest-params splice changed the DER", !shk.der.equals(pShk));
-  check("SLH-DSA shake128 digestAlgorithm NULL parameters -> unsupported", (function (r) { return r.valid === false && r.signers[0].code === "cms/unsupported-algorithm"; })(await pki.cms.verify(shk.der)));
+  // The decoder refuses it, so the message is rejected whole rather than reported per signer.
+  await rejects("SLH-DSA shake128 digestAlgorithm NULL parameters", function () {
+    return pki.cms.verify(shk.der);
+  }, "cms/bad-algorithm-parameters");
   // RFC 9814 sec. 4: a message-digest that is not the parameter set's paired hash is rejected on
   // verify -- SHA-256 on sha2-256f (which pairs SHA-512, twice the 256-bit tree hash) fails closed.
   var p256f = await pki.cms.sign(CONTENT, makeSigner("slh-dsa-sha2-256f"));

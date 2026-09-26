@@ -196,11 +196,16 @@ function testParamsMustBeAbsent() {
     "Ed25519", "Ed448", "X25519", "X448",
     "id-ml-kem-512", "id-ml-kem-768", "id-ml-kem-1024",
     "hkdfWithSha256", "hkdfWithSha384", "hkdfWithSha512",
+    // RFC 3279 sec. 2.2.3 "the encoding MUST omit the parameters field" for ecdsa-with-SHA1, and
+    // sec. 2.2.2 SHALL for id-dsa-with-sha1; RFC 5758 sec. 3.2 repeats it for the SHA-2 ECDSA set.
+    "ecdsaWithSHA1", "ecdsaWithSHA256", "ecdsaWithSHA384", "ecdsaWithSHA512", "dsaWithSha1",
+    // RFC 8702 sec. 2 and sec. 3.1 for the SHAKE digests, sec. 3.2 for the PSS-SHAKE signatures.
+    "shake128", "shake256", "id-RSASSA-PSS-SHAKE128", "id-RSASSA-PSS-SHAKE256",
   ];
   must.forEach(function (nm) {
     check("paramsMustBeAbsent(" + nm + ") -> true", pki.oid.paramsMustBeAbsent(pki.oid.byName(nm)) === true);
   });
-  check("count of the must-absent set is 37 (12 pure + 12 hash SLH-DSA + 3 ML-DSA + 4 Ed/X + 3 ML-KEM + 3 HKDF)", must.length === 37);
+  check("count of the must-absent set is 46 (37 plus the 5 ECDSA/DSA and 4 SHAKE identifiers)", must.length === 46);
   // Algorithms that legitimately CARRY parameters (or a NULL) are NOT in the set.
   ["rsaEncryption", "sha256WithRSAEncryption", "rsassaPss", "ecPublicKey", "prime256v1", "aes256-GCM"].forEach(function (nm) {
     check("paramsMustBeAbsent(" + nm + ") -> false", pki.oid.paramsMustBeAbsent(pki.oid.byName(nm)) === false);

@@ -432,13 +432,18 @@ security-only patches after the next major releases.
   was deferred to first use.
 - **Algorithm-parameter confusion.** For the algorithms whose `parameters` field
   must be absent — ML-DSA, SLH-DSA, the RFC 8410 Edwards and Montgomery curves,
-  ML-KEM (RFC 9936), and the HKDF identifiers (RFC 8619) — the single shared
+  ML-KEM (RFC 9936), the HKDF identifiers (RFC 8619), the ECDSA and DSA signature
+  identifiers (RFC 3279 §2.2.2 and §2.2.3, RFC 5758 §3.2), and the SHAKE digests
+  and RSASSA-PSS-SHAKE signatures (RFC 8702 §2, §3.1, §3.2) — the single shared
   AlgorithmIdentifier decoder rejects a present parameters field, whether an
   explicit NULL or arbitrary bytes, with a `<format>/bad-algorithm-parameters`
   code (RFC 9909 §3, RFC 9814 §4, RFC 9881 §2, RFC 8410 §3). The check lives in
   the one decoder every format composes, so a certificate, CMS message, OCSP
   response, timestamp, CRL, CSR, or key cannot smuggle unauthenticated bytes past
-  a parser through that field, and no format can drift out of the rule.
+  a parser through that field, and no format can drift out of the rule. An
+  identifier whose specification requires the field PRESENT and NULL, which is
+  `rsaEncryption` and every `*WithRSAEncryption` under RFC 4055, is not in the set:
+  declaring one there would refuse conforming certificates.
 - **ML-KEM key misuse (RFC 9935 / FIPS 203).** An ML-KEM public key establishes
   keys; it cannot sign or agree. `pki.path.validate` enforces the RFC 9935 §5
   rule that an ML-KEM certificate's keyUsage, if present, asserts

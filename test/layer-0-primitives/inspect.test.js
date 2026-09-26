@@ -69,9 +69,17 @@ function run() {
   var richPem = fs.readFileSync(path.join(__dirname, "..", "fixtures", "inspect", "rich-cert.pem"), "utf8");
   var r = pki.inspect.certificate(richPem);
   check("inspect: IPv4 SAN as dotted-quad", /IP Address:192\.168\.1\.10/.test(r));
-  check("inspect: IPv6 SAN grouped", /IP Address:2001:DB8:/.test(r));
+  // RFC 5952 fixes the text form of an IPv6 address: lowercase, with the longest run of zero groups
+  // compressed to "::". The same report renders an RFC 3779 address block through `ipUtils`, so a
+  // second renderer here would print one address two ways and a diff of two reports would lie about
+  // whether the addresses match. The vector compares the rendering against that shared home rather
+  // than against a literal, which is what makes it the claim and not a restatement of the output.
+  check("inspect: IPv6 SAN in the RFC 5952 canonical form", /IP Address:2001:db8::1/.test(r));
+  check("inspect: and that is exactly what the shared address renderer produces",
+    r.indexOf("IP Address:" + require("../../lib/ip-utils.js")
+      .textFromOctets(Buffer.from("20010db8000000000000000000000001", "hex"))) !== -1);
   check("inspect: directoryName SAN as a DN (not [object Object])", /DirName:.*CN=altdir/.test(r) && r.indexOf("[object Object]") < 0);
-  check("inspect: whole SAN on one line (no IP byte injects a newline)", /DNS:rich\.blamejs\.test, IP Address:192\.168\.1\.10, IP Address:2001:DB8:0:0:0:0:0:1, email:hostmaster@blamejs\.test, URI:https:\/\/blamejs\.test\/, DirName:CN=altdir/.test(r));
+  check("inspect: whole SAN on one line (no IP byte injects a newline)", /DNS:rich\.blamejs\.test, IP Address:192\.168\.1\.10, IP Address:2001:db8::1, email:hostmaster@blamejs\.test, URI:https:\/\/blamejs\.test\/, DirName:CN=altdir/.test(r));
   check("inspect: high-bit serial has no DER 00 sign byte", /Serial Number:\n\s+f1:e2:d3/.test(r) && !/Serial Number:\n\s+00:f1/.test(r));
   check("inspect: certificatePolicies renders the policy OID", /X509v3 Certificate Policies:\n\s+Policy: 1\.3\.6\.1\.4\.1\.99999\.1\.2/.test(r));
   check("inspect: CRL distribution point renders the URI", /X509v3 CRL Distribution Points:[\s\S]*URI:http:\/\/crl\.blamejs\.test\/ca\.crl/.test(r));
@@ -372,7 +380,9 @@ function run() {
   var nc32 = pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("nameConstraints")), b.boolean(true),
     b.octetString(b.sequence([b.contextConstructed(0, b.sequence([b.contextPrimitive(7, ncIp)]))]))])));
   check("inspect: nameConstraints 32-byte IPv6 subtree renders addr/mask, excluded omitted",
-    /Permitted:\n\s+IP Address:2001:0:0:0:0:0:0:0\/FFFF:0:0:0:0:0:0:0/.test(nc32) && nc32.indexOf("Excluded:") < 0);
+    // An address AND mask, so each half is rendered as an address and the two are joined. The shared
+    // renderer is not widened to take 32 octets, because a mask reaching it would render as an address.
+    /Permitted:\n\s+IP Address:2001::\/ffff::/.test(nc32) && nc32.indexOf("Excluded:") < 0);
 
   // An extKeyUsage whose KeyPurposeId OID is unregistered renders the raw dotted
   // OID (the registry lookup misses, but the purpose is never dropped).

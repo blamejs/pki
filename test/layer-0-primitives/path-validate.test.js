@@ -5062,9 +5062,10 @@ async function testCoverageEdges() {
   });
 
   // ---- 268b ECDSA signatureAlgorithm carrying a (forbidden) NULL parameters ---
-  // Unlike the EdDSA 268 case (the x509 parser rejects EdDSA-with-parameters
-  // first), an ECDSA signatureAlgorithm with a spurious NULL survives parsing and
-  // reaches resolveDescriptor, which rejects the "absent"-shaped algorithm.
+  // RFC 3279 sec. 2.2.3 and RFC 5758 sec. 3.2 both say the encoding MUST omit the
+  // parameters field for an ECDSA signature algorithm, so the x509 parser refuses
+  // it, the way it already refuses EdDSA-with-parameters in the 268 case. The
+  // shape was refused before this too, but a layer later, at resolveDescriptor.
   await cap("268b ECDSA sigAlg with NULL params", async function () {
     return run([await mkCert({ subject: "Ecdsa268b", issuer: "EcRoot", signWith: "p256", subjectKeys: "ed25519leaf", sigAlgOverride: b.sequence([b.oid("1.2.840.10045.4.3.2"), b.nullValue()]) })], { time: T2027, trustAnchors: anchorEc });
   });
@@ -5310,7 +5311,7 @@ async function testCoverageEdges() {
     "1866 delegate signature does not verify -> unknown": { status: UNK },
     "1872 delegate malformed EKU -> unknown": { status: UNK },
     "1879 delegate malformed keyUsage -> unknown": { status: UNK },
-    "268b ECDSA sigAlg with NULL params": { code: UA },
+    "268b ECDSA sigAlg with NULL params": { throw: "x509/bad-algorithm-parameters" },
     "488b URI SAN single-'@' authority within a URI subtree": { valid: true },
     "665 rfc822Name (tag 1) string seed accepted": { valid: true },
     "665 URI (tag 6) string seed accepted": { valid: true },

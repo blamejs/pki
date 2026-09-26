@@ -366,6 +366,22 @@ async function run() {
   check("OAEP with an MGF1 hash != the OAEP hash -> cms/unsupported-algorithm", (await codeOf(function () { return pki.cms.decrypt(oaepMgf, { key: rsa.key, cert: rsa.cert }, { recipientIndex: 0 }); })) === "cms/unsupported-algorithm");
   var oaepLabel = ktriOaepEnv(bp.sequence([bp.explicit(0, bp.sequence([bp.oid(O("sha256")), NL])), bp.explicit(2, bp.sequence([bp.oid(O("pSpecified")), bp.octetString(Buffer.from("label"))]))]));
   check("OAEP with a non-empty label -> cms/unsupported-algorithm", (await codeOf(function () { return pki.cms.decrypt(oaepLabel, { key: rsa.key, cert: rsa.cert }, { recipientIndex: 0 }); })) === "cms/unsupported-algorithm");
+  // RFC 4055 sec. 4.1 gives maskGenFunc the default mgf1SHA1, so the parameter set above and this one
+  // are THE SAME SET written two ways, and they get the same verdict. Reading the omission as "the
+  // same as hashFunc" would enforce the rule on one spelling and skip it on the other, which is a
+  // stated check a sender can step around by leaving a field out.
+  var oaepDefaultedMgf = ktriOaepEnv(bp.sequence([bp.explicit(0, bp.sequence([bp.oid(O("sha256")), NL]))]));
+  check("OAEP whose maskGenFunc is ABSENT names mgf1SHA1, so SHA-256 is the same mismatch -> cms/unsupported-algorithm",
+    (await codeOf(function () { return pki.cms.decrypt(oaepDefaultedMgf, { key: rsa.key, cert: rsa.cert }, { recipientIndex: 0 }); })) === "cms/unsupported-algorithm");
+  // CONTROL: the two spellings of a CONFORMING set both reach the decrypt rather than the parameter
+  // check, so the fix refuses a mismatch without refusing agreement. SHA-1 on both sides is what an
+  // absent maskGenFunc pairs with, and parameters absent entirely is all three defaults at once.
+  var oaepSha1Both = ktriOaepEnv(bp.sequence([bp.explicit(0, bp.sequence([bp.oid(O("sha1")), NL])), bp.explicit(1, bp.sequence([bp.oid(O("mgf1")), bp.sequence([bp.oid(O("sha1")), NL])]))]));
+  check("CONTROL OAEP SHA-1 with MGF1-SHA-1 agrees, so it reaches the decrypt -> cms/decrypt-failed",
+    (await codeOf(function () { return pki.cms.decrypt(oaepSha1Both, { key: rsa.key, cert: rsa.cert }, { recipientIndex: 0 }); })) === "cms/decrypt-failed");
+  var oaepDefaultedBoth = ktriOaepEnv(bp.sequence([bp.explicit(0, bp.sequence([bp.oid(O("sha1")), NL]))]));
+  check("CONTROL OAEP SHA-1 with maskGenFunc ABSENT is the same agreeing set -> cms/decrypt-failed",
+    (await codeOf(function () { return pki.cms.decrypt(oaepDefaultedBoth, { key: rsa.key, cert: rsa.cert }, { recipientIndex: 0 }); })) === "cms/decrypt-failed");
   // PKCS#1 v1.5 (rsaEncryption) implicit rejection WITHOUT an openssl oracle: a decode fault (here a
   // wrong-length RSA ciphertext) yields a fresh random CEK, so the failure is the uniform verdict --
   // never a distinguishable padding error (RFC 3218 sec. 2.3.2).
