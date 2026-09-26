@@ -92,6 +92,9 @@ jobs:
           - lint-csr
           - lint-crl
           - lint-ocsp
+          - lint-cms
+          - lint-tsp
+          - lint-attrcert
           - cms-verify
           - cms-digest
           - dn-string
