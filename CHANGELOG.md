@@ -4,6 +4,24 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.26 — 2026-09-24
+
+Three lint verbs, and each is short because the parser that feeds it is strict.
+
+### Added
+
+- `pki.lint.cms(pem | der | parsed, opts?)` lints a CMS ContentInfo against the RFC 5652 profile, under `profile: "rfc5652"`. A content type other than signed-data carries no signerInfos, so every row is not applicable to it rather than reported against it.
+- Its rows are what the parser leaves: a signing-time naming a year from 1950 to 2049 encoded as GeneralizedTime where section 11.3 requires UTCTime, a signer whose digest algorithm the digestAlgorithms set does not list, a version 1 attribute certificate in the certificates field, and two notices, a SignedData carrying no signers and a detached signature whose content a verifier must be handed separately. The other direction of section 11.3 cannot be broken at all: a UTCTime carries two year digits that the clause reads as 19YY or 20YY, so every one of them names a year inside the window.
+- The signing-time rule reads every SignerInfo a message carries, which includes the countersignatures section 11.4 places in an unsigned attribute and any nested inside those. A rule about a signed attribute governs one wherever it appears, so a message cannot put the shape the clause forbids a level down. The finding names the message's own signer and says whether the attribute sat on a countersignature under it, rather than a position in that walk, which would send a reader to a different signer. Two digest identifiers naming the same algorithm are compared as RFC 5754 section 2 requires: absent parameters and an explicit NULL are the same digest, so a set that writes one beside a signer that writes the other is listing that signer's algorithm.
+- `pki.lint.tsp(pem | der, opts?)` lints an RFC 3161 timestamp token under `profile: "rfc3161"`. Its rows are a tsa hint naming a subject the token's own certificate does not carry, a serial number wider than the 160 bits a conforming consumer must accommodate, and a token stating no accuracy. The tsa row resolves which certificate verifies the token from the SignerInfo's own identifier, in either form it takes, an issuer with a serial number or a subject key identifier, and passes over a token that leaves that certificate to be supplied out of band. Carrying one certificate is not the same fact as carrying the signer's, since a token may embed an intermediate, and comparing a hint against that would report a conforming token. The clause says subject names, plural, so the row reads the subject and every subjectAltName entry alike. A distinguished name is compared under the RFC 5280 section 7.1 rules wherever it appears, since two encodings of one name are one name, a DNS name and the text of a mailbox and a URI are compared without regard to ASCII case, since DER canonicalizes the encoding and not the letters, and every other form is compared as its exact encoding, since a structured name such as an otherName is not settled by comparing decoded values.
+- `pki.lint.attrcert(pem | der, opts?)` lints an X.509 attribute certificate under `profile: "rfc5755"`. Its rows are the criticality each clause fixes for the extensions the profile defines, section 4.3's six and the ProxyInfo of section 7.2, a critical extension the profile does not define, a Holder naming more than one of its three options, and an issuerUniqueID, which section 4.2.8 permits only where the issuer's own certificate carries one and which is therefore a warning naming that condition. What counts as outside the profile is membership in that set rather than whether this toolkit can decode the value: the attribute certificate decoder also reads AAControls, which section 7.4 places in a CA or AC issuer public-key certificate rather than in an attribute certificate.
+- `pki.lint.rules()` and `pki.lint.rules(profile, artifact)` reach the three new sets, with `"cms"`, `"tsp"` and `"attrcert"` joining the artifacts a profile name can be read under.
+- A fuzz target for each of the three, holding the contract every lint verb holds: hostile bytes return a report and never raise. Each drives the raw bytes at the ingestion boundary, splices them over a well-framed structure so the rules run on attacker-controlled values, and then puts them in each attribute or extension a rule reads a value out of.
+
+### Changed
+
+- Each of the three verbs refuses a profile name belonging to another one by name, the way the existing verbs do, rather than running a certificate's rows against a message.
+
 ## v0.8.25 — 2026-09-24
 
 A dated permission that lapses is a requirement, and a certificate's own extended key usages name the purpose it was issued for.
