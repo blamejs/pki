@@ -66,6 +66,12 @@ async function run() {
   // A ContentInfo that is not signed-data carries no signerInfos, so every row that reads one is
   // not applicable to it rather than reported against it.
   var certsOnly = await pki.cms.certsOnly([cert]);
+  // A STRING input takes the PEM door rather than the DER one, and a string that is not a decodable
+  // PEM must arrive as the same fatal finding: the never-throw promise covers both doors.
+  var badPem = pki.lint.cms("-----BEGIN CMS-----\nnot base64 at all\n-----END CMS-----");
+  check("Q3b. a string that is not a decodable PEM is a fatal finding, not a throw",
+    badPem.findings.length === 1 && badPem.findings[0].id === "lint/unparseable" &&
+    badPem.findings[0].severity === "fatal" && typeof badPem.findings[0].context.code === "string");
   check("Q4. a profile name belonging to another verb is refused by name",
     (function () {
       try { pki.lint.cms(attached, { profile: "rfc5280" }); return false; }

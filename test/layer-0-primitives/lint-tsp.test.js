@@ -72,6 +72,13 @@ async function run() {
     hostile.findings[0].severity === "fatal" &&
     typeof hostile.findings[0].context.code === "string");
 
+  // A STRING input takes the PEM door rather than the DER one, and a string that is not a decodable
+  // PEM must arrive as the same fatal finding: the never-throw promise covers both doors.
+  var badPem = pki.lint.tsp("-----BEGIN TIMESTAMP TOKEN-----\nnot base64\n-----END TIMESTAMP TOKEN-----");
+  check("T3b. a string that is not a decodable PEM is a fatal finding, not a throw",
+    badPem.findings.length === 1 && badPem.findings[0].id === "lint/unparseable" &&
+    badPem.findings[0].severity === "fatal" && typeof badPem.findings[0].context.code === "string");
+
   // ---- T4: what parseToken settles, so no row is written for it -------------------------------
   // Each of these is an RFC 3161 sec. 2.4.2 MUST that the token parser refuses outright, so the
   // operator sees its verdict. Driving them is what keeps the absent rows a decision.

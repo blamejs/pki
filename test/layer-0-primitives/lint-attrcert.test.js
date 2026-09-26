@@ -79,6 +79,14 @@ async function run() {
     hostile.findings[0].severity === "fatal" &&
     typeof hostile.findings[0].context.code === "string");
 
+  // A STRING input takes the PEM door rather than the DER one, and a string that is not a decodable
+  // PEM must arrive as the same fatal finding: the never-throw promise covers both doors.
+  var badPem = pki.lint.attrcert(
+    "-----BEGIN ATTRIBUTE CERTIFICATE-----\nnot base64\n-----END ATTRIBUTE CERTIFICATE-----");
+  check("R3b. a string that is not a decodable PEM is a fatal finding, not a throw",
+    badPem.findings.length === 1 && badPem.findings[0].id === "lint/unparseable" &&
+    badPem.findings[0].severity === "fatal" && typeof badPem.findings[0].context.code === "string");
+
   // ---- R4: what the parser settles, so no row is written for it -------------------------------
   // Each is an RFC 5755 sec. 4.2 MUST the parser refuses. The producer refuses some of them first,
   // which is the same verdict reaching the operator one step earlier.
