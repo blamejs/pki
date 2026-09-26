@@ -295,6 +295,39 @@ async function testDigestIndependence() {
   // Adding to that set must not disturb a signature, since no signature in the message covers it.
   check("#14 every signature still verifies after the set gains an entry",
     res.signers.every(function (s) { return s.ok; }));
+  // Whether a digest is ALREADY listed is asked through RFC 5754 sec. 2, which makes absent
+  // parameters and an explicit NULL one algorithm, and not by matching bytes. Another producer may
+  // write the NULL spelling where this one omits the parameters, so a byte comparison would list the
+  // same digest twice. pki.cms.sign only ever emits the absent form, so the NULL form is spliced in.
+  function isDigestAlgSet(n) {
+    if (n.tagClass !== "universal" || n.tagNumber !== 17 || !n.children || !n.children.length) return false;
+    return n.children.every(function (c) {
+      return c.constructed && c.tagNumber === 16 && c.children && c.children.length &&
+        c.children[0].tagClass === "universal" && c.children[0].tagNumber === 6;
+    });
+  }
+  var nullForm = surgery.patch(base.cms, function (n) {
+    if (!isDigestAlgSet(n)) return undefined;
+    return b.set(n.children.map(function (c) {
+      return b.sequence([b.raw(c.children[0].bytes), b.nullValue()]);
+    }));
+  });
+  function digestCount(der, name) {
+    return (parse(der).digestAlgorithms || []).filter(function (a) { return a.name === name; }).length;
+  }
+  check("#14 CONTROL: the spliced NULL-parameter base lists its digest once, with parameters",
+    digestCount(nullForm, "sha256") === 1 &&
+    (parse(nullForm).digestAlgorithms || [])[0].parameters !== null);
+  var sameDigest = await pki.cms.countersign(nullForm,
+    { cert: cs.cert, key: cs.key, digestAlgorithm: "sha256" }, {});
+  check("#14 countersigning with a digest the set spells as NULL adds no second entry",
+    digestCount(sameDigest, "sha256") === 1);
+  check("#14 and that message still verifies",
+    (await pki.cms.verify(sameDigest)).signers.every(function (s) { return s.ok; }));
+  var otherDigest = await pki.cms.countersign(nullForm,
+    { cert: cs.cert, key: cs.key, digestAlgorithm: "sha512" }, {});
+  check("#14 CONTROL: a genuinely different digest IS still added",
+    digestCount(otherDigest, "sha256") === 1 && digestCount(otherDigest, "sha512") === 1);
 }
 
 // ---- 15 INPUT POLYMORPHISM: DER Buffer / Uint8Array / PEM (byte-preserving) --

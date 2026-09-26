@@ -208,6 +208,71 @@ async function run() {
     sevOf(pki.lint.attrcert(withUid), "lint/rfc5755/issuer-unique-id-present") === "warn" &&
     !has(cleanRep, "lint/rfc5755/issuer-unique-id-present"));
 
+  // ---- R11: sec. 4.2.2's remaining clauses -----------------------------------------------------
+  // Three of them are answerable from these bytes alone and the parser refuses them, in the same
+  // words sec. 4.2.3 uses for the AC issuer: "The PKC issuer MUST have a non-empty distinguished name
+  // that is to be present as the single value of the holder.baseCertificateID.issuer construct in the
+  // directoryName field." The builder writes only a conforming holder, so each is hand-built.
+  var DN_ALICE = b.sequence([b.set([b.sequence([b.oid(pki.oid.byName("commonName")), b.utf8("Alice")])])]);
+  function withBaseHolder(inner) {
+    return surgery.patch(clean, function (n, path) {
+      // AttributeCertificateInfo: version(0), holder(1), issuer(2). The Holder's three options are
+      // IMPLICIT, so [0] replaces the IssuerSerial SEQUENCE tag.
+      if (path.length !== 2 || path[0].index !== 0 || path[1].index !== 1) return undefined;
+      return b.sequence([b.implicit(0, inner, true)]);
+    });
+  }
+  function issuerSerial(names, uid) {
+    var kids = [b.sequence(names), b.integer(5n)];
+    if (uid) kids.push(uid);
+    return b.sequence(kids);
+  }
+  var conformingBase = withBaseHolder(issuerSerial([b.contextConstructed(4, DN_ALICE)], null));
+  check("R11. CONTROL: a conforming baseCertificateID Holder parses and reports nothing (" +
+    acIds(pki.lint.attrcert(conformingBase)).join(",") + ")",
+  pki.lint.attrcert(conformingBase).findings.length === 0);
+  [["is not a directoryName", [b.contextPrimitive(2, Buffer.from("not-a-dn.example"))]],
+    ["is an empty distinguished name", [b.contextConstructed(4, b.sequence([]))]],
+    ["carries two GeneralNames", [b.contextConstructed(4, DN_ALICE),
+      b.contextPrimitive(2, Buffer.from("second.example"))]],
+  ].forEach(function (row, i) {
+    var rep = pki.lint.attrcert(withBaseHolder(issuerSerial(row[1], null)));
+    check("R11" + "abc".charAt(i) + ". a baseCertificateID issuer that " + row[0] +
+      " is refused at parse, carrying the parser's code",
+    rep.findings.length === 1 && rep.findings[0].id === "lint/unparseable" &&
+      rep.findings[0].severity === "fatal" &&
+      rep.findings[0].context.code === "attrcert/bad-holder");
+  });
+  // The same schema reads a targetInformation targetCertificate, which sec. 4.2.2 says nothing about,
+  // so that structure must not have inherited the Holder's rule.
+  var targeted = await pki.attrcert.sign(spec({ extensions: {
+    targetInformation: [{ targetName: { dNSName: "t.example" } }] } }), aa);
+  check("R11d. CONTROL: a targetInformation targetCertificate is not held to the Holder's rule",
+    pki.lint.attrcert(targeted).findings.length === 0);
+
+  // The two clauses these bytes cannot settle get rows instead. "The AC
+  // holder.baseCertificateID.issuerUID field MUST only be used if the holder's PKC contains an
+  // issuerUniqueID field" is a fact about another certificate, so it warns and names the condition.
+  var holderUid = withBaseHolder(issuerSerial([b.contextConstructed(4, DN_ALICE)],
+    b.bitString(Buffer.from([0xa5]), 0)));
+  check("R11e. a Holder baseCertificateID issuerUID is reported at warn",
+    sevOf(pki.lint.attrcert(holderUid), "lint/rfc5755/holder-issuer-uid-present") === "warn" &&
+    !has(pki.lint.attrcert(conformingBase), "lint/rfc5755/holder-issuer-uid-present"));
+  // "In any other case where the Holder field uses the entityName option, only one name SHOULD be
+  // present." A SHOULD, so a warning, and it counts the NAMES in the one option rather than the
+  // options: the sibling row counts options, and this fixture names exactly one of them.
+  var twoNameHolder = await pki.attrcert.sign(spec({
+    holder: { entityName: [{ directoryName: "CN=Alice" }, { dNSName: "holder2.example" }] } }), aa);
+  var twoNameRep = pki.lint.attrcert(twoNameHolder);
+  check("R11f. a Holder entityName carrying two names is reported at warn",
+    sevOf(twoNameRep, "lint/rfc5755/holder-entity-name-multiple") === "warn" &&
+    twoNameRep.findings.filter(function (f) {
+      return f.id === "lint/rfc5755/holder-entity-name-multiple";
+    })[0].context.names === 2);
+  check("R11g. CONTROL: it is ONE option, so the multiple-options row stays silent",
+    !has(twoNameRep, "lint/rfc5755/holder-multiple-options") &&
+    !has(cleanRep, "lint/rfc5755/holder-entity-name-multiple"));
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

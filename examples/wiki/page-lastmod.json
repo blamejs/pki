@@ -95,7 +95,7 @@
   "lib/schema-c509.js": "2026-09-20",
   "lib/schema-cmc.js": "2026-09-20",
   "lib/schema-cmp.js": "2026-09-20",
-  "lib/schema-cms.js": "2026-09-20",
+  "lib/schema-cms.js": "2026-09-26",
   "lib/schema-crl.js": "2026-09-23",
   "lib/schema-crmf.js": "2026-09-23",
   "lib/schema-csr.js": "2026-09-23",
