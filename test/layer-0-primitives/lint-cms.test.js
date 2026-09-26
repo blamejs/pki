@@ -63,8 +63,8 @@ async function run() {
     hostile.findings.length === 1 && hostile.findings[0].id === "lint/unparseable" &&
     hostile.findings[0].severity === "fatal" &&
     typeof hostile.findings[0].context.code === "string");
-  // A ContentInfo that is not signed-data carries no signerInfos, so every row that reads one is
-  // not applicable to it rather than reported against it.
+  // certs-only is a SignedData carrying zero signers, which Q11 reads. A ContentInfo that is not
+  // signed-data at all is Q4b below.
   var certsOnly = await pki.cms.certsOnly([cert]);
   // A STRING input takes the PEM door rather than the DER one, and a string that is not a decodable
   // PEM must arrive as the same fatal finding: the never-throw promise covers both doors.
@@ -77,6 +77,54 @@ async function run() {
       try { pki.lint.cms(attached, { profile: "rfc5280" }); return false; }
       catch (e) { return e.code === "lint/unknown-profile"; }
     })());
+
+  // ---- Q4b-Q4d: which content types the rows apply to -----------------------------------------
+  // Every row reads a signer, so a content type that carries none gets not-applicable rather than a
+  // finding. This is asserted on each content type the parser reads, because the claim is about all
+  // of them and a fixture built from one says nothing about the rest.
+  var notSigned = [["digestedData", await pki.cms.digest(CONTENT)],
+    ["compressedData", await pki.cms.compress(CONTENT)]];
+  check("Q4b. a content type the parser reads that is not signed-data runs no row (" +
+    notSigned.map(function (p) { return p[0]; }).join(",") + ")",
+  notSigned.every(function (p) {
+    var rep = pki.lint.cms(p[1]);
+    return rep.ran.length === 0 && rep.counts.na === 5 && cmsIds(rep).length === 0;
+  }));
+  // A content type the parser does not read is refused before a row is reached, so it arrives as the
+  // parser's own code rather than as five not-applicable rows. Sec. 4's id-data is that case.
+  var idData = b.sequence([b.oid(pki.oid.byName("data")), b.explicit(0, b.octetString(CONTENT))]);
+  var idRep = pki.lint.cms(idData);
+  check("Q4c. id-data is a fatal lint/unparseable carrying the parser's code, not five na rows",
+    idRep.findings.length === 1 && idRep.findings[0].id === "lint/unparseable" &&
+    idRep.findings[0].severity === "fatal" &&
+    idRep.findings[0].context.code === "cms/unsupported-content-type" && idRep.counts.na === 0);
+  // Applicability is decided by the content type the parser recorded, which is the ContentInfo's own
+  // field. A field name that a signed-data body happens to carry is reachable through the prototype
+  // chain on a content type that has none, so deciding on one would run every row against a message
+  // with no signers at all. The same walk must not throw on a value it did not build either: the
+  // verb's contract is a report.
+  function underPollutedSignerInfos(value, fn) {
+    Object.defineProperty(Object.prototype, "signerInfos",
+      { value: value, writable: true, configurable: true, enumerable: false });
+    try { return fn(); } finally { delete Object.prototype.signerInfos; }
+  }
+  var polluted = [["an empty signer list", []],
+    ["a signer naming an unlisted digest", [{ digestAlgorithm: { oid: pki.oid.byName("sha512") } }]],
+    ["a countersignature whose values is not an array",
+      [{ unsignedAttrs: [{ type: pki.oid.byName("countersignature"), values: null }] }]],
+    ["a signing-time attribute whose values is not an array",
+      [{ signedAttrs: [{ type: pki.oid.byName("signingTime"), values: null }] }]]];
+  check("Q4d. an inherited signerInfos runs no row on a non-signed-data content type, and throws out of no door",
+    polluted.every(function (p) {
+      return notSigned.every(function (f) {
+        // No try/catch: the verb's contract is a report, so a throw here is the failure this vector
+        // exists to catch and it is more use surfacing with its own stack than as a false return.
+        var rep = underPollutedSignerInfos(p[1], function () { return pki.lint.cms(f[1]); });
+        return rep.ran.length === 0 && rep.counts.na === 5 && cmsIds(rep).length === 0;
+      });
+    }));
+  check("Q4d2. CONTROL: the same rows DO run on a real signed-data message, so Q4d is not silence",
+    pki.lint.cms(attached).ran.length === 5);
 
   // ---- Q5-Q6: sec. 11.3, the signing-time encoding --------------------------------------------
   var TIME_ID = "lint/rfc5652/signing-time-encoding";
@@ -96,13 +144,20 @@ async function run() {
   // built at all: UTCTime carries two year digits and sec. 11.3 reads YY >= 50 as 19YY and YY < 50
   // as 20YY, so every UTCTime names a year inside the window. The row needs one direction because
   // the encoding provides only one.
+  // Every two-digit year is put to the PARSER and the year it resolves is read back, rather than
+  // recomputed here: a vector that applies the pivot itself asserts its own arithmetic and stays
+  // green if `asn1.read.time` ever reads the digits differently.
   check("Q6b. a UTCTime cannot name a year outside the window, whatever digits it carries",
     (function () {
-      var everyYear = [];
+      var years = [];
       for (var yy = 0; yy < 100; yy++) {
-        everyYear.push(yy >= 50 ? 1900 + yy : 2000 + yy);
+        var two = (yy < 10 ? "0" : "") + yy;
+        var tlv = Buffer.concat([Buffer.from([0x17, 13]),
+          Buffer.from(two + "0601000000Z", "latin1")]);
+        years.push(pki.asn1.read.time(pki.asn1.decode(tlv)).getUTCFullYear());
       }
-      return everyYear.every(function (y) { return y >= 1950 && y <= 2049; });
+      return years.length === 100 &&
+        Math.min.apply(null, years) === 1950 && Math.max.apply(null, years) === 2049;
     })());
 
   // A countersignature is a SignerInfo with its own signedAttrs, and section 11.3 governs a

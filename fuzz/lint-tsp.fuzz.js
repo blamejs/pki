@@ -16,6 +16,7 @@
  * throw at all is an unguarded invariant break: rethrow so jazzer records the reproducer.
  */
 
+var crypto = require("crypto");
 var pki = require("..");
 var b = pki.asn1.build;
 var oid = pki.oid;
@@ -42,6 +43,7 @@ var TSA_CERT = b.sequence([
   ]),
   CERT_ALG, b.bitString(Buffer.alloc(64, 2), 0),
 ]);
+var TSA_CERT_SHA256 = crypto.createHash("sha256").update(TSA_CERT).digest();
 
 function tstInfo(tail) {
   var kids = [
@@ -63,11 +65,12 @@ function tokenWith(tail) {
     attr("contentType", b.oid(oid.byName("tSTInfo"))),
     attr("messageDigest", b.octetString(Buffer.alloc(32, 9))),
     attr("signingCertificateV2", b.sequence([b.sequence([
-      b.sequence([b.octetString(Buffer.alloc(32, 4))])])])),
+      b.sequence([b.octetString(TSA_CERT_SHA256)])])])),
   ];
-  // The sid names the certificate above by its issuer and serial, so the rule that reads the tsa
-  // hint can resolve it. A serial that does not match leaves the rule unreachable and the hint
-  // path fuzzing nothing, which is what the assertion below refuses to let happen quietly.
+  // The ESS certHash above names the certificate this token embeds, which is what the rule that
+  // reads the tsa hint resolves the signer from. A hash that names nothing embedded leaves the rule
+  // unreachable and the hint path fuzzing nothing, which the assertion below refuses to let happen
+  // quietly.
   var signerInfo = b.sequence([
     b.integer(1n),
     b.sequence([DN, b.integer(1n)]),

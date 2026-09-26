@@ -193,6 +193,71 @@ async function run() {
   check("T7f. a subjectKeyIdentifier signer identifier resolves the same certificate",
     has(pki.lint.tsp(withTsaHint(skiToken, subjectNameDer(other))), TSA_ID) &&
     !has(pki.lint.tsp(withTsaHint(skiToken, subjectNameDer(cert))), TSA_ID));
+  // Which embedded certificate signed the token is settled by the ESS SigningCertificate or
+  // SigningCertificateV2 certHash that sec. 2.4.2 requires and parseToken refuses a token without.
+  // The SignerInfo sid settles nothing on its own: an issuer with a serial, and a subject key
+  // identifier, are values an issuer wrote, and two certificates can carry either. `cert` and
+  // `other` share a key here, so they share a subjectKeyIdentifier. The `certificates` SET is
+  // outside every signature in the token, so anything between the TSA and the reader can add to it,
+  // and the DER SET OF order the addition lands in is the sender's to choose. So the verdict is
+  // taken against the certificate the certHash names, in both hint directions and at either order.
+  function withCerts(tokenDer, list) {
+    return surgery.patch(tokenDer, function (n) {
+      if (n.tagClass !== "context" || n.tagNumber !== 0 || !n.constructed) return undefined;
+      if (!n.children || n.children.length !== 1) return undefined;
+      // A Certificate is a SEQUENCE of exactly three fields, which is what tells this `[0]` apart
+      // from the ContentInfo's own `[0]` holding the SignedData.
+      var kid = n.children[0];
+      if (kid.tagClass !== "universal" || kid.tagNumber !== 16 || !kid.children ||
+        kid.children.length !== 3) return undefined;
+      return b.implicit(0, b.setOf(list.map(function (d) { return b.raw(d); })), true);
+    });
+  }
+  // A shorter name sorts first, so this decoy is the one a reader taking the first match would pick.
+  var decoyFirst = withCerts(skiToken, [cert, other]);
+  check("T7g. a second certificate sharing the signer's subjectKeyIdentifier does not become the one the hint is compared against",
+    has(pki.lint.tsp(withTsaHint(decoyFirst, subjectNameDer(other))), TSA_ID) &&
+    !has(pki.lint.tsp(withTsaHint(decoyFirst, subjectNameDer(cert))), TSA_ID));
+  // The same pair with the decoy's name long enough to sort last, so the verdict is shown not to
+  // depend on which of them the SET OF order puts first.
+  var longDecoy = await tsaCert("Some Other Authority With A Very Much Longer Name");
+  var decoyLast = withCerts(skiToken, [cert, longDecoy]);
+  check("T7h. and the verdict is the same when that certificate sorts last instead of first",
+    has(pki.lint.tsp(withTsaHint(decoyLast, subjectNameDer(longDecoy))), TSA_ID) &&
+    !has(pki.lint.tsp(withTsaHint(decoyLast, subjectNameDer(cert))), TSA_ID));
+  // An element that hashes to nothing the ESS attribute names leaves the signer unresolved, which is
+  // the same answer a token supplying its certificate out of band gets.
+  check("T7i. a token carrying only a certificate the ESS certHash does not name is passed over",
+    !has(pki.lint.tsp(withTsaHint(withCerts(skiToken, [strangerCert]), subjectNameDer(other))), TSA_ID));
+  /** Replace the values SET of the signed attribute carrying `oidName`. */
+  function reSignedAttr(tokenDer, oidName, valuesSet) {
+    var wanted = b.oid(pki.oid.byName(oidName));
+    return surgery.patch(tokenDer, function (n) {
+      if (!n.constructed || n.tagNumber !== 16 || !n.children || n.children.length !== 2) return undefined;
+      if (!wanted.equals(n.children[0].bytes)) return undefined;
+      return b.sequence([b.raw(wanted), valuesSet]);
+    });
+  }
+  // An ESS attribute whose value does not decode never reaches a rule: parseToken refuses the token,
+  // so the operator gets the parser's own code. Asserted against that code rather than against the
+  // row's silence, because a token that does not parse is silent about every row and asserting the
+  // silence would pass whatever the reason.
+  var essUnreadable = reSignedAttr(skiToken, "signingCertificateV2", b.set([b.integer(1n)]));
+  var essRep = pki.lint.tsp(essUnreadable);
+  check("T7j. a token whose ESS attribute value does not decode is refused by the parser, not graded",
+    essRep.findings.length === 1 && essRep.findings[0].id === "lint/unparseable" &&
+    essRep.findings[0].severity === "fatal" &&
+    essRep.findings[0].context.code === "tsp/bad-token");
+  // The hash naming an embedded element that is not a certificate DOES reach the row, and there is no
+  // subject to compare a hint against. The element is given three children so it is shaped like a
+  // Certificate to anything that counts children rather than reading one.
+  var notACert = b.sequence([b.integer(1n), b.integer(2n), b.integer(3n)]);
+  var notACertHash = crypto.createHash("sha256").update(notACert).digest();
+  var essNamesJunk = reSignedAttr(withCerts(skiToken, [notACert]), "signingCertificateV2",
+    b.set([b.sequence([b.sequence([b.sequence([b.octetString(notACertHash)])])])]));
+  check("T7k. an ESS hash naming an embedded element that is not a certificate is passed over, and reports rather than throwing",
+    !has(pki.lint.tsp(withTsaHint(essNamesJunk, subjectNameDer(other))), TSA_ID) &&
+    !has(pki.lint.tsp(withTsaHint(essNamesJunk, subjectNameDer(cert))), TSA_ID));
   check("T7d. a dNSName hint differing only in case names the same host",
     !has(pki.lint.tsp(withTsaHintRaw(dnsToken, dnsHint("TSA.EXAMPLE.COM"))), TSA_ID) &&
     has(pki.lint.tsp(withTsaHintRaw(dnsToken, dnsHint("other.example.com"))), TSA_ID));

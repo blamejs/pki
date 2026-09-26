@@ -282,10 +282,19 @@ async function testDigestIndependence() {
   var res = await pki.cms.verify(out);
   check("#14 countersignature under a different digest (sha512) verifies", res.signers[0].countersignatures[0].ok === true);
   check("#14 countersignature digestAlgorithm surfaced", res.signers[0].countersignatures[0].digestAlgorithm === "sha512");
-  // The countersignature's digestAlgorithm is NOT added to SignedData.digestAlgorithms.
+  // RFC 5652 sec. 5.1 has digestAlgorithms list the digests "employed by all of the signers, in any
+  // order, to facilitate one-pass signature verification", and sec. 11.4 makes a countersignature a
+  // SignerInfo without excepting it from sec. 5.3's "the message digest algorithm SHOULD be among
+  // those listed in the digestAlgorithms field". So the countersigner's digest joins the set, and the
+  // primary's stays in it: the two are independent, which is what this case is named for.
   var parsed = parse(out);
-  check("#14 SignedData.digestAlgorithms unchanged (countersig digest not added)",
-    parsed.digestAlgorithms.filter(function (d) { return d.name === "sha512"; }).length === 0);
+  check("#14 the countersigner's digest joins SignedData.digestAlgorithms (RFC 5652 sec. 5.1, 5.3)",
+    parsed.digestAlgorithms.filter(function (d) { return d.name === "sha512"; }).length === 1);
+  check("#14 and the primary signer's digest is still listed beside it",
+    parsed.digestAlgorithms.filter(function (d) { return d.name === "sha256"; }).length === 1);
+  // Adding to that set must not disturb a signature, since no signature in the message covers it.
+  check("#14 every signature still verifies after the set gains an entry",
+    res.signers.every(function (s) { return s.ok; }));
 }
 
 // ---- 15 INPUT POLYMORPHISM: DER Buffer / Uint8Array / PEM (byte-preserving) --

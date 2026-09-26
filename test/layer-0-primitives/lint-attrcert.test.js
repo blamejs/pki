@@ -156,6 +156,23 @@ async function run() {
     !has(pki.lint.attrcert(reExtension(clean, "acAuditIdentity",
       { critical: null, oid: pki.oid.byName("subjectDirectoryAttributes") })),
     "lint/rfc5755/critical-extension-outside-profile"));
+  // R8e reads the two surfaces against each other. The criticality this profile reports, the one the
+  // AC signer writes and the deviation the extension door reports come from one row set, so an
+  // attribute certificate this toolkit signed is one it also finds conforming. AAControls is the
+  // case that says it: section 7.4 fixes no criticality for an attribute certificate, so the signer
+  // writes the form section 4.2.9 calls conforming rather than the one this profile reports.
+  var signedAa = await pki.attrcert.sign(spec({ extensions: { aaControls: { pathLenConstraint: 0 } } }), aa);
+  var signedAaRep = pki.lint.attrcert(signedAa);
+  check("R8e. an attribute certificate this toolkit signed with aaControls lints clean (" +
+    ids(signedAaRep).join(",") + ")", signedAaRep.findings.length === 0);
+  var aaRow = pki.schema.attrcert.decodeExtensions(signedAa)
+    .filter(function (x) { return x.name === "aaControls"; })[0];
+  check("R8e2. and the extension door states no fixed criticality for it, because sec. 7.4 fixes none",
+    !!aaRow && aaRow.critical === false && !aaRow.profile);
+  check("R8e3. CONTROL: the same extension marked critical IS reported, so R8e is not silence",
+    has(pki.lint.attrcert(reExtension(clean, "acAuditIdentity",
+      { critical: true, oid: pki.oid.byName("aaControls"), value: b.sequence([]) })),
+    "lint/rfc5755/critical-extension-outside-profile"));
 
   // ---- R9: sec. 4.2.2, a Holder naming more than one option -----------------------------------
   // The builder refuses a Holder naming two forms, which is it keeping to the clause, so the
