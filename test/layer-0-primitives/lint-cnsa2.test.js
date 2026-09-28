@@ -111,15 +111,9 @@ async function run() {
   check("K5. a signature that is not id-ml-dsa-87 is an error",
     sevOf(lint(signedByEd), P + "signature-not-ml-dsa-87") === "error" &&
     !has(lint(conformingRoot), P + "signature-not-ml-dsa-87"));
-  // Sec. 6.3's version and sec. 6.1 / 6.4's absent parameters are settled by the parser, so an
-  // operator sees its code rather than a row. Asserted against the code, because a certificate that
-  // does not parse is silent about every row and asserting that silence would pass for any reason.
-  var v1 = surgery.patch(conformingRoot, function (n) {
-    if (n.tagClass !== "context" || n.tagNumber !== 0 || !n.constructed) return undefined;
-    if (!n.children || n.children.length !== 1) return undefined;
-    if (n.children[0].tagClass !== "universal" || n.children[0].tagNumber !== 2) return undefined;
-    return b.explicit(0, b.integer(0n));
-  });
+  // Sec. 6.1 and 6.4's absent parameters are settled by the parser, so an operator sees its code
+  // rather than a row. Asserted against the code, because a certificate that does not parse is silent
+  // about every row and asserting that silence would pass for any reason.
   var mlOid = b.oid(pki.oid.byName("id-ml-dsa-87"));
   var withParams = surgery.patch(conformingRoot, function (n) {
     if (n.tagClass !== "universal" || n.tagNumber !== 16 || !n.children) return undefined;
@@ -131,9 +125,32 @@ async function run() {
     var f = rep.findings.filter(function (x) { return x.id === "lint/unparseable"; })[0];
     return f && f.context.code;
   }
-  check("K6. the version and absent-parameters clauses reach an operator as the parser's verdict",
-    fatalCode(v1) === "x509/bad-version" &&
+  check("K6. the absent-parameters clause reaches an operator as the parser's verdict",
     fatalCode(withParams) === "x509/bad-algorithm-parameters");
+  // Sec. 6.3 requires version 3, and it needs a row of its own: a version 1 certificate carrying no
+  // extensions is well-formed, since RFC 5280 sec. 4.1.2.1 puts the field at DEFAULT v1 and the parser
+  // refuses only an extensions field beneath that version. Both wrappers are removed to build one.
+  // Encoding the default version explicitly instead would test DER's rule about a DEFAULT, which the
+  // parser answers on its own and which is a different clause from this one.
+  function asVersion1(der) {
+    return surgery.patch(der, function (n) {
+      if (n.tagClass !== "universal" || n.tagNumber !== 16 || !n.children) return undefined;
+      var kids = n.children;
+      var hasVersion = kids[0] && kids[0].tagClass === "context" && kids[0].tagNumber === 0;
+      var hasExtensions = kids.some(function (c) { return c.tagClass === "context" && c.tagNumber === 3; });
+      if (!hasVersion || !hasExtensions) return undefined;
+      return b.sequence(kids.filter(function (c) {
+        return !(c.tagClass === "context" && (c.tagNumber === 0 || c.tagNumber === 3));
+      }).map(function (c) { return b.raw(c.bytes); }));
+    });
+  }
+  var v1Cert = asVersion1(conformingRoot);
+  check("K6c. CONTROL: a version 1 certificate carrying no extensions parses",
+    !has(lint(v1Cert), "lint/unparseable") && pki.schema.x509.parse(v1Cert).version === 1);
+  check("K6d. a certificate that is not version 3 is an error naming its version",
+    sevOf(lint(v1Cert), P + "version-not-3") === "error" &&
+    findingsOf(lint(v1Cert), P + "version-not-3")[0].context.version === 1 &&
+    !has(lint(conformingRoot), P + "version-not-3"));
   // Sec. 6.1 names the inner `signature` field of a TBSCertificate and TBSCertList as well as the
   // outer `signatureAlgorithm`. Both parsers refuse an artifact whose two disagree, so the row reading
   // one answers for both, and this asserts that verdict rather than a second row reading the same OID.
