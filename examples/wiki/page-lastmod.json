@@ -33,7 +33,7 @@
   "lib/cms-sign.js": "2026-09-28",
   "lib/cms-verify.js": "2026-09-24",
   "lib/composite-kem.js": "2026-09-07",
-  "lib/composite-sig.js": "2026-09-06",
+  "lib/composite-sig.js": "2026-09-28",
   "lib/constants.js": "2026-09-28",
   "lib/crl-sign.js": "2026-09-24",
   "lib/crl-verify.js": "2026-09-01",

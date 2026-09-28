@@ -114,6 +114,21 @@ async function run() {
   check("K3c. an encapsulation key of the wrong size is reported under this profile",
     sevOf(lint(truncatedKem), "lint/rfc9935/kem-key-length") === "error" &&
     !has(lint(kemCert), "lint/rfc9935/kem-key-length"));
+  // The signature key owes the same thing to the same clause: an identifier names one FIPS 204
+  // parameter set, so bytes of any other length are not the key it claims. Reading the identifier and
+  // not the length accepted them for one of the two suite algorithms and not the other.
+  var truncatedMlDsa = surgery.patch(conformingRoot, function (n) {
+    if (n.tagClass !== "universal" || n.tagNumber !== 3 || !Buffer.isBuffer(n.content)) return undefined;
+    if (n.content.length !== 2593 || n.content[0] !== 0x00) return undefined;
+    return b.bitString(Buffer.from(n.content.subarray(1, n.content.length - 1)));
+  });
+  check("K3d. CONTROL: the truncated certificate parses and still names id-ml-dsa-87",
+    !has(lint(truncatedMlDsa), "lint/unparseable") &&
+    pki.schema.x509.parse(truncatedMlDsa).subjectPublicKeyInfo.algorithm.name === "id-ml-dsa-87" &&
+    !truncatedMlDsa.equals(conformingRoot));
+  check("K3e. a signature key of the wrong size is reported under this profile",
+    sevOf(lint(truncatedMlDsa), "lint/rfc9881/mldsa-key-length") === "error" &&
+    !has(lint(conformingRoot), "lint/rfc9881/mldsa-key-length"));
   check("K4. a subject key outside the suite is an error",
     sevOf(lint(await root({}, ed)), P + "spki-not-suite") === "error" &&
     !has(lint(conformingRoot), P + "spki-not-suite") &&
