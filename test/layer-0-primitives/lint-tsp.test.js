@@ -378,6 +378,53 @@ async function run() {
     has(pki.lint.tsp(withTsaHintRaw(unreadableToken, textHint(1, "nobody@tsa.example.com"))), TSA_ID));
   check("T7ad. a subject name of the hint's form that the rule cannot read leaves the row silent",
     !has(pki.lint.tsp(withTsaHintRaw(unreadableToken, textHint(6, "https://elsewhere.example/x"))), TSA_ID));
+  // RFC 5035 sec. 7 permits a message to carry both ESS attributes, so that a legacy reader keeps its
+  // protection against certificate substitution, and says the two "are generated and evaluated
+  // independently". So a token carrying both is read the same way: each names a certificate on its own,
+  // and a reader that took one of them and stopped left the signer unresolved whenever that one named
+  // a certificate the token does not embed.
+  /** Append an Attribute to the SignerInfo's signedAttrs, which is the `[0]` whose children are all
+   *  two-field SEQUENCEs. The certificates `[0]` holds one three-field SEQUENCE, so it cannot match. */
+  function addSignedAttr(tokenDer, attrDer) {
+    return surgery.patch(tokenDer, function (n) {
+      if (n.tagClass !== "context" || n.tagNumber !== 0 || !n.constructed) return undefined;
+      if (!n.children || n.children.length < 3) return undefined;
+      for (var i = 0; i < n.children.length; i++) {
+        var kid = n.children[i];
+        if (kid.tagClass !== "universal" || kid.tagNumber !== 16 || !kid.children ||
+          kid.children.length !== 2) return undefined;
+      }
+      var kids = n.children.map(function (c) { return b.raw(c.bytes); });
+      kids.push(b.raw(attrDer));
+      return b.implicit(0, b.setOf(kids), true);
+    });
+  }
+  function essV1Attr(certDer) {
+    return b.sequence([b.oid(pki.oid.byName("signingCertificate")),
+      b.set([b.sequence([b.sequence([b.sequence([
+        b.octetString(crypto.createHash("sha1").update(certDer).digest())])])])])]);
+  }
+  // The v2 attribute names a certificate the token does not carry; the v1 attribute names the one it
+  // does. Read independently, the signer is resolved and the hint is compared against it.
+  var v2NamesAbsent = reSignedAttr(clean, "signingCertificateV2",
+    b.set([b.sequence([b.sequence([b.sequence([
+      b.octetString(crypto.createHash("sha256").update(strangerCert).digest())])])])]));
+  var bothAttrs = addSignedAttr(v2NamesAbsent, essV1Attr(cert));
+  check("T7ae. CONTROL: the token carrying both attributes still parses, and the v2 one alone resolves nothing",
+    !has(pki.lint.tsp(bothAttrs), "lint/unparseable") &&
+    !has(pki.lint.tsp(withTsaHint(v2NamesAbsent, subjectNameDer(other))), TSA_ID));
+  check("T7af. with both attributes present, the one that names an embedded certificate resolves the signer",
+    sevOf(pki.lint.tsp(withTsaHint(bothAttrs, subjectNameDer(other))), TSA_ID) === "error" &&
+    !has(pki.lint.tsp(withTsaHint(bothAttrs, subjectNameDer(cert))), TSA_ID));
+  // "The contents could conceivably be in conflict... Recipients that attempt to evaluate both
+  // attributes may choose to reject such a message." Two attributes naming two embedded certificates
+  // leave which one signed the token unsettled, so the row reaches no verdict rather than taking one.
+  var conflicting = addSignedAttr(withCerts(clean, [cert, other]), essV1Attr(other));
+  check("T7ag. CONTROL: the conflicting token parses and carries both certificates",
+    !has(pki.lint.tsp(conflicting), "lint/unparseable"));
+  check("T7ah. two attributes naming two embedded certificates leave the row with no verdict",
+    !has(pki.lint.tsp(withTsaHint(conflicting, subjectNameDer(other))), TSA_ID) &&
+    !has(pki.lint.tsp(withTsaHint(conflicting, subjectNameDer(cert))), TSA_ID));
 
   // ---- T8-T9: the serial width, and an absent accuracy ----------------------------------------
   // "Time-Stamping users MUST be ready to accommodate integers up to 160 bits", so a serial wider
