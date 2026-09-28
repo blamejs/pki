@@ -265,6 +265,26 @@ async function run() {
   check("K13b. a non-critical basicConstraints is an error on a CA certificate",
     sevOf(lint(bcNonCritical), P + "basic-constraints-not-critical") === "error" &&
     !has(lint(conformingRoot), P + "basic-constraints-not-critical"));
+  // "The cA boolean MUST be set to indicate that the subject is a CA." A certificate reaches this
+  // scope by carrying that boolean OR by asserting keyCertSign, so the boolean can be read as unset:
+  // a certificate whose keyUsage claims the CA role while its basicConstraints denies it says both
+  // things. The value is emptied to the DEFAULT FALSE that an empty BasicConstraints SEQUENCE encodes,
+  // which the builder will not write.
+  var bcEmpty = surgery.patch(conformingRoot, function (n) {
+    if (n.tagClass !== "universal" || n.tagNumber !== 16 || !n.children || n.children.length !== 3) return undefined;
+    if (!bcOid.equals(n.children[0].bytes)) return undefined;
+    return b.sequence([b.raw(n.children[0].bytes), b.raw(n.children[1].bytes),
+      b.octetString(b.sequence([]))]);
+  });
+  check("K13c. CONTROL: the rewritten certificate parses and its basicConstraints reads cA false",
+    !has(lint(bcEmpty), "lint/unparseable") &&
+    pki.schema.x509.parse(bcEmpty).extensions.filter(function (e) {
+      return e.oid === pki.oid.byName("basicConstraints");
+    }).length === 1);
+  check("K13d. a basicConstraints that does not set cA is an error where the keyUsage claims the role",
+    sevOf(lint(bcEmpty), P + "ca-boolean-not-set") === "error" &&
+    !has(lint(conformingRoot), P + "ca-boolean-not-set") &&
+    !has(lint(await endEntity()), P + "ca-boolean-not-set"));
   // "If a policy is asserted, the certificatePolicies extension MUST be marked as non-critical ...
   // and SHOULD NOT use the policyQualifiers option." Sec. 7.1 says neither of a self-signed CA.
   var policy = [{ oid: "1.3.6.1.4.1.99999.1" }];
