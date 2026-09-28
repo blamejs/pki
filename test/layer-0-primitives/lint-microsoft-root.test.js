@@ -57,9 +57,12 @@ async function run() {
     Object.keys(over || {}).forEach(function (n) {
       if (over[n] === undefined) delete e[n]; else e[n] = over[n];
     });
+    // profile "none": these fixtures are the linter's corpus, and an override that deletes keyUsage or
+    // basicConstraints is exactly the certificate the build-time gate refuses. Holding them to it would
+    // leave the rows below untestable.
     return pki.x509.sign({ subject: w.subject || [{ commonName: "A Program Root" }],
       subjectPublicKey: k.pub, notBefore: w.notBefore || NB, notAfter: w.notAfter || ROOT_NA,
-      extensions: e }, { key: k.priv });
+      extensions: e }, { key: k.priv }, { profile: "none" });
   }
   var issuer = await root({});
 

@@ -123,7 +123,7 @@ async function runOwnPropertyOptionVectors() {
   // A distribution point the caller named is read as a distribution point, not as a bare name.
   await agrees("crl.sign freshestCRL", function (o) {
     return pki.crl.sign({ thisUpdate: new Date("2021-01-01Z"),
-      nextUpdate: new Date("2031-01-01Z"), revoked: [],
+      nextUpdate: new Date("2031-01-01Z"), crlNumber: 1n, revoked: [],
       extensions: { freshestCRL: [o] } }, { cert: aa, key: priv })
       .then(function (der) { return der.length > 0; });
   }, "fullName", [{ uniformResourceIdentifier: "http://crl.example/d.crl" }]);

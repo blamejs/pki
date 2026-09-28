@@ -656,6 +656,19 @@ security-only patches after the next major releases.
 
 ### Path validation, revocation, and signed messages
 
+- **An artifact that is signed before anyone asks whether it conforms
+  (CWE-1021).** A certificate, request or CRL that violates a MUST of the
+  profile it is written to is a misissuance the moment a key touches it, and
+  checking afterwards does not undo the signature, the audit-log entry, or the
+  hardware token's use counter. `pki.x509.sign`, `pki.csr.sign` and
+  `pki.crl.sign` lint the artifact the spec describes against RFC 5280, RFC 2986
+  and the RFC 5280 §5 profile respectively, and refuse an error-severity finding
+  with a `/profile-violation` code naming the rule and its clause, before the
+  signing key is reached. A CRL with no `cRLNumber` cannot be ordered against a
+  successor, and one with no `nextUpdate` states no window a replayed copy can be
+  told from; both are refused. `opts.profile` names a further profile to hold the
+  artifact to at build time, and `opts.profile: "none"` runs no rules, which is
+  how a deliberately non-conforming artifact is produced for a test corpus.
 - **A name constraint a relying party may ignore (CWE-693).** RFC 5280 fixes the
   criticality of nine certificate extensions, and `nameConstraints` is one it
   requires critical. A verifier that does not recognize an extension marked

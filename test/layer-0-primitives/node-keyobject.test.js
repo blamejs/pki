@@ -144,7 +144,7 @@ async function testEverySigningVerbTakesAKeyObject() {
       { key: k.priv, cert: caCert });
   });
   await drive("crl.sign", function () {
-    return pki.crl.sign({ thisUpdate: NOT_BEFORE, nextUpdate: NOT_AFTER, revoked: [] }, { key: k.priv, cert: caCert });
+    return pki.crl.sign({ thisUpdate: NOT_BEFORE, nextUpdate: NOT_AFTER, crlNumber: 1n, revoked: [] }, { key: k.priv, cert: caCert });
   });
   await drive("csr.sign", function () {
     return pki.csr.sign({ subject: "CN=Requester", subjectPublicKey: k.spki }, { key: k.priv });

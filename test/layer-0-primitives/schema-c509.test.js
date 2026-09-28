@@ -576,9 +576,12 @@ async function run() {
   // ==== draft-20 alignment + compact per-extension value inversions (sec. 3.3 / 8.6 / 8.8) ====
   var b = pki.asn1.build, O = pki.oid.byName, CB = pki.cbor;
   var KID = Buffer.from("00112233445566778899aabbccddeeff00112233", "hex");
+  // profile "none": the extension list is handed pre-encoded so each vector can invert one value, which
+  // is what these fixtures exist to do, and several of the lists describe a certificate the build-time
+  // gate on pki.x509.sign refuses.
   async function certWithExts(extsArray) {
     var sk = signing.makeSigner("ec-p256");
-    return Buffer.from(await pki.x509.sign({ subject: [{ commonName: "ext-test" }], subjectPublicKey: sk.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"), extensions: extsArray }, { key: sk.key }));
+    return Buffer.from(await pki.x509.sign({ subject: [{ commonName: "ext-test" }], subjectPublicKey: sk.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"), extensions: extsArray }, { key: sk.key }, { profile: "none" }));
   }
   // An extension the signer refuses to produce (a policy mapping to or from anyPolicy, RFC 5280
   // sec. 4.2.1.5) is written as the bytes a decoder would receive: the signer's own certificate with

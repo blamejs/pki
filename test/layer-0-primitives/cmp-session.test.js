@@ -2276,9 +2276,12 @@ async function run() {
   var EE_FOR_NEW_KEY = await pki.x509.sign({ subject: "root-new", subjectPublicKey: NEWK.spki,
     notBefore: VALID.notBefore, notAfter: VALID.notAfter }, { key: OLDK.key, cert: OLD_ROOT });
   check("165o. a newWithOld issued as an END ENTITY -> refused (the update moves CA authority)", /^cmp\//.test(await codeOf(mk([H.genpOf("rootCaKeyUpdate", B.sequence([B.raw(NEW_ROOT), B.explicit(0, B.raw(EE_FOR_NEW_KEY))]))]).session.info({ rootCaCert: OLD_ROOT }))));
+  // The withheld keyCertSign is this vector's subject, so it asks for the certificate the build-time
+  // gate on pki.x509.sign refuses under profile "none".
   var CA_NO_CERTSIGN = await pki.x509.sign({ subject: "root-new", subjectPublicKey: NEWK.spki,
     notBefore: VALID.notBefore, notAfter: VALID.notAfter,
-    extensions: { basicConstraints: { cA: true }, keyUsage: ["cRLSign"] } }, { key: OLDK.key, cert: OLD_ROOT });
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["cRLSign"] } },
+  { key: OLDK.key, cert: OLD_ROOT }, { profile: "none" });
   check("165p. a newWithOld whose keyUsage withholds keyCertSign -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("rootCaKeyUpdate", B.sequence([B.raw(NEW_ROOT), B.explicit(0, B.raw(CA_NO_CERTSIGN))]))]).session.info({ rootCaCert: OLD_ROOT }))));
   // A CA certificate MUST mark basicConstraints critical (RFC 5280 sec. 4.2.1.9): a relying party
   // that skips extensions it does not recognize would not see the cA bit. The path validator refuses

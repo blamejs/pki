@@ -27,6 +27,11 @@ async function codeOf(promise) {
 var TU = new Date("2026-01-01T00:00:00Z");
 var NU = new Date("2026-02-01T00:00:00Z");
 var RD = new Date("2026-01-15T00:00:00Z");
+// RFC 5280 sec. 5.2.3 requires the cRLNumber of a conforming CRL issuer, and the number is issuer state
+// the builder cannot invent, so every spec that expects to be emitted names one. GATE_OFF is for the
+// vectors whose subject is a CRL the profile refuses: a v1 CRL, which carries no extensions at all.
+var CN = 1n;
+var GATE_OFF = { profile: "none" };
 
 function issuerOf(s, name) { return { name: name || "Test CRL Issuer", publicKey: s.spki, key: s.key }; }
 function crlExt(c, name) { return c.crlExtensions.filter(function (x) { return x.oid === byName(name); })[0]; }
@@ -68,15 +73,15 @@ async function testUnknownArgumentKeys() {
   // the CERT's DN while having named a different issuer, with nothing to read as a failure.
   var caCert = pki.schema.x509.parse(await pki.x509.sign({
     subject: "Test CRL Issuer", subjectPublicKey: s.spki, notBefore: TU, notAfter: NU,
-    extensions: { basicConstraints: { cA: true }, keyUsage: ["cRLSign"] },
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "cRLSign"] },
   }, { key: s.key }));
   var mixedIssuer = await attempt({ thisUpdate: TU, nextUpdate: NU, revoked: [entry] },
     { key: s.key, cert: caCert, name: "Different CRL Issuer" });
   check("an issuing cert mixed with an explicit name -> crl/bad-input", mixedIssuer.code === "crl/bad-input");
   check("...and NO CRL is emitted", mixedIssuer.out === null);
   check("each issuer form on its own still signs",
-    (await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [entry] }, { key: s.key, cert: caCert })) != null &&
-    (await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [entry] }, issuerOf(s))) != null);
+    (await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: CN, revoked: [entry] }, { key: s.key, cert: caCert })) != null &&
+    (await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: CN, revoked: [entry] }, issuerOf(s))) != null);
 
   // spec.issuer is a THIRD source for the distinguished name, and it is read only when neither
   // issuer.cert nor issuer.name supplies one. Beside either of those it named an issuer the CRL was
@@ -87,7 +92,7 @@ async function testUnknownArgumentKeys() {
   check("...and NO CRL is emitted", specVsCert.out === null);
   check("spec.issuer beside an explicit issuer.name -> crl/bad-input",
     (await attempt({ issuer: "Wrong CA", thisUpdate: TU, nextUpdate: NU, revoked: [entry] }, issuerOf(s))).code === "crl/bad-input");
-  var fromSpec = await pki.crl.sign({ issuer: "Spec-named CA", thisUpdate: TU, nextUpdate: NU, revoked: [entry] },
+  var fromSpec = await pki.crl.sign({ issuer: "Spec-named CA", thisUpdate: TU, nextUpdate: NU, crlNumber: CN, revoked: [entry] },
     { key: s.key, publicKey: s.spki });
   check("spec.issuer is still the name when the issuer argument supplies none",
     pki.schema.crl.parse(fromSpec).issuer.dn === "CN=Spec-named CA");
@@ -100,7 +105,7 @@ async function testUnknownArgumentKeys() {
   check("an unknown revoked-entry field -> crl/bad-input", badEntry.code === "crl/bad-input");
   check("...and NO CRL is emitted", badEntry.out === null);
   // The reason spelled correctly still reaches the entry, so the vector above is about the NAME.
-  var withReason = await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU,
+  var withReason = await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: CN,
     revoked: [{ serialNumber: 7n, revocationDate: TU, reason: "keyCompromise" }] }, issuerOf(s));
   check("reason spelled correctly -> the entry carries reasonCode keyCompromise(1)",
     pki.schema.crl.parse(withReason).revokedCertificates[0].crlEntryExtensions
@@ -156,7 +161,11 @@ async function testEmptyListOmitsRevoked() {
   var s = makeSigner("ed25519");
   // schema-crl's REVOKED_LIST has min:1, so an emitted EMPTY SEQUENCE OF would throw crl/bad-revoked-certificates
   // here -- a clean parse proves the field was OMITTED entirely.
-  var c = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [], extensions: [] }, issuerOf(s)));
+  // profile "none": a v1 CRL carries no extensions at all, so it can hold neither the cRLNumber nor
+  // the authorityKeyIdentifier a conforming issuer includes. The empty extension list is what this
+  // vector is about, so it asks for the artifact the build-time gate would otherwise refuse.
+  var c = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [], extensions: [] },
+    issuerOf(s), { profile: "none" }));
   check("empty revoked list parses (field omitted, no empty SEQUENCE)", c.revokedCertificates.length === 0);
   check("a CRL given the empty pre-encoded extension list is v1", c.version === 1);
 }
@@ -193,7 +202,7 @@ async function testAkiDefault() {
   check("authorityKeyIdentifier: false -> crl/bad-input (sec. 5.2.1 MUST, no exception)",
     await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 1n, extensions: { authorityKeyIdentifier: false } }, issuerOf(s))) === "crl/bad-input");
   // The pre-encoded array form is the explicit, low-level form and adds nothing.
-  var arr = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: [] }, issuerOf(s)));
+  var arr = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: [] }, issuerOf(s), GATE_OFF));
   check("the array form given nothing emits no extension", arr.crlExtensions.length === 0);
 }
 
@@ -203,14 +212,17 @@ async function testVersionDerivation() {
   var s = makeSigner("ec-p256");
   // The object form always carries the authorityKeyIdentifier the signer emits by default, so the
   // only route to a v1 CRL is the pre-encoded array form given nothing.
-  var v1 = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 5n, revocationDate: RD }], extensions: [] }, issuerOf(s)));
+  var v1 = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 5n, revocationDate: RD }], extensions: [] }, issuerOf(s), GATE_OFF));
   check("no extensions -> v1 (version omitted)", v1.version === 1);
-  var v2d = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 5n, revocationDate: RD }] }, issuerOf(s)));
+  var v2d = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: CN, revoked: [{ serialNumber: 5n, revocationDate: RD }] }, issuerOf(s)));
   check("no extensions spec -> v2 (the default authorityKeyIdentifier is present)", v2d.version === 2 && !!crlExt(v2d, "authorityKeyIdentifier"));
   var v2n = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 1n }, issuerOf(s)));
   check("a CRL extension -> v2", v2n.version === 2);
-  var v2e = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 5n, revocationDate: RD, reason: "superseded" }] }, issuerOf(s)));
-  check("an entry extension -> v2", v2e.version === 2);
+  // The entry extension is the only one here: the CRL's own extension list is given empty, so v2 can
+  // only have followed from the reasonCode on the entry.
+  var v2e = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: [],
+    revoked: [{ serialNumber: 5n, revocationDate: RD, reason: "superseded" }] }, issuerOf(s), GATE_OFF));
+  check("an entry extension -> v2", v2e.version === 2 && v2e.crlExtensions.length === 0);
 }
 
 // ---- sec. 5.3.2 -- invalidityDate is ALWAYS GeneralizedTime (not the UTCTime cutover) ----
@@ -220,7 +232,7 @@ async function testInvalidityDateGeneralizedTime() {
   var when = new Date("2020-06-01T00:00:00Z");   // < year 2050: the timeDer cutover would wrongly pick UTCTime
   // schema-crl.decodeExt REQUIRES GeneralizedTime for invalidityDate, so a clean parse proves the builder
   // used b.generalizedTime directly (the trap is reusing timeDer here).
-  var c = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 9n, revocationDate: RD, invalidityDate: when }] }, issuerOf(s)));
+  var c = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: CN, revoked: [{ serialNumber: 9n, revocationDate: RD, invalidityDate: when }] }, issuerOf(s)));
   var iv = entryExt(c.revokedCertificates[0], "invalidityDate");
   check("invalidityDate decoded (GeneralizedTime-only enforced)", iv && iv.value.getTime() === when.getTime());
 }
@@ -230,7 +242,7 @@ async function testInvalidityDateGeneralizedTime() {
 async function testReasonCodeRules() {
   var s = makeSigner("ec-p256");
   // read.enumerated in schema-crl rejects a bare INTEGER, so a clean parse proves the ENUMERATED tag (0x0A).
-  var c = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 1n, revocationDate: RD, reason: "cACompromise" }] }, issuerOf(s)));
+  var c = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: CN, revoked: [{ serialNumber: 1n, revocationDate: RD, reason: "cACompromise" }] }, issuerOf(s)));
   check("reason cACompromise -> ENUMERATED value 2", (entryExt(c.revokedCertificates[0], "reasonCode") || {}).value === 2);
   check("reason 7 (unused) -> crl/bad-reason-code",
     await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 1n, revocationDate: RD, reason: 7 }] }, issuerOf(s))) === "crl/bad-reason-code");
@@ -238,7 +250,7 @@ async function testReasonCodeRules() {
     await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 1n, revocationDate: RD, reason: "removeFromCRL" }] }, issuerOf(s))) === "crl/bad-reason-code");
   // unspecified(0) SHOULD be absent -> the builder OMITS it (no entry extension; with no CRL extension
   // either, through the array form, the CRL is v1).
-  var u = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 1n, revocationDate: RD, reason: 0 }], extensions: [] }, issuerOf(s)));
+  var u = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 1n, revocationDate: RD, reason: 0 }], extensions: [] }, issuerOf(s), GATE_OFF));
   check("unspecified(0) reason omitted -> entry has no extensions", u.revokedCertificates[0].crlEntryExtensions.length === 0);
   check("an unspecified(0)-only CRL is v1", u.version === 1);
   // A CRLReason arrives as a registry name or its number; anything else is rejected rather than coerced.
@@ -422,11 +434,13 @@ async function testVerifyInputShapes() {
   // handed only the KEY, with no certificate to carry the restriction, the same CRL verifies.
   check("the same CRL verifies under the bare key -- a key carries no authority to restrict",
     (await pki.crl.verify(crlByEe, ee.spki)).valid === true);
-  // An absent keyUsage places no restriction (sec. 4.2.1.3), so it must not read as a refusal.
+  // An absent keyUsage places no restriction (sec. 4.2.1.3), so it must not read as a refusal. The
+  // absence is this vector's subject, and a cA=TRUE certificate asserting no keyCertSign is one the
+  // build-time gate refuses, so it asks for the artifact under profile "none".
   var noKuDer = await pki.x509.sign({
     subject: "CA verify shapes", subjectPublicKey: ca.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2030-01-01T00:00:00Z"),
     extensions: { basicConstraints: { cA: true } },
-  }, { key: ca.key });
+  }, { key: ca.key }, GATE_OFF);
   check("an issuer certificate with no keyUsage at all still verifies its CRL",
     (await pki.crl.verify(crlByCa, { cert: noKuDer })).valid === true);
 
@@ -555,7 +569,7 @@ async function testIdpGates() {
 
 async function testFreshestAndAia() {
   var s = makeSigner("ec-p256");
-  function withExt(e) { return pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: e }, issuerOf(s)); }
+  function withExt(e) { return pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: CN, extensions: e }, issuerOf(s)); }
   // freshestCRL is a SEQUENCE OF DistributionPoint. A bare GeneralName list is one DP's fullName; an array
   // of { fullName } objects is one DP each. Both emit; neither is rejected as the other's shape.
   var f1 = crlExt(pki.schema.crl.parse(await withExt({ freshestCRL: [{ uniformResourceIdentifier: "http://x/f.crl" }] })), "freshestCRL");
@@ -577,7 +591,7 @@ async function testFreshestAndAia() {
 
 async function testCrlIssuerAltName() {
   var s = makeSigner("ec-p256");
-  function withExt(e) { return pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: e }, issuerOf(s)); }
+  function withExt(e) { return pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: CN, extensions: e }, issuerOf(s)); }
   var names = [{ dNSName: "crl.issuer.example" }, { rfc822Name: "ca@issuer.example" }, { uniformResourceIdentifier: "https://issuer.example/ca" }];
   var e = crlExt(pki.schema.crl.parse(await withExt({ issuerAltName: names })), "issuerAltName");
   check("issuerAltName is emitted on a CRL (sec. 5.2.2)", !!e);
@@ -723,7 +737,9 @@ async function testPemAndIsRevoked() {
     currencyCode(new Date(NU.getTime() + 1000)) === "crl/not-current");
   check("before thisUpdate it is refused too, since it speaks for a later window",
     currencyCode(new Date(TU.getTime() - 1000)) === "crl/not-current");
-  var noNextUpdate = await pki.crl.sign({ thisUpdate: TU, crlNumber: 7n, revoked: [] }, issuerOf(s));
+  // The absent nextUpdate is this vector's subject, and RFC 5280 sec. 5.1.2.5 requires one of a
+  // conforming issuer, so it asks for the artifact the build-time gate refuses.
+  var noNextUpdate = await pki.crl.sign({ thisUpdate: TU, crlNumber: 7n, revoked: [] }, issuerOf(s), GATE_OFF);
   check("a CRL stating no window at all is refused when a time is asked about",
     currencyCode(new Date(TU.getTime() + 1000), noNextUpdate) === "crl/not-current");
   check("while without a time it stays the structural lookup it has always been",
@@ -996,6 +1012,12 @@ async function testPreEncodedExtProfile() {
     kids.push(B.octetString(valueDer));
     return B.sequence(kids);
   }
+  // The authorityKeyIdentifier the object form derives for this signer, read back off a CRL it signed
+  // rather than recomputed. A vector below that needs the pre-encoded array for its own reasons writes
+  // this into the list, so it is held to the sec. 5.2.1 requirement instead of opting out of it.
+  var derivedAki = crlExt(pki.schema.crl.parse(
+    await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: CN }, issuerOf(s))), "authorityKeyIdentifier");
+  var akiExt = extDer("authorityKeyIdentifier", false, derivedAki.value);
   // cRLNumber MUST be non-critical (sec. 5.2.3) -- a critical pre-encoded one is rejected.
   check("pre-encoded critical cRLNumber -> crl/bad-input",
     await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: [extDer("cRLNumber", true, B.integer(1n))] }, issuerOf(s))) === "crl/bad-input");
@@ -1008,8 +1030,10 @@ async function testPreEncodedExtProfile() {
   // A pre-encoded (critical) delta whose base (5) is >= spec.crlNumber (5) -> rejected.
   check("pre-encoded delta with cRLNumber <= baseCRLNumber -> crl/bad-crl-number",
     await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 5n, extensions: [extDer("deltaCRLIndicator", true, B.integer(5n))] }, issuerOf(s))) === "crl/bad-crl-number");
-  // A conforming pre-encoded delta (critical, base 2) + spec.crlNumber 5 is accepted.
-  var c = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 5n, extensions: [extDer("deltaCRLIndicator", true, B.integer(2n))] }, issuerOf(s)));
+  // A conforming pre-encoded delta (critical, base 2) + spec.crlNumber 5 is accepted. Conforming means
+  // conforming, so the list carries the authorityKeyIdentifier too and this is an acceptance under the
+  // profile rather than one taken with the gate switched off.
+  var c = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 5n, extensions: [extDer("deltaCRLIndicator", true, B.integer(2n)), akiExt] }, issuerOf(s)));
   check("conforming pre-encoded delta + spec.crlNumber accepted", (crlExt(c, "deltaCRLIndicator") || {}).critical === true);
   // The profile rules above govern WHICH extension may appear and how it is marked. They say
   // nothing about whether its value decodes as the structure its OID names, which is what the
@@ -1017,7 +1041,7 @@ async function testPreEncodedExtProfile() {
   // builder; a value that does not decode must not ride into a signed CRL either.
   var okIan = extDer("issuerAltName", false, B.sequence([B.contextPrimitive(2, Buffer.from("crl.example", "latin1"))]));
   check("CONTROL: a well-formed pre-encoded issuerAltName is accepted",
-    (await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: [okIan] }, issuerOf(s)))) === null);
+    (await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: CN, extensions: [okIan, akiExt] }, issuerOf(s)))) === null);
   // The decoder's own typed code is kept, because it names the field that failed. This is the same
   // answer pki.x509.sign gives for the same malformed value. The check runs AFTER this module's own
   // profile rules, so an extension it already answers for (authorityKeyIdentifier, cRLNumber,
@@ -1088,8 +1112,10 @@ async function testPreEncodedExtProfile() {
   check("pre-encoded IDP with onlyContainsAttributeCerts -> crl/bad-idp",
     await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: [extDer("issuingDistributionPoint", true, B.sequence([B.contextPrimitive(5, Buffer.from([0xff]))]))] }, issuerOf(s))) === "crl/bad-idp");
 
-  function withExts(list) { return pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: list }, issuerOf(s)); }
-  function withEntryExts(list) { return pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 1n, revocationDate: RD, extensions: list }] }, issuerOf(s)); }
+  // The pre-encoded list is the whole extension set, so these vectors are about what the hatch itself
+  // admits and the CRL they describe carries no authorityKeyIdentifier: profile "none" asks for it.
+  function withExts(list) { return pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: list }, issuerOf(s), GATE_OFF); }
+  function withEntryExts(list) { return pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: CN, revoked: [{ serialNumber: 1n, revocationDate: RD, extensions: list }] }, issuerOf(s)); }
   // A recognized extension's value is DECODED on the escape hatch, never emitted opaque: content that is not
   // well-formed DER is rejected rather than copied through to the wire.
   check("pre-encoded ext whose value is not valid DER -> crl/bad-input",

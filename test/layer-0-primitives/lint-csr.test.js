@@ -33,7 +33,9 @@ async function run() {
   var priv = await pki.key.export(kp.privateKey);
   var pub = await pki.key.export(kp.publicKey);
 
-  function csr(spec) { return pki.csr.sign(spec, { key: priv }); }
+  // profile "none": these fixtures are the linter's corpus, so several of them are the requests the
+  // build-time gate on pki.csr.sign refuses. Holding them to it would leave the rows below untestable.
+  function csr(spec) { return pki.csr.sign(spec, { key: priv }, { profile: "none" }); }
   var plain = await csr({ subject: [{ commonName: "example.com" }], subjectPublicKey: pub,
     extensionRequest: { subjectAltName: [{ dNSName: "example.com" }] } });
 

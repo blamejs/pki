@@ -58,6 +58,12 @@ function extDer(oidName, critical, valueDer) {
   kids.push(b.octetString(valueDer));
   return b.sequence(kids);
 }
+// The key id an issuer's own subjectKeyIdentifier carries, read off the certificate rather than
+// recomputed, so what the array form writes is the value the object form would have derived.
+function caKeyId(cert) {
+  var ski = cert.extensions.filter(function (e) { return e.oid === pki.oid.byName("subjectKeyIdentifier"); })[0];
+  return pki.asn1.read.octetString(pki.asn1.decode(ski.value));
+}
 // ReasonFlags as minimal-DER NamedBitList content (X.690 sec. 11.2.2).
 function reasonBits(bits) {
   var hi = Math.max.apply(null, bits);
@@ -98,11 +104,20 @@ async function run() {
     extensions: [
       extDer("keyUsage", true, b.bitString(Buffer.from([0x80]), 7)),   // digitalSignature
       extDer("cRLDistributionPoints", false, b.sequence([b.sequence([dpName])])),
+      // The array form emits only what is written into it, so the authorityKeyIdentifier RFC 5280
+      // sec. 4.2.1.1 requires is written here too, carrying the root's own subjectKeyIdentifier.
+      extDer("authorityKeyIdentifier", false, b.sequence([b.contextPrimitive(0, caKeyId(caCert))])),
     ],
   }, { cert: caCert, key: caKp.key }, { pem: true });
 
+  var akiExtDer = extDer("authorityKeyIdentifier", false, b.sequence([b.contextPrimitive(0, caKeyId(caCert))]));
   async function signCrl(spec) {
-    return pki.crl.sign(Object.assign({ thisUpdate: TU, nextUpdate: NU }, spec), { cert: caCert, key: caKp.key });
+    var s = Object.assign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 1n }, spec);
+    // Each shard below hands its issuingDistributionPoint or deltaCRLIndicator pre-encoded, and that
+    // form emits only what is written into it, so the authorityKeyIdentifier RFC 5280 sec. 5.2.1
+    // requires of every CRL is appended rather than derived.
+    if (Array.isArray(s.extensions)) s.extensions = s.extensions.concat([akiExtDer]);
+    return pki.crl.sign(s, { cert: caCert, key: caKp.key });
   }
   async function ourVerdict(crlDers) {
     return pki.path.validate([derOf(leafPem)], {

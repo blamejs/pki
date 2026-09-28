@@ -224,7 +224,20 @@ module.exports = {
   // OID registry, naming extension/algorithm OIDs OpenSSL shows only as raw bytes.
   // Pure, no OpenSSL dependency; best-effort (a bad extension falls back to hex).
   inspect:   inspect,
-  lint:      lint,
+  // `lint` is named member by member rather than passed through, because the module also exports the
+  // build-time gate the authoring verbs call and the two readers its conformance vectors use. Those
+  // are internal plumbing, so they stay off the public namespace.
+  lint: {
+    certificate: lint.certificate,
+    csr:         lint.csr,
+    crl:         lint.crl,
+    ocsp:        lint.ocsp,
+    cms:         lint.cms,
+    tsp:         lint.tsp,
+    attrcert:    lint.attrcert,
+    rules:       lint.rules,
+    profiles:    lint.profiles,
+  },
   // `webauthn` verifies a W3C WebAuthn / passkey attestation -- pki.webauthn.verify
   // checks the attestation-statement signature + each format's structural bindings
   // (packed / tpm / android-key / apple / fido-u2f / none) and surfaces the x5c chain

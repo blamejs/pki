@@ -403,7 +403,9 @@ async function testFailClosed() {
   var iss = makeSigner("ec-p256");
   var notCaCert = pki.schema.x509.parse(await pki.x509.sign({ subject: "Not A CA", subjectPublicKey: iss.spki, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"] } }, { key: iss.key }));
   check("non-CA issuer.cert -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "leaf", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA }, { cert: notCaCert, key: iss.key })) === "x509/bad-input");
-  var caNoKcs = pki.schema.x509.parse(await pki.x509.sign({ subject: "CRL-only CA", subjectPublicKey: iss.spki, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true }, keyUsage: ["cRLSign"] } }, { key: iss.key }));
+  // The withheld keyCertSign is this vector's subject, so profile "none" asks for the certificate the
+  // build-time gate refuses, and the check below is that a later sign will not accept it as an issuer.
+  var caNoKcs = pki.schema.x509.parse(await pki.x509.sign({ subject: "CRL-only CA", subjectPublicKey: iss.spki, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true }, keyUsage: ["cRLSign"] } }, { key: iss.key }, { profile: "none" }));
   check("CA issuer.cert without keyCertSign -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "leaf", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA }, { cert: caNoKcs, key: iss.key })) === "x509/bad-input");
   // basicConstraints spec is validated strictly (a truthy non-boolean cA, or an unknown field, is rejected).
   check("basicConstraints cA non-boolean -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: 1 } } }, { key: s.key })) === "x509/bad-input");
@@ -501,7 +503,7 @@ async function testExtensionSurface() {
   var skiAB = new ArrayBuffer(20); new Uint8Array(skiAB).fill(0xab);
   var akiAB = new ArrayBuffer(20); new Uint8Array(akiAB).fill(0xcd);
   var derKidAB = await pki.x509.sign({ subject: [{ commonName: "kidAB" }], subjectPublicKey: s.spki,
-    notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true },
+    notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"],
       subjectKeyIdentifier: skiAB, authorityKeyIdentifier: akiAB } }, { key: s.key });
   var cKidAB = pki.schema.x509.parse(derKidAB);
   var skiExtAB = cKidAB.extensions.filter(function (x) { return (x.name || x.oid) === "subjectKeyIdentifier"; })[0];
@@ -738,7 +740,10 @@ async function testInputForms() {
 
   // array-form pre-encoded extension pass-through.
   var B = pki.asn1.build, oidB = pki.oid.byName;
-  var preExt = B.sequence([B.oid(oidB("basicConstraints")), B.boolean(true), B.octetString(B.sequence([B.boolean(true)]))]);
+  // What this measures is the pass-through and the count, so the one extension is a critical
+  // basicConstraints with the cA boolean absent: a self-signed end entity needs no key identifier, so the
+  // list stays at one and the certificate is still one the build-time gate accepts.
+  var preExt = B.sequence([B.oid(oidB("basicConstraints")), B.boolean(true), B.octetString(B.sequence([]))]);
   check("array-form pre-encoded extension parses", pki.schema.x509.parse(await pki.x509.sign(base({ extensions: [preExt] }), { key: s.key })).extensions.length === 1);
 
   // PKCS#8 PEM signing key input.
@@ -1031,7 +1036,9 @@ async function testKeyMatchAndTimeAndSan() {
   var caIssuer = { name: "SAN CA", publicKey: ca.spki, key: ca.key };
   var sanVal = B.sequence([B.contextPrimitive(2, Buffer.from("host.example", "latin1"))]);   // GeneralNames { dNSName }
   var criticalSan = B.sequence([B.oid(oidB("subjectAltName")), B.boolean(true), B.octetString(sanVal)]);
-  var derSan = await pki.x509.sign({ subject: [], subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: [criticalSan] }, caIssuer);
+  // The pre-encoded list is what carries the critical SAN this vector is about, and that form emits
+  // only what is written into it, so profile "none" asks for a certificate with no key identifiers.
+  var derSan = await pki.x509.sign({ subject: [], subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: [criticalSan] }, caIssuer, { profile: "none" });
   check("empty subject with a pre-encoded critical SAN (array form) is accepted", pki.schema.x509.parse(derSan).subject.dn === "");
   var nonCriticalSan = B.sequence([B.oid(oidB("subjectAltName")), B.octetString(sanVal)]);   // no critical flag
   check("empty subject with a NON-critical pre-encoded SAN -> x509/bad-input",
@@ -1052,8 +1059,10 @@ async function testKeyMatchAndTimeAndSan() {
   check("array keyCertSign without cA=TRUE -> x509/bad-input",
     await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: [kcsKu, bcFalse] }, { key: s.key })) === "x509/bad-input");
   var bcTrue = B.sequence([B.oid(oidB("basicConstraints")), B.boolean(true), B.octetString(B.sequence([B.boolean(true), B.integer(1n)]))]);   // cA=TRUE, pathLen 1
+  // The list is these two extensions and nothing else, which is what makes the pair the thing under
+  // test, so the certificate carries no key identifiers and profile "none" asks for it.
   check("array pathLen with cA=TRUE + keyCertSign is accepted",
-    Buffer.isBuffer(await pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: [kcsKu, bcTrue] }, { key: s.key })));
+    Buffer.isBuffer(await pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: [kcsKu, bcTrue] }, { key: s.key }, { profile: "none" })));
 }
 
 // issue #119: extendedKeyUsage / certificatePolicies accept a raw dotted-OID (an unregistered KeyPurposeId
@@ -2056,9 +2065,11 @@ async function testNameConstraintsSpec() {
   check("a pre-encoded nameConstraints on a non-CA certificate -> x509/bad-input",
     await codeOf(pki.x509.sign({ subject: "leaf.example", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA,
       extensions: [ncPre] }, { key: s.key })) === "x509/bad-input");
+  // The pair is the whole extension list, which is what makes the cA bit the reason nameConstraints is
+  // admitted here, so profile "none" asks for a certificate carrying nothing else.
   check("a pre-encoded nameConstraints on a CA certificate is accepted",
     Buffer.isBuffer(await pki.x509.sign({ subject: "ca.example", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA,
-      extensions: [bcPre, ncPre] }, { key: s.key })));
+      extensions: [bcPre, ncPre] }, { key: s.key }, { profile: "none" })));
 
   // The bytes are ENFORCEABLE, not merely parseable: a leaf outside the permitted subtree is
   // rejected by the validator that reads them.
@@ -2142,9 +2153,11 @@ async function testFixedCriticality() {
     B.sequence([B.oid(oidB("basicConstraints")), B.boolean(true), B.octetString(B.sequence([B.boolean(true)]))]),
     B.sequence([B.oid(oidB("keyUsage")), B.boolean(true), B.octetString(B.namedBitString([5]))]),
   ];
+  // profile "none" for the reason the comment below the loop gives: the carrier holds only the
+  // extensions the criticality matrix needs, so it omits the key identifiers RFC 5280 requires.
   function signWith(e) {
     return pki.x509.sign({ subject: "crit.example", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA,
-      extensions: carrier.concat([e]) }, { key: s.key });
+      extensions: carrier.concat([e]) }, { key: s.key }, { profile: "none" });
   }
   var names = Object.keys(FIXED);
   for (var i = 0; i < names.length; i++) {
@@ -2265,7 +2278,9 @@ async function testExtensionEncoder() {
     var viaObject = pki.schema.x509.parse(await pki.x509.sign({ subject: "ext", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: objExts }, { key: s.key }));
     var arr = (needsCa ? caCarrier.filter(function (e) { return !standalone.equals(e); }) : []).concat([standalone]);
     var arrExts = needsCa && name === "basicConstraints" ? [pki.x509.extension("keyUsage", ["keyCertSign"]), standalone] : arr;
-    var viaArray = pki.schema.x509.parse(await pki.x509.sign({ subject: "ext", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: arrExts }, { key: s.key }));
+    // The array holds the extension under test and the carrier it needs, so profile "none" asks for a
+    // certificate with no key identifiers: what is compared is the one extension both forms emitted.
+    var viaArray = pki.schema.x509.parse(await pki.x509.sign({ subject: "ext", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: arrExts }, { key: s.key }, { profile: "none" }));
     var a = entryOf(viaObject, name), z = entryOf(viaArray, name);
     var same = !!a && !!z && a.oid === z.oid && a.critical === z.critical && Buffer.compare(a.value, z.value) === 0;
     if (same) okRows++;
@@ -2427,7 +2442,9 @@ async function testKeyIdentifierDefaults() {
   // The pre-encoded array form emits exactly what it was given: the boundary of the defaults.
   var b = asn1.build, O = pki.oid.byName;
   var kuOnly = [b.sequence([b.oid(O("keyUsage")), b.boolean(true), b.octetString(b.bitString(Buffer.from([0x80]), 7))])];
-  var arrDer = await pki.x509.sign({ subject: "array", subjectPublicKey: leaf.spki, notBefore: NB, notAfter: NA, extensions: kuOnly }, { cert: caCert, key: ca.key });
+  // One extension in and one out is the whole point, so the certificate carries no key identifiers and
+  // profile "none" asks for it.
+  var arrDer = await pki.x509.sign({ subject: "array", subjectPublicKey: leaf.spki, notBefore: NB, notAfter: NA, extensions: kuOnly }, { cert: caCert, key: ca.key }, { profile: "none" });
   check("the array form adds nothing: one extension in, one out", pki.schema.x509.parse(arrDer).extensions.length === 1);
   // Sec. 4.2.1.2: the issuer certificate's SKI MUST be the value placed in the AKI keyIdentifier of
   // what it issues, so an explicit keyIdentifier is held to the issuer certificate's SKI when there
@@ -2482,7 +2499,7 @@ async function testKeyIdentifierDefaults() {
     pl0Msg.indexOf("x509/bad-input") === 0 && pl0Msg.indexOf("pathLenConstraint (0) forbids") > 0);
   check("a pre-encoded end entity under the same issuer signs", Buffer.isBuffer(await pki.x509.sign({
     subject: "ee under pl0", subjectPublicKey: leaf.spki, notBefore: NB, notAfter: NA, extensions: kuOnly,
-  }, { cert: pl0, key: ca2.key })));
+  }, { cert: pl0, key: ca2.key }, { profile: "none" })));
 }
 
 main().then(function () { process.exit(0); }, function (e) { console.error(e && e.stack || e); process.exit(1); });
