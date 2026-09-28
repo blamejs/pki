@@ -552,6 +552,7 @@ async function testGeneralNameMatchingRules() {
       targetInformation: [
         { targetName: { dNSName: "Server-A.Example" } },
         { targetName: { rfc822Name: "Ops@Example.COM" } },
+        { targetName: { uniformResourceIdentifier: "HTTPS://Svc.Example:443/Ops" } },
       ],
     },
   }), aaOf(aa));
@@ -566,6 +567,15 @@ async function testGeneralNameMatchingRules() {
   // The local-part is an exact match, so folding it would accept a different mailbox.
   check("a mailbox local-part differing in case is refused (sec. 7.5)",
     (await at({ rfc822Name: "ops@Example.COM" })).verified === false);
+  // Sec. 7.4 prepares both URIs before the exact match it calls for: the scheme and host lowercase,
+  // percent-encoding and path segments normalized, and a default port dropped for https. So a target
+  // written one way and asked about another names the same service.
+  check("a URI target differing only where sec. 7.4 normalizes matches",
+    (await at({ uniformResourceIdentifier: "https://svc.example/Ops" })).verified === true &&
+    (await at({ uniformResourceIdentifier: "https://svc.example/./Ops" })).verified === true);
+  // Its path is not one of those places.
+  check("a URI target differing in its path case is refused (sec. 7.4)",
+    (await at({ uniformResourceIdentifier: "https://svc.example/ops" })).verified === false);
 }
 
 // A directoryName target is a distinguished name, so it compares through the one DN comparator

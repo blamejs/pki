@@ -3359,7 +3359,7 @@ function testGuardReadsRuntimeLive() {
     "lib/trust.js": 100,
     "lib/cms-sign.js": 57,
     "lib/webauthn-mds.js": 89,
-    "lib/attrcert-sign.js": 84,
+    "lib/attrcert-sign.js": 76,
     "lib/tsp-sign.js": 49,
     "lib/http-digest.js": 73,
     "lib/pkcs12-build.js": 63,

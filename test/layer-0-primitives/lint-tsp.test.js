@@ -327,6 +327,57 @@ async function run() {
   check("T7d. a dNSName hint differing only in case names the same host",
     !has(pki.lint.tsp(withTsaHintRaw(dnsToken, dnsHint("TSA.EXAMPLE.COM"))), TSA_ID) &&
     has(pki.lint.tsp(withTsaHintRaw(dnsToken, dnsHint("other.example.com"))), TSA_ID));
+  // A mailbox and a URI are NOT case-insensitive throughout. RFC 5280 sec. 7.5 matches the local
+  // part exactly and the host part without regard to case; sec. 7.4 prepares both URIs, lowercasing
+  // only the scheme and host, and then calls for a case-sensitive exact match. So a hint differing
+  // from every subject name in a local part or in a path names none of them and is reported, while
+  // one differing only where its clause allows names the same thing.
+  var textCert = await pki.x509.sign({ subject: [{ commonName: "A Time Stamping Authority" }],
+    subjectPublicKey: pub, notBefore: NB, notAfter: NA,
+    extensions: { subjectKeyIdentifier: true, keyUsage: ["digitalSignature"],
+      extendedKeyUsage: ["timeStamping"], extendedKeyUsageCritical: true,
+      subjectAltName: [{ rfc822Name: "Stamp.Office@tsa.example.com" },
+        { uniformResourceIdentifier: "https://tsa.example.com/Stamp" }] } }, { key: key });
+  var textToken = await pki.tsp.sign(imprint, { cert: textCert, key: key },
+    { policy: "1.2.3", serialNumber: 1, accuracy: { seconds: 1 } });
+  function textHint(tag, value) { return b.contextPrimitive(tag, Buffer.from(value, "latin1")); }
+  function hintVerdict(tag, value) {
+    return has(pki.lint.tsp(withTsaHintRaw(textToken, textHint(tag, value))), TSA_ID);
+  }
+  check("T7w. a mailbox hint differing only in its host case names the same mailbox",
+    !hintVerdict(1, "Stamp.Office@TSA.EXAMPLE.COM"));
+  check("T7x. a mailbox hint differing only in its local-part case names a different one",
+    hintVerdict(1, "stamp.office@tsa.example.com"));
+  check("T7y. a URI hint differing only in its scheme and host case names the same resource",
+    !hintVerdict(6, "HTTPS://TSA.EXAMPLE.COM/Stamp"));
+  check("T7z. a URI hint differing only in its path case names a different resource",
+    hintVerdict(6, "https://tsa.example.com/stamp"));
+  // The other four preparation steps sec. 7.4 requires, each on its own: a default port for one of
+  // the four schemes it names, an empty path, a dot segment, and a percent-encoded unreserved
+  // character all leave the URI naming the same resource.
+  check("T7aa. the preparation steps leave a URI naming the same resource",
+    !hintVerdict(6, "https://tsa.example.com:443/Stamp") &&
+    !hintVerdict(6, "https://tsa.example.com/./Stamp") &&
+    !hintVerdict(6, "https://tsa.example.com/x/../Stamp") &&
+    !hintVerdict(6, "https://tsa.example.com/%53tamp"));
+  check("T7ab. CONTROL: and a URI naming another host is still reported",
+    hintVerdict(6, "https://other.example.com/Stamp"));
+  // A certificate carrying a name of the hint's own form that sec. 7.4 cannot prepare leaves the row
+  // with no verdict on that certificate: the hint may be one of its names and this cannot tell, so it
+  // reports nothing rather than the mismatch it did not establish. Two userinfo separators in one
+  // authority is such a URI, and the signer writes it.
+  var unreadableCert = await pki.x509.sign({ subject: [{ commonName: "A Time Stamping Authority" }],
+    subjectPublicKey: pub, notBefore: NB, notAfter: NA,
+    extensions: { subjectKeyIdentifier: true, keyUsage: ["digitalSignature"],
+      extendedKeyUsage: ["timeStamping"], extendedKeyUsageCritical: true,
+      subjectAltName: [{ uniformResourceIdentifier: "https://a@b@c.example/x" }] } }, { key: key });
+  var unreadableToken = await pki.tsp.sign(imprint, { cert: unreadableCert, key: key },
+    { policy: "1.2.3", serialNumber: 1, accuracy: { seconds: 1 } });
+  check("T7ac. CONTROL: a hint of another form is still compared against that certificate",
+    !has(pki.lint.tsp(unreadableToken), "lint/unparseable") &&
+    has(pki.lint.tsp(withTsaHintRaw(unreadableToken, textHint(1, "nobody@tsa.example.com"))), TSA_ID));
+  check("T7ad. a subject name of the hint's form that the rule cannot read leaves the row silent",
+    !has(pki.lint.tsp(withTsaHintRaw(unreadableToken, textHint(6, "https://elsewhere.example/x"))), TSA_ID));
 
   // ---- T8-T9: the serial width, and an absent accuracy ----------------------------------------
   // "Time-Stamping users MUST be ready to accommodate integers up to 160 bits", so a serial wider
