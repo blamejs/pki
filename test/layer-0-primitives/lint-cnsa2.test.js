@@ -82,10 +82,13 @@ async function run() {
     cnsaIds(pki.lint.certificate(await root({ keyUsage: ["keyCertSign", "cRLSign", "keyEncipherment"] }))).length === 0 &&
     cnsaIds(pki.lint.certificate(conformingRoot, { profile: "rfc5280" })).length === 0);
   var certRows = pki.lint.rules("cnsa-2.0", "certificate").filter(function (r) { return r.source === "cnsa-2.0"; });
+  // The CRL and response registries carry the two halves of the one sentence sections 8 and 9 give
+  // them: which algorithm signed the artifact, and whether the signature is the length that algorithm
+  // fixes. A certificate is told the second by the RFC 9881 row its own profile runs.
   check("K2. the profile is enumerated under each verb that runs it, and listed once",
     certRows.length >= 14 &&
-    pki.lint.rules("cnsa-2.0", "crl").length === 1 &&
-    pki.lint.rules("cnsa-2.0", "ocsp").length === 1 &&
+    pki.lint.rules("cnsa-2.0", "crl").length === 2 &&
+    pki.lint.rules("cnsa-2.0", "ocsp").length === 2 &&
     pki.lint.profiles().filter(function (n) { return n === "cnsa-2.0"; }).length === 1 &&
     certRows.every(function (r) { return r.citation.indexOf("draft-jenkins-cnsa2-pkix-profile-05") === 0; }));
   check("K3. a conforming self-signed CA, sub CA and end entity of each kind draw no finding",
@@ -452,6 +455,20 @@ async function run() {
     sevOf(pki.lint.crl(edCrl, { profile: "cnsa-2.0" }), P + "crl-signature-not-ml-dsa-87") === "error" &&
     !has(pki.lint.crl(mlCrl, { profile: "cnsa-2.0" }), P + "crl-signature-not-ml-dsa-87") &&
     !has(pki.lint.crl(edCrl, { profile: "rfc5280-crl" }), P + "crl-signature-not-ml-dsa-87"));
+  // The same sentence's other half: the signature must be the length FIPS 204 fixes. A certificate is
+  // told this by the RFC 9881 row its own profile runs, so the CRL and the response are told it here.
+  var shortCrlSig = surgery.patch(mlCrl, function (n) {
+    if (n.tagClass !== "universal" || n.tagNumber !== 3 || !Buffer.isBuffer(n.content)) return undefined;
+    if (n.content.length !== 4628 || n.content[0] !== 0x00) return undefined;
+    return b.bitString(Buffer.from(n.content.subarray(1, n.content.length - 1)));
+  });
+  check("K21b. CONTROL: the shortened CRL parses and still names id-ml-dsa-87",
+    !has(pki.lint.crl(shortCrlSig, { profile: "cnsa-2.0" }), "lint/unparseable") &&
+    pki.schema.crl.parse(shortCrlSig).signatureAlgorithm.name === "id-ml-dsa-87" &&
+    !shortCrlSig.equals(mlCrl));
+  check("K21c. a CRL signature of the wrong length is an error",
+    sevOf(pki.lint.crl(shortCrlSig, { profile: "cnsa-2.0" }), P + "crl-signature-length") === "error" &&
+    !has(pki.lint.crl(mlCrl, { profile: "cnsa-2.0" }), P + "crl-signature-length"));
   var eeForOcsp = await endEntity();
   function ocspFor(ca, key) {
     return pki.ocsp.sign({ responses: [{ cert: eeForOcsp, issuer: caForCrl, status: "good",
@@ -464,6 +481,29 @@ async function run() {
     sevOf(pki.lint.ocsp(edResp, { profile: "cnsa-2.0" }), P + "response-signature-not-ml-dsa-87") === "error" &&
     !has(pki.lint.ocsp(mlResp, { profile: "cnsa-2.0" }), P + "response-signature-not-ml-dsa-87") &&
     !has(pki.lint.ocsp(edResp, { profile: "rfc6960" }), P + "response-signature-not-ml-dsa-87"));
+  // The BasicOCSPResponse sits inside the responseBytes OCTET STRING, which the patcher does not
+  // descend into, so it is decoded, patched and wrapped again.
+  function shortenBitString(der) {
+    return surgery.patch(der, function (n) {
+      if (n.tagClass !== "universal" || n.tagNumber !== 3 || !Buffer.isBuffer(n.content)) return undefined;
+      if (n.content.length !== 4628 || n.content[0] !== 0x00) return undefined;
+      return b.bitString(Buffer.from(n.content.subarray(1, n.content.length - 1)));
+    });
+  }
+  var shortRespSig = surgery.patch(mlResp, function (n) {
+    if (n.tagClass !== "universal" || n.tagNumber !== 4 || !Buffer.isBuffer(n.content)) return undefined;
+    // The one that holds the BasicOCSPResponse: a SEQUENCE long enough to carry the signature. Read
+    // as a tag rather than by decoding, so no other octet string has to be decoded to be passed over.
+    if (n.content.length <= 4628 || n.content[0] !== 0x30) return undefined;
+    var rebuilt = shortenBitString(n.content);
+    return rebuilt.equals(n.content) ? undefined : b.octetString(rebuilt);
+  });
+  check("K22b. CONTROL: the shortened response parses and still names id-ml-dsa-87",
+    !has(pki.lint.ocsp(shortRespSig, { profile: "cnsa-2.0" }), "lint/unparseable") &&
+    !shortRespSig.equals(mlResp));
+  check("K22c. a response signature of the wrong length is an error",
+    sevOf(pki.lint.ocsp(shortRespSig, { profile: "cnsa-2.0" }), P + "response-signature-length") === "error" &&
+    !has(pki.lint.ocsp(mlResp, { profile: "cnsa-2.0" }), P + "response-signature-length"));
 
   console.log("CHECKS " + helpers.getChecks());
 }
