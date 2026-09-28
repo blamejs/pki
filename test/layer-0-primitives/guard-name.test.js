@@ -172,6 +172,7 @@ function run() {
   testUriHostIsReadByLabel();
   testPromotedHostReaders();
   testUriParts();
+  testUriEqual();
 }
 
 // The host-label readers and the A-label scanner, read here rather than restated by each
@@ -256,6 +257,84 @@ function testUriParts() {
     parts("https://1.2.3.4/p").host === "1.2.3.4" && parts("https://12345/p").host === "12345");
   check("an authority that is only a port carries no host",
     parts("https://:8443/p").host === null && parts("https://:/p").host === null);
+  check("the authority span bounds the authority as written, userinfo and port included",
+    parts("https://user@a.example:8443/p?q").authStart === 8 &&
+    parts("https://user@a.example:8443/p?q").authEnd === 27 &&
+    parts("mailto:a@b.example").authStart === parts("mailto:a@b.example").authEnd);
+}
+
+// RFC 5280 sec. 7.4 fixes five preparation steps a conforming implementation MUST perform before
+// comparing two URIs, and then says the comparison itself "shall perform a case-sensitive exact
+// match". Step 1 converts an internationalized name to ASCII Compatible Encoding, which a
+// `uniformResourceIdentifier` read out of a certificate has already had done to it: the field is an
+// IA5String. The other four are steps 2 through 5 below. The exact match after them is what makes
+// each of these a claim about the clause rather than about a string comparison.
+function testUriEqual() {
+  function eq(a, b) { return name.uriEqual(a, b); }
+  check("step 2 lowercases the scheme and the host, and nothing else",
+    eq("HTTPS://TSA.Example/a", "https://tsa.example/a") === "match" &&
+    eq("https://tsa.example/A", "https://tsa.example/a") === "no-match" &&
+    eq("https://tsa.example/?Q=1", "https://tsa.example/?q=1") === "no-match" &&
+    eq("https://User@tsa.example/", "https://user@tsa.example/") === "no-match");
+  check("step 3 decodes a triplet standing for an unreserved character and uppercases the rest",
+    eq("https://tsa.example/%7Ea", "https://tsa.example/~a") === "match" &&
+    eq("https://tsa.example/%3a", "https://tsa.example/%3A") === "match" &&
+    eq("https://tsa.example/%2Fa", "https://tsa.example//a") === "no-match");
+  check("step 4 normalizes path segments",
+    eq("https://tsa.example/a/./b", "https://tsa.example/a/b") === "match" &&
+    eq("https://tsa.example/a/x/../b", "https://tsa.example/a/b") === "match" &&
+    eq("https://tsa.example/a/../../b", "https://tsa.example/b") === "match");
+  // The shapes RFC 3986 sec. 5.2.4 writes out, each through the comparison: a dot segment at the end
+  // leaves the path ending in a separator, a `..` past the root removes nothing, an empty segment is a
+  // segment, and a relative `./` or `../` at the front takes its separator with it.
+  check("and it keeps the separators and empty segments the algorithm keeps",
+    eq("https://tsa.example/a/..", "https://tsa.example/") === "match" &&
+    eq("https://tsa.example/a/b/..", "https://tsa.example/a/") === "match" &&
+    eq("https://tsa.example/..", "https://tsa.example/") === "match" &&
+    eq("https://tsa.example//a", "https://tsa.example//a") === "match" &&
+    eq("https://tsa.example//a", "https://tsa.example/a") === "no-match" &&
+    eq("https://tsa.example/a/b/", "https://tsa.example/a/b") === "no-match" &&
+    eq("urn:./a", "urn:a") === "match" && eq("urn:../a", "urn:a") === "match");
+  // A certificate may carry a URI of any length the encoding allows, and this comparison runs on one
+  // while an operator waits, so the walk is asked for its cost on a large one rather than for a ratio
+  // between two: an implementation that rewrites the remaining path per segment takes seconds here.
+  var manyDots = "https://tsa.example/";
+  for (var d = 0; d < 120000; d++) manyDots += "a/../";
+  manyDots += "z";
+  var startedAt = Date.now();
+  var bigVerdict = eq(manyDots, "https://tsa.example/z");
+  var tookMs = Date.now() - startedAt;
+  check("600 KB of dot segments is read once, not once per segment (" + tookMs + "ms)",
+    bigVerdict === "match" && tookMs < 2000);
+  // "Conforming implementations MUST recognize and perform scheme-based normalization for the
+  // following schemes: ldap, http, https, and ftp. If the scheme is not recognized, step 5 is
+  // omitted." So a default port is the same URI under those four names and a different one elsewhere.
+  check("step 5 drops a default port and writes an empty path for the four schemes the clause names",
+    eq("https://tsa.example:443/a", "https://tsa.example/a") === "match" &&
+    eq("http://tsa.example:80/a", "http://tsa.example/a") === "match" &&
+    eq("ftp://f.example:21/a", "ftp://f.example/a") === "match" &&
+    eq("ldap://d.example:389/a", "ldap://d.example/a") === "match" &&
+    eq("https://tsa.example", "https://tsa.example/") === "match");
+  check("and step 5 is omitted for a scheme the clause does not name",
+    eq("sip://x.example:5060/a", "sip://x.example/a") === "no-match" &&
+    eq("https://tsa.example:8443/a", "https://tsa.example/a") === "no-match");
+  check("a value that is not a URI reaches no verdict rather than a mismatch",
+    eq("nocolon", "https://a.example/") === "not-comparable" &&
+    eq(null, "https://a.example/") === "not-comparable" &&
+    eq("https://a.example/", 7) === "not-comparable");
+  // A URI written without an authority has no host to lowercase and no port to drop, so the whole of
+  // it after the scheme is compared as written.
+  check("a URI with no authority keeps the case of everything after its scheme",
+    eq("MAILTO:A@b.example", "mailto:A@b.example") === "match" &&
+    eq("mailto:a@b.example", "mailto:A@b.example") === "no-match");
+  // No step removes a trailing dot from a host, and the comparison the clause then calls for is exact,
+  // so two authorities differing by one are two URIs. The dNSName rule of sec. 7.2 is a different
+  // clause about a different form and is not read into this one.
+  check("a trailing dot on the host is not removed, since no step removes one",
+    eq("https://tsa.example./a", "https://tsa.example/a") === "no-match");
+  check("an empty port is dropped for a scheme the clause names, and kept for one it does not",
+    eq("https://tsa.example:/a", "https://tsa.example/a") === "match" &&
+    eq("sip://x.example:/a", "sip://x.example/a") === "no-match");
 }
 
 // RFC 5280 sec. 4.2.1.10 holds a URI name constraint to "a fully qualified domain name" and says

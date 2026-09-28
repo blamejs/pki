@@ -594,6 +594,32 @@ function run() {
   // ---- registry introspection ----
   check("pki.lint.rules('bad-profile') throws lint/unknown-profile", throwsCode(function () { pki.lint.rules("does-not-exist"); }) === "lint/unknown-profile");
   check("pki.lint.profiles() lists the profile names", pki.lint.profiles().indexOf("rfc5280") !== -1 && pki.lint.profiles().indexOf("cabf-tls") !== -1);
+  // Derived rather than named, so a verb added later cannot ship a profile this cannot discover: every
+  // profile a shipped ROW declares as its source must be listed. Naming the registries inside
+  // profiles() once left three of them out while rules() still returned their rows.
+  (function () {
+    var artifacts = (function () {
+      try { pki.lint.rules(null, "not-an-artifact"); return []; }
+      catch (e) { return String(e.message).replace(/^.*\(known: /, "").replace(/\)\s*$/, "").split(", "); }
+    })();
+    var listed = pki.lint.profiles(), missing = [], sources = [];
+    artifacts.forEach(function (a) {
+      pki.lint.rules(null, a).forEach(function (r) {
+        if (typeof r.source !== "string" || sources.indexOf(r.source) !== -1) return;
+        sources.push(r.source);
+        if (listed.indexOf(r.source) === -1) missing.push(r.source + " (" + a + ")");
+      });
+    });
+    check("every artifact's known-artifact list was read (" + artifacts.join(",") + ")", artifacts.length >= 7);
+    check("and profiles() lists every profile a shipped row names as its source (" +
+      sources.length + " sources, missing: " + (missing.join(",") || "none") + ")", missing.length === 0);
+    // "all" and "default" name no profile: every verb reads either as selecting all of them, and
+    // rules() reads them the same way, so neither belongs in a list of profile names.
+    check("and the two names that select every profile are not listed as profiles",
+      listed.indexOf("all") === -1 && listed.indexOf("default") === -1 &&
+      pki.lint.rules("all").length === pki.lint.rules().length &&
+      pki.lint.rules("default").length === pki.lint.rules().length);
+  })();
   check("pki.lint.rules() enumerates the registry with stable ids", pki.lint.rules().length > 10 && pki.lint.rules().every(function (r) { return typeof r.id === "string" && typeof r.citation === "string"; }));
   check("pki.lint.rules('rfc5280') filters to one profile", pki.lint.rules("rfc5280").every(function (r) { return r.source === "rfc5280"; }));
   // The data path never throws, and the byte sources it accepts are the ones the parsers accept.

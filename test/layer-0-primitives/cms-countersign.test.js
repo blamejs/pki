@@ -282,10 +282,52 @@ async function testDigestIndependence() {
   var res = await pki.cms.verify(out);
   check("#14 countersignature under a different digest (sha512) verifies", res.signers[0].countersignatures[0].ok === true);
   check("#14 countersignature digestAlgorithm surfaced", res.signers[0].countersignatures[0].digestAlgorithm === "sha512");
-  // The countersignature's digestAlgorithm is NOT added to SignedData.digestAlgorithms.
+  // RFC 5652 sec. 5.1 has digestAlgorithms list the digests "employed by all of the signers, in any
+  // order, to facilitate one-pass signature verification", and sec. 11.4 makes a countersignature a
+  // SignerInfo without excepting it from sec. 5.3's "the message digest algorithm SHOULD be among
+  // those listed in the digestAlgorithms field". So the countersigner's digest joins the set, and the
+  // primary's stays in it: the two are independent, which is what this case is named for.
   var parsed = parse(out);
-  check("#14 SignedData.digestAlgorithms unchanged (countersig digest not added)",
-    parsed.digestAlgorithms.filter(function (d) { return d.name === "sha512"; }).length === 0);
+  check("#14 the countersigner's digest joins SignedData.digestAlgorithms (RFC 5652 sec. 5.1, 5.3)",
+    parsed.digestAlgorithms.filter(function (d) { return d.name === "sha512"; }).length === 1);
+  check("#14 and the primary signer's digest is still listed beside it",
+    parsed.digestAlgorithms.filter(function (d) { return d.name === "sha256"; }).length === 1);
+  // Adding to that set must not disturb a signature, since no signature in the message covers it.
+  check("#14 every signature still verifies after the set gains an entry",
+    res.signers.every(function (s) { return s.ok; }));
+  // Whether a digest is ALREADY listed is asked through RFC 5754 sec. 2, which makes absent
+  // parameters and an explicit NULL one algorithm, and not by matching bytes. Another producer may
+  // write the NULL spelling where this one omits the parameters, so a byte comparison would list the
+  // same digest twice. pki.cms.sign only ever emits the absent form, so the NULL form is spliced in.
+  function isDigestAlgSet(n) {
+    if (n.tagClass !== "universal" || n.tagNumber !== 17 || !n.children || !n.children.length) return false;
+    return n.children.every(function (c) {
+      return c.constructed && c.tagNumber === 16 && c.children && c.children.length &&
+        c.children[0].tagClass === "universal" && c.children[0].tagNumber === 6;
+    });
+  }
+  var nullForm = surgery.patch(base.cms, function (n) {
+    if (!isDigestAlgSet(n)) return undefined;
+    return b.set(n.children.map(function (c) {
+      return b.sequence([b.raw(c.children[0].bytes), b.nullValue()]);
+    }));
+  });
+  function digestCount(der, name) {
+    return (parse(der).digestAlgorithms || []).filter(function (a) { return a.name === name; }).length;
+  }
+  check("#14 CONTROL: the spliced NULL-parameter base lists its digest once, with parameters",
+    digestCount(nullForm, "sha256") === 1 &&
+    (parse(nullForm).digestAlgorithms || [])[0].parameters !== null);
+  var sameDigest = await pki.cms.countersign(nullForm,
+    { cert: cs.cert, key: cs.key, digestAlgorithm: "sha256" }, {});
+  check("#14 countersigning with a digest the set spells as NULL adds no second entry",
+    digestCount(sameDigest, "sha256") === 1);
+  check("#14 and that message still verifies",
+    (await pki.cms.verify(sameDigest)).signers.every(function (s) { return s.ok; }));
+  var otherDigest = await pki.cms.countersign(nullForm,
+    { cert: cs.cert, key: cs.key, digestAlgorithm: "sha512" }, {});
+  check("#14 CONTROL: a genuinely different digest IS still added",
+    digestCount(otherDigest, "sha256") === 1 && digestCount(otherDigest, "sha512") === 1);
 }
 
 // ---- 15 INPUT POLYMORPHISM: DER Buffer / Uint8Array / PEM (byte-preserving) --

@@ -212,18 +212,24 @@ async function testUnsupportedCriticalExtensionIsRejected() {
 // the first, so it must still be refused: aaControls constrains what an AA may delegate (sec. 7.4)
 // and acProxying constrains proxy use (sec. 7.2), and neither is evaluated here.
 async function testAParsedButUnevaluatedCriticalIsRefused() {
+  var b = pki.asn1.build;
   var aa = makeSigner("ec-p256");
+  // Sec. 7.2 fixes acProxying critical, so the builder writes it that way from its option. Sec. 7.4
+  // fixes nothing for aaControls inside an attribute certificate and sec. 4.2.9 makes the critical
+  // form non-conforming, so the builder writes it non-critical and the critical form this case needs
+  // is handed in pre-encoded. What is under test either way is the verb's refusal, not the builder.
   for (var name of ["aaControls", "acProxying"]) {
-    var over = {};
-    over[name] = name === "aaControls"
-      ? { pathLenConstraint: 0, permittedAttrs: [], excludedAttrs: [], permitUnSpecified: false }
-      : [{ targetName: { dNSName: "proxy.example" } }];
+    var over = name === "aaControls"
+      ? [b.sequence([b.oid(pki.oid.byName("aaControls")), b.boolean(true),
+        b.octetString(b.sequence([b.integer(0n)]))])]
+      : { acProxying: [{ targetName: { dNSName: "proxy.example" } }] };
     var der;
     try { der = await pki.attrcert.sign(spec({ extensions: over }), aaOf(aa)); }
     catch { check(name + " is buildable", false); continue; }
-    var parsedExt = pki.schema.attrcert.parse(der).extensions[0];
-    check(name + " is emitted critical and parses cleanly",
-      parsedExt.critical === true && !!parsedExt.decoded && parsedExt.decoded.opaque !== true);
+    var parsedExt = pki.schema.attrcert.parse(der).extensions
+      .filter(function (x) { return x.name === name; })[0];
+    check(name + " is critical and parses cleanly",
+      !!parsedExt && parsedExt.critical === true && !!parsedExt.decoded && parsedExt.decoded.opaque !== true);
     var r = await pki.attrcert.verify(der, trusted(aa), OK);
     check("a critical " + name + " this verb does not evaluate is refused", r.verified === false);
     check("the refusal names the extension (" + name + ")", /critical/i.test(String(r.reason)));
@@ -546,6 +552,7 @@ async function testGeneralNameMatchingRules() {
       targetInformation: [
         { targetName: { dNSName: "Server-A.Example" } },
         { targetName: { rfc822Name: "Ops@Example.COM" } },
+        { targetName: { uniformResourceIdentifier: "HTTPS://Svc.Example:443/Ops" } },
       ],
     },
   }), aaOf(aa));
@@ -560,6 +567,15 @@ async function testGeneralNameMatchingRules() {
   // The local-part is an exact match, so folding it would accept a different mailbox.
   check("a mailbox local-part differing in case is refused (sec. 7.5)",
     (await at({ rfc822Name: "ops@Example.COM" })).verified === false);
+  // Sec. 7.4 prepares both URIs before the exact match it calls for: the scheme and host lowercase,
+  // percent-encoding and path segments normalized, and a default port dropped for https. So a target
+  // written one way and asked about another names the same service.
+  check("a URI target differing only where sec. 7.4 normalizes matches",
+    (await at({ uniformResourceIdentifier: "https://svc.example/Ops" })).verified === true &&
+    (await at({ uniformResourceIdentifier: "https://svc.example/./Ops" })).verified === true);
+  // Its path is not one of those places.
+  check("a URI target differing in its path case is refused (sec. 7.4)",
+    (await at({ uniformResourceIdentifier: "https://svc.example/ops" })).verified === false);
 }
 
 // A directoryName target is a distinguished name, so it compares through the one DN comparator

@@ -426,12 +426,14 @@ async function testAlgParams() {
   check("rsaEncryption with absent params -> unsupported", r1.valid === false && r1.signers[0].code === un);
   var r1b = await pki.cms.verify(withParams("rsa-attached.p7s", "rsaEncryption", b.integer(0)));
   check("rsaEncryption with non-NULL params -> unsupported", r1b.valid === false && r1b.signers[0].code === un);
-  // ECDSA: parameters MUST be absent -- a present (even NULL) parameter fails closed.
-  var r2 = await pki.cms.verify(withParams("ec-attached.p7s", "ecdsaWithSHA256", b.nullValue()));
-  check("ecdsaWithSHA256 with present params -> unsupported", r2.valid === false && r2.signers[0].code === un);
-  // EdDSA: parameters MUST be absent (RFC 8419 sec. 3). This one the DECODER enforces, so the
-  // message is refused whole rather than reported per signer -- the strictest of the three, and
-  // the reason its code differs from its siblings above.
+  // ECDSA: RFC 3279 sec. 2.2.3 and RFC 5758 sec. 3.2 both say the encoding MUST omit the parameters
+  // field, so the DECODER enforces it and the message is refused whole, the way EdDSA's is below.
+  await rejects("ecdsaWithSHA256 with present params", function () {
+    return pki.cms.verify(withParams("ec-attached.p7s", "ecdsaWithSHA256", b.nullValue()));
+  }, "cms/bad-algorithm-parameters");
+  // EdDSA: parameters MUST be absent (RFC 8419 sec. 3), enforced the same way, so the two read alike.
+  // RSA above is the one that differs: RFC 4055 requires the field PRESENT and NULL, which is a value
+  // question the decoder cannot settle from the OID alone, so it is reported per signer.
   await rejects("Ed25519 with present params", function () {
     return pki.cms.verify(withParams("ed25519-attached.p7s", "Ed25519", b.nullValue()));
   }, "cms/bad-algorithm-parameters");
@@ -946,9 +948,13 @@ async function testMlDsaVerify() {
   var m14 = signerDigestParams(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65")), b.nullValue());
   check("R14 ML-DSA sha512 digestAlgorithm DER NULL parameter -> accepted (RFC 5754)", (await pki.cms.verify(m14)).valid === true);
   // R14b -- a SHAKE256 ML-DSA digestAlgorithm with a present parameter (even DER NULL) is REJECTED:
-  // RFC 8702 sec. 3.1 requires the SHAKE parameters absent, with no NULL exception.
+  // RFC 8702 sec. 3.1 requires the SHAKE parameters absent, with no NULL exception. The DECODER
+  // enforces it, so the message is refused whole rather than reported per signer, which is where R14's
+  // sha512 differs: RFC 5754 grants that one both spellings.
   var m14b = signerDigestParams(await pki.cms.sign(CONTENT, Object.assign(makeSigner("ml-dsa-44"), { digestAlgorithm: "shake256" })), b.nullValue());
-  check("R14b ML-DSA shake256 digestAlgorithm NULL parameter -> unsupported (RFC 8702)", (function (r) { return r.valid === false && r.signers[0].code === "cms/unsupported-algorithm"; })(await pki.cms.verify(m14b)));
+  await rejects("R14b ML-DSA shake256 digestAlgorithm NULL parameter (RFC 8702)", function () {
+    return pki.cms.verify(m14b);
+  }, "cms/bad-algorithm-parameters");
   // R8 -- an unwired message digest (SHA3-512) with signed attributes present.
   var m8 = swapSignerDigest(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65")), "sha3-512");
   check("R8 ML-DSA unsupported message digest -> unsupported", (function (r) { return r.valid === false && r.signers[0].code === "cms/unsupported-algorithm"; })(await pki.cms.verify(m8)));

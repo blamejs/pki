@@ -211,7 +211,14 @@ async function run() {
     ["md5WithRSASignature", "md5"], ["sha1WithRSASignature", "sha1"],
     ["md4WithRSA", "md4"], ["md5WithRSA", "md5"], ["ecdsaWithSHA1", "sha1"]]
     .forEach(function (pair) {
-      var alg = b.sequence([b.oid(pki.oid.byName(pair[0])), Buffer.from([0x05, 0x00])]);
+      // Each fixture is conforming in the dimension it is NOT testing, so the weak-algorithm row is
+      // what the verdict rests on. The RSA identifiers carry the NULL RFC 4055 requires; the ECDSA and
+      // DSA ones omit the field, which RFC 3279 sec. 2.2.2 and sec. 2.2.3 require, and a NULL there
+      // would be refused at parse before any row ran.
+      var dotted = pki.oid.byName(pair[0]);
+      var alg = pki.oid.paramsMustBeAbsent(dotted)
+        ? b.sequence([b.oid(dotted)])
+        : b.sequence([b.oid(dotted), Buffer.from([0x05, 0x00])]);
       var one = b.sequence([b.raw(rsaNode.children[0].bytes), b.raw(alg), b.raw(rsaNode.children[2].bytes)]);
       check("C12f. " + pair[0] + " is named by the registry and reported",
         has(pki.lint.csr(one), "lint/rfc2986/weak-signature-algorithm"));

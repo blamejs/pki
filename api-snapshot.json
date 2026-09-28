@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.8.25",
+  "packageVersion": "0.8.26",
   "surface": {
     "C": {
       "kind": "object",
@@ -60,6 +60,9 @@
               "kind": "number"
             },
             "CMP_TRANSACTION_ID_BYTES": {
+              "kind": "number"
+            },
+            "CMS_MAX_COUNTERSIGNATURE_DEPTH": {
               "kind": "number"
             },
             "CMS_MAX_KARI_ENCRYPTED_KEYS": {
@@ -1517,6 +1520,9 @@
             "CMP_TRANSACTION_ID_BYTES": {
               "kind": "number"
             },
+            "CMS_MAX_COUNTERSIGNATURE_DEPTH": {
+              "kind": "number"
+            },
             "CMS_MAX_KARI_ENCRYPTED_KEYS": {
               "kind": "number"
             },
@@ -2890,7 +2896,15 @@
     "lint": {
       "kind": "object",
       "members": {
+        "attrcert": {
+          "kind": "function",
+          "arity": 2
+        },
         "certificate": {
+          "kind": "function",
+          "arity": 2
+        },
+        "cms": {
           "kind": "function",
           "arity": 2
         },
@@ -2911,6 +2925,10 @@
           "arity": 0
         },
         "rules": {
+          "kind": "function",
+          "arity": 2
+        },
+        "tsp": {
           "kind": "function",
           "arity": 2
         }
@@ -4128,6 +4146,9 @@
     "pki.lint.crl": "0.7.9",
     "pki.lint.csr": "0.8.16",
     "pki.lint.ocsp": "0.7.26",
+    "pki.lint.cms": "0.8.26",
+    "pki.lint.tsp": "0.8.26",
+    "pki.lint.attrcert": "0.8.26",
     "pki.lint.rules": "0.2.10",
     "pki.lint.profiles": "0.2.10",
     "pki.merkle.leafHash": "0.1.28",

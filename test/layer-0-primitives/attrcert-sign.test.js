@@ -254,7 +254,11 @@ async function testExtensionSyntaxes() {
   check("auditIdentity critical=TRUE (RFC 5755 sec. 4.3.1)", byName.acAuditIdentity && byName.acAuditIdentity.critical === true);
   check("targetInformation critical=TRUE (RFC 5755 sec. 4.3.2)", byName.targetInformation && byName.targetInformation.critical === true);
   check("noRevAvail non-critical (RFC 5755 sec. 4.3.6)", byName.noRevAvail && byName.noRevAvail.critical === false);
-  check("aaControls critical=TRUE (RFC 5755 sec. 7.4, safer default)", byName.aaControls && byName.aaControls.critical === true);
+  // Sec. 7.4 calls AAControls a PKC extension "intended to be used in CA and AC issuer PKCs", so no
+  // clause of this profile fixes its criticality inside an attribute certificate. Sec. 4.2.9 governs
+  // it instead: an extension outside sec. 4.3 conforms when non-critical and does not when critical,
+  // so the conforming form is what the signer writes. R8d holds the lint verb to the same answer.
+  check("aaControls non-critical (RFC 5755 sec. 4.2.9, since sec. 7.4 intends it for a PKC)", byName.aaControls && byName.aaControls.critical === false);
   check("acProxying critical=TRUE (RFC 5755 sec. 7.2)", byName.acProxying && byName.acProxying.critical === true);
   check("authorityKeyIdentifier non-critical (RFC 5755 sec. 4.3.3) + auto-derived", byName.authorityKeyIdentifier && byName.authorityKeyIdentifier.critical === false);
   check("noRevAvail decodes", byName.noRevAvail.decoded.noRevAvail === true);

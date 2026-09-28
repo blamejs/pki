@@ -184,11 +184,20 @@ function testAcceptV2() {
 }
 
 function testHolderVariants() {
-  // Holder via baseCertificateID [0].
-  var m = parse(attrCert({ holderNode: holder({ baseCertificateID: { issuer: [gnDns("ca.example")], serial: 42 } }) }));
+  // Holder via baseCertificateID [0]. Sec. 4.2.2 requires a non-empty distinguished name present as
+  // the single value of holder.baseCertificateID.issuer in the directoryName field, in the same words
+  // sec. 4.2.3 uses for the AC issuer, so the conforming shape is one [4] carrying a non-empty Name.
+  var m = parse(attrCert({ holderNode: holder({ baseCertificateID: { issuer: [gnDirName("A CA")], serial: 42 } }) }));
   check("holder baseCertificateID: serial BigInt", m.holder.baseCertificateID.serial === 42n);
-  check("holder baseCertificateID: issuer decoded", m.holder.baseCertificateID.issuer.names[0].tagNumber === 2);
+  check("holder baseCertificateID: issuer decoded", m.holder.baseCertificateID.issuer.names[0].tagNumber === 4);
   check("holder baseCertificateID: entityName null", m.holder.entityName === null);
+  // The three shapes that clause forbids, each refused rather than reported later.
+  check("holder baseCertificateID: a non-directoryName issuer rejected",
+    parseCode(attrCert({ holderNode: holder({ baseCertificateID: { issuer: [gnDns("ca.example")], serial: 42 } }) })) === "attrcert/bad-holder");
+  check("holder baseCertificateID: two issuer GeneralNames rejected",
+    parseCode(attrCert({ holderNode: holder({ baseCertificateID: { issuer: [gnDirName("A CA"), gnDns("ca.example")], serial: 42 } }) })) === "attrcert/bad-holder");
+  check("holder baseCertificateID: an empty issuer distinguished name rejected",
+    parseCode(attrCert({ holderNode: holder({ baseCertificateID: { issuer: [b.explicit(4, b.sequence([]))], serial: 42 } }) })) === "attrcert/bad-holder");
 
   // Holder via objectDigestInfo [2].
   var m2 = parse(attrCert({ holderNode: holder({ objectDigestInfo: { type: 0 } }) }));
