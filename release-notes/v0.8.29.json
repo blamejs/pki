@@ -1,0 +1,22 @@
+{
+  "version": "0.8.29",
+  "date": "2026-09-28",
+  "headline": "Every format the toolkit detects now renders a report, and a report never prints a private key.",
+  "summary": "`pki.inspect` rendered four of the fifteen formats `pki.schema.all()` detects, and refused the rest with `inspect/unsupported-format`. It now renders all of them, each through its own named verb as well as through `pki.inspect.any`, so an operator holding a PKCS#12 file or an OCSP response reads it the same way they read a certificate. A PKCS#8 and a PKCS#12 both carry a private key, and neither report prints one: each names the algorithm and says a private key is present, never its bytes.",
+  "sections": {
+    "Added": [
+      "Ten reports, one per format that had none: `pki.inspect.pkcs8`, `pki.inspect.pkcs12`, `pki.inspect.crmf`, `pki.inspect.cmp`, `pki.inspect.csrattrs`, `pki.inspect.trustanchor`, `pki.inspect.ocspRequest`, `pki.inspect.ocspResponse`, `pki.inspect.tsp` and `pki.inspect.attrcert`. Each takes a PEM string, a DER Buffer, or that format's own parse result, refuses a wrong-format input with its own `inspect/bad-*` code, and is best-effort in the same way the certificate report is: a valid but unusual structure renders rather than throwing.",
+      "Every one is reachable by name as well as by detection, and renders the same text either way. A report only `pki.inspect.any` could reach would be a feature nobody could ask for, and an operator who knows what a file is should not have to rely on detection to read it.",
+      "No report prints private key material. A PKCS#8 report gives the version, the key algorithm, any attributes and the public key where the structure carries one, and states that the private key is present with its length; a PKCS#12 report gives the version, the integrity mode, the MAC algorithm with its iteration count and salt, and one line per safe bag naming its type. Neither writes key bytes, so inspecting a key file does not copy the key into wherever the report goes.",
+      "A PKCS#12 report says what reading the contents needs. These verbs take no password, so an encrypted safe is named and not decrypted and the report points at `pki.pkcs12.open`. A report that silently showed nothing would read as an empty store.",
+      "`pki.inspect.tsp` renders an RFC 3161 timestamp response: the PKI status with its status strings and failure info, and the TSTInfo inside the token with its policy, message imprint, serial, time, accuracy, ordering, nonce and TSA name. A bare timestamp token is a CMS ContentInfo rather than a response, and `pki.inspect.cms` has always rendered one of those."
+    ],
+    "Changed": [
+      "`pki.inspect.any` on an X.509-1997 v1 attribute certificate now throws `attrcert/legacy-v1-not-supported`, the reason that format's own parser gives, where it previously threw `inspect/unsupported-format`. The v1 form is detected so it can be named: RFC 5755 section 1 obsoletes it and this build does not parse it, and a reader of one needs to know which form they hold rather than to go looking for a renderer that was never missing.",
+      "The `inspect/unsupported-format` message enumerates the formats that do render, read from the dispatch table rather than from a list written beside it, so it cannot name a set the code does not have."
+    ],
+    "Fixed": [
+      "`pki.inspect.cms` on an EnvelopedData, an AuthenticatedData, a CompressedData or a DigestedData now has conformance vectors; before, every CMS report the suite exercised was a SignedData, so the arm reading the other four content types was never driven and a field named wrongly there would have rendered quietly."
+    ]
+  }
+}

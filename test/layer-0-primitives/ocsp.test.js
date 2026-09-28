@@ -865,6 +865,26 @@ async function run() {
   check("a query singleRequestExtension round-trips into the Request", pki.schema.ocsp.parseRequest(reqSingle).requestList[0].singleRequestExtensions.length === 1);
   check("the lightweight profile forbids singleRequestExtensions",
     (await codeOfAsync(function () { return pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer, singleRequestExtensions: [singleExt] }, { profile: "lightweight" }); })) === "ocsp/bad-input");
+  // A value that is not an array was DROPPED rather than refused: the field is read as truthy-and-has-
+  // length, so an object or a number produced a Request carrying no single-request extension and no error.
+  // A requestor that asked for one and was silently given a request without it cannot tell from the
+  // result, which is the same danger as a dropped spec key. The sibling lists in this module all pass
+  // through pkiBuild.reqDenseArray, and this one now does too.
+  var droppedShapes = [{ ocspNonce: Buffer.alloc(32, 5) }, 7, true];
+  var dropped = [];
+  for (var di = 0; di < droppedShapes.length; di++) {
+    var code = await codeOfAsync(function () {
+      return pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer,
+        singleRequestExtensions: droppedShapes[di] });
+    });
+    if (code !== "ocsp/bad-input") dropped.push(JSON.stringify(droppedShapes[di]) + " -> " + code);
+  }
+  check("a non-array singleRequestExtensions is refused, never dropped (" + (dropped.join(", ") || "all refused") + ")",
+    dropped.length === 0);
+  // An empty array still asks for nothing and is still accepted, so the refusal above is about the TYPE.
+  check("an empty singleRequestExtensions array is accepted and emits no extension",
+    (pki.schema.ocsp.parseRequest(await pki.ocsp.buildRequest({ cert: w.targetCertDer,
+      issuer: w.issuerCertDer, singleRequestExtensions: [] })).requestList[0].singleRequestExtensions) === null);
 
   // ---- sign option defaults + verify input/opts arms ----
   var ridDefault = await pki.ocsp.sign({ responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: "good", thisUpdate: TU, nextUpdate: NU }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 });
