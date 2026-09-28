@@ -1357,7 +1357,7 @@ async function testCallerCannotRewriteAfterEntry() {
   check("x509.sign returns the encoding opts asked for at entry", Buffer.isBuffer(await pending));
 
   var crlOpts = { pem: false };
-  var pendingCrl = pki.crl.sign({ thisUpdate: new Date(0), nextUpdate: new Date(1e12), revoked: [] },
+  var pendingCrl = pki.crl.sign({ thisUpdate: new Date(0), nextUpdate: new Date(1e12), crlNumber: 1n, revoked: [] },
     { name: "opts-after-entry CRL", publicKey: s.spki, key: s.key }, crlOpts);
   crlOpts.pem = true;
   check("crl.sign returns the encoding opts asked for at entry", Buffer.isBuffer(await pendingCrl));

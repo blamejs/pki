@@ -140,7 +140,7 @@ async function testRequestPayloadValidated() {
 async function testCertRepCrlOnly() {
   // A SUCCESS CertRep answering GetCRL carries a CRL and no certificate (RFC 8894 sec. 3.3.4); the CRL
   // is surfaced in crls and certificates is empty, rather than rejected for having no certificate.
-  var crl = await pki.crl.sign({ thisUpdate: new Date("2026-06-01"), nextUpdate: new Date("2026-07-01"), revoked: [] }, { key: F.caKey, cert: F.caCert });
+  var crl = await pki.crl.sign({ thisUpdate: new Date("2026-06-01"), nextUpdate: new Date("2026-07-01"), crlNumber: 1n, revoked: [] }, { key: F.caKey, cert: F.caCert });
   var env = await cmsEncrypt.encrypt(certsOnlyBag(null, [crl]), [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
   var rep = await buildCertRep({ statusCode: "0", transactionId: "crl", content: env });
   var v = await pki.scep.parse(rep, { recipientKey: { cert: F.caCert, key: F.caKey } });
@@ -1270,7 +1270,7 @@ async function testGetCertVerb() {
 
 async function testGetCrlVerb() {
   var f = await queryFixture();
-  var crl = await pki.crl.sign({ thisUpdate: new Date("2026-06-01"), nextUpdate: new Date("2026-07-01"), revoked: [] }, { key: F.caKey, cert: F.caCert });
+  var crl = await pki.crl.sign({ thisUpdate: new Date("2026-06-01"), nextUpdate: new Date("2026-07-01"), crlNumber: 1n, revoked: [] }, { key: F.caKey, cert: F.caCert });
   var t20 = caTransport(function (p) { return f.crlResp(p, crl); });
   var out20 = await pki.scep.getCrl("http://ca.example/scep", Object.assign({ certificate: F.issuedCert, transport: t20 }, f.base));
   check("getCrl: retrieves the CRL", Buffer.compare(out20.crl, crl) === 0 && out20.crls.length === 1 && (await pki.scep.parse(t20.calls[0].body, { recipientKey: { cert: F.caCert, key: F.caKey } })).messageType === "GetCRL");
@@ -1285,7 +1285,7 @@ async function testGetCrlVerb() {
   var otherKp = await pki.key.generate({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" });
   var otherKey = await pki.key.export(otherKp.privateKey);
   var otherCert = await pki.x509.sign({ subject: "Other CA", subjectPublicKey: await pki.key.export(otherKp.publicKey), notBefore: new Date("2026-01-01"), notAfter: new Date("2030-01-01"), extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "cRLSign"] } }, { key: otherKey });
-  var otherCrl = await pki.crl.sign({ thisUpdate: new Date("2026-06-01"), nextUpdate: new Date("2026-07-01"), revoked: [] }, { key: otherKey, cert: otherCert });
+  var otherCrl = await pki.crl.sign({ thisUpdate: new Date("2026-06-01"), nextUpdate: new Date("2026-07-01"), crlNumber: 1n, revoked: [] }, { key: otherKey, cert: otherCert });
   var t24c = caTransport(function (p) { return f.crlResp(p, otherCrl); });
   check("getCrl: a CRL issued by a different CA than the one queried -> no-crl", (await codeOf(pki.scep.getCrl("http://ca.example/scep", Object.assign({ certificate: F.issuedCert, transport: t24c }, f.base)))) === "scep/no-crl");
   var t24d = caTransport(async function (p) { var env = await cmsEncrypt.encrypt(certsOnlyBag(null, [crl, crl]), [{ cert: f.rsa.cert }], { contentEncryptionAlgorithm: "aes-128-cbc" }); return buildCertRep({ statusCode: "0", transactionId: p.transactionId, recipientNonce: p.senderNonce, content: env }); });
@@ -1403,7 +1403,7 @@ async function testCertRepIssuance() {
   var swapCode = await codeOf(pki.scep.parse(swapped, { recipientKey: recipKey, signerCert: F.caCert }));
   check("CertRep issuance captures the signer key in the sync prologue (a mid-flight key swap during the encrypt await does not corrupt the CA signature)", swapCode === "NO-THROW");
 
-  var crl = await pki.crl.sign({ thisUpdate: new Date("2026-06-01"), nextUpdate: new Date("2026-07-01"), revoked: [] }, { key: F.caKey, cert: F.caCert });
+  var crl = await pki.crl.sign({ thisUpdate: new Date("2026-06-01"), nextUpdate: new Date("2026-07-01"), crlNumber: 1n, revoked: [] }, { key: F.caKey, cert: F.caCert });
   var crlRep = await pki.scep.build({ messageType: "CertRep", pkiStatus: "SUCCESS", transactionId: "cr-crl", recipientNonce: rn, crls: [crl], recipient: rsa.cert, signer: caSigner });
   var vc = await pki.scep.parse(crlRep, { recipientKey: recipKey, signerCert: F.caCert });
   check("CertRep issuance SUCCESS (GetCRL response): crls[0] is the CRL", Buffer.compare(vc.crls[0], crl) === 0);

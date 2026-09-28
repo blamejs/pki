@@ -616,7 +616,7 @@ async function testFailClosedInputs() {
 // ---- bag-type coverage: keyBag, crl, secret, nested safeContents ----------
 async function testBagTypes() {
   var s = signer();
-  var crlDer = await pki.crl.sign({ thisUpdate: new Date("2026-01-01T00:00:00Z"), nextUpdate: new Date("2026-02-01T00:00:00Z"), revoked: [] },
+  var crlDer = await pki.crl.sign({ thisUpdate: new Date("2026-01-01T00:00:00Z"), nextUpdate: new Date("2026-02-01T00:00:00Z"), crlNumber: 1n, revoked: [] },
     { cert: pki.schema.x509.parse(s.cert), key: s.key });
   var p12 = await pki.pkcs12.build({ safeContents: [{ bags: [
     { type: "key", key: s.key },

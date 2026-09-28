@@ -4,6 +4,27 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.28 — 2026-09-28
+
+The three signing verbs lint what they are about to emit, and refuse it before the key is used.
+
+### Added
+
+- `pki.x509.sign` refuses a spec whose certificate violates an error-severity rule of the RFC 5280 profile, with `x509/profile-violation` naming the rule and its clause. `pki.csr.sign` does the same against RFC 2986 with `csr/profile-violation`, and `pki.crl.sign` against the RFC 5280 section 5 profile with `crl/profile-violation`. The check runs on the assembled artifact rather than on the spec, so it reports what would have reached the wire.
+- The refusal precedes the signature. A spec that violates a rule never reaches the signing key, which matters where that key is a hardware token, a remote signer, or anything that counts or logs a use.
+- `opts.profile` on all three verbs names a further profile from `pki.lint.profiles()` whose error-severity rules run beside the always-on set, so a certificate can be held to `cabf-tls` or `cnsa-2.0` at the moment it is built rather than after. A name that verb does not run is refused with its own `bad-input` code and the sentence `pki.lint.rules` gives for the same name.
+- `opts.profile: "none"` runs no rules and emits what the spec describes. A toolkit that cannot emit a non-conforming artifact cannot produce a test corpus, reproduce a real misissuance, or build the fixtures a linter is exercised against, so the escape is a name the caller writes rather than a default: the gate is closed unless somebody asked for it, and every refusal names it.
+- Two kinds of finding are passed over. A rule reading the signature value cannot apply, because at the moment of the check the signature does not exist. `lint/rfc5280/unknown-critical-extension` does not apply either: RFC 5280 section 4.2 places that requirement on a certificate-using system, and the same section states that conforming CAs may support extensions the specification does not identify, so a private critical extension signs and the relying party still decides what to do with it.
+
+### Changed
+
+- A spec that describes a non-conforming artifact is now refused rather than signed. What changes in practice: a CRL spec with no `crlNumber` or no `nextUpdate` is refused, since RFC 5280 section 5.2.3 and section 5.1.2.5 require both of a conforming CRL issuer and neither can be derived, a CRL number being issuer state; a certificate whose basicConstraints sets cA without a keyUsage asserting keyCertSign is refused, per section 4.2.1.3; a request with an empty subject that does not ask for a subjectAltName is refused, since it names nothing to certify; and a certificate or CRL built through the pre-encoded extension array is refused when that array carries no key identifier the artifact needs, because that form emits only what is written into it. The object form still derives what its RFC places on the issuer: a subjectKeyIdentifier on every certificate, an authorityKeyIdentifier on every certificate that is not self-signed and on every CRL. To upgrade: add the missing field, write the identifier into the array, or pass `{ profile: "none" }` where the artifact is meant to be non-conforming. The refusal message names the rule and the clause in every case.
+- `pki.lint` is assembled from its public verbs rather than passed through as a module, so the namespace holds `certificate`, `csr`, `crl`, `ocsp`, `cms`, `tsp`, `attrcert`, `rules` and `profiles` and nothing else. No name was removed.
+
+### Fixed
+
+- The documented examples for `pki.crl.verify`, `pki.crl.isRevoked`, `pki.inspect.crl`, `pki.schema.crl.parse`, `pki.schema.crl.pemDecode`, `pki.schema.crl.pemEncode`, `pki.schema.crl.decodeExtension` and `pki.schema.crl.decodeExtensions` built artifacts this toolkit's linter grades an error, and an operator copying one got a CRL with no nextUpdate or a CA certificate asserting no keyCertSign. Each now carries what its RFC requires.
+
 ## v0.8.27 — 2026-09-28
 
 Two algorithm-policy profiles, and a two-digit year read against the clock rather than a constant.

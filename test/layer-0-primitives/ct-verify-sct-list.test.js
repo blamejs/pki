@@ -135,8 +135,19 @@ async function run() {
   var otherExt = pki.asn1.build.sequence([pki.asn1.build.oid(pki.oid.byName("basicConstraints")), pki.asn1.build.octetString(pki.asn1.build.sequence([]))]);
   var common = { serialNumber: 4242, subject: "CT Leaf", subjectPublicKey: leafSpki, notBefore: new Date("2026-06-01T00:00:00Z"), notAfter: new Date("2027-06-01T00:00:00Z") };
   var issuerArg = { key: caKey, cert: caCert };
+  // Every certificate below hands the extension list pre-encoded, because where the SCT extension sits
+  // in that list is what these vectors measure, and that form emits only what is written into it. So the
+  // authorityKeyIdentifier RFC 5280 sec. 4.2.1.1 requires is written in too, carrying the issuing
+  // certificate's own subjectKeyIdentifier, and each pair stays comparable because both members of it
+  // carry the same one. `gateOff` is left for the one vector whose subject is a single-extension list.
+  var caSki = pki.schema.x509.parse(caCert).extensions
+    .filter(function (e) { return e.oid === pki.oid.byName("subjectKeyIdentifier"); })[0];
+  var akiExt = pki.asn1.build.sequence([pki.asn1.build.oid(pki.oid.byName("authorityKeyIdentifier")),
+    pki.asn1.build.octetString(pki.asn1.build.sequence([
+      pki.asn1.build.contextPrimitive(0, pki.asn1.read.octetString(pki.asn1.decode(caSki.value)))]))]);
+  var gateOff = { profile: "none" };
   // A: the precert TBS (no SCT). B: the final cert = A + the SCT extension (SCT NOT last -> mid-list removal).
-  var certA = await pki.x509.sign(Object.assign({}, common, { extensions: [otherExt] }), issuerArg);
+  var certA = await pki.x509.sign(Object.assign({}, common, { extensions: [otherExt, akiExt] }), issuerArg);
   var tbsA = pki.schema.x509.parse(certA).tbsBytes;
   var logKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   var logSpki = logKp.publicKey.export({ format: "der", type: "spki" });
@@ -145,7 +156,7 @@ async function run() {
     signatureAlgorithm: { hash: 4, hashName: "sha256", signature: 3, signatureName: "ecdsa" }, signature: null, extensions: Buffer.alloc(0) };
   eSct.signature = crypto.sign("sha256", pki.ct.reconstructSignedData({ entryType: 1, tbsCertificate: tbsA, issuerKeyHash: issuerKeyHash }, eSct), logKp.privateKey);
   var sctExt = pki.asn1.build.sequence([pki.asn1.build.oid(pki.oid.byName("signedCertificateTimestampList")), pki.asn1.build.octetString(pki.ct.encodeSctList([eSct]))]);
-  var certB = await pki.x509.sign(Object.assign({}, common, { extensions: [sctExt, otherExt] }), issuerArg);
+  var certB = await pki.x509.sign(Object.assign({}, common, { extensions: [sctExt, otherExt, akiExt] }), issuerArg);
 
   var entry11 = pki.ct.x509CertEntry(certB, caCert);
   check("VL11. x509CertEntry(final, issuer) reconstructs an entry whose SCT verifySct accepts",
@@ -262,7 +273,7 @@ async function run() {
     signatureAlgorithm: { hash: 4, hashName: "sha256", signature: 3, signatureName: "ecdsa" }, signature: null, extensions: Buffer.alloc(0) };
   rSct.signature = crypto.sign("sha256", pki.ct.reconstructSignedData({ entryType: 1, tbsCertificate: R, issuerKeyHash: issuerKeyHash }, rSct), logKp.privateKey);
   var rSctExt = pki.asn1.build.sequence([pki.asn1.build.oid(pki.oid.byName("signedCertificateTimestampList")), pki.asn1.build.octetString(pki.ct.encodeSctList([rSct]))]);
-  var onlySctCert = await pki.x509.sign(Object.assign({}, common, { extensions: [rSctExt] }), issuerArg);
+  var onlySctCert = await pki.x509.sign(Object.assign({}, common, { extensions: [rSctExt] }), issuerArg, gateOff);
   var re26 = pki.ct.x509CertEntry(onlySctCert, caCert);
   var re26Node = pki.asn1.decode(re26.tbsCertificate);
   var hasExt3 = false;
@@ -282,7 +293,7 @@ async function run() {
     signatureAlgorithm: { hash: 4, hashName: "sha256", signature: 3, signatureName: "ecdsa" }, signature: null, extensions: Buffer.alloc(0) };
   certFutSct.signature = crypto.sign("sha256", pki.ct.reconstructSignedData({ entryType: 1, tbsCertificate: tbsA, issuerKeyHash: issuerKeyHash }, certFutSct), logKp.privateKey);
   var futSctExt = pki.asn1.build.sequence([pki.asn1.build.oid(pki.oid.byName("signedCertificateTimestampList")), pki.asn1.build.octetString(pki.ct.encodeSctList([certFutSct]))]);
-  var certFuture = await pki.x509.sign(Object.assign({}, common, { extensions: [futSctExt, otherExt] }), issuerArg);
+  var certFuture = await pki.x509.sign(Object.assign({}, common, { extensions: [futSctExt, otherExt, akiExt] }), issuerArg);
   var rFut = await pki.path.validate([certFuture], { trustAnchors: caCert, time: atTime, ctLogList: ctLogList, ctPolicy: { minScts: 1, minOperators: 1 } });
   var cFut = ctCheckOf(rFut);
   check("VL28. the path gate rejects a future-dated SCT (opts.time forwarded as at) -> ct ok:false, path invalid",

@@ -355,7 +355,7 @@ async function testEverySigningVerbTakesTheForm() {
     }, { key: e.signer, cert: caCert });
   });
   await drive("crl.sign", async function () {
-    await pki.crl.sign({ thisUpdate: NOT_BEFORE, nextUpdate: NOT_AFTER, revoked: [] }, { key: e.signer, cert: caCert });
+    await pki.crl.sign({ thisUpdate: NOT_BEFORE, nextUpdate: NOT_AFTER, crlNumber: 1n, revoked: [] }, { key: e.signer, cert: caCert });
   });
   await drive("csr.sign", async function () {
     await pki.csr.sign({ subject: "CN=Requester", subjectPublicKey: e.spki }, { key: e.signer });
@@ -428,7 +428,7 @@ async function testABadSignatureIsRefusedEverywhere() {
       { key: wrongKey, cert: caCert });
   });
   await mustRefuse("crl.sign", function () {
-    return pki.crl.sign({ thisUpdate: NOT_BEFORE, nextUpdate: NOT_AFTER, revoked: [] }, { key: wrongKey, cert: caCert });
+    return pki.crl.sign({ thisUpdate: NOT_BEFORE, nextUpdate: NOT_AFTER, crlNumber: 1n, revoked: [] }, { key: wrongKey, cert: caCert });
   });
   await mustRefuse("csr.sign", function () {
     return pki.csr.sign({ subject: "CN=Requester", subjectPublicKey: e.spki }, { key: wrongKey });

@@ -27,7 +27,7 @@ function signer() { if (!SIGNER) SIGNER = makeSigner("rsa"); return SIGNER; }
 // ---- #1 / #4 / #5 / #13 build -> open round-trip (classic HMAC) -------------
 async function testClassicRoundTrip() {
   var s = signer();
-  var crl = await pki.crl.sign({ thisUpdate: new Date("2026-01-01T00:00:00Z"), nextUpdate: new Date("2026-02-01T00:00:00Z"), revoked: [] }, { cert: pki.schema.x509.parse(s.cert), key: s.key });
+  var crl = await pki.crl.sign({ thisUpdate: new Date("2026-01-01T00:00:00Z"), nextUpdate: new Date("2026-02-01T00:00:00Z"), crlNumber: 1n, revoked: [] }, { cert: pki.schema.x509.parse(s.cert), key: s.key });
   var lki = Buffer.from([0xaa, 0xbb]);
   var p12 = await pki.pkcs12.build({ safeContents: [
     { encrypt: { password: "1234" }, bags: [{ type: "cert", cert: s.cert, friendlyName: "my cert", localKeyId: lki }] },   // #4 encrypted cert safe

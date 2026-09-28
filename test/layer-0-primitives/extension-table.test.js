@@ -223,7 +223,7 @@ async function testTheCrlDoorReadsBothScopes() {
     extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "cRLSign"] },
   }, { key: key });
   var crlDer = await pki.crl.sign({
-    thisUpdate: new Date("2026-01-01T00:00:00Z"), crlNumber: 7n,
+    thisUpdate: new Date("2026-01-01T00:00:00Z"), nextUpdate: new Date("2026-02-01T00:00:00Z"), crlNumber: 7n,
     revoked: [
       { serialNumber: 0x0a3fn, revocationDate: new Date("2026-01-15T00:00:00Z"), reason: "keyCompromise" },
       { serialNumber: 0x0a40n, revocationDate: new Date("2026-01-16T00:00:00Z"), invalidityDate: new Date("2026-01-14T00:00:00Z") },
@@ -703,7 +703,7 @@ async function testTheCrlTableCarriesTheWholeSection5Profile() {
     extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "cRLSign"] },
   }, { key: key });
   var crlDer = await pki.crl.sign({
-    thisUpdate: new Date("2026-01-01T00:00:00Z"), crlNumber: 9n,
+    thisUpdate: new Date("2026-01-01T00:00:00Z"), nextUpdate: new Date("2026-02-01T00:00:00Z"), crlNumber: 9n,
     revoked: [{ serialNumber: 1n, revocationDate: new Date("2026-01-02T00:00:00Z") }],
     extensions: {
       issuingDistributionPoint: { fullName: [{ uniformResourceIdentifier: "http://crl.example/a.crl" }], onlyContainsUserCerts: true },

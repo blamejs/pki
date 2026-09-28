@@ -102,16 +102,17 @@ async function testCompositeArm() {
 
 async function testEmptySubjectAndAttrs() {
   var s = makeSigner("ed25519");
-  // empty subject is allowed for a CSR (no SAN requirement, unlike an empty-subject certificate).
-  var der = await pki.csr.sign({ subject: [], subjectPublicKey: s.spki }, { key: s.key });
+  // The empty subject is this vector's subject, and a request carrying one names nothing to certify
+  // unless it also requests a subjectAltName, so it asks for the artifact the build-time gate refuses.
+  var der = await pki.csr.sign({ subject: [], subjectPublicKey: s.spki }, { key: s.key }, { profile: "none" });
   var c = pki.schema.csr.parse(der);
   check("empty subject accepted", c.subject.dn === "");
   // the CRI's 4th child is the [0] IMPLICIT SET OF attributes, emitted even when empty (A0 00).
   var attrs = asn1.decode(der).children[0].children[3];
   check("attributes is context [0] constructed", attrs.tagClass === "context" && attrs.tagNumber === 0);
   check("empty attributes -> zero members in [0]", (attrs.children || []).length === 0 && attrs.length === 0);   // A0 00
-  // subject omitted entirely behaves the same.
-  check("subject omitted -> empty subject", pki.schema.csr.parse(await pki.csr.sign({ subjectPublicKey: s.spki }, { key: s.key })).subject.dn === "");
+  // subject omitted entirely behaves the same, and names nothing to certify for the same reason.
+  check("subject omitted -> empty subject", pki.schema.csr.parse(await pki.csr.sign({ subjectPublicKey: s.spki }, { key: s.key }, { profile: "none" })).subject.dn === "");
 }
 
 // ---- extensionRequest carrying a SAN + a CA copying it ---------------------
@@ -169,10 +170,12 @@ async function testExtensionRequest() {
   // rebuild the SAN extension DER (oid + extnValue) for the array form.
   var B = pki.asn1.build;
   var sanDer = B.sequence([B.oid(pki.oid.byName("subjectAltName")), B.octetString(sanExt.value)]);
+  // The pre-encoded list is what carries the rebuilt SAN, and that form emits only what is written
+  // into it, so this certificate holds no authorityKeyIdentifier and profile "none" asks for it.
   var leaf = pki.schema.x509.parse(await pki.x509.sign({
     subject: "leaf.example", subjectPublicKey: s.spki, notBefore: new Date("2026-01-01Z"), notAfter: new Date("2030-01-01Z"),
     extensions: [sanDer],
-  }, { cert: caCert, key: ca.key }));
+  }, { cert: caCert, key: ca.key }, { profile: "none" }));
   var res = await pki.path.validate([leaf], { time: new Date("2027-06-01Z"), trustAnchors: { name: caCert.subject, publicKey: caCert.subjectPublicKeyInfo.bytes, algorithm: caCert.subjectPublicKeyInfo.algorithm.oid } });
   check("a CA copies the requested SAN into a valid issued cert", res.valid === true && leaf.extensions.some(function (e) { return (e.name || e.oid) === "subjectAltName"; }));
 
