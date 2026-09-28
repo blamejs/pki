@@ -229,6 +229,72 @@ async function run() {
   // the same answer a token supplying its certificate out of band gets.
   check("T7i. a token carrying only a certificate the ESS certHash does not name is passed over",
     !has(pki.lint.tsp(withTsaHint(withCerts(skiToken, [strangerCert]), subjectNameDer(other))), TSA_ID));
+  // RFC 2634 sec. 5.4's ESSCertID carries no hashAlgorithm: SHA-1 is implied. So the ORIGINAL
+  // SigningCertificate attribute names its certificate by a SHA-1 hash, and a profile that resolves the
+  // signer only for the v2 attribute leaves every v1 token's hint uncompared. Both attributes satisfy
+  // sec. 2.4.2, so both reach this row and both must answer.
+  function withEssV1(tokenDer, certDer) {
+    var wantedV2 = b.oid(pki.oid.byName("signingCertificateV2"));
+    var value = b.sequence([b.sequence([b.sequence([
+      b.octetString(crypto.createHash("sha1").update(certDer).digest())])])]);
+    return surgery.patch(tokenDer, function (n) {
+      if (!n.constructed || n.tagNumber !== 16 || !n.children || n.children.length !== 2) return undefined;
+      if (!wantedV2.equals(n.children[0].bytes)) return undefined;
+      return b.sequence([b.oid(pki.oid.byName("signingCertificate")), b.set([value])]);
+    });
+  }
+  var v1Token = withEssV1(clean, cert);
+  check("T7l. CONTROL: the ESS v1 rewrite still parses as a timestamp token",
+    !has(pki.lint.tsp(v1Token), "lint/unparseable"));
+  check("T7m. a tsa hint naming another subject is reported on an ESS v1 token, as on a v2 one",
+    sevOf(pki.lint.tsp(withTsaHint(v1Token, subjectNameDer(other))), TSA_ID) === "error");
+  check("T7n. CONTROL: and a hint naming the v1 token's own signer stays silent",
+    !has(pki.lint.tsp(withTsaHint(v1Token, subjectNameDer(cert))), TSA_ID));
+  // An ESSCertIDv2 carries a hashAlgorithm AlgorithmIdentifier and RFC 5035 sec. 4 fixes no set of
+  // algorithms for it, so the certHash may name the signer under any digest. A profile that reads a
+  // fixed handful of them leaves the signer of a token naming one outside that handful unresolved, and
+  // every row reading the signer certificate silent. RFC 8702 sec. 2 fixes 32 bytes for id-shake128
+  // and 64 for id-shake256 where either names a message digest, so the XOF forms hash to that length.
+  function withEssDigest(tokenDer, certDer, digestName, xofBytes) {
+    var h = xofBytes === null ? crypto.createHash(digestName)
+      : crypto.createHash(digestName, { outputLength: xofBytes });
+    var essCertId = b.sequence([b.sequence([b.oid(pki.oid.byName(digestName))]),
+      b.octetString(h.update(certDer).digest())]);
+    return reSignedAttr(tokenDer, "signingCertificateV2",
+      b.set([b.sequence([b.sequence([essCertId])])]));
+  }
+  var sha3Token = withEssDigest(clean, cert, "sha3-256", null);
+  check("T7o. CONTROL: a token naming its signer by a sha3-256 certHash still parses",
+    !has(pki.lint.tsp(sha3Token), "lint/unparseable"));
+  check("T7p. a tsa hint naming another subject is reported on a token whose certHash is sha3-256",
+    sevOf(pki.lint.tsp(withTsaHint(sha3Token, subjectNameDer(other))), TSA_ID) === "error");
+  check("T7q. CONTROL: and a hint naming that token's own signer stays silent",
+    !has(pki.lint.tsp(withTsaHint(sha3Token, subjectNameDer(cert))), TSA_ID));
+  var shakeToken = withEssDigest(clean, cert, "shake128", 32);
+  check("T7r. CONTROL: a token naming its signer by a shake128 certHash still parses",
+    !has(pki.lint.tsp(shakeToken), "lint/unparseable"));
+  check("T7s. the same hint is reported on a token whose certHash is the 32-byte shake128 digest",
+    sevOf(pki.lint.tsp(withTsaHint(shakeToken, subjectNameDer(other))), TSA_ID) === "error");
+  check("T7t. CONTROL: and a hint naming that token's own signer stays silent",
+    !has(pki.lint.tsp(withTsaHint(shakeToken, subjectNameDer(cert))), TSA_ID));
+  // A shake128 certHash whose length is not the 32 bytes RFC 8702 sec. 2 fixes names no certificate
+  // this reads, so the signer is unresolved and the row is passed over rather than compared against a
+  // truncation of the digest.
+  var shortShake = reSignedAttr(clean, "signingCertificateV2", b.set([b.sequence([b.sequence([
+    b.sequence([b.sequence([b.oid(pki.oid.byName("shake128"))]),
+      b.octetString(crypto.createHash("shake128", { outputLength: 16 }).update(cert).digest())])])])]));
+  check("T7u. a shake128 certHash of a length RFC 8702 does not fix names no embedded certificate",
+    !has(pki.lint.tsp(withTsaHint(shortShake, subjectNameDer(other))), TSA_ID) &&
+    !has(pki.lint.tsp(shortShake), "lint/unparseable"));
+  // The hashAlgorithm name the row reads is the OID registry's, not the token's: an OID the registry
+  // does not know carries no name at all, so the signer is unresolved and the row is passed over. A
+  // sender therefore cannot name a digest this toolkit does not hold an OID for.
+  var unknownAlg = reSignedAttr(clean, "signingCertificateV2", b.set([b.sequence([b.sequence([
+    b.sequence([b.sequence([b.oid("1.2.3.4.5.6")]),
+      b.octetString(crypto.createHash("sha256").update(cert).digest())])])])]));
+  check("T7v. a certHash under an OID the registry does not name resolves no signer, and reports",
+    !has(pki.lint.tsp(withTsaHint(unknownAlg, subjectNameDer(other))), TSA_ID) &&
+    !has(pki.lint.tsp(unknownAlg), "lint/unparseable"));
   /** Replace the values SET of the signed attribute carrying `oidName`. */
   function reSignedAttr(tokenDer, oidName, valuesSet) {
     var wanted = b.oid(pki.oid.byName(oidName));
