@@ -244,6 +244,30 @@ async function run() {
     findingsOf(lint(twoForbidden), P + "ca-key-usage-bits").length === 2 &&
     !has(lint(await root({ keyUsage: ["keyCertSign", "cRLSign", "digitalSignature", "nonRepudiation"] })),
       P + "ca-key-usage-bits"));
+  // "All other bits MUST NOT be set" reaches past the nine RFC 5280 sec. 4.2.1.3 names: a bit beyond
+  // them is one of the others. The builder writes only the nine, so the extension value is written
+  // here: keyCertSign and cRLSign set, plus a bit past the named positions.
+  var kuOid = b.oid(pki.oid.byName("keyUsage"));
+  function withKeyUsageBits(der, bytes, unused) {
+    return surgery.patch(der, function (n) {
+      if (n.tagClass !== "universal" || n.tagNumber !== 16 || !n.children || n.children.length !== 3) return undefined;
+      if (!kuOid.equals(n.children[0].bytes)) return undefined;
+      return b.sequence([b.raw(n.children[0].bytes), b.raw(n.children[1].bytes),
+        b.octetString(b.bitString(Buffer.from(bytes), unused))]);
+    });
+  }
+  var caReservedBit = withKeyUsageBits(conformingRoot, [0x06, 0x40], 6);
+  check("K10b. CONTROL: the rewritten certificate parses and keeps its two required bits",
+    !has(lint(caReservedBit), "lint/unparseable") &&
+    !has(lint(caReservedBit), P + "ca-missing-extension") &&
+    !caReservedBit.equals(conformingRoot));
+  check("K10c. a bit past the nine named positions is outside the set this profile fixes",
+    findingsOf(lint(caReservedBit), P + "ca-key-usage-bits").length === 1 &&
+    findingsOf(lint(caReservedBit), P + "ca-key-usage-bits")[0].context.bit === "beyond the nine named positions");
+  var eeReservedBit = withKeyUsageBits(await endEntity(), [0x80, 0x40], 6);
+  check("K10d. and the same holds in the end entity set",
+    findingsOf(lint(eeReservedBit), P + "end-entity-key-usage-bits").length === 1 &&
+    findingsOf(lint(eeReservedBit), P + "end-entity-key-usage-bits")[0].context.bit === "beyond the nine named positions");
   // "the pathLenConstraint MUST NOT be present", for a self-signed CA alone: sec. 7.2 calls the same
   // field OPTIONAL, so the row must not reach a non-self-signed one.
   check("K11. a pathLenConstraint is an error on a self-signed CA and not on a sub CA",
