@@ -184,12 +184,17 @@ async function run() {
   check("K7. a self-signed CA carrying no subjectKeyIdentifier is an error naming the extension",
     sevOf(lint(noSki), P + "self-signed-ca-missing-extension") === "error" &&
     findingsOf(lint(noSki), P + "self-signed-ca-missing-extension")[0].context.extension === "subjectKeyIdentifier");
-  // A certificate carrying no basicConstraints is not a CA certificate to read, so it is graded
-  // against sec. 7.3 instead. That is the scope the bytes settle, and the vector says so.
+  // A certificate that omits basicConstraints is exactly the one this clause is about, so the scope
+  // cannot be decided on that extension alone: its keyUsage asserting keyCertSign says it is a CA, and
+  // RFC 5280 sec. 4.2.1.3 requires the cA boolean of any certificate that asserts the bit. Deciding on
+  // the extension graded this certificate as an end entity and reported requirements written for a
+  // different kind while staying silent about the one it broke.
   var noBc = withoutExtension(conformingRoot, "basicConstraints");
-  check("K8. one carrying no basicConstraints is read under the end entity section, not this one",
-    !has(lint(noBc), P + "self-signed-ca-missing-extension") &&
-    has(lint(noBc), P + "end-entity-missing-extension"));
+  check("K8. one carrying no basicConstraints is still read as a CA, and told which extension it owes",
+    findingsOf(lint(noBc), P + "self-signed-ca-missing-extension").length === 1 &&
+    findingsOf(lint(noBc), P + "self-signed-ca-missing-extension")[0].context.extension === "basicConstraints" &&
+    !has(lint(noBc), P + "end-entity-missing-extension") &&
+    !has(lint(noBc), P + "end-entity-eku-missing"));
   // "The keyUsage extension MUST be marked as critical."
   check("K9. a non-critical keyUsage is an error",
     sevOf(lint(await root({ keyUsageCritical: false })), P + "key-usage-not-critical") === "error" &&
