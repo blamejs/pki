@@ -213,6 +213,19 @@ async function run() {
   check("N12c. and one at L of 3072 is at the 128-bit level, so 2031 does not reach it",
     !has(lint(await ffcCert(dh3072, FROM_2031)), DEPRECATED) &&
     sevOf(lint(await ffcCert(dh3072, FROM_2036)), DISALLOWED) === "error");
+  // SP 800-57 Table 2 states the finite-field level as a PAIR: 112 bits is L of 2048 WITH N of 224, and
+  // 128 bits is L of 3072 with N of 256. So either parameter caps the strength, and a group with a
+  // 3072-bit prime and a 224-bit subgroup is a 112-bit key however large its prime is.
+  var dsa3072n224 = nodeSpki("dsa", { modulusLength: 3072, divisorLength: 224 });
+  var dsa3072n256 = nodeSpki("dsa", { modulusLength: 3072, divisorLength: 256 });
+  check("N12d. a subgroup order of 224 caps the strength whatever the prime's length",
+    sevOf(lint(await ffcCert(dsa3072n224, FROM_2031)), DEPRECATED) === "warn" &&
+    !has(lint(await ffcCert(dsa3072n256, FROM_2031)), DEPRECATED) &&
+    sevOf(lint(await ffcCert(dsa3072n256, FROM_2036)), DISALLOWED) === "error");
+  // A shape that states no subgroup order settles the question on its prime, which is all it states.
+  check("N12e. CONTROL: a PKCS#3 group carries no subgroup order and is read on its prime",
+    sevOf(lint(await ffcCert(dh2048, FROM_2031)), DEPRECATED) === "warn" &&
+    !has(lint(await ffcCert(dh3072, FROM_2031)), DEPRECATED));
 
   // ---- N13: a composite signature is the transition, not a breach of it ------------------------
   // A composite identifier names two algorithms, one of them classical, and IR 8547's tables list

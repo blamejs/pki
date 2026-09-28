@@ -211,6 +211,31 @@ async function run() {
     sevOf(lint(await root({ basicConstraints: { cA: true, pathLen: 0 } })), P + "self-signed-ca-path-len-present") === "error" &&
     !has(lint(await subCa({ basicConstraints: { cA: true, pathLen: 0 } })), P + "self-signed-ca-path-len-present") &&
     !has(lint(conformingRoot), P + "self-signed-ca-path-len-present"));
+  // A CA reissued IN ITS OWN NAME under a new key carries matching issuer and subject names and was
+  // signed by its predecessor, so sec. 7.2 governs it and the pathLenConstraint that section calls
+  // optional is permitted. Its key identifiers are what separate it from a self-signed CA without a
+  // signature check: the authorityKeyIdentifier names the predecessor's key rather than its own
+  // subjectKeyIdentifier. Reading the names alone reported a conforming rollover for that field.
+  var rollover = await pki.x509.sign({ subject: [{ commonName: "A CNSA Root" }],
+    subjectPublicKey: mldsa.pub, notBefore: NB, notAfter: NA,
+    extensions: { basicConstraints: { cA: true, pathLen: 0 },
+      keyUsage: ["keyCertSign", "cRLSign"], subjectKeyIdentifier: true,
+      authorityKeyIdentifier: true } },
+    { name: [{ commonName: "A CNSA Root" }], publicKey: ed.pub, key: ed.priv });
+  var rolloverParsed = pki.schema.x509.parse(rollover);
+  function extValue(parsed, name) {
+    var e = (parsed.extensions || []).filter(function (x) { return x.oid === pki.oid.byName(name); })[0];
+    return e && e.value;
+  }
+  check("K11b. CONTROL: the rollover carries its own name on both sides and a different key identifier",
+    rolloverParsed.subject.rdns.length === rolloverParsed.issuer.rdns.length &&
+    Buffer.isBuffer(extValue(rolloverParsed, "subjectKeyIdentifier")) &&
+    Buffer.isBuffer(extValue(rolloverParsed, "authorityKeyIdentifier")) &&
+    !extValue(rolloverParsed, "authorityKeyIdentifier").equals(extValue(rolloverParsed, "subjectKeyIdentifier")));
+  check("K11c. a self-issued rollover CA is read under sec. 7.2, so its pathLenConstraint is permitted",
+    !has(lint(rollover), P + "self-signed-ca-path-len-present") &&
+    !has(lint(rollover), P + "self-signed-ca-missing-extension") &&
+    !has(lint(rollover), P + "ca-missing-extension"));
 
   // ---- K12-K14: sec. 7.2, the non-self-signed CA ----------------------------------------------
   var subNoAki = withoutExtension(await subCa(), "authorityKeyIdentifier");
