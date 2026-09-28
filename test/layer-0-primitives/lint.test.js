@@ -619,6 +619,50 @@ function run() {
       listed.indexOf("all") === -1 && listed.indexOf("default") === -1 &&
       pki.lint.rules("all").length === pki.lint.rules().length &&
       pki.lint.rules("default").length === pki.lint.rules().length);
+    // Every verb is asked about every profile name, so the refusal a verb gives for a name it does not
+    // run is derived rather than written per verb: it must name a verb that DOES run the name, and two
+    // verbs must not disagree about where a name lives. A name carried by more than one artifact is
+    // where a per-verb chain of branches answered differently depending on which verb was asked.
+    // Driven through the VERB and through the enumerator, because the refusal has both doors and they
+    // must give one answer. Any bytes will do: each verb reads opts.profile before it reads the input.
+    var NOT_DER = Buffer.from([0x30, 0x00]);
+    function refusalOf(fn) { try { fn(); return null; } catch (e) { return e; } }
+    /** Whether this artifact runs this profile. A refusal answers no only when it is the refusal this
+     *  question expects; any other error is a fault in the enumerator and is re-thrown rather than
+     *  read as an answer. */
+    function runs(name, artifact) {
+      var err = refusalOf(function () { pki.lint.rules(name, artifact); });
+      if (err === null) return true;
+      if (err.code === "lint/unknown-profile") return false;
+      throw err;
+    }
+    var wrongRefusals = [];
+    artifacts.forEach(function (a) {
+      listed.forEach(function (name) {
+        var homes = artifacts.filter(function (other) { return other !== a && runs(name, other); });
+        var fromVerb = refusalOf(function () { pki.lint[a](NOT_DER, { profile: name }); });
+        var fromRules = refusalOf(function () { pki.lint.rules(name, a); });
+        if (runs(name, a)) {
+          if (fromVerb || fromRules) wrongRefusals.push(a + " refuses its own " + name);
+          return;
+        }
+        if (!fromVerb || !fromRules) { wrongRefusals.push(a + " accepts " + name + " without running it"); return; }
+        [["verb", fromVerb], ["rules", fromRules]].forEach(function (pair) {
+          var e = pair[1];
+          if (e.code !== "lint/unknown-profile") { wrongRefusals.push(a + "/" + name + " " + pair[0] + " -> " + e.code); return; }
+          var named = artifacts.filter(function (other) {
+            return other !== a && e.message.indexOf("pki.lint." + other) !== -1;
+          });
+          if (named.join(",") !== homes.join(",")) {
+            wrongRefusals.push(a + "/" + name + " " + pair[0] + " names [" + named.join(",") +
+              "] for homes [" + homes.join(",") + "]");
+          }
+        });
+      });
+    });
+    check("and each verb's refusal names every other verb that runs the profile (" +
+      (wrongRefusals.join("; ") || artifacts.length * listed.length + " pairs agree") + ")",
+      wrongRefusals.length === 0);
   })();
   check("pki.lint.rules() enumerates the registry with stable ids", pki.lint.rules().length > 10 && pki.lint.rules().every(function (r) { return typeof r.id === "string" && typeof r.citation === "string"; }));
   check("pki.lint.rules('rfc5280') filters to one profile", pki.lint.rules("rfc5280").every(function (r) { return r.source === "rfc5280"; }));

@@ -7,9 +7,13 @@
 // deliberately separate: sec. 5.6 `date-time` (a date, a time and a zone) and sec. 5.6 `full-date`
 // (a calendar date alone). A consumer handed the wrong one has a malformed value, not a variant.
 //
-// The vectors that matter most are the ones JS would silently accept: `new Date("2021-02-30")`
-// rolls over into March rather than failing, and `Date.parse` returns NaN for a :60 leap second --
-// so a shape-only check would hand a downstream comparison a value that is wrong or not a number.
+// The vector that matters most is the one JS silently accepts: `new Date("2021-02-30")` reads it as
+// 2 March rather than failing, so a shape-only check would hand a downstream comparison an instant two
+// days from the one the value names. The runtime refuses month 13, hour 25, a +25:00 offset and a :60
+// leap second on its own, so the calendar check agrees with it on those rather than adding anything;
+// the last of the four is refused as a decision, since RFC 3339 sec. 5.7 permits it and JS cannot
+// represent it. `runtimeAgreement` below asserts that division against the runtime itself, because the
+// module's header states it and a reader who found it wrong could trim the check.
 
 var rfc3339 = require("../../lib/rfc3339");
 var helpers = require("../helpers");
@@ -44,6 +48,29 @@ function run() {
   check("full-date: day 00 is refused", !rfc3339.isValidDate("2026-08-00"));
   // The headline case: JS would roll this into 2 March rather than reject it.
   check("full-date: 2021-02-30 is refused rather than rolled over", !rfc3339.isValidDate("2021-02-30"));
+
+  // ---- what the runtime does with each rejected shape, which is why the check exists ----
+  // February 30 is the one the runtime accepts, and it accepts it as a different day. Asserted against
+  // `new Date` rather than described, so the header's reason cannot quietly stop being true.
+  var rolled = new Date("2026-02-30T00:00:00Z");
+  check("runtimeAgreement: the runtime reads February 30 as 2 March, and this reader refuses it",
+    !isNaN(rolled.getTime()) && rolled.toISOString() === "2026-03-02T00:00:00.000Z" &&
+    !rfc3339.isValid("2026-02-30T00:00:00Z"));
+  // The other three shapes the header lists are refused by the runtime too, so the check agrees with it
+  // on them. A reader checking the header against the runtime sees the same division.
+  ["2026-13-01T00:00:00Z", "2026-01-01T25:00:00Z", "2026-01-01T00:00:00+25:00"].forEach(function (v) {
+    check("runtimeAgreement: the runtime refuses " + v + " as this reader does",
+      isNaN(new Date(v).getTime()) && !rfc3339.isValid(v));
+  });
+  // A :60 second is well-formed under sec. 5.7 and is refused here as a decision, since the runtime
+  // cannot represent it either: a caller accepting one would hold an invalid Date.
+  check("runtimeAgreement: a :60 leap second is well-formed, unrepresentable, and refused",
+    isNaN(new Date("2016-12-31T23:59:60Z").getTime()) && !rfc3339.isValid("2016-12-31T23:59:60Z"));
+  // CONTROL: a real date in the same month is accepted by both, so the four checks above are refusals
+  // rather than a reader that refuses everything.
+  check("runtimeAgreement: CONTROL: February 28 is accepted by both",
+    rfc3339.parse("2026-02-28T00:00:00Z", E, "x/bad", "t").getTime() ===
+      new Date("2026-02-28T00:00:00Z").getTime());
   check("full-date: 2026-04-31 is refused (April has 30 days)", !rfc3339.isValidDate("2026-04-31"));
   // Leap-year arithmetic, including the century rules both ways.
   check("full-date: 2024-02-29 is valid (a leap year)", rfc3339.isValidDate("2024-02-29"));

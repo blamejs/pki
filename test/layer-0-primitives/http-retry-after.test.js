@@ -26,9 +26,12 @@ function run() {
   check("an IMF-fixdate surfaces retryAfterDate", imf.retryAfterDate === Date.UTC(2026, 9, 21, 7, 28, 0));
   check("an IMF-fixdate with now surfaces a bounded retryAfterSeconds", imf.retryAfterSeconds === 60);
 
-  // the obsolete rfc850-date (two-digit year): both century arms (< 70 -> 2000s, >= 70 -> 1900s).
-  check("an rfc850 date with a >=70 two-digit year maps to the 1900s", retryAfter.httpDateMs("Sunday, 06-Nov-94 08:49:37 GMT") === Date.UTC(1994, 10, 6, 8, 49, 37));
-  check("an rfc850 date with a <70 two-digit year maps to the 2000s", retryAfter.httpDateMs("Sunday, 06-Nov-25 08:49:37 GMT") === Date.UTC(2025, 10, 6, 8, 49, 37));
+  // the obsolete rfc850-date carries two year digits, and RFC 7231 sec. 7.1.1.1 resolves them against
+  // the time the value is received: a year "more than 50 years in the future" names "the most recent
+  // year in the past that had the same last two digits". At a receipt in the 2020s, 94 is 2094, which
+  // is more than 50 years ahead, so it names 1994; 25 is within the window and names 2025.
+  check("an rfc850 year more than 50 years ahead names the most recent past year with those digits", retryAfter.httpDateMs("Sunday, 06-Nov-94 08:49:37 GMT") === Date.UTC(1994, 10, 6, 8, 49, 37));
+  check("an rfc850 year inside the window names the coming one", retryAfter.httpDateMs("Sunday, 06-Nov-25 08:49:37 GMT") === Date.UTC(2025, 10, 6, 8, 49, 37));
 
   // the obsolete asctime-date (no GMT token; parsed as UTC, not local).
   check("an asctime date parses as UTC", retryAfter.httpDateMs("Sun Nov  6 08:49:37 1994") === Date.UTC(1994, 10, 6, 8, 49, 37));
@@ -38,6 +41,33 @@ function run() {
   check("an rfc850 year uses the receipt-relative sliding window", retryAfter.httpDateMs("Sunday, 06-Nov-70 08:49:37 GMT", Date.UTC(2069, 5, 15)) === Date.UTC(2070, 10, 6, 8, 49, 37));
   // an old two-digit year stays in the PAST (never advanced a century): at a 2090 receipt, `25` is 2025.
   check("an old rfc850 year is kept in the past, not advanced", retryAfter.httpDateMs("Sunday, 06-Nov-25 08:49:37 GMT", Date.UTC(2090, 0, 1)) === Date.UTC(2025, 10, 6, 8, 49, 37));
+  // The clause says MORE than 50 years, so the boundary belongs to the future: at a 2026 receipt 76 is
+  // exactly 50 years ahead and names 2076, while 77 is 51 and names 1977.
+  var ref2026 = Date.UTC(2026, 0, 1);
+  check("the boundary is exclusive: exactly 50 years ahead names the future year",
+    retryAfter.httpDateMs("Saturday, 01-Jan-76 00:00:00 GMT", ref2026) === Date.UTC(2076, 0, 1) &&
+    retryAfter.httpDateMs("Saturday, 01-Jan-77 00:00:00 GMT", ref2026) === Date.UTC(1977, 0, 1));
+  // And it moves with the receipt year, which is what no fixed cutoff can do: one year later, 77 is
+  // inside the window, and at a receipt a century on the same digits name a year a century on.
+  check("the boundary moves with the receipt year",
+    retryAfter.httpDateMs("Saturday, 01-Jan-77 00:00:00 GMT", Date.UTC(2027, 0, 1)) === Date.UTC(2077, 0, 1) &&
+    retryAfter.httpDateMs("Saturday, 01-Jan-76 00:00:00 GMT", Date.UTC(2126, 0, 1)) === Date.UTC(2176, 0, 1));
+  // A caller may omit the receipt time: `parse`'s `opts.now` is optional and `est.js` passes it through
+  // from an optional option of its own. The reading is then the same rule against the current clock,
+  // asserted as the same verdict the explicit call gives rather than as a year written here, which
+  // would be this test's arithmetic instead of the parser's.
+  var nowMs = Date.now();
+  check("with no receipt time the same rule is applied against the current clock",
+    retryAfter.httpDateMs("Saturday, 01-Jan-76 00:00:00 GMT") ===
+      retryAfter.httpDateMs("Saturday, 01-Jan-76 00:00:00 GMT", nowMs) &&
+    retryAfter.httpDateMs("Saturday, 01-Jan-70 00:00:00 GMT") ===
+      retryAfter.httpDateMs("Saturday, 01-Jan-70 00:00:00 GMT", nowMs));
+  // CONTROL: the other two formats carry four year digits, so no receipt time can move them.
+  check("CONTROL: a four-digit year is unaffected by the receipt time",
+    retryAfter.httpDateMs("Wed, 21 Oct 2026 07:28:00 GMT", Date.UTC(1990, 0, 1)) ===
+      retryAfter.httpDateMs("Wed, 21 Oct 2026 07:28:00 GMT") &&
+    retryAfter.httpDateMs("Sun Nov  6 08:49:37 1994", Date.UTC(2200, 0, 1)) ===
+      retryAfter.httpDateMs("Sun Nov  6 08:49:37 1994"));
 
   // a malformed value fails closed: with a factory it is the caller's typed code; with none it is a
   // TypeError (the fallback that keeps the parser usable outside a PkiError domain).
