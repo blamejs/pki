@@ -97,6 +97,23 @@ async function run() {
   // ---- K4-K6: sec. 4 and 6 --------------------------------------------------------------------
   // "Every CNSA Suite certificate MUST ... contain one of the following as its subject public key:
   // A ML-DSA-87 signature verification key. A ML-KEM-1024 public encapsulation key."
+  // Sec. 4 names RFC 9881 and RFC 9935 for the syntax and semantics of the two subject keys, so those
+  // documents' rows run under this profile too. Without them the profile read the algorithm OID alone,
+  // and bytes claiming to be an ML-KEM-1024 key while being the wrong size for one were reported as
+  // conforming. The key is truncated by a byte, which leaves the OID saying what it said.
+  var kemCert = await endEntity({ keyUsage: ["keyEncipherment"] }, mlkem);
+  var truncatedKem = surgery.patch(kemCert, function (n) {
+    if (n.tagClass !== "universal" || n.tagNumber !== 3 || !Buffer.isBuffer(n.content)) return undefined;
+    if (n.content.length !== 1569 || n.content[0] !== 0x00) return undefined;
+    return b.bitString(Buffer.from(n.content.subarray(1, n.content.length - 1)));
+  });
+  check("K3b. CONTROL: the truncated certificate parses and still names ML-KEM-1024",
+    !has(lint(truncatedKem), "lint/unparseable") &&
+    pki.schema.x509.parse(truncatedKem).subjectPublicKeyInfo.algorithm.name === "id-ml-kem-1024" &&
+    !truncatedKem.equals(kemCert));
+  check("K3c. an encapsulation key of the wrong size is reported under this profile",
+    sevOf(lint(truncatedKem), "lint/rfc9935/kem-key-length") === "error" &&
+    !has(lint(kemCert), "lint/rfc9935/kem-key-length"));
   check("K4. a subject key outside the suite is an error",
     sevOf(lint(await root({}, ed)), P + "spki-not-suite") === "error" &&
     !has(lint(conformingRoot), P + "spki-not-suite") &&
