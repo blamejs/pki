@@ -249,6 +249,45 @@ async function run() {
   check("N12f. a curve at or below the 112-bit field size is deprecated, whichever curve it is (" +
     (curveWrong.join(", ") || CURVES.length + " curves as expected") + ")",
     curveWrong.length === 0);
+  // X25519 and X448 carry an RFC 8410 raw coordinate with no format byte, so there is no point to
+  // measure and reading one as a point would answer from key material: the verdict would differ
+  // between two keys of the same algorithm. They follow their signing siblings instead, which IR 8547's
+  // EdDSA row places at 128 bits, so the 2036 row reports them and the 2031 row does not. Several keys
+  // of each are driven, since one key cannot show that the answer does not depend on its bytes.
+  // The leading byte is SET rather than waited for. A generated key opens with 0x02 or 0x03 about once
+  // in 128, so driving generated keys would report this only on the runs that happened to draw one,
+  // which is a flake rather than a vector. Each first byte a SEC1 reader would act on is spliced in.
+  function withFirstKeyByte(der, byte) {
+    return surgery.patch(der, function (n) {
+      if (n.tagClass !== "universal" || n.tagNumber !== 3 || !Buffer.isBuffer(n.content)) return undefined;
+      if (n.content.length !== 33 || n.content[0] !== 0x00) return undefined;
+      var body = Buffer.from(n.content.subarray(1));
+      body[0] = byte;
+      return b.bitString(body);
+    });
+  }
+  var x25519 = await pair("X25519");
+  async function montgomeryCert(notBefore) {
+    return pki.x509.sign({ subject: [{ commonName: "A Transition Subject" }],
+      subjectPublicKey: x25519.pub, notBefore: notBefore, notAfter: NA,
+      extensions: { keyUsage: ["keyAgreement"] } }, pqcIssuer);
+  }
+  var mont2031 = await montgomeryCert(FROM_2031), mont2036 = await montgomeryCert(FROM_2036);
+  var LEADING = [0x02, 0x03, 0x04, 0x41];
+  var spliced2031 = LEADING.map(function (byte) { return withFirstKeyByte(mont2031, byte); });
+  check("N12h. CONTROL: each spliced certificate still parses and carries the same key algorithm",
+    spliced2031.every(function (der) {
+      return !has(lint(der), "lint/unparseable") &&
+        pki.schema.x509.parse(der).subjectPublicKeyInfo.algorithm.name === "X25519";
+    }) && !withFirstKeyByte(mont2031, 0x03).equals(mont2031));
+  check("N12i. an X25519 key answers the same at 2031 whatever its leading byte",
+    !has(lint(mont2031), DEPRECATED) &&
+    spliced2031.every(function (der) { return !has(lint(der), DEPRECATED); }));
+  check("N12j. and the 2036 row reports it, as it reports the signing sibling",
+    sevOf(lint(mont2036), DISALLOWED) === "error" &&
+    sevOf(lint(await pki.x509.sign({ subject: [{ commonName: "A Transition Subject" }],
+      subjectPublicKey: (await pair("X448")).pub, notBefore: FROM_2036, notAfter: NA,
+      extensions: { keyUsage: ["keyAgreement"] } }, pqcIssuer)), DISALLOWED) === "error");
 
   // ---- N13: a composite signature is the transition, not a breach of it ------------------------
   // A composite identifier names two algorithms, one of them classical, and IR 8547's tables list
