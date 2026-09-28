@@ -113,9 +113,13 @@ async function run() {
     var o = {}; Object.defineProperty(o, "responseStatus", { get: function () { throw new Error("boom"); } }); pki.lint.ocsp(o);
   }) === "lint/bad-input");
 
+  // The count is read from the registry rather than from a list of profile names, so a profile added
+  // to this verb later is counted by having been added. Naming the profiles here made the assertion a
+  // second list to keep, and it went stale the first time the verb gained one.
   check("a non-successful response (tryLater, no responseBytes) draws no finding and marks every row not applicable", (function () {
     var r = pki.lint.ocsp(b.sequence([b.enumerated(3n)]));
-    return r.findings.length === 0 && r.worst === null && r.ran.length === 0 && r.counts.na === pki.lint.rules("rfc6960").length + pki.lint.rules("rfc5019").length;
+    return r.findings.length === 0 && r.worst === null && r.ran.length === 0 &&
+      r.counts.na === pki.lint.rules(null, "ocsp").length && r.counts.na > 0;
   })());
 
   // ==== The profile door, shared with the other two verbs.
