@@ -129,6 +129,21 @@ async function run() {
   check("K3e. a signature key of the wrong size is reported under this profile",
     sevOf(lint(truncatedMlDsa), "lint/rfc9881/mldsa-key-length") === "error" &&
     !has(lint(conformingRoot), "lint/rfc9881/mldsa-key-length"));
+  // FIPS 204 fixes the SIGNATURE's length per parameter set as it fixes the public key's, so a
+  // signatureValue of another length is not a signature of the algorithm the identifier names. The
+  // signature is the certificate's last BIT STRING, and the only one 4,628 bytes long.
+  var truncatedSig = surgery.patch(conformingRoot, function (n) {
+    if (n.tagClass !== "universal" || n.tagNumber !== 3 || !Buffer.isBuffer(n.content)) return undefined;
+    if (n.content.length !== 4628 || n.content[0] !== 0x00) return undefined;
+    return b.bitString(Buffer.from(n.content.subarray(1, n.content.length - 1)));
+  });
+  check("K3f. CONTROL: the rewritten certificate parses and still names id-ml-dsa-87 as its signature",
+    !has(lint(truncatedSig), "lint/unparseable") &&
+    pki.schema.x509.parse(truncatedSig).signatureAlgorithm.name === "id-ml-dsa-87" &&
+    !truncatedSig.equals(conformingRoot));
+  check("K3g. a signature of the wrong size is reported under this profile",
+    sevOf(lint(truncatedSig), "lint/rfc9881/mldsa-signature-length") === "error" &&
+    !has(lint(conformingRoot), "lint/rfc9881/mldsa-signature-length"));
   check("K4. a subject key outside the suite is an error",
     sevOf(lint(await root({}, ed)), P + "spki-not-suite") === "error" &&
     !has(lint(conformingRoot), P + "spki-not-suite") &&
