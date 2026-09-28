@@ -163,6 +163,35 @@ async function run() {
   function nodeSpki(kind, opts) {
     return crypto.generateKeyPairSync(kind, opts).publicKey.export({ format: "der", type: "spki" });
   }
+  /** An integer of exactly `bits` bits, which is the only property of a finite-field parameter these
+   *  rows read: the strength is stated as the parameter's LENGTH. */
+  function integerOfBits(bits) {
+    var buf = Buffer.alloc(Math.ceil(bits / 8), 0xab);
+    buf[0] |= 0x80;
+    return BigInt("0x" + buf.toString("hex"));
+  }
+  /** A finite-field SubjectPublicKeyInfo built to state a given L and N, rather than generated.
+   *  Generating one means generating a prime: a 3072-bit DH group takes minutes and a different amount
+   *  of time on every run, which would make this file's duration the suite's. The rows read the
+   *  parameters' integers and nothing else, so the parameters are written to say what the vector is
+   *  about. `realDsa2048` below is a genuinely generated key, so a built one is never the only evidence.
+   *  Each shape puts its integers where its own definition does: Dss-Parms is `{ p, q, g }`,
+   *  DomainParameters `{ p, g, q OPTIONAL }`, and PKCS#3's DHParameter `{ prime, base }` with no
+   *  subgroup order at all. */
+  function ffcSpki(algName, primeBits, subgroupBits) {
+    var p = integerOfBits(primeBits);
+    var params;
+    if (algName === "dsa") {
+      params = b.sequence([b.integer(p), b.integer(integerOfBits(subgroupBits)), b.integer(2n)]);
+    } else if (algName === "dhpublicnumber") {
+      params = b.sequence([b.integer(p), b.integer(2n), b.integer(integerOfBits(subgroupBits))]);
+    } else {
+      params = b.sequence([b.integer(p), b.integer(2n)]);
+    }
+    return b.sequence([b.sequence([b.oid(pki.oid.byName(algName)), b.raw(params)]),
+      b.bitString(b.integer(3n))]);
+  }
+  var realDsa2048 = nodeSpki("dsa", { modulusLength: 2048, divisorLength: 224 });
   var SUBJECT_KEYS = [
     ["RSASSA-PKCS1-v1_5", { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, hash: "SHA-256" }, "classical"],
     ["RSA-PSS", { name: "RSA-PSS", modulusLength: 2048, hash: "SHA-256" }, "classical"],
@@ -176,9 +205,9 @@ async function run() {
     ["ML-DSA-87", "ML-DSA-87", "pqc"],
     ["ML-KEM-1024", "ML-KEM-1024", "pqc"],
     ["SLH-DSA-SHA2-128S", "SLH-DSA-SHA2-128S", "pqc"],
-    ["DSA (2048/224)", nodeSpki("dsa", { modulusLength: 2048, divisorLength: 224 }), "classical"],
-    ["DH dhKeyAgreement (2048)", nodeSpki("dh", { primeLength: 2048 }), "classical"],
-    ["DH 3072", nodeSpki("dh", { primeLength: 3072 }), "classical"],
+    ["DSA (2048/224)", realDsa2048, "classical"],
+    ["DH dhpublicnumber", ffcSpki("dhpublicnumber", 2048, 224), "classical"],
+    ["DH dhKeyAgreement", ffcSpki("dhKeyAgreement", 2048, null), "classical"],
   ];
   var unclassified = [];
   for (var i = 0; i < SUBJECT_KEYS.length; i++) {
@@ -203,21 +232,21 @@ async function run() {
     return pki.x509.sign({ subject: [{ commonName: "An FFC Subject" }], subjectPublicKey: spki,
       notBefore: notBefore, notAfter: NA, extensions: { keyUsage: ["digitalSignature"] } }, pqcIssuer);
   }
-  var dsa2048 = nodeSpki("dsa", { modulusLength: 2048, divisorLength: 224 });
-  var dh2048 = nodeSpki("dh", { primeLength: 2048 });
-  var dh3072 = nodeSpki("dh", { primeLength: 3072 });
-  check("N12b. a finite-field key at L of 2048 is deprecated from 2031, in both spellings",
-    sevOf(lint(await ffcCert(dsa2048, FROM_2031)), DEPRECATED) === "warn" &&
+  var dh2048 = ffcSpki("dhKeyAgreement", 2048, null);
+  var dh3072 = ffcSpki("dhKeyAgreement", 3072, null);
+  check("N12b. a finite-field key at L of 2048 is deprecated from 2031, in every spelling",
+    sevOf(lint(await ffcCert(realDsa2048, FROM_2031)), DEPRECATED) === "warn" &&
+    sevOf(lint(await ffcCert(ffcSpki("dhpublicnumber", 2048, 224), FROM_2031)), DEPRECATED) === "warn" &&
     sevOf(lint(await ffcCert(dh2048, FROM_2031)), DEPRECATED) === "warn" &&
-    !has(lint(await ffcCert(dsa2048, BEFORE_2031)), DEPRECATED));
+    !has(lint(await ffcCert(realDsa2048, BEFORE_2031)), DEPRECATED));
   check("N12c. and one at L of 3072 is at the 128-bit level, so 2031 does not reach it",
     !has(lint(await ffcCert(dh3072, FROM_2031)), DEPRECATED) &&
     sevOf(lint(await ffcCert(dh3072, FROM_2036)), DISALLOWED) === "error");
   // SP 800-57 Table 2 states the finite-field level as a PAIR: 112 bits is L of 2048 WITH N of 224, and
   // 128 bits is L of 3072 with N of 256. So either parameter caps the strength, and a group with a
   // 3072-bit prime and a 224-bit subgroup is a 112-bit key however large its prime is.
-  var dsa3072n224 = nodeSpki("dsa", { modulusLength: 3072, divisorLength: 224 });
-  var dsa3072n256 = nodeSpki("dsa", { modulusLength: 3072, divisorLength: 256 });
+  var dsa3072n224 = ffcSpki("dsa", 3072, 224);
+  var dsa3072n256 = ffcSpki("dsa", 3072, 256);
   check("N12d. a subgroup order of 224 caps the strength whatever the prime's length",
     sevOf(lint(await ffcCert(dsa3072n224, FROM_2031)), DEPRECATED) === "warn" &&
     !has(lint(await ffcCert(dsa3072n256, FROM_2031)), DEPRECATED) &&
