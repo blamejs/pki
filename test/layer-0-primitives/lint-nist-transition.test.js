@@ -112,16 +112,16 @@ async function run() {
   check("N8. a P-256 key is at the 128-bit level too",
     !has(lint(await cert(p256, FROM_2031)), DEPRECATED));
   // A curve whose field is 224 to 255 bits is the 112-bit ECC row. The engine does not generate a
-  // P-224 key, so the certificate is built by naming that curve in an existing one's parameters: the
-  // row reads the curve the certificate declares, which is the value an operator's certificate
-  // carries whether or not this toolkit can make one.
-  var p256Cert = await cert(p256, FROM_2031);
-  var p224Oid = b.oid(pki.oid.byName("prime256v1"));
-  var p224Cert = surgery.patch(p256Cert, function (n) {
-    if (n.tagClass !== "universal" || n.tagNumber !== 6 || !p224Oid.equals(n.bytes)) return undefined;
-    return b.oid(pki.oid.byName("secp224r1"));
-  });
-  check("N9. CONTROL: the rewritten certificate still parses and declares the smaller curve",
+  // P-224 key, so the subject key comes from node's own generator: a real key on that curve, rather
+  // than a larger key relabelled, because the field size is read from the point the key encodes and a
+  // relabelled key would state one curve and carry another.
+  var p224Spki = require("node:crypto").generateKeyPairSync("ec", { namedCurve: "secp224r1" })
+    .publicKey.export({ format: "der", type: "spki" });
+  var p224Cert = await pki.x509.sign({ subject: [{ commonName: "A Transition Subject" }],
+    subjectPublicKey: p224Spki, notBefore: FROM_2031, notAfter: NA,
+    extensions: { keyUsage: ["digitalSignature"] } },
+    { name: [{ commonName: "A Post-Quantum Issuer" }], publicKey: mldsa.pub, key: mldsa.priv });
+  check("N9. CONTROL: the certificate parses and carries an elliptic-curve subject key",
     pki.schema.x509.parse(p224Cert).subjectPublicKeyInfo.algorithm.name === "ecPublicKey" &&
     !has(lint(p224Cert), "lint/unparseable"));
   check("N9b. a curve at the 112-bit level is deprecated from 2031",
@@ -226,6 +226,29 @@ async function run() {
   check("N12e. CONTROL: a PKCS#3 group carries no subgroup order and is read on its prime",
     sevOf(lint(await ffcCert(dh2048, FROM_2031)), DEPRECATED) === "warn" &&
     !has(lint(await ffcCert(dh3072, FROM_2031)), DEPRECATED));
+
+  // ---- N12f: the curve's field, read off the key rather than off a list of curve names ----------
+  // SP 800-57's ECC column states the level as a field size, and a certificate can be on any curve a
+  // CA chose. A table of curve names left the ones nobody had added outside the deprecation, so the
+  // size is read from the encoded point, which carries it for every curve.
+  var CURVES = [
+    ["secp224r1", true], ["brainpoolP224r1", true], ["sect233r1", true], ["prime239v1", true],
+    ["prime256v1", false], ["brainpoolP256r1", false], ["secp384r1", false], ["secp521r1", false],
+  ];
+  var curveWrong = [];
+  for (var c = 0; c < CURVES.length; c++) {
+    var name = CURVES[c][0], expectDeprecated = CURVES[c][1];
+    var spkiDer;
+    try { spkiDer = nodeSpki("ec", { namedCurve: name }); }
+    catch (_e) { curveWrong.push(name + " could not be generated"); continue; }
+    var certDer = await ffcCert(spkiDer, FROM_2031);
+    if (has(lint(certDer), DEPRECATED) !== expectDeprecated) {
+      curveWrong.push(name + (expectDeprecated ? " not reported" : " reported"));
+    }
+  }
+  check("N12f. a curve at or below the 112-bit field size is deprecated, whichever curve it is (" +
+    (curveWrong.join(", ") || CURVES.length + " curves as expected") + ")",
+    curveWrong.length === 0);
 
   // ---- N13: a composite signature is the transition, not a breach of it ------------------------
   // A composite identifier names two algorithms, one of them classical, and IR 8547's tables list

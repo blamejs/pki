@@ -241,6 +241,20 @@ async function run() {
     !has(lint(rollover), P + "self-signed-ca-path-len-present") &&
     !has(lint(rollover), P + "self-signed-ca-missing-extension") &&
     !has(lint(rollover), P + "ca-missing-extension"));
+  // What makes a self-issued CA a rollover is its two key identifiers DISAGREEING. A certificate
+  // carrying no subjectKeyIdentifier for that comparison to read is one sec. 7.1 requires the extension
+  // of, so it stays in sec. 7.1 and is told so: letting the absence move it to sec. 7.2 left the
+  // certificate with no finding at all, which is the same shape as deciding the CA scope on
+  // basicConstraints.
+  var selfIssuedNoSki = withoutExtension(rollover, "subjectKeyIdentifier");
+  check("K11d. CONTROL: it carries an authorityKeyIdentifier and no subjectKeyIdentifier",
+    !has(lint(selfIssuedNoSki), "lint/unparseable") &&
+    Buffer.isBuffer(extValue(pki.schema.x509.parse(selfIssuedNoSki), "authorityKeyIdentifier")) &&
+    extValue(pki.schema.x509.parse(selfIssuedNoSki), "subjectKeyIdentifier") === undefined);
+  check("K11e. a self-issued CA with no subjectKeyIdentifier is told sec. 7.1 requires it",
+    findingsOf(lint(selfIssuedNoSki), P + "self-signed-ca-missing-extension")
+      .some(function (f) { return f.context.extension === "subjectKeyIdentifier"; }) &&
+    !has(lint(selfIssuedNoSki), P + "ca-missing-extension"));
 
   // ---- K12-K14: sec. 7.2, the non-self-signed CA ----------------------------------------------
   var subNoAki = withoutExtension(await subCa(), "authorityKeyIdentifier");

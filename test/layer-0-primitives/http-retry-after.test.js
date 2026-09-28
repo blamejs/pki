@@ -41,6 +41,13 @@ function run() {
   check("an rfc850 year uses the receipt-relative sliding window", retryAfter.httpDateMs("Sunday, 06-Nov-70 08:49:37 GMT", Date.UTC(2069, 5, 15)) === Date.UTC(2070, 10, 6, 8, 49, 37));
   // an old two-digit year stays in the PAST (never advanced a century): at a 2090 receipt, `25` is 2025.
   check("an old rfc850 year is kept in the past, not advanced", retryAfter.httpDateMs("Sunday, 06-Nov-25 08:49:37 GMT", Date.UTC(2090, 0, 1)) === Date.UTC(2025, 10, 6, 8, 49, 37));
+  // The clause compares the TIMESTAMP, not its year, so the boundary falls inside the fiftieth year
+  // ahead: received on 1 January 2026, 1 January 2076 is exactly fifty years ahead and is not more, so
+  // it names 2076, while 31 December 2076 is fifty years and a day more and names 1976.
+  check("the 50-year horizon is compared as a timestamp, not as a year",
+    retryAfter.httpDateMs("Wednesday, 01-Jan-76 00:00:00 GMT", Date.UTC(2026, 0, 1)) === Date.UTC(2076, 0, 1) &&
+    retryAfter.httpDateMs("Thursday, 31-Dec-76 00:00:00 GMT", Date.UTC(2026, 0, 1)) === Date.UTC(1976, 11, 31) &&
+    retryAfter.httpDateMs("Thursday, 31-Dec-76 00:00:00 GMT", Date.UTC(2027, 0, 1)) === Date.UTC(2076, 11, 31));
   // The clause says MORE than 50 years, so the boundary belongs to the future: at a 2026 receipt 76 is
   // exactly 50 years ahead and names 2076, while 77 is 51 and names 1977.
   var ref2026 = Date.UTC(2026, 0, 1);
