@@ -4,6 +4,20 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.40 — 2026-09-29
+
+Talk to a Certificate Transparency log: ask for its tree head, its proofs, and its entries.
+
+### Added
+
+- `pki.ct.getSth` fetches a log's latest signed tree head and verifies it under the key `opts.logKey` pins. A head whose signature does not verify is `ct/sth-untrusted` and no field of it is returned: everything a client does next is measured against that root, so a root nobody vouched for is not a result. `opts.logKey` is required; there is no unverified mode and no baked-in key.
+- `pki.ct.sthSignedData` builds the 50 bytes a log signs, which RFC 6962 sec. 3.5 fixes as the version, the signature type `tree_hash`, the timestamp and tree size as big-endian uint64s, then the 32-byte root. `pki.ct.verifySth` checks a head a caller already holds against it, resolving a boolean rather than throwing, since whether a given key signed a given head is a verdict about the head.
+- `pki.ct.getProofByHash` fetches a leaf's audit proof and folds it to the root of the tree head it was requested at. The head is a caller value from `getSth`, so the tree size the query needs comes from it and a size and a head cannot disagree. A proof that does not fold, or that does not support the leaf index the log states, is `ct/proof-mismatch`.
+- `pki.ct.getSthConsistency` fetches the proof between two tree heads and reconstructs both roots, which is the append-only check. Both sizes come from the two heads. A proof that does not reconstruct them is `ct/consistency-mismatch`: the log rewrote history, or served a proof for a different pair.
+- `pki.ct.getEntries` fetches entries by index range and `pki.ct.getRoots` fetches the roots a log accepts. Neither response carries a signature, which the specification says outright of get-entries, so neither is verified and both say so. A log may serve fewer entries than the range asks for, which the specification permits, and that is reported as `truncated` beside `requested` rather than treated as a fault; more entries than the range asks for is refused.
+- `pki.ct.addChain` and `pki.ct.addPreChain` submit a chain and verify the signed certificate timestamp the log returns against the chain it was issued for. An SCT that does not verify, or that names a different log than the pinned key, is `ct/sct-untrusted` and is not returned: a receipt nobody can check is not a receipt. The precertificate form verifies over the `precert_entry` shape, whose signed data is the issuer key hash and the TBSCertificate.
+- Every message reaches the log over the same injectable transport `pki.ct.fetchLogList` uses, with the same response cap, timeout and header filtering, and the same refusal to reach an unpinned server: with no transport and no TLS anchor, `ct/no-trust-anchors`. A log's base URL is accepted with or without the `ct/v1/` prefix the specification fixes, and neither spelling doubles it.
+
 ## v0.8.39 — 2026-09-29
 
 Verify a bundle logged in a Rekor v2 tiled transparency log.

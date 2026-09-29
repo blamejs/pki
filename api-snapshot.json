@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.8.39",
+  "packageVersion": "0.8.40",
   "surface": {
     "C": {
       "kind": "object",
@@ -72,6 +72,9 @@
               "kind": "number"
             },
             "CT_LOG_LIST_MAX_BYTES": {
+              "kind": "number"
+            },
+            "CT_MAX_ENTRIES_PER_REQUEST": {
               "kind": "number"
             },
             "DER_MAX_BYTES": {
@@ -1556,6 +1559,9 @@
             "CT_LOG_LIST_MAX_BYTES": {
               "kind": "number"
             },
+            "CT_MAX_ENTRIES_PER_REQUEST": {
+              "kind": "number"
+            },
             "DER_MAX_BYTES": {
               "kind": "number"
             },
@@ -2399,11 +2405,39 @@
             }
           }
         },
+        "addChain": {
+          "kind": "function",
+          "arity": 1
+        },
+        "addPreChain": {
+          "kind": "function",
+          "arity": 1
+        },
         "encodeSctList": {
           "kind": "function",
           "arity": 1
         },
         "fetchLogList": {
+          "kind": "function",
+          "arity": 1
+        },
+        "getEntries": {
+          "kind": "function",
+          "arity": 1
+        },
+        "getProofByHash": {
+          "kind": "function",
+          "arity": 1
+        },
+        "getRoots": {
+          "kind": "function",
+          "arity": 1
+        },
+        "getSth": {
+          "kind": "function",
+          "arity": 1
+        },
+        "getSthConsistency": {
           "kind": "function",
           "arity": 1
         },
@@ -2423,6 +2457,10 @@
           "kind": "function",
           "arity": 3
         },
+        "sthSignedData": {
+          "kind": "function",
+          "arity": 1
+        },
         "verifyLogListSignature": {
           "kind": "function",
           "arity": 3
@@ -2438,6 +2476,10 @@
         "verifySctWithLogList": {
           "kind": "function",
           "arity": 4
+        },
+        "verifySth": {
+          "kind": "function",
+          "arity": 2
         },
         "x509CertEntry": {
           "kind": "function",
@@ -4275,6 +4317,15 @@
     "pki.ct.verifySctList": "0.6.1",
     "pki.ct.x509CertEntry": "0.6.1",
     "pki.ct.verifyLogListSignature": "0.2.29",
+    "pki.ct.sthSignedData": "0.8.40",
+    "pki.ct.verifySth": "0.8.40",
+    "pki.ct.getSth": "0.8.40",
+    "pki.ct.getProofByHash": "0.8.40",
+    "pki.ct.getSthConsistency": "0.8.40",
+    "pki.ct.getEntries": "0.8.40",
+    "pki.ct.getRoots": "0.8.40",
+    "pki.ct.addChain": "0.8.40",
+    "pki.ct.addPreChain": "0.8.40",
     "pki.ct.fetchLogList": "0.3.21",
     "pki.est.transferDecode": "0.1.24",
     "pki.est.transferEncode": "0.1.24",
