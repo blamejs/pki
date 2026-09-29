@@ -471,6 +471,9 @@ async function runEveryDetectedFormat() {
     ["crmf", { messages: [] }],
     ["cmp", { header: {}, body: {} }],
     ["csrattrs", { items: 7 }],
+    ["csrattrs", { items: [null] }],
+    ["csrattrs", { items: [{}] }],
+    ["csrattrs", { items: [{ kind: "attribute", values: "nope" }] }],
     ["trustanchor", { anchors: [{}] }],
     ["trustanchor", { anchors: [{ kind: "certificate" }] }],
     ["ocspRequest", { version: 1, requestList: [{}], tbsRequestBytes: Buffer.alloc(1) }],
@@ -487,6 +490,64 @@ async function runEveryDetectedFormat() {
   });
   check("F6b. and an object carrying only a door's marker is refused typed, never faulted on (" +
     (untyped.join(", ") || "all typed") + ")", untyped.length === 0);
+
+  // The same contract one level deeper, and enumerated rather than sampled: take a REAL parsed object, set
+  // each of its members in turn to each of seven wrong values, and drive the verb. Every result has to be a
+  // rendered report or `inspect/bad-input`; an untyped fault is neither, and it is what `x && x.length` on a
+  // string and `(x || []).forEach` on a truthy non-array produced at fourteen separate members before the
+  // shared `_list` and `_obj` readers replaced them. Three review rounds found this class one member at a
+  // time, which is why it is driven exhaustively here.
+  var WRONG = [null, undefined, 7, "x", true, {}, []];
+  function memberPaths(o, at, acc, left) {
+    if (o === null || typeof o !== "object" || Buffer.isBuffer(o) || o instanceof Date) return acc;
+    var keys = Array.isArray(o) ? o.map(function (_, i) { return String(i); }) : Object.keys(o);
+    keys.forEach(function (k) {
+      var p = at.concat([k]);
+      acc.push(p);
+      if (left > 0) memberPaths(o[k], p, acc, left - 1);
+    });
+    return acc;
+  }
+  function deepCopy(v) {
+    if (v === null || typeof v !== "object") return v;
+    if (Buffer.isBuffer(v)) return Buffer.from(v);
+    if (v instanceof Date) return new Date(v.getTime());
+    if (Array.isArray(v)) return v.map(deepCopy);
+    var o = {};
+    Object.keys(v).forEach(function (k) { o[k] = deepCopy(v[k]); });
+    return o;
+  }
+  var CORRUPT_CASES = [["pkcs8", f.pkcs8], ["pkcs12", f.pkcs12], ["crmf", f.crmf], ["cmp", f.cmp],
+    ["csrattrs", f.csrattrs], ["trustanchor", f.trustanchor], ["ocspRequest", f["ocsp-request"]],
+    ["ocspResponse", f["ocsp-response"]], ["tsp", f.tsp], ["attrcert", f.attrcert]];
+  var PARSE_FOR = { pkcs8: pki.schema.pkcs8.parse, pkcs12: pki.schema.pkcs12.parse,
+    crmf: pki.schema.crmf.parse, cmp: pki.schema.cmp.parse, csrattrs: pki.schema.csrattrs.parse,
+    trustanchor: pki.schema.trustanchor.parse, ocspRequest: pki.schema.ocsp.parseRequest,
+    ocspResponse: pki.schema.ocsp.parseResponse, tsp: pki.schema.tsp.parseResponse,
+    attrcert: pki.schema.attrcert.parse };
+  var faulted = [], drivenCount = 0;
+  CORRUPT_CASES.forEach(function (row) {
+    var verb = row[0], parsed = PARSE_FOR[verb](row[1]);
+    memberPaths(parsed, [], [], 3).forEach(function (p) {
+      WRONG.forEach(function (bad) {
+        var copy = deepCopy(parsed), cur = copy;
+        for (var i = 0; i < p.length - 1; i++) cur = cur[p[i]];
+        if (cur === null || typeof cur !== "object") return;
+        cur[p[p.length - 1]] = bad;
+        drivenCount += 1;
+        try { pki.inspect[verb](copy); }
+        catch (e) {
+          if ((e && e.code) !== "inspect/bad-input") {
+            var at = verb + "." + p.join(".") + " -> " + ((e && e.code) || e.constructor.name);
+            if (faulted.indexOf(at) === -1) faulted.push(at);
+          }
+        }
+      });
+    });
+  });
+  check("F6c. no member of a parsed object, set to any wrong value, makes a report fault untyped (" +
+    drivenCount + " driven; " + (faulted.slice(0, 4).join(", ") || "none fault") + ")",
+  drivenCount > 1000 && faulted.length === 0);
 
   // A timestamp TOKEN is a CMS ContentInfo, so it is detected as cms and rendered by that report. The
   // tsp report is for the RESPONSE wrapper, and the two are different artifacts.
