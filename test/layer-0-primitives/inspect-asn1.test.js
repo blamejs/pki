@@ -542,6 +542,33 @@ function runDoors() {
     typeof pki.inspect.asn1(CONTROL) === "string");
   check("H5: an options argument that is not an object is refused",
     codeOf(function () { pki.inspect.asn1(CONTROL, 7); }) === "inspect/bad-input");
+
+  /* A short-form DER header can be entirely printable: an APPLICATION 3 primitive is identifier
+   * 0x43 and a content length of 32 to 126 is a printable length octet. Such a value carrying an
+   * armor line in its content is indistinguishable from a PEM file by a byte scan alone, and the
+   * dump has to render the outer value rather than the block inside it. */
+  var innerPem = "-----BEGIN ANY-----\n" + b.sequence([b.integer(1)]).toString("base64") +
+    "\n-----END ANY-----\n";
+  var textHeaderDer = Buffer.concat([Buffer.from([0x43, innerPem.length]), Buffer.from(innerPem, "latin1")]);
+  check("H6: valid DER whose header is text and whose content carries an armor line dumps as " +
+    "the outer value",
+  lines(pki.inspect.asn1(textHeaderDer))[0] ===
+      "ASN.1 structure: " + textHeaderDer.length + " bytes, decoded as DER" &&
+    lineWith(pki.inspect.asn1(textHeaderDer), "APPLICATION [3]") !== null);
+  check("H7: the PEM block inside it is rendered as the content bytes it is, not decoded",
+    pki.inspect.asn1(textHeaderDer).indexOf("2d:2d:2d:2d:2d:42:45:47:49:4e") !== -1);
+
+  /* Where the bytes are BOTH one complete DER value and a well-formed PEM block, no rule chooses
+   * between them, so the verb refuses rather than dumping one reading's bytes under the other's
+   * length. The same text as a string is unambiguous and renders the value inside the block. */
+  var bothText = "\n-----BEGIN A-----\n" + b.octetString(Buffer.alloc(17, 0x41)).toString("base64") +
+    "\n-----END A-----\n";
+  var ambiguous = Buffer.concat([Buffer.from([0x43, bothText.length]), Buffer.from(bothText, "latin1")]);
+  check("H8: bytes that read as both a DER value and a PEM block are refused, not guessed",
+    codeOf(function () { pki.inspect.asn1(ambiguous); }) === "inspect/bad-input");
+  check("H9: the same text as a string dumps the value the block carries",
+    lineWith(pki.inspect.asn1(bothText), "OCTET STRING") ===
+      line(0, 0, 2, 17, "prim", "OCTET STRING", new Array(17).fill("41").join(":")));
 }
 
 async function runConsumerPath() {
