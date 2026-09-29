@@ -198,6 +198,120 @@ function buildSynBundle(opts) {
   };
 }
 
+// A synthetic Rekor v2 bundle. No public-good v2 bundle exists to borrow: the npm attestations are
+// v1, so this is built the way rekor-tiles CLIENTS.md describes one.
+//
+// Rekor v2 supports no DSSE entry type, so a DSSE signature is logged as a `hashedrekord` v0.0.2 over
+// the hash of its PAE preimage. It issues no signed entry timestamp and writes integratedTime as 0,
+// so the instant comes from an RFC 3161 token over the SIGNATURE bytes, which is what dates the
+// ephemeral certificate that made them.
+async function buildV2Bundle(opts) {
+  opts = opts || {};
+  var rootKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var leafKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var logKp = crypto.generateKeyPairSync("ed25519");           // a v2 log signs with Ed25519
+  var NB = new Date("2026-01-01T00:00:00Z"), NA = new Date("2030-01-01T00:00:00Z");
+  var genTime = opts.genTime || new Date("2027-06-01T00:00:00Z");
+
+  var rootDer = synCert({ serial: 1n, issuer: "v2-root", subject: "v2-root", notBefore: NB, notAfter: NA,
+    subjectKey: rootKp.publicKey, signerKey: rootKp.privateKey,
+    extensions: [synExt("basicConstraints", true, B.sequence([B.boolean(true)])), synExt("keyUsage", true, synKuVal([5, 6]))] });
+  var leafDer = synCert({ serial: 2n, issuer: "v2-root", subject: "v2-leaf", notBefore: NB, notAfter: NA,
+    subjectKey: leafKp.publicKey, signerKey: rootKp.privateKey,
+    extensions: [synExt("keyUsage", true, synKuVal([0])), synExt("extKeyUsage", false, B.sequence([synOid("codeSigning")])),
+      synExt("subjectAltName", false, B.sequence([gnUriDer("https://github.com/synthetic/v2")]))] });
+
+  // Either content arm. A v2 log holds a DSSE signature as a hashedrekord over
+  // the hash of its signing preimage, and a message signature as one over the
+  // artifact's own digest, so the digest the entry records differs by arm.
+  var isMsg = opts.messageArtifact !== undefined;
+  var payloadType = "application/vnd.in-toto+json";
+  var payload, paeBytes, derSig, env = null, ms = null, coveredDigest;
+  if (isMsg) {
+    var art = opts.messageArtifact;
+    derSig = crypto.sign("sha256", art, { key: leafKp.privateKey, dsaEncoding: "der" });
+    ms = { signature: derSig.toString("base64"),
+      messageDigest: { algorithm: "SHA2_256", digest: crypto.createHash("sha256").update(art).digest().toString("base64") } };
+    coveredDigest = crypto.createHash("sha256").update(art).digest();
+  } else {
+    var payloadObj = { _type: "https://in-toto.io/Statement/v1", predicateType: "https://slsa.dev/provenance/v1",
+      subject: [{ name: "pkg", digest: { sha512: "cd".repeat(64) } }], predicate: {} };
+    payload = Buffer.from(JSON.stringify(payloadObj));
+    paeBytes = pki.sigstore.pae(payloadType, payload);
+    derSig = crypto.sign("sha256", paeBytes, { key: leafKp.privateKey, dsaEncoding: "der" });
+    env = { payload: payload.toString("base64"), payloadType: payloadType, signatures: [{ sig: derSig.toString("base64") }] };
+    coveredDigest = crypto.createHash("sha256").update(paeBytes).digest();
+  }
+
+  // The v0.0.2 entry body: the signature, the raw certificate that made it, and
+  // the digest of the PAE preimage.
+  var body = {
+    apiVersion: opts.apiVersion || "0.0.2",
+    kind: opts.kind || "hashedrekord",
+    spec: { hashedRekordV002: {
+      signature: {
+        content: derSig.toString("base64"),
+        verifier: { x509Certificate: { rawBytes: leafDer.toString("base64") },
+          keyDetails: opts.keyDetails === null ? undefined : (opts.keyDetails || "PKIX_ECDSA_P256_SHA_256") },
+      },
+      data: { algorithm: opts.digestAlgorithm || "SHA2_256",
+        digest: (opts.digest || coveredDigest).toString("base64") },
+    } },
+  };
+  if (opts.editBody) opts.editBody(body);
+  var canonBuf = Buffer.from(JSON.stringify(body));
+
+  // A single-leaf tree, so the root is the leaf hash and the proof is empty.
+  var rootHash = merkle.leafHash(canonBuf);
+  var logSpki = logKp.publicKey.export({ format: "der", type: "spki" });
+  var logRaw = pki.asn1.decode(logSpki).children[1].content.subarray(1);
+  var origin = opts.origin || "log2025-1.rekor.example";
+  var cpBody = origin + "\n1\n" + rootHash.toString("base64") + "\n";
+  var cpSig = crypto.sign(null, Buffer.from(cpBody, "utf8"), logKp.privateKey);
+  var cpKeyId = pki.tlog.keyId(origin, logRaw);
+  var cpEnvelope = cpBody + "\n" + String.fromCharCode(0x2014) + " " + origin + " " +
+    Buffer.concat([cpKeyId, cpSig]).toString("base64") + "\n";
+  // logId.keyId is the NON-truncated checkpoint key ID for a v2 log.
+  var logIdFull = crypto.createHash("sha256")
+    .update(Buffer.from(origin, "utf8")).update(Buffer.from([0x0a, 0x01])).update(logRaw).digest();
+
+  // The timestamp authority, self-signed with the critical exclusive timeStamping EKU RFC 3161 asks
+  // for, and a token over the SIGNATURE bytes.
+  var tsaKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var tsaDer = synCert({ serial: 3n, issuer: "v2-tsa", subject: "v2-tsa", notBefore: NB, notAfter: NA,
+    subjectKey: tsaKp.publicKey, signerKey: tsaKp.privateKey,
+    extensions: [synExt("extKeyUsage", true, B.sequence([synOid("timeStamping")]))] });
+  var token = await pki.tsp.sign(
+    { hashAlgorithm: "sha256", hashedMessage: crypto.createHash("sha256").update(opts.tsaOver || derSig).digest() },
+    { cert: tsaDer, key: tsaKp.privateKey.export({ format: "der", type: "pkcs8" }) },
+    { policy: "1.2.3", serialNumber: 7, genTime: genTime });
+
+  var te = {
+    logId: { keyId: logIdFull.toString("base64") },
+    integratedTime: 0,                       // always zero on a v2 entry, and ignored
+    logIndex: opts.logIndex === undefined ? 4242 : opts.logIndex,
+    inclusionProof: { logIndex: 0, treeSize: 1, hashes: [], rootHash: rootHash.toString("base64"),
+      checkpoint: { envelope: cpEnvelope } },
+    canonicalizedBody: canonBuf.toString("base64"),
+  };
+  var bundle = {
+    mediaType: "application/vnd.dev.sigstore.bundle.v0.3+json",
+    verificationMaterial: {
+      certificate: { rawBytes: leafDer.toString("base64") },
+      tlogEntries: [te],
+      timestampVerificationData: opts.omitTimestamps === true ? undefined
+        : { rfc3161Timestamps: opts.timestamps || [{ signedTimestamp: token.toString("base64") }] },
+    },
+  };
+  if (isMsg) bundle.messageSignature = ms; else bundle.dsseEnvelope = env;
+  return {
+    bundle: bundle, origin: origin, genTime: genTime, artifact: opts.messageArtifact,
+    trust: { fulcioRoots: [{ der: rootDer }], rekorKeys: [{ keyId: logIdFull, spki: logSpki }],
+      tsaRoots: [{ der: tsaDer }], identity: { san: "https://github.com/synthetic/v2" } },
+    keys: { leafPrivate: leafKp.privateKey, leafDer: leafDer, tsaDer: tsaDer, derSig: derSig, paeBytes: paeBytes },
+  };
+}
+
 // A synthetic bundle whose leaf is issued by an INTERMEDIATE the bundle carries, with a real embedded
 // certificate-transparency receipt over that leaf. The caller pins only the root, so the certificate
 // that issued the leaf is a link in the chain rather than the anchor, which is the shape the receipt's
@@ -1138,6 +1252,7 @@ async function run() {
     await codeOf(pki.sigstore.verifyBundle(synDeep.bundle, synDeep.trust)) === "sigstore/chain-incomplete");
 
   await runMessageSignature(TM);
+  await runRekorV2();
 }
 
 // ---------------------------------------------------------------------------
@@ -1282,6 +1397,188 @@ async function runCheckpointShape() {
     withEnvelope(signedBody("rekor.local\n99\n" + rootHash.toString("base64") + "\n")), TRUST));
   check("CS8: a tree size the proof geometry cannot match is refused (got " + cs8 + ")",
     cs8 === "sigstore/bad-inclusion-proof");
+}
+
+// ---------------------------------------------------------------------------
+// The Rekor v2 arm: a hashedrekord v0.0.2 entry over a DSSE signature, dated by
+// an RFC 3161 token because the log issues no signed entry timestamp.
+// ---------------------------------------------------------------------------
+async function runRekorV2() {
+  var v2 = await buildV2Bundle({});
+  var ok = await pki.sigstore.verifyBundle(v2.bundle, v2.trust);
+  check("V1: a Rekor v2 bundle verifies", ok && ok.verified === true);
+  check("V2: and the verdict reports what the verified checkpoint said",
+    ok.logOrigin === v2.origin && ok.treeSize === 1n && typeof ok.checkpointKeyId === "string" &&
+    ok.checkpointKeyId.length === 8);
+  check("V3: the instant is the timestamp token's, not the entry's zero",
+    ok.timestampSource === "rfc3161" && ok.integratedTime === null);
+
+  /* The three binding legs. Dropping any one leaves inclusion proving nothing
+     about this bundle, so each is its own vector. */
+  var sigSwap = await buildV2Bundle({ editBody: function (bd) {
+    bd.spec.hashedRekordV002.signature.content = Buffer.alloc(70, 9).toString("base64");
+  } });
+  check("V4: an entry signature that is not the bundle's is refused",
+    await codeOf(pki.sigstore.verifyBundle(sigSwap.bundle, sigSwap.trust)) === "sigstore/entry-mismatch");
+  var otherLeaf = await buildV2Bundle({});
+  var certSwap = await buildV2Bundle({ editBody: function (bd) {
+    bd.spec.hashedRekordV002.signature.verifier.x509Certificate.rawBytes = otherLeaf.keys.leafDer.toString("base64");
+  } });
+  check("V5: an entry verifier certificate that is not the bundle leaf is refused",
+    await codeOf(pki.sigstore.verifyBundle(certSwap.bundle, certSwap.trust)) === "sigstore/entry-mismatch");
+  var digestSwap = await buildV2Bundle({ digest: Buffer.alloc(32, 3) });
+  check("V6: a digest that is not the hash of this envelope's signing preimage is refused",
+    await codeOf(pki.sigstore.verifyBundle(digestSwap.bundle, digestSwap.trust)) === "sigstore/entry-mismatch");
+
+  /* The entry's statement about the key is held to the key. */
+  var keyLie = await buildV2Bundle({ keyDetails: "PKIX_ED25519" });
+  check("V7: an entry naming a key algorithm the leaf key is not is refused",
+    await codeOf(pki.sigstore.verifyBundle(keyLie.bundle, keyLie.trust)) === "sigstore/entry-mismatch");
+  var keyUnknown = await buildV2Bundle({ keyDetails: "PKIX_SOMETHING_NEW" });
+  check("V8: an entry naming a key algorithm this build does not read is refused",
+    await codeOf(pki.sigstore.verifyBundle(keyUnknown.bundle, keyUnknown.trust)) === "sigstore/bad-tlog-entry");
+  var noDetails = await buildV2Bundle({ keyDetails: null });
+  check("V9: an entry omitting keyDetails still verifies, since it states nothing to hold",
+    (await pki.sigstore.verifyBundle(noDetails.bundle, noDetails.trust)).verified === true);
+
+  /* The time leg. */
+  var noTsa = await buildV2Bundle({});
+  check("V10: with no timestamp anchor pinned there is no attested instant",
+    await codeOf(pki.sigstore.verifyBundle(noTsa.bundle,
+      { fulcioRoots: noTsa.trust.fulcioRoots, rekorKeys: noTsa.trust.rekorKeys,
+        identity: noTsa.trust.identity })) === "sigstore/no-attested-time");
+  var callerTime = await buildV2Bundle({});
+  var ctv = await pki.sigstore.verifyBundle(callerTime.bundle,
+    { fulcioRoots: callerTime.trust.fulcioRoots, rekorKeys: callerTime.trust.rekorKeys,
+      identity: callerTime.trust.identity, time: callerTime.genTime });
+  check("V11: a caller instant dates the bundle without a timestamp anchor, and says so",
+    ctv.verified === true && ctv.timestampSource === "caller");
+  /* A token over the wrong bytes dates the wrong thing. */
+  var wrongCover = await buildV2Bundle({ tsaOver: Buffer.from("not the signature") });
+  check("V12: a timestamp token over bytes other than the signature does not date it",
+    await codeOf(pki.sigstore.verifyBundle(wrongCover.bundle, wrongCover.trust)) === "sigstore/no-attested-time");
+  /* A token whose TSA chains to no pinned anchor. */
+  var otherTsa = await buildV2Bundle({});
+  var foreignAnchor = await buildV2Bundle({});
+  check("V13: a timestamp token whose authority chains to no pinned anchor does not date it",
+    await codeOf(pki.sigstore.verifyBundle(otherTsa.bundle,
+      { fulcioRoots: otherTsa.trust.fulcioRoots, rekorKeys: otherTsa.trust.rekorKeys,
+        identity: otherTsa.trust.identity,
+        tsaRoots: [{ der: foreignAnchor.keys.tsaDer }] })) === "sigstore/no-attested-time");
+  check("V14: an empty tsaRoots list is refused rather than read as a policy that checks nothing",
+    await codeOf(pki.sigstore.verifyBundle(otherTsa.bundle,
+      { fulcioRoots: otherTsa.trust.fulcioRoots, rekorKeys: otherTsa.trust.rekorKeys,
+        identity: otherTsa.trust.identity, tsaRoots: [] })) === "sigstore/bad-input");
+
+  /* integratedTime is ignored, not used as a fallback: a plausible non-zero value
+     must not date the bundle. */
+  var fakeTime = await buildV2Bundle({});
+  fakeTime.bundle.verificationMaterial.tlogEntries[0].integratedTime =
+    Math.floor(fakeTime.genTime.getTime() / 1000);
+  check("V15: a v2 entry's integratedTime is ignored even when it looks plausible",
+    await codeOf(pki.sigstore.verifyBundle(fakeTime.bundle,
+      { fulcioRoots: fakeTime.trust.fulcioRoots, rekorKeys: fakeTime.trust.rekorKeys,
+        identity: fakeTime.trust.identity })) === "sigstore/no-attested-time");
+
+  /* The unsigned inclusionProof fields are not read on this arm either. */
+  var ipLies = await buildV2Bundle({});
+  ipLies.bundle.verificationMaterial.tlogEntries[0].inclusionProof.rootHash = Buffer.alloc(32, 8).toString("base64");
+  ipLies.bundle.verificationMaterial.tlogEntries[0].inclusionProof.treeSize = 9999;
+  check("V16: the unsigned inclusionProof root and size are not what the fold trusts",
+    (await pki.sigstore.verifyBundle(ipLies.bundle, ipLies.trust)).verified === true);
+
+  /* And the v1 arm is untouched, which is the regression half. */
+  var v1 = buildSynBundle({});
+  var v1v = await pki.sigstore.verifyBundle(v1.bundle, v1.trust);
+  check("V17: a v1 dsse bundle still verifies and still reports its SET-derived time",
+    v1v.verified === true && v1v.timestampSource === "set" && typeof v1v.integratedTime === "number");
+
+  /* The OTHER content arm. A v2 log holds a message signature as a hashedrekord
+     over the artifact's own digest, so this drives the half of the binding the
+     DSSE vectors above never reach. */
+  var ART = Buffer.from("the artifact a v2 log recorded");
+  var v2msg = await buildV2Bundle({ messageArtifact: ART });
+  var mv = await pki.sigstore.verifyBundle(v2msg.bundle,
+    _assignTrust(v2msg.trust, { artifact: ART }));
+  check("V18: a Rekor v2 bundle on the message-signature arm verifies",
+    mv.verified === true && mv.timestampSource === "rfc3161" && mv.contentType === "messageSignature");
+  check("V19: and the artifact is held to the digest the v2 entry records",
+    await codeOf(pki.sigstore.verifyBundle(v2msg.bundle,
+      _assignTrust(v2msg.trust, { artifact: Buffer.from("a different artifact") }))) === "sigstore/artifact-mismatch");
+  var v2msgShort = await buildV2Bundle({ messageArtifact: ART, digest: Buffer.alloc(31, 1) });
+  check("V20: a v2 digest whose length is not its algorithm's is refused",
+    await codeOf(pki.sigstore.verifyBundle(v2msgShort.bundle,
+      _assignTrust(v2msgShort.trust, { artifact: ART }))) === "sigstore/bad-tlog-entry");
+
+  /* Every field the binding reads, missing or of the wrong type. A shape guard
+     that never runs is a guard nobody has checked. */
+  var SHAPES = [
+    ["no spec", function (bd) { delete bd.spec; }],
+    ["no hashedRekordV002", function (bd) { bd.spec = {}; }],
+    ["no signature object", function (bd) { delete bd.spec.hashedRekordV002.signature; }],
+    ["a non-string signature content", function (bd) { bd.spec.hashedRekordV002.signature.content = 7; }],
+    ["no verifier", function (bd) { delete bd.spec.hashedRekordV002.signature.verifier; }],
+    ["no x509Certificate", function (bd) { delete bd.spec.hashedRekordV002.signature.verifier.x509Certificate; }],
+    ["non-string rawBytes", function (bd) { bd.spec.hashedRekordV002.signature.verifier.x509Certificate.rawBytes = []; }],
+    ["no data", function (bd) { delete bd.spec.hashedRekordV002.data; }],
+    ["a non-string digest", function (bd) { bd.spec.hashedRekordV002.data.digest = 1; }],
+    ["a digest algorithm outside the schema", function (bd) { bd.spec.hashedRekordV002.data.algorithm = "MD5"; }],
+    ["no digest algorithm", function (bd) { delete bd.spec.hashedRekordV002.data.algorithm; }],
+  ];
+  var shapeOk = 0;
+  for (var si = 0; si < SHAPES.length; si++) {
+    var sb = await buildV2Bundle({ editBody: SHAPES[si][1] });
+    if (await codeOf(pki.sigstore.verifyBundle(sb.bundle, sb.trust)) === "sigstore/bad-tlog-entry") shapeOk++;
+    else console.log("    shape not refused as bad-tlog-entry: " + SHAPES[si][0]);
+  }
+  check("V21: every malformed v0.0.2 entry shape is refused as a bad entry (" + shapeOk + "/" +
+    SHAPES.length + ")", shapeOk === SHAPES.length);
+
+  /* The digest algorithm may also be the integer the JSON mapping allows. */
+  var numAlg = await buildV2Bundle({ editBody: function (bd) { bd.spec.hashedRekordV002.data.algorithm = 1; } });
+  check("V22: a digest algorithm given as the enum's integer is read as the name it stands for",
+    (await pki.sigstore.verifyBundle(numAlg.bundle, numAlg.trust)).verified === true);
+
+  /* The timestamp material's own shapes. */
+  var noTvd = await buildV2Bundle({ omitTimestamps: true });
+  check("V23: a bundle carrying no timestamp data has no instant to offer",
+    await codeOf(pki.sigstore.verifyBundle(noTvd.bundle, noTvd.trust)) === "sigstore/no-attested-time");
+  var nonString = await buildV2Bundle({ timestamps: [{ signedTimestamp: 9 }] });
+  check("V24: a non-string signedTimestamp is passed over rather than read",
+    await codeOf(pki.sigstore.verifyBundle(nonString.bundle, nonString.trust)) === "sigstore/no-attested-time");
+  var notArray = await buildV2Bundle({});
+  notArray.bundle.verificationMaterial.timestampVerificationData.rfc3161Timestamps = "nope";
+  check("V25: a timestamp list that is not a list offers nothing",
+    await codeOf(pki.sigstore.verifyBundle(notArray.bundle, notArray.trust)) === "sigstore/no-attested-time");
+  var tooMany = await buildV2Bundle({});
+  var many = [];
+  var LIM = require("../../lib/constants.js").LIMITS;
+  for (var mi = 0; mi < LIM.TLOG_MAX_COUNT + 1; mi++) many.push({ signedTimestamp: "AAAA" });
+  tooMany.bundle.verificationMaterial.timestampVerificationData.rfc3161Timestamps = many;
+  check("V26: more timestamps than the cap is refused rather than walked",
+    await codeOf(pki.sigstore.verifyBundle(tooMany.bundle, tooMany.trust)) === "sigstore/bad-bundle");
+
+  /* tsaRoots accepts the shapes the other trust material accepts. */
+  var single = await buildV2Bundle({});
+  var sv2 = await pki.sigstore.verifyBundle(single.bundle,
+    _assignTrust(single.trust, { tsaRoots: single.keys.tsaDer }));
+  check("V27: a single anchor outside a list is accepted, as a raw DER Buffer", sv2.verified === true);
+  var rawShape = await buildV2Bundle({});
+  var rv2 = await pki.sigstore.verifyBundle(rawShape.bundle,
+    _assignTrust(rawShape.trust, { tsaRoots: [{ rawBytes: rawShape.keys.tsaDer }] }));
+  check("V28: and the { rawBytes } spelling the bundle format uses", rv2.verified === true);
+  var badShape = await buildV2Bundle({});
+  check("V29: an anchor that is neither a Buffer nor { der } is refused at the door",
+    await codeOf(pki.sigstore.verifyBundle(badShape.bundle,
+      _assignTrust(badShape.trust, { tsaRoots: [{ nope: 1 }] }))) === "sigstore/bad-input");
+}
+
+/** Copy a trust bundle with overrides, so a vector changes one pinned thing. */
+function _assignTrust(trust, over) {
+  var out = {};
+  Object.keys(trust).forEach(function (k) { out[k] = trust[k]; });
+  Object.keys(over).forEach(function (k) { out[k] = over[k]; });
+  return out;
 }
 
 async function runMessageSignature(TM) {
@@ -1561,9 +1858,19 @@ async function runMessageSignature(TM) {
     te.canonicalizedBody = Buffer.from(JSON.stringify(body), "utf8").toString("base64");
     return b;
   }
-  check("a hashedrekord entry of an unsupported version is refused, never partly parsed",
+  // A v0.0.1 body relabelled 0.0.2 is not read with v0.0.1 field names. The
+  // version is part of the dispatch key, so the v0.0.2 reader looks for the
+  // v0.0.2 shape and refuses a body that does not carry it. This vector
+  // previously expected unsupported-content, which was true only while 0.0.2 was
+  // unread; what it was pinning is that a version bump is never partly parsed,
+  // and that is what it pins now.
+  check("a hashedrekord body relabelled 0.0.2 is not read with v0.0.1 field names",
     await codeOf(pki.sigstore.verifyBundle(
       withBody(msBundle("v0.3"), function (bd) { bd.apiVersion = "0.0.2"; }),
+      { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: ARTIFACT })) === "sigstore/bad-tlog-entry");
+  check("a hashedrekord entry of a version this build does not read is refused",
+    await codeOf(pki.sigstore.verifyBundle(
+      withBody(msBundle("v0.3"), function (bd) { bd.apiVersion = "0.0.3"; }),
       { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: ARTIFACT })) === "sigstore/unsupported-content");
   check("an entry of a kind this build does not read is refused",
     await codeOf(pki.sigstore.verifyBundle(

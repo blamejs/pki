@@ -78,4 +78,37 @@ module.exports.fuzz = async function (data) {
   var opts = { fulcioRoots: TRUST.fulcioRoots, rekorKeys: TRUST.rekorKeys, artifact: data.subarray(1) };
   try { await pki.sigstore.verifyBundle(ms, opts); }
   catch (e) { if (!isPki(e)) throw e; }
+
+  // Target D -- the Rekor v2 arm. A hashedrekord v0.0.2 body is built with the
+  // fuzzer's bytes in each field the binding reads, so the version dispatch, the
+  // three comparisons and the digest recomputation are driven on hostile values.
+  // tsaRoots and the timestamp list are fuzzed too, since an RFC 3161 token is the
+  // only thing that can date such an entry.
+  var v2;
+  try { v2 = JSON.parse(REAL); } catch (_e3) { return; }
+  var vpick = data[0] % 7;
+  var vte = v2.verificationMaterial.tlogEntries[0];
+  var hr = { signature: { content: inject,
+      verifier: { x509Certificate: { rawBytes: inject },
+        keyDetails: data.subarray(1, 40).toString("latin1") } },
+    data: { algorithm: "SHA2_256", digest: inject } };
+  if (vpick === 0) hr.signature.content = v2.dsseEnvelope.signatures[0].sig;
+  else if (vpick === 1) hr.signature.verifier.x509Certificate.rawBytes = v2.verificationMaterial.certificate.rawBytes;
+  else if (vpick === 2) hr.signature.verifier.keyDetails = "PKIX_ECDSA_P256_SHA_256";
+  else if (vpick === 3) delete hr.signature.verifier.keyDetails;
+  else if (vpick === 4) hr.data.algorithm = data.subarray(1, 12).toString("latin1");
+  else if (vpick === 5) hr.data.digest = null;
+  vte.canonicalizedBody = Buffer.from(JSON.stringify({
+    apiVersion: "0.0.2", kind: "hashedrekord", spec: { hashedRekordV002: hr },
+  })).toString("base64");
+  vte.integratedTime = 0;
+  v2.verificationMaterial.timestampVerificationData = { rfc3161Timestamps: [{ signedTimestamp: inject }] };
+  // A pinned anchor that does not parse is a config fault and refuses before any
+  // entry is read, so most inputs pin a real certificate: the token will not verify
+  // under it, but the entry binding is reached, which is the surface being driven.
+  // One pick still hands the anchor list fuzzer bytes, to drive that door too.
+  var vopts = { fulcioRoots: TRUST.fulcioRoots, rekorKeys: TRUST.rekorKeys,
+    tsaRoots: vpick === 6 ? [data.subarray(1)] : [TRUST.fulcioRoots[0]] };
+  try { await pki.sigstore.verifyBundle(v2, vopts); }
+  catch (e) { if (!isPki(e)) throw e; }
 };
