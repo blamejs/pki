@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.8.35",
+  "packageVersion": "0.8.36",
   "surface": {
     "C": {
       "kind": "object",
@@ -3947,6 +3947,10 @@
           "kind": "function",
           "arity": 2
         },
+        "inclusionProof": {
+          "kind": "function",
+          "arity": 1
+        },
         "keyId": {
           "kind": "function",
           "arity": 2
@@ -3972,6 +3976,10 @@
           "arity": 1
         },
         "tilePath": {
+          "kind": "function",
+          "arity": 3
+        },
+        "tileWidth": {
           "kind": "function",
           "arity": 3
         },
@@ -4462,6 +4470,8 @@
     "pki.tlog.parseTilePath": "0.8.33",
     "pki.tlog.parseTile": "0.8.33",
     "pki.tlog.parseEntryBundle": "0.8.33",
+    "pki.tlog.tileWidth": "0.8.36",
+    "pki.tlog.inclusionProof": "0.8.36",
     "pki.tls.decompressCertificate": "0.4.3",
     "pki.tls.parseCertificateMessage": "0.4.3",
     "pki.tls.compressCertificate": "0.4.3",

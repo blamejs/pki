@@ -478,11 +478,266 @@ async function runHostileBytes() {
     bundleFaults.slice(0, 2).join("; "), bundleFaults.length === 0);
 }
 
+// ---------------------------------------------------------------------------
+// Tile widths, against the geometry measured on a live log.
+//
+// The specification states the RIGHTMOST partial tile's width as
+// floor(s / 256**l) mod 256. A caller needs a width for any tile it is about to
+// request, so the rule here is the general one -- how many level-l units remain
+// for that tile -- and these vectors hold it to the four widths measured on
+// log2025-1.rekor.sigstore.dev at tree size 100466009, where the full tile at
+// each level was served as 8192 bytes and the partial one at the stated width.
+// ---------------------------------------------------------------------------
+var LIVE_SIZE = 100466009n;
+// [level, a full tile's index, the partial tile's index, its measured width]
+var MEASURED_TILES = [
+  [0, 392444n, 392445n, 89],
+  [1, 1531n, 1532n, 253],
+  [2, 4n, 5n, 252],
+  [3, null, 0n, 5],
+];
+
+function runTileWidths() {
+  MEASURED_TILES.forEach(function (m) {
+    check("W1 level " + m[0] + ": the rightmost tile's width is the measured one",
+      pki.tlog.tileWidth(LIVE_SIZE, m[0], m[2]) === m[3]);
+    if (m[1] !== null) {
+      check("W2 level " + m[0] + ": a full tile reports null, the form tilePath takes",
+        pki.tlog.tileWidth(LIVE_SIZE, m[0], m[1]) === null);
+    }
+  });
+  /* The width composes straight into the path, which is the whole point of
+     returning null for a full tile. */
+  check("W3: width and path compose to the measured level-0 paths",
+    pki.tlog.tilePath(0, 392444n, pki.tlog.tileWidth(LIVE_SIZE, 0, 392444n)) === "tile/0/x392/444" &&
+    pki.tlog.tilePath(0, 392445n, pki.tlog.tileWidth(LIVE_SIZE, 0, 392445n)) === "tile/0/x392/445.p/89");
+  check("W4: and to the measured level-1, 2 and 3 paths",
+    pki.tlog.tilePath(1, 1532n, pki.tlog.tileWidth(LIVE_SIZE, 1, 1532n)) === "tile/1/x001/532.p/253" &&
+    pki.tlog.tilePath(2, 5n, pki.tlog.tileWidth(LIVE_SIZE, 2, 5n)) === "tile/2/005.p/252" &&
+    pki.tlog.tilePath(3, 0n, pki.tlog.tileWidth(LIVE_SIZE, 3, 0n)) === "tile/3/000.p/5");
+  /* "Empty tiles MUST NOT be served", so asking for one is an error rather than
+     a width of zero a caller could turn into a request. */
+  check("W5: a tile past the tree is refused, not answered with zero",
+    codeOf(function () { pki.tlog.tileWidth(LIVE_SIZE, 0, 392446n); }) === "tlog/bad-tile");
+  check("W6: a level with no complete unit is refused",
+    codeOf(function () { pki.tlog.tileWidth(LIVE_SIZE, 4, 0n); }) === "tlog/bad-tile");
+  check("W7: an empty tree has no tile at all",
+    codeOf(function () { pki.tlog.tileWidth(0n, 0, 0n); }) === "tlog/bad-tile");
+  check("W8: a one-leaf tree has a one-wide level-0 tile",
+    pki.tlog.tileWidth(1n, 0, 0n) === 1);
+  check("W9: exactly 256 leaves is a full tile, not a partial one",
+    pki.tlog.tileWidth(256n, 0, 0n) === null);
+  check("W10: the level and index are held to the same rules the path builder applies",
+    codeOf(function () { pki.tlog.tileWidth(LIVE_SIZE, 64, 0n); }) === "tlog/bad-tile" &&
+    codeOf(function () { pki.tlog.tileWidth(LIVE_SIZE, -1, 0n); }) === "tlog/bad-tile");
+}
+
+// ---------------------------------------------------------------------------
+// Proof assembly from tiles.
+//
+// A tiled log serves no proof endpoint, so the client computes the audit path
+// itself from the tiles. The oracle is the shipped in-memory producer: a proof
+// assembled from tiles must fold, through pki.merkle.verifyInclusion, to the
+// same root pki.merkle.root computes over every leaf.
+// ---------------------------------------------------------------------------
+
+/** Build an in-memory tiled log of `size` leaves and return a `read` plus a counter. */
+function tiledLog(size) {
+  var leaves = [];
+  for (var i = 0; i < size; i++) {
+    leaves.push(pki.merkle.leafHash(Buffer.from([i & 0xff, (i >> 8) & 0xff, (i >> 16) & 0xff])));
+  }
+  // units[l] holds every COMPLETE level-l unit hash. A partial group is never
+  // hashed into the level above, which is what the specification requires.
+  var units = [leaves];
+  for (var l = 1; ; l++) {
+    var below = units[l - 1];
+    var count = Math.floor(below.length / 256);
+    if (count === 0) break;
+    var here = [];
+    for (var u = 0; u < count; u++) here.push(pki.merkle.root(below.slice(u * 256, u * 256 + 256)));
+    units.push(here);
+  }
+  var reads = [];
+  function read(level, index, width) {
+    reads.push(level + "/" + index + "/" + width);
+    var have = units[level] || [];
+    var start = Number(index) * 256;
+    var want = width === null ? 256 : width;
+    var slice = have.slice(start, start + want);
+    if (slice.length !== want) return Buffer.alloc(0);
+    return Buffer.concat(slice);
+  }
+  return { leaves: leaves, read: read, reads: reads, root: pki.merkle.root(leaves) };
+}
+
+async function runTileProofs() {
+  /* 70000 is the tlog-tiles document's own worked geometry example. */
+  var log = tiledLog(70000);
+  var INDICES = [0, 1, 255, 256, 34999, 69999];
+  var ok = 0;
+  for (var i = 0; i < INDICES.length; i++) {
+    var idx = INDICES[i];
+    var proof = await pki.tlog.inclusionProof({ index: BigInt(idx), size: 70000n, read: log.read });
+    if (pki.merkle.verifyInclusion({
+      leafIndex: idx, treeSize: 70000, leafHash: log.leaves[idx], proof: proof, rootHash: log.root,
+    }) === true) ok++;
+  }
+  check("X1: a proof assembled from tiles folds to the tree head, at every probed index (" +
+    ok + "/" + INDICES.length + ")", ok === INDICES.length && INDICES.length === 6);
+
+  /* The path must be index-bound: a producer returning a path independent of
+     the index would still fold for the leaf it was built for. */
+  var p0 = await pki.tlog.inclusionProof({ index: 0n, size: 70000n, read: log.read });
+  check("X2: a path built for leaf 0 does not prove leaf 1",
+    pki.merkle.verifyInclusion({
+      leafIndex: 1, treeSize: 70000, leafHash: log.leaves[1], proof: p0, rootHash: log.root,
+    }) === false);
+
+  /* Reads are cached within a call: one tile carries 256 unit hashes, so an
+     assembler that re-read per unit would fetch a multiple of this. */
+  var counted = tiledLog(70000);
+  await pki.tlog.inclusionProof({ index: 34999n, size: 70000n, read: counted.read });
+  check("X3: assembling one proof reads few tiles, not one per unit (" + counted.reads.length + ")",
+    counted.reads.length > 0 && counted.reads.length <= 12);
+  check("X4: every read asks for a width the log would serve",
+    counted.reads.every(function (r) {
+      var w = r.split("/")[2];
+      return w === "null" || (Number(w) >= 1 && Number(w) <= 255);
+    }));
+
+  /* "Clients MUST NOT fetch arbitrary partial tiles without verifying a
+     checkpoint with a size that requires their existence." */
+  check("X5: an index at the tree size is refused before any tile is read",
+    await codeOfAsync(pki.tlog.inclusionProof({
+      index: 70000n, size: 70000n, read: function () { throw new Error("read must not run"); },
+    })) === "tlog/index-out-of-range");
+  check("X6: an index past the tree size is refused",
+    await codeOfAsync(pki.tlog.inclusionProof({
+      index: 70001n, size: 70000n, read: function () { throw new Error("read must not run"); },
+    })) === "tlog/index-out-of-range");
+  check("X7: an empty tree has nothing to prove",
+    await codeOfAsync(pki.tlog.inclusionProof({
+      index: 0n, size: 0n, read: function () { throw new Error("read must not run"); },
+    })) === "tlog/empty-tree");
+
+  /* A short tile is a refusal, never a silently wrong root. */
+  check("X8: a read returning a short tile is refused",
+    await codeOfAsync(pki.tlog.inclusionProof({
+      index: 0n, size: 70000n, read: function () { return Buffer.alloc(32 * 3); },
+    })) === "tlog/bad-tile");
+  check("X9: a read returning nothing is refused",
+    await codeOfAsync(pki.tlog.inclusionProof({
+      index: 0n, size: 70000n, read: function () { return Buffer.alloc(0); },
+    })) === "tlog/bad-tile");
+  check("X10: a read returning a non-buffer is refused",
+    await codeOfAsync(pki.tlog.inclusionProof({
+      index: 0n, size: 70000n, read: function () { return "not bytes"; },
+    })) === "tlog/bad-input");
+  /* Text is not tile bytes. A tile, an entry bundle and a public key are binary,
+     and a string reaching one of them is a caller that read a response as text
+     instead of bytes. Decoding it as UTF-8 mangles every byte above 0x7f, so the
+     string can never be the data it stands in for -- yet a 32-character string
+     is exactly the length of one hash and parsed as one. */
+  check("X15: a tile is binary, and a string of the right length is not one",
+    codeOf(function () { pki.tlog.parseTile("a".repeat(32)); }) === "tlog/bad-input" &&
+    codeOf(function () { pki.tlog.parseTile("b".repeat(64)); }) === "tlog/bad-input");
+  check("X16: an entry bundle is binary too",
+    codeOf(function () { pki.tlog.parseEntryBundle("\u0000\u0003abc"); }) === "tlog/bad-input");
+  check("X17: a public key is binary",
+    codeOf(function () { pki.tlog.keyId("example.com/log", "x".repeat(32)); }) === "tlog/bad-input");
+  check("X18: and a public key supplied to a verify is binary",
+    await codeOfAsync(pki.tlog.verifyNote("t\n\n", [{ name: "n", publicKey: "x".repeat(32) }])) === "tlog/bad-input");
+  /* The forms that are bytes still parse, so the tightening did not narrow the
+     contract to Buffer alone. */
+  check("X19: a Buffer and a Uint8Array are both still tile bytes",
+    pki.tlog.parseTile(Buffer.alloc(32)).length === 1 &&
+    pki.tlog.parseTile(new Uint8Array(64)).length === 2);
+  check("X20: an entry bundle still parses from bytes",
+    pki.tlog.parseEntryBundle(Buffer.from([0, 3, 97, 98, 99])).length === 1);
+  check("X21: a key ID is still derived from raw key bytes",
+    pki.tlog.keyId("example.com/log", Buffer.alloc(32)).length === 4);
+  check("X22: something that is neither text nor bytes is refused as neither",
+    codeOf(function () { pki.tlog.parseTile(null); }) === "tlog/bad-input" &&
+    codeOf(function () { pki.tlog.parseTile(42); }) === "tlog/bad-input" &&
+    codeOf(function () { pki.tlog.parseEntryBundle({ length: 32 }); }) === "tlog/bad-input");
+  check("X23: read must be a function",
+    await codeOfAsync(pki.tlog.inclusionProof({ index: 0n, size: 5n, read: "not a function" })) === "tlog/bad-input");
+  check("X23b: no options at all fails closed on the missing size, not on a raw property read",
+    await codeOfAsync(pki.tlog.inclusionProof()) === "tlog/bad-input");
+
+  /* A partial tile served at a width the tree size does not call for. parseTile
+     accepts it on its own terms -- it is a whole number of hashes and under a
+     full tile -- so the refusal has to come from comparing it against the width
+     the verified size requires, or a proof folds from the wrong slot. */
+  check("X24: a partial tile served narrower than the tree size requires is refused",
+    await codeOfAsync(pki.tlog.inclusionProof({
+      index: 299n, size: 300n,
+      read: function (level, tile, width) {
+        if (width === null) return Buffer.concat(tiledLog(300).leaves.slice(0, 256));
+        return Buffer.concat([Buffer.alloc(32), Buffer.alloc(32), Buffer.alloc(32)]);
+      },
+    })) === "tlog/bad-tile");
+  check("X11: an unknown option is refused rather than ignored",
+    await codeOfAsync(pki.tlog.inclusionProof({
+      index: 0n, size: 70000n, read: log.read, treeSize: 70000n,
+    })) === "tlog/bad-input");
+
+  /* The strongest available cross-check: the path assembled from tiles must be
+     the path the in-memory producer emits, byte for byte. Two separately
+     written recursions over the same geometry, and the in-memory one is held to
+     the known-answer tables in merkle.test.js, so agreement is evidence rather
+     than two copies of one mistake. */
+  var xs = 0, xtotal = 0;
+  var XSIZES = [1, 2, 3, 5, 8, 17, 33, 70, 255, 256, 257, 300];
+  for (var s = 0; s < XSIZES.length; s++) {
+    var nn = XSIZES[s], tl = tiledLog(nn);
+    for (var ii = 0; ii < nn; ii += (nn > 70 ? 29 : 1)) {
+      xtotal++;
+      var fromTiles = await pki.tlog.inclusionProof({ index: BigInt(ii), size: BigInt(nn), read: tl.read });
+      var inMemory = pki.merkle.inclusionProof({ leafHashes: tl.leaves, leafIndex: ii });
+      var a = fromTiles.map(function (b) { return b.toString("hex"); }).join(",");
+      var b2 = inMemory.map(function (b) { return b.toString("hex"); }).join(",");
+      if (a === b2) xs++;
+    }
+  }
+  check("X15b: the tile-assembled path equals the in-memory path (" + xs + "/" + xtotal + ")",
+    xs === xtotal && xtotal > 150);
+
+  /* A small tree exercises the partial level-0 tile as the only tile. */
+  var tiny = tiledLog(5);
+  var tinyOk = 0;
+  for (var t = 0; t < 5; t++) {
+    var tp = await pki.tlog.inclusionProof({ index: BigInt(t), size: 5n, read: tiny.read });
+    if (pki.merkle.verifyInclusion({
+      leafIndex: t, treeSize: 5, leafHash: tiny.leaves[t], proof: tp, rootHash: tiny.root,
+    }) === true) tinyOk++;
+  }
+  check("X12: a tree smaller than one tile proves every leaf (" + tinyOk + "/5)", tinyOk === 5);
+
+  /* Exactly one full tile, and one leaf past it: the boundary where a level-1
+     unit first exists. */
+  var at256 = tiledLog(256);
+  var p255 = await pki.tlog.inclusionProof({ index: 255n, size: 256n, read: at256.read });
+  check("X13: a tree of exactly one full tile proves its last leaf",
+    pki.merkle.verifyInclusion({
+      leafIndex: 255, treeSize: 256, leafHash: at256.leaves[255], proof: p255, rootHash: at256.root,
+    }) === true);
+  var at257 = tiledLog(257);
+  var p256 = await pki.tlog.inclusionProof({ index: 256n, size: 257n, read: at257.read });
+  check("X14: the first leaf of a second tile proves against the tree head",
+    pki.merkle.verifyInclusion({
+      leafIndex: 256, treeSize: 257, leafHash: at257.leaves[256], proof: p256, rootHash: at257.root,
+    }) === true);
+}
+
 async function run() {
   await runNoteFormat();
   await runCheckpoint();
   runTilePaths();
   runTileData();
+  runTileWidths();
+  await runTileProofs();
   await runDoors();
   await runHostileBytes();
 }

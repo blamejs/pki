@@ -4,6 +4,20 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.36 — 2026-09-29
+
+Assemble a transparency-log inclusion proof from the tiles a log serves.
+
+### Added
+
+- `pki.tlog.inclusionProof({ index, size, read })` assembles the RFC 6962 audit path for one leaf of a tiled log and returns what `pki.merkle.verifyInclusion` folds against a verified checkpoint's root. `read(level, index, width)` takes the same three values `pki.tlog.tilePath` takes, so a caller wires it straight to a fetch of that path, and it may return bytes or a promise of them. Tiles are cached for the life of one call, because a tile carries 256 hashes and an audit path walks neighbors.
+- `pki.tlog.tileWidth(treeSize, level, index)` reports how wide a tile is: `null` when it is full, which is the form `tilePath` takes, or 1 to 255 when it is partial. A client has to know this before it asks, since a log serves a full and a partial tile at different paths and the full path for a partial tile is a request for something the log does not have. A tile the tree does not reach is refused rather than answered with a width of zero, because the specification says an empty tile is not served.
+- A tile served narrower than the verified tree size requires is refused as `tlog/bad-tile` rather than folded into a root computed from short data, and an `index` at or above `size` is `tlog/index-out-of-range` before any tile is read.
+
+### Fixed
+
+- A tile, an entry bundle and a public key are binary, and a string handed to `pki.tlog.parseTile`, `parseEntryBundle`, `keyId` or `verifyNote` was decoded as UTF-8 instead of refused. That rewrites every byte above 0x7f, so the result could never be the data it stood for, yet a 32-character string is the length of one hash and parsed as a valid one-hash tile. Each now refuses a string with `tlog/bad-input` and says to read the response as bytes. The documented signatures already said bytes; nothing that passes bytes is affected.
+
 ## v0.8.35 — 2026-09-29
 
 A builder encodes the number you wrote, or refuses it.
