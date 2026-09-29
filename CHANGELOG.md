@@ -6,7 +6,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## v0.8.32 — 2026-09-29
 
-The command line generates a key, builds a request, issues a certificate, and reads the chain an endpoint presents.
+The command line makes certificates, and the tarball carries programs you can run.
 
 ### Added
 
@@ -14,6 +14,7 @@ The command line generates a key, builds a request, issues a certificate, and re
 - `pki csr --key <key> --subject <dn>` builds a PKCS#10 request over the key's public half, which it derives from the key rather than asking for a second file. `--san` requests names through the RFC 2985 extensionRequest attribute a CA copies into the certificate it issues.
 - `pki issue` writes a certificate, self-signed from `--key` or signed by `--issuer-cert` and `--issuer-key`. An issuer needs both halves: a certificate with no key, or a key with no certificate, is refused rather than quietly self-signed, because a certificate asked to be signed by a CA and returned signed by its own subject key is the failure that looks like success. `--csr` certifies the subject and key a request carries, and verifies the request's signature first, since certifying an unverified request certifies a key the requester may not hold. `--ca`, `--days`, `--serial` and `--san` shape what is issued.
 - `pki fetch <https-url>` prints the certificate chain a live TLS endpoint presents, leaf first. It sends no request, so nothing reaches the application behind the endpoint, and it reports what the handshake checked and what it did not: a fetched chain is not a validated one, and `pki verify` is the verb that validates a path.
+- Five runnable example programs ship in the package: `issue-a-certificate.js` builds a CA, issues a leaf from it and validates the path, `read-a-certificate.js` reads one certificate four ways, `sign-and-verify-cms.js` signs and verifies attached and detached, `post-quantum.js` puts ML-DSA, SLH-DSA and ML-KEM through the same verbs as everything else, and `revoke-and-check.js` publishes a CRL and shows the path stop validating. Run one with `node node_modules/@blamejs/pki/examples/<name>.js`. Each generates what it needs, uses no network, writes nothing to disk, and opens with the `require("@blamejs/pki")` line a reader copies rather than a relative path that would only work inside the repository. Every line they print is asserted, so an example that stops demonstrating what it says fails the build rather than going stale in the tarball.
 - `pki.transport.peerChain(request, defaults?)` is the library primitive behind that verb: it negotiates TLS and returns the channel, including `peerChain`, the certificates the endpoint presented as DER walked up from the peer certificate to the one that issues itself. It prepares the connection through the same code `pki.transport.https` prepares a request with, so the trust anchors, the SNI, the version floor, the identity hook, the private-address block and the https-only rule are one policy rather than a second copy of one. A request with no anchor is refused before any socket opens, and a configured proxy is refused rather than bypassed.
 
 ### Changed

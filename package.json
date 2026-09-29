@@ -57,6 +57,7 @@
     "index.js",
     "bin/",
     "lib/",
+    "examples/*.js",
     "CHANGELOG.md",
     "LICENSE",
     "MIGRATING.md",

@@ -295,6 +295,24 @@ comment blocks, is at [pkijs.com](https://pkijs.com).
 | `pki.errors` | The `PkiError` taxonomy — `defineClass` plus `ConstantsError`, `Asn1Error`, `OidError`, `PemError`, `CertificateError`, `CrlError`, `CsrError`, `Pkcs8Error`, `CmsError`, `OcspError`, `TspError`, `AttrCertError`, `CrmfError`, `Pkcs12Error`, `CmpError`, `PathError`, `CtError`, `JoseError`, `AcmeError`, `WebauthnError`, and `LintError`, each carrying a stable `code` in `domain/reason` form |
 | `pki` CLI | `pki version`, `pki oid <dotted\|name>`, `pki parse <cert>`, `pki inspect <file> [--asn1]`, `pki keygen --out <key>`, `pki csr --key <k> --subject <dn>`, `pki issue (--key <k> --subject <dn> \| --csr <req>)`, `pki fetch <https-url>`, `pki lint <file>`, `pki convert <file> --to der\|pem`, `pki verify <cert>... --anchor <cert>`, `pki sign <file> --cert <c> --key <k>` |
 
+### Runnable examples
+
+The tarball carries five programs. After `npm i @blamejs/pki`, run any of them
+from the installed package:
+
+```sh
+node node_modules/@blamejs/pki/examples/issue-a-certificate.js   # a CA, a leaf, and path validation
+node node_modules/@blamejs/pki/examples/read-a-certificate.js    # parse, render, lint, dump one certificate
+node node_modules/@blamejs/pki/examples/sign-and-verify-cms.js   # CMS SignedData, attached and detached
+node node_modules/@blamejs/pki/examples/post-quantum.js          # ML-DSA, SLH-DSA and ML-KEM through the same verbs
+node node_modules/@blamejs/pki/examples/revoke-and-check.js      # a CRL, and the path that stops validating
+```
+
+Each is self-contained: it generates what it needs, uses no network, writes
+nothing to disk, and opens with the `require("@blamejs/pki")` line a reader
+copies. Every line they print is asserted by the test suite, so an example that
+stopped demonstrating what it claims fails the build rather than going stale.
+
 ### CLI
 
 ```sh
