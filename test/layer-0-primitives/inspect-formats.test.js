@@ -655,6 +655,14 @@ async function runPopulatedFormats(f) {
   check("P1b. an enveloped safe is named as one, and the report asks for a recipient key, not a password",
     has(envR, "envelopedData:") && has(envR, "opts.recipientKey") &&
     !/takes the password, which/.test(envR) && has(encR, "takes the password, which"));
+  // And the guidance follows what the store IS rather than whether it has encrypted safes: a MAC-less store
+  // of plaintext bags wants opts.allowUnauthenticated, not a password, and telling its reader to find one
+  // sends them after something the store does not have.
+  var noMacR = pki.inspect.pkcs12(await pki.pkcs12.build(
+    { safeContents: [{ bags: [{ type: "cert", cert: f.cert }] }] }, { mac: false }));
+  check("P1c. a MAC-less store asks for opts.allowUnauthenticated rather than a password",
+    has(noMacR, "Integrity Mode: none") && has(noMacR, "opts.allowUnauthenticated") &&
+    !has(noMacR, "takes the password"));
 
   // A CRMF template carrying every optional field the report reads.
   // A serialNumber is only a field of a REVOCATION template (crmf-sign's REVOCATION_TEMPLATE_KEYS), so a
@@ -830,8 +838,13 @@ async function runPopulatedFormats(f) {
   // A failure response carries no token at all, which is the other half of the token branch.
   var failResp = pki.tsp.response(null, { status: 2, statusString: "rejected by policy", failInfo: ["badRequest"] });
   var failR = pki.inspect.tsp(failResp);
-  check("P10. a rejected timestamp response renders its status strings and reports no token",
-    has(failR, "Status: 2") && has(failR, "rejected by policy") && has(failR, "Token: (none)"));
+  // RFC 3161 sec. 2.4.2's statuses need different handling from each other, and a bare integer said which
+  // only to a reader who already knows the table: a rejection and a response still being waited on both read
+  // as a number.
+  check("P10. a rejected timestamp response names its status, its strings, and reports no token",
+    has(failR, "Status: 2 (rejection)") && has(failR, "rejected by policy") && has(failR, "Token: (none)"));
+  check("P10a2. and a waiting response is named as waiting rather than as 3",
+    has(pki.inspect.tsp(pki.tsp.response(null, { status: 3 })), "Status: 3 (waiting)"));
   // The failure REASON is the one thing that line is for, and PKIFailureInfo is a BIT STRING the parser
   // decodes to named bits: read as an array it rendered as object notation and the reason was lost. So the
   // assertion is the decoded reason, not the presence of a label.
