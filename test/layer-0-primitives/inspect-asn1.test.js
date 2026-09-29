@@ -606,16 +606,45 @@ async function runConsumerPath() {
   var dump = pki.inspect.asn1(pkcs8);
   check("I8: a PKCS#8 dumps through the DER route",
     lines(dump)[0].indexOf("decoded as DER") !== -1);
+  /* How many bytes the key occupies is the runtime's choice: RFC 9935 lets a PKCS#8 carry the
+   * seed, the expanded key, or both, and Node has shipped more than one of those. So the vector
+   * asserts against the value cap rather than against the key's length, and holds either way. */
   var keyBytes = pki.asn1.decode(pkcs8).children[2].content;
-  var keyHexColon = keyBytes.toString("hex").split("").reduce(function (acc, ch, idx) {
-    return acc + (idx > 0 && idx % 2 === 0 ? ":" : "") + ch;
-  }, "");
-  check("I9: the dump renders the private key bytes, which is what a byte-level tool does",
-    keyBytes.length > 8 && dump.indexOf(keyHexColon) !== -1);
+  var cap = pki.C.LIMITS.DUMP_MAX_VALUE_BYTES;
+  var shown = keyBytes.length <= cap ? keyBytes : keyBytes.subarray(0, cap);
+  function colonHex(buf) {
+    return buf.toString("hex").split("").reduce(function (acc, ch, idx) {
+      return acc + (idx > 0 && idx % 2 === 0 ? ":" : "") + ch;
+    }, "");
+  }
+  check("I9: the dump renders the private key bytes up to the value cap, which is what a " +
+    "byte-level tool does (" + keyBytes.length + " key bytes, cap " + cap + ")",
+  keyBytes.length > 8 && dump.indexOf(colonHex(shown)) !== -1 &&
+      (keyBytes.length <= cap ||
+        dump.indexOf("(" + (keyBytes.length - cap) + " more bytes not rendered)") !== -1));
   var structured = pki.inspect.any(pkcs8);
   check("I10: pki.inspect.any on the same file renders no byte string from it and is not the dump",
     structured !== dump && structured.indexOf("Private Key: present") !== -1 &&
-      structured.indexOf(keyBytes.toString("hex")) === -1);
+      structured.indexOf(keyBytes.subarray(0, 16).toString("hex")) === -1 &&
+      structured.indexOf(colonHex(keyBytes.subarray(0, 16))) === -1);
+
+  /* An RSA private key is longer than the value cap in every runtime, so it drives the over-cap
+   * arm of both properties where the ML-DSA key above may not: the dump renders the cap's worth
+   * and states the omission, and the structured report still renders none of it. */
+  var rsaPair = await pki.key.generate({ name: "RSA-PSS", modulusLength: 2048,
+    publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" });
+  var rsaPkcs8 = await pki.key.export(rsaPair.privateKey);
+  var rsaKey = pki.asn1.decode(rsaPkcs8).children[2].content;
+  var rsaDump = pki.inspect.asn1(rsaPkcs8);
+  check("I11: a key longer than the value cap renders the cap's worth and states the omission (" +
+    rsaKey.length + " key bytes)",
+  rsaKey.length > cap && rsaDump.indexOf(colonHex(rsaKey.subarray(0, cap))) !== -1 &&
+      rsaDump.indexOf("(" + (rsaKey.length - cap) + " more bytes not rendered)") !== -1);
+  var rsaStructured = pki.inspect.any(rsaPkcs8);
+  check("I12: the structured report on the longer key renders none of it either",
+    rsaStructured.indexOf("Private Key: present") !== -1 &&
+      rsaStructured.indexOf(rsaKey.subarray(0, 16).toString("hex")) === -1 &&
+      rsaStructured.indexOf(colonHex(rsaKey.subarray(0, 16))) === -1);
 }
 
 function runHostileBytes() {
