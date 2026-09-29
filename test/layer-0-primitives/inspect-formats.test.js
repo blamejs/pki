@@ -639,7 +639,22 @@ async function runPopulatedFormats(f) {
   // every encrypted store as "unknown" while the line itself still rendered.
   check("P1. a PKCS#12 with an encrypted safe names the algorithm and says it is not decrypted",
     has(encR, "Encrypted Safes: 1") && has(encR, "(not decrypted)") && has(encR, "Iterations: 4096") &&
-    /Encrypted Safes: 1\n\s+\[0\] pbes2/.test(encR) && !has(encR, "] unknown"));
+    /Encrypted Safes: 1\n\s+\[0\] encryptedData: pbes2/.test(encR) && !has(encR, "] unknown"));
+  // WHICH credential opens the contents, because naming the wrong one sends an operator looking for
+  // something the store does not want. RFC 7292 sec. 4.1's public-key privacy is an EnvelopedData opened with
+  // a recipient key, and pki.pkcs12.open refuses it with pkcs12/no-recipient-key rather than asking for a
+  // password, so a report telling its reader to find the password is telling them the wrong thing.
+  var rsa = require("node:crypto").generateKeyPairSync("rsa", { modulusLength: 2048 });
+  var rcpt = await pki.x509.sign({ subject: "A Recipient", notBefore: NB, notAfter: NA,
+    subjectPublicKey: rsa.publicKey.export({ format: "der", type: "spki" }),
+    extensions: { keyUsage: ["keyEncipherment"] } },
+  { key: rsa.privateKey.export({ format: "der", type: "pkcs8" }) });
+  var envR = pki.inspect.pkcs12(await pki.pkcs12.build(
+    { safeContents: [{ recipients: [{ cert: rcpt }], bags: [{ type: "cert", cert: rcpt }] }] },
+    { password: "1234" }));
+  check("P1b. an enveloped safe is named as one, and the report asks for a recipient key, not a password",
+    has(envR, "envelopedData:") && has(envR, "opts.recipientKey") &&
+    !/takes the password, which/.test(envR) && has(encR, "takes the password, which"));
 
   // A CRMF template carrying every optional field the report reads.
   // A serialNumber is only a field of a REVOCATION template (crmf-sign's REVOCATION_TEMPLATE_KEYS), so a
