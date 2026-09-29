@@ -410,6 +410,7 @@ async function run() {
       { ref: "PKCS#7", linked: false }, { ref: "CA/Browser Forum Baseline", linked: false }, { ref: "DSSE", linked: false },
       { ref: "Sigstore bundle", linked: false }, { ref: "SLSA provenance", linked: false }, { ref: "in-toto", linked: false },
       { ref: "SemVer 2.0.0", linked: false }, { ref: "internal (design: infra)", linked: false },
+      { ref: "C2SP tlog-checkpoint", linked: true },
     ];
     SPEC_SAMPLES.forEach(function (s) {
       check("@spec '" + s.ref + "' is recognized by the validator", engine.isValidSpecRef(s.ref) === true);

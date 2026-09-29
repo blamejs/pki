@@ -109,6 +109,12 @@ var SPEC_PATTERNS = [
   new RegExp("^Sigstore(?: bundle)?(?: v\\d+\\.\\d+)?" + _SPEC_OPT + "$"),
   new RegExp("^SLSA(?: provenance)?(?: v\\d+)?" + _SPEC_OPT + "$"),
   new RegExp("^in-toto(?:\\s+\\S.*)?$"),
+  // Community Cryptography Specification Project documents, each published at
+  // c2sp.org/<name>: the signed note, the transparency-log checkpoint and the
+  // tile layout a static log serves. Go's checksum database, Sigstore and the
+  // static-CT API all cite these, and _specUrl maps the name to its page so the
+  // recognized set and the linkable set stay identical.
+  new RegExp("^C2SP [a-z][a-z0-9-]*" + _SPEC_OPT + "$"),
   new RegExp("^(?:SemVer|semver\\.org)\\b.*$"),
   new RegExp("^internal(?:\\s+\\([^)]*\\))?$"),
 ];

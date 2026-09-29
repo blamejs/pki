@@ -53,6 +53,7 @@ var key       = require("./lib/key");
 var pkcs12    = require("./lib/pkcs12-build");
 var pkcs11    = require("./lib/pkcs11-uri");
 var merkle    = require("./lib/merkle");
+var tlog      = require("./lib/tlog");
 var shbs      = require("./lib/shbs");
 var hpke      = require("./lib/hpke");
 var compositeKem = require("./lib/composite-kem");
@@ -166,6 +167,10 @@ module.exports = {
   // verifyConsistency fold an audit / consistency proof and constant-time-
   // compare to a checkpoint root. Pure sync hashing, fail-closed, transport-free.
   merkle:    merkle,
+  // `tlog` is the C2SP transparency-log envelope over those hashes: a signed
+  // note, the checkpoint body a log signs into one, and the tile paths a static
+  // log serves them beside. Verifying only; nothing signs and nothing fetches.
+  tlog:      tlog,
   // `shbs` verifies stateful hash-based signatures -- HSS/LMS (RFC 8554),
   // carried by RFC 9802 (X.509) and RFC 9708 (CMS), profiled by NIST SP 800-208.
   // VERIFY ONLY by design: stateful signing requires atomic one-time-key index

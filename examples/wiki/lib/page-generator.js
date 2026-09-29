@@ -266,6 +266,7 @@ function _specUrl(ref) {
   if ((m = r.match(/^SEC (\d+)/)))                       return "https://www.secg.org/sec" + m[1] + "-v2.pdf";
   if (/^W3C WebCrypto/.test(r))                          return "https://www.w3.org/TR/WebCryptoAPI/";
   if (/^FIDO Metadata Service v3\.0/.test(r))            return "https://fidoalliance.org/specs/mds/fido-metadata-service-v3.0-ps-20210518.html";
+  if ((m = r.match(/^C2SP ([a-z][a-z0-9-]*)/)))          return "https://c2sp.org/" + m[1];
   if ((m = r.match(/^CVE-(\d{4}-\d+)/)))                 return "https://www.cve.org/CVERecord?id=CVE-" + m[1];
   if ((m = r.match(/^CWE-(\d+)/)))                       return "https://cwe.mitre.org/data/definitions/" + m[1] + ".html";
   return null;

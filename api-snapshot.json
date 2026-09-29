@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.8.32",
+  "packageVersion": "0.8.33",
   "surface": {
     "C": {
       "kind": "object",
@@ -264,6 +264,18 @@
               "kind": "number"
             },
             "TLOG_MAX_COUNT": {
+              "kind": "number"
+            },
+            "TLOG_MAX_ENTRY_BUNDLE_BYTES": {
+              "kind": "number"
+            },
+            "TLOG_MAX_EXTENSION_LINES": {
+              "kind": "number"
+            },
+            "TLOG_MAX_NOTE_BYTES": {
+              "kind": "number"
+            },
+            "TLOG_MAX_SIGNATURES": {
               "kind": "number"
             },
             "TLS_CERT_MAX_ENTRIES": {
@@ -1733,6 +1745,18 @@
             "TLOG_MAX_COUNT": {
               "kind": "number"
             },
+            "TLOG_MAX_ENTRY_BUNDLE_BYTES": {
+              "kind": "number"
+            },
+            "TLOG_MAX_EXTENSION_LINES": {
+              "kind": "number"
+            },
+            "TLOG_MAX_NOTE_BYTES": {
+              "kind": "number"
+            },
+            "TLOG_MAX_SIGNATURES": {
+              "kind": "number"
+            },
             "TLS_CERT_MAX_ENTRIES": {
               "kind": "number"
             },
@@ -2571,6 +2595,10 @@
           "arity": 3
         },
         "SmimeError": {
+          "kind": "function",
+          "arity": 3
+        },
+        "TlogError": {
           "kind": "function",
           "arity": 3
         },
@@ -3890,6 +3918,55 @@
         }
       }
     },
+    "tlog": {
+      "kind": "object",
+      "members": {
+        "checkpointPath": {
+          "kind": "function",
+          "arity": 0
+        },
+        "entryBundlePath": {
+          "kind": "function",
+          "arity": 2
+        },
+        "keyId": {
+          "kind": "function",
+          "arity": 2
+        },
+        "parseCheckpoint": {
+          "kind": "function",
+          "arity": 1
+        },
+        "parseEntryBundle": {
+          "kind": "function",
+          "arity": 1
+        },
+        "parseNote": {
+          "kind": "function",
+          "arity": 1
+        },
+        "parseTile": {
+          "kind": "function",
+          "arity": 2
+        },
+        "parseTilePath": {
+          "kind": "function",
+          "arity": 1
+        },
+        "tilePath": {
+          "kind": "function",
+          "arity": 3
+        },
+        "verifyCheckpoint": {
+          "kind": "function",
+          "arity": 2
+        },
+        "verifyNote": {
+          "kind": "function",
+          "arity": 2
+        }
+      }
+    },
     "tls": {
       "kind": "object",
       "members": {
@@ -4353,6 +4430,17 @@
     "pki.smime.compress": "0.2.27",
     "pki.smime.decompress": "0.2.27",
     "pki.smime.buildCertsOnly": "0.6.3",
+    "pki.tlog.keyId": "0.8.33",
+    "pki.tlog.parseNote": "0.8.33",
+    "pki.tlog.verifyNote": "0.8.33",
+    "pki.tlog.parseCheckpoint": "0.8.33",
+    "pki.tlog.verifyCheckpoint": "0.8.33",
+    "pki.tlog.tilePath": "0.8.33",
+    "pki.tlog.entryBundlePath": "0.8.33",
+    "pki.tlog.checkpointPath": "0.8.33",
+    "pki.tlog.parseTilePath": "0.8.33",
+    "pki.tlog.parseTile": "0.8.33",
+    "pki.tlog.parseEntryBundle": "0.8.33",
     "pki.tls.decompressCertificate": "0.4.3",
     "pki.tls.parseCertificateMessage": "0.4.3",
     "pki.tls.compressCertificate": "0.4.3",
