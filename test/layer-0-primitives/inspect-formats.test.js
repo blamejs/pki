@@ -461,6 +461,33 @@ async function runEveryDetectedFormat() {
   check("F6. every format verb refuses a certificate with its own inspect/ code (" +
     (refusals.join(", ") || "all refuse") + ")", refusals.length === 0);
 
+  // A door that admits a caller's object on the strength of its MARKER and not its structure hands the
+  // renderer a shape it will fault on, and an untyped TypeError is not the typed refusal every one of these
+  // verbs documents. Each object below satisfies the marker its door selects on and carries nothing under it.
+  var markerOnly = [
+    ["pkcs8", { version: 1, privateKeyAlgorithm: {}, privateKey: Buffer.alloc(1) }],
+    ["pkcs12", { version: 3, integrityMode: "password", safeBags: [{}] }],
+    ["crmf", { messages: [{}] }],
+    ["crmf", { messages: [] }],
+    ["cmp", { header: {}, body: {} }],
+    ["csrattrs", { items: 7 }],
+    ["trustanchor", { anchors: [{}] }],
+    ["trustanchor", { anchors: [{ kind: "certificate" }] }],
+    ["ocspRequest", { version: 1, requestList: [{}], tbsRequestBytes: Buffer.alloc(1) }],
+    ["ocspResponse", { responseStatus: { code: 0, name: "successful" },
+      basicResponse: { version: 1, responderID: {}, responses: [{}] } }],
+    ["tsp", { status: 0, timeStampToken: {} }],
+    ["attrcert", { version: 2, holder: {}, attributes: [{}], signatureAlgorithm: {} }],
+  ];
+  var untyped = [];
+  markerOnly.forEach(function (row) {
+    var code = "NO-THROW";
+    try { pki.inspect[row[0]](row[1]); } catch (e) { code = (e && e.code) || ("RAW:" + e.constructor.name); }
+    if (code !== "inspect/bad-input") untyped.push(row[0] + " -> " + code);
+  });
+  check("F6b. and an object carrying only a door's marker is refused typed, never faulted on (" +
+    (untyped.join(", ") || "all typed") + ")", untyped.length === 0);
+
   // A timestamp TOKEN is a CMS ContentInfo, so it is detected as cms and rendered by that report. The
   // tsp report is for the RESPONSE wrapper, and the two are different artifacts.
   check("F7. a bare timestamp token renders as CMS, while the response wrapper renders as a timestamp",
@@ -555,6 +582,21 @@ async function runPopulatedFormats(f) {
     has(crmfR, "Request ID: 7") && has(crmfR, "A Populated Issuer") &&
     has(crmfR, "Not Before") && has(crmfR, "Requested Extensions:") && has(crmfR, "populated.example") &&
     has(crmfR, "Proof of Possession: signature"));
+  // RFC 4211 sec. 5 carries the DER value, so 2 names v3 exactly as a certificate's version does. Printed
+  // raw it told an operator the template asks for v2, the opposite of what it asks for, and the certificate
+  // report beside it writes the same number the other way.
+  check("P2b. and a template version is labeled by what it means, as the certificate report labels it",
+    has(crmfR, "Version: 3 (0x2)") && !/Version: 2$/m.test(crmfR));
+  // The door admits a parsed object only when it carries the structure the report reads. Checking only that
+  // `messages` was an array admitted a caller's own object and the renderer then faulted on it, leaving an
+  // untyped TypeError where every other wrong input gets inspect/bad-input.
+  var malformed = ["NO-THROW", "NO-THROW", "NO-THROW"];
+  [{ messages: [{}] }, { messages: [] }, { messages: [{ certReq: {} }] }].forEach(function (bad, i) {
+    try { pki.inspect.crmf(bad); } catch (e) { malformed[i] = (e && e.code) || ("RAW:" + e.constructor.name); }
+  });
+  check("P2c. and a marker-only CRMF object is refused with the documented code, not an untyped fault (" +
+    malformed.join(", ") + ")",
+  malformed.every(function (c) { return c === "inspect/bad-input"; }));
 
   // A CMP header carrying the times, nonces and key id the report reads.
   var cmpFull = await pki.cmp.build({ header: { sender: { directoryName: "CN=A Populated Subject" },
