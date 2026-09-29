@@ -190,8 +190,11 @@ function buildSynBundle(opts) {
     bundle: bundle,
     trust: { fulcioRoots: [{ der: rootDer }], rekorKeys: [{ keyId: keyId, spki: rekorSpki }] },
     // The held keys, so a vector can construct material this bundle's own signer could have made
-    // but never logged, which is the difference a transparency log exists to state.
-    keys: { leafPrivate: leafKp.privateKey, leafDer: leafDer, leafPem: synPem(leafDer) },
+    // but never logged, which is the difference a transparency log exists to state. The log's own
+    // key rides along so a vector can mint a checkpoint a DIFFERENT log would have signed, which is
+    // what distinguishes "a signed tree root" from "this log's signed tree root".
+    keys: { leafPrivate: leafKp.privateKey, leafDer: leafDer, leafPem: synPem(leafDer),
+      rekorPrivate: rekorKp.privateKey, rekorSpki: rekorSpki, rekorKeyId: keyId },
   };
 }
 
@@ -531,6 +534,15 @@ async function run() {
   var noSet = JSON.parse(JSON.stringify(BUNDLE));
   delete noSet.verificationMaterial.tlogEntries[0].inclusionPromise;
   check("checkpoint-only, no SET -> sigstore/unattested-time", await codeOf(pki.sigstore.verifyBundle(noSet, TM)) === "sigstore/unattested-time");
+  // A SET that is present and well formed but signed by nothing the caller pinned:
+  // every key the entry's identifier selects is tried and none verifies, which is
+  // the exhausted-candidates path rather than the missing-field one above.
+  var badSet = JSON.parse(JSON.stringify(BUNDLE));
+  var setBuf = Buffer.from(badSet.verificationMaterial.tlogEntries[0].inclusionPromise.signedEntryTimestamp, "base64");
+  setBuf[setBuf.length - 1] ^= 0x01;
+  badSet.verificationMaterial.tlogEntries[0].inclusionPromise.signedEntryTimestamp = setBuf.toString("base64");
+  check("a well-formed SET that no pinned key verifies -> sigstore/unattested-time",
+    await codeOf(pki.sigstore.verifyBundle(badSet, TM)) === "sigstore/unattested-time");
   // The inclusion-proof root MUST be checkpoint-signed: a valid SET alone does not
   // attest the root the proof reconstructs, so a corrupted checkpoint rejects even
   // with a valid SET (the reconstructed root would otherwise be attacker-supplied).
@@ -748,13 +760,16 @@ async function run() {
   var uv = await pki.sigstore.verifyBundle(urlLeaf, TM);
   check("URL-safe base64 leaf (identical bytes) still verifies", uv && uv.verified === true);
 
-  // --- Rekor SET selection: a non-string logId.keyId is a malformed bundle; a
-  // well-formed keyId that matches no caller Rekor key leaves the log time
-  // unattested (the SET, not the checkpoint, signs integratedTime). ---
+  // --- Rekor log selection: a non-string logId.keyId is a malformed bundle; a
+  // well-formed keyId that matches no caller Rekor key names a log nobody pinned.
+  // The entry's own logId.keyId is what the checkpoint is bound to, so that leg is
+  // the first thing such an entry cannot establish: the root it folds to is not
+  // attested by the log the entry claims. The SET leg would fail too, and did
+  // report first before the checkpoint was bound to the named log. ---
   var kidNum = cl(); kidNum.verificationMaterial.tlogEntries[0].logId.keyId = 123;
   check("non-string logId.keyId -> sigstore/bad-bundle", await codeOf(pki.sigstore.verifyBundle(kidNum, TM)) === "sigstore/bad-bundle");
   var kidBad = cl(); kidBad.verificationMaterial.tlogEntries[0].logId.keyId = Buffer.alloc(32, 7).toString("base64");
-  check("logId.keyId matching no Rekor key -> sigstore/unattested-time", await codeOf(pki.sigstore.verifyBundle(kidBad, TM)) === "sigstore/unattested-time");
+  check("logId.keyId matching no Rekor key -> sigstore/unsigned-root", await codeOf(pki.sigstore.verifyBundle(kidBad, TM)) === "sigstore/unsigned-root");
   var setNum = cl(); setNum.verificationMaterial.tlogEntries[0].inclusionPromise.signedEntryTimestamp = 123;
   check("non-string signedEntryTimestamp -> sigstore/unattested-time", await codeOf(pki.sigstore.verifyBundle(setNum, TM)) === "sigstore/unattested-time");
 
@@ -763,15 +778,53 @@ async function run() {
   // is skipped while the real signature still verifies. ---
   var noSep = cl(); noSep.verificationMaterial.tlogEntries[0].inclusionProof.checkpoint.envelope = "no-separator-here";
   check("checkpoint with no note/signature separator -> sigstore/bad-checkpoint", await codeOf(pki.sigstore.verifyBundle(noSep, TM)) === "sigstore/bad-checkpoint");
+  // The root line sits inside the text the log signed, so rewriting it breaks the
+  // checkpoint's own signature. That is the fault, and it is what is reported: the
+  // root is unattested. Comparing a rewritten root against the proof BEFORE
+  // checking the signature would have named the mismatch instead, which reads as
+  // "these two roots differ" for what is really a tampered checkpoint.
   var cpRoot = cl();
   var cpip = cpRoot.verificationMaterial.tlogEntries[0].inclusionProof;
   var cplines = cpip.checkpoint.envelope.split("\n"); cplines[2] = Buffer.alloc(32).toString("base64"); cpip.checkpoint.envelope = cplines.join("\n");
-  check("checkpoint root != inclusion-proof root -> sigstore/inclusion-proof-mismatch", await codeOf(pki.sigstore.verifyBundle(cpRoot, TM)) === "sigstore/inclusion-proof-mismatch");
+  check("a rewritten checkpoint root breaks its signature -> sigstore/unsigned-root", await codeOf(pki.sigstore.verifyBundle(cpRoot, TM)) === "sigstore/unsigned-root");
+  // And the case that vector was reaching for, reached properly: the unsigned
+  // inclusionProof.rootHash disagrees with the VERIFIED checkpoint root. The fold
+  // uses the attested one, so the bundle's own unsigned copy carries no weight.
+  var ipRoot = cl();
+  ipRoot.verificationMaterial.tlogEntries[0].inclusionProof.rootHash = Buffer.alloc(32, 9).toString("base64");
+  var ipRootV = await pki.sigstore.verifyBundle(ipRoot, TM);
+  check("the unsigned inclusionProof.rootHash is not what the fold trusts", ipRootV && ipRootV.verified === true);
+  // "Signatures are the base64 encoding of 4+n bytes", so a three-byte blob is not
+  // a signature line and the note does not conform. It is refused rather than
+  // passed over: a verifier that skips whatever it cannot read decides how much of
+  // a note it is willing to ignore, and a malformed line is not the same thing as
+  // the unknown-key line a verifier is told to ignore.
   var shortSig = cl();
   var ssip = shortSig.verificationMaterial.tlogEntries[0].inclusionProof;
   ssip.checkpoint.envelope = ssip.checkpoint.envelope.replace("\n\n", "\n\n" + String.fromCharCode(0x2014) + " x AAAA\n");
-  var ssv = await pki.sigstore.verifyBundle(shortSig, TM);
-  check("a too-short checkpoint signature line is skipped, the real one verifies", ssv && ssv.verified === true);
+  check("a malformed checkpoint signature line refuses the note -> sigstore/bad-checkpoint",
+    await codeOf(pki.sigstore.verifyBundle(shortSig, TM)) === "sigstore/bad-checkpoint");
+  // A WELL-FORMED line from a key the caller did not pin is the case a verifier
+  // must ignore, and it is ignored: this is the witness-cosignature shape.
+  var cosigned = cl();
+  var cip = cosigned.verificationMaterial.tlogEntries[0].inclusionProof;
+  var cosigLine = String.fromCharCode(0x2014) + " witness.example " +
+    Buffer.concat([Buffer.from([1, 2, 3, 4]), Buffer.alloc(72)]).toString("base64") + "\n";
+  cip.checkpoint.envelope = cip.checkpoint.envelope + cosigLine;
+  var cosV = await pki.sigstore.verifyBundle(cosigned, TM);
+  check("a cosignature from an unpinned key is ignored, and the log's own line still verifies",
+    cosV && cosV.verified === true);
+
+  // --- Which log signed the root. The entry names its log in logId.keyId, and
+  // the checkpoint that attests the root must be that log's. A valid signature
+  // from a second pinned log over the same tree root is not evidence about this
+  // log's tree, and with more than one log pinned that is the whole difference.
+  await runCheckpointIsThisLogs();
+
+  // --- The checkpoint body's own shape, which the signed-note and
+  // tlog-checkpoint specifications fix and which a verifier must hold it to
+  // before reading a root out of it. ---
+  await runCheckpointShape();
 
   // --- Rekor entry binding (_bindEntry): a non-dsse kind, a missing payloadHash,
   // a payloadHash that disagrees with the envelope payload, and a verifier field
@@ -897,12 +950,25 @@ async function run() {
   var logIdBuf = Buffer.from(BUNDLE.verificationMaterial.tlogEntries[0].logId.keyId, "base64");
   function spkiOf(kind, opt) { return crypto.generateKeyPairSync(kind, opt).publicKey.export({ format: "der", type: "spki" }); }
   function injectRekorKey(spkiDer) { return { keyId: logIdBuf, spki: spkiDer }; }
-  check("Ed25519 Rekor key dispatch (checkpoint) -> sigstore/unsigned-root",
-    await codeOf(pki.sigstore.verifyBundle(cl(), { fulcioRoots: TM.fulcioRoots, rekorKeys: [injectRekorKey(spkiOf("ed25519"))].concat(TM.rekorKeys) })) === "sigstore/unsigned-root");
-  check("secp384r1 Rekor key dispatch (SHA-384) -> sigstore/unsigned-root",
-    await codeOf(pki.sigstore.verifyBundle(cl(), { fulcioRoots: TM.fulcioRoots, rekorKeys: [injectRekorKey(spkiOf("ec", { namedCurve: "secp384r1" }))].concat(TM.rekorKeys) })) === "sigstore/unsigned-root");
-  check("secp521r1 Rekor key dispatch (SHA-512) -> sigstore/unsigned-root",
-    await codeOf(pki.sigstore.verifyBundle(cl(), { fulcioRoots: TM.fulcioRoots, rekorKeys: [injectRekorKey(spkiOf("ec", { namedCurve: "secp521r1" }))].concat(TM.rekorKeys) })) === "sigstore/unsigned-root");
+  // Each of these pins a key of the WRONG type or curve whose keyId collides with
+  // the log's, alongside the real key. The identifier a signed note carries is
+  // derived from the key material, so such a key derives a different identifier,
+  // is not a candidate for the line, and never reaches a verify; the real key is
+  // still found and the bundle verifies.
+  //
+  // These three previously expected unsigned-root, because the resolver stopped at
+  // the FIRST key whose four-byte hint matched and reported that key's failure even
+  // though a later pinned key would have verified. A caller holding a stale or an
+  // unrelated log key could therefore deny verification of a sound bundle.
+  var WRONG_KEYS = [["Ed25519", spkiOf("ed25519")],
+    ["secp384r1", spkiOf("ec", { namedCurve: "secp384r1" })],
+    ["secp521r1", spkiOf("ec", { namedCurve: "secp521r1" })]];
+  for (var wk = 0; wk < WRONG_KEYS.length; wk++) {
+    var wv = await pki.sigstore.verifyBundle(cl(), { fulcioRoots: TM.fulcioRoots,
+      rekorKeys: [injectRekorKey(WRONG_KEYS[wk][1])].concat(TM.rekorKeys) });
+    check("a pinned " + WRONG_KEYS[wk][0] + " Rekor key with a colliding keyId is not a candidate, " +
+      "and the real key still verifies", wv && wv.verified === true);
+  }
 
   // A tlog entry with no logId leaves the SET selector with a null keyId. The SET
   // (not the checkpoint) signs integratedTime, so no SET verifies -> the log time
@@ -1080,6 +1146,144 @@ async function run() {
 // 109-byte artifact, so the accepting cases are an independent implementation's output rather
 // than this suite's.
 // ---------------------------------------------------------------------------
+/** Mint a checkpoint over `rootHash` under a caller-chosen key, name and origin. This is what a
+ *  DIFFERENT log's signed tree root looks like: well formed, correctly signed, and about a tree the
+ *  entry never claimed. */
+function mintCheckpoint(o) {
+  var body = Buffer.from(o.origin + "\n" + o.size + "\n" + o.rootHash.toString("base64") + "\n", "utf8");
+  var sig = crypto.sign("sha256", body, { key: o.privateKey, dsaEncoding: "der" });
+  var blob = Buffer.concat([o.keyIdPrefix, sig]);
+  return body.toString("utf8") + "\n" + String.fromCharCode(0x2014) + " " + o.keyName + " " +
+    blob.toString("base64") + "\n";
+}
+
+async function runCheckpointIsThisLogs() {
+  var syn = buildSynBundle({});
+  var te0 = syn.bundle.verificationMaterial.tlogEntries[0];
+  var rootHash = Buffer.from(te0.inclusionProof.rootHash, "base64");
+
+  // A second log, whose key the caller also pins. Its key ID is the ECDSA
+  // derivation the signed-note specification fixes: the SPKI alone.
+  var otherKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var otherSpki = otherKp.publicKey.export({ format: "der", type: "spki" });
+  var otherKeyId = crypto.createHash("sha256").update(otherSpki).digest();
+  var twoLogs = {
+    fulcioRoots: syn.trust.fulcioRoots,
+    rekorKeys: [syn.trust.rekorKeys[0], { keyId: otherKeyId, spki: otherSpki }],
+  };
+
+  // Control: the bundle still verifies with two logs pinned, so the refusals
+  // below are about which log signed and not about pinning a second one.
+  var ctl = await pki.sigstore.verifyBundle(syn.bundle, twoLogs);
+  check("CP1: pinning a second Rekor log does not disturb a good bundle", ctl && ctl.verified === true);
+
+  // The attack: swap in a checkpoint the OTHER pinned log signed, over the same
+  // root. The entry still names the first log in logId.keyId.
+  var swapped = JSON.parse(JSON.stringify(syn.bundle));
+  swapped.verificationMaterial.tlogEntries[0].inclusionProof.checkpoint.envelope = mintCheckpoint({
+    origin: "other.log", size: 1, rootHash: rootHash, privateKey: otherKp.privateKey,
+    keyName: "other.log", keyIdPrefix: otherKeyId.subarray(0, 4),
+  });
+  var cp2 = await codeOf(pki.sigstore.verifyBundle(swapped, twoLogs));
+  check("CP2: a checkpoint signed by a DIFFERENT pinned log does not attest this entry's root (got " +
+    cp2 + ")", cp2 === "sigstore/unsigned-root");
+
+  // The same swap where the other log even reuses this log's origin string: the
+  // binding is to the key the entry names, not to a string in the note.
+  var swappedSameOrigin = JSON.parse(JSON.stringify(syn.bundle));
+  swappedSameOrigin.verificationMaterial.tlogEntries[0].inclusionProof.checkpoint.envelope = mintCheckpoint({
+    origin: "rekor.local", size: 1, rootHash: rootHash, privateKey: otherKp.privateKey,
+    keyName: "rekor.local", keyIdPrefix: otherKeyId.subarray(0, 4),
+  });
+  check("CP3: nor when that log copies this log's origin and key name",
+    await codeOf(pki.sigstore.verifyBundle(swappedSameOrigin, twoLogs)) === "sigstore/unsigned-root");
+
+  // Two signature lines naming the SAME key. The candidate list is built from the
+  // distinct names the note carries, so a repeated name contributes one entry and
+  // the duplicate does not multiply the keys tried.
+  var repeated = JSON.parse(JSON.stringify(syn.bundle));
+  var goodEnvelope = mintCheckpoint({
+    origin: "rekor.local", size: 1, rootHash: rootHash, privateKey: syn.keys.rekorPrivate,
+    keyName: "rekor.local", keyIdPrefix: syn.keys.rekorKeyId.subarray(0, 4),
+  });
+  var lastLine = goodEnvelope.slice(goodEnvelope.indexOf(String.fromCharCode(0x2014)));
+  repeated.verificationMaterial.tlogEntries[0].inclusionProof.checkpoint.envelope = goodEnvelope + lastLine;
+  var repV = await pki.sigstore.verifyBundle(repeated, twoLogs);
+  check("CP3b: a checkpoint repeating one signer's line still verifies once", repV && repV.verified === true);
+
+  // A pinned key carrying the RIGHT keyId but the wrong key material: it is the
+  // only key the entry's identifier selects, its derived note identifier does not
+  // match the signature line, so nothing matches and the root is unattested. This
+  // is the verified-false path, distinct from a matched key that fails.
+  var wrongMaterial = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var onlyWrong = { fulcioRoots: syn.trust.fulcioRoots, rekorKeys: [{
+    keyId: syn.keys.rekorKeyId,
+    spki: wrongMaterial.publicKey.export({ format: "der", type: "spki" }),
+  }] };
+  check("CP3c: a pinned key with the right identifier but the wrong material attests nothing",
+    await codeOf(pki.sigstore.verifyBundle(syn.bundle, onlyWrong)) === "sigstore/unsigned-root");
+
+  // And the honest re-sign: this log's own key over the same root still verifies,
+  // so CP2 and CP3 are about the signer and not about the minting helper.
+  var reminted = JSON.parse(JSON.stringify(syn.bundle));
+  reminted.verificationMaterial.tlogEntries[0].inclusionProof.checkpoint.envelope = mintCheckpoint({
+    origin: "rekor.local", size: 1, rootHash: rootHash, privateKey: syn.keys.rekorPrivate,
+    keyName: "rekor.local", keyIdPrefix: syn.keys.rekorKeyId.subarray(0, 4),
+  });
+  var rev = await pki.sigstore.verifyBundle(reminted, twoLogs);
+  check("CP4: a checkpoint re-minted under this log's own key verifies", rev && rev.verified === true);
+}
+
+async function runCheckpointShape() {
+  var syn = buildSynBundle({});
+  var TRUST = syn.trust;
+  var rootHash = Buffer.from(syn.bundle.verificationMaterial.tlogEntries[0].inclusionProof.rootHash, "base64");
+  function withEnvelope(env) {
+    var b = JSON.parse(JSON.stringify(syn.bundle));
+    b.verificationMaterial.tlogEntries[0].inclusionProof.checkpoint.envelope = env;
+    return b;
+  }
+  function signedBody(text) {
+    var sig = crypto.sign("sha256", Buffer.from(text, "utf8"), { key: syn.keys.rekorPrivate, dsaEncoding: "der" });
+    return text + "\n" + String.fromCharCode(0x2014) + " rekor.local " +
+      Buffer.concat([syn.keys.rekorKeyId.subarray(0, 4), sig]).toString("base64") + "\n";
+  }
+  // Control: a body minted here and signed here verifies, so each refusal below
+  // is about the shape and not about the minting.
+  var ok = await pki.sigstore.verifyBundle(
+    withEnvelope(signedBody("rekor.local\n1\n" + rootHash.toString("base64") + "\n")), TRUST);
+  check("CS1: a checkpoint body minted in this vector verifies", ok && ok.verified === true);
+
+  // "The note text is a sequence of at least three non-empty lines."
+  check("CS2: a checkpoint body of two lines is refused rather than read past its end",
+    await codeOf(pki.sigstore.verifyBundle(withEnvelope(signedBody("rekor.local\n1\n")), TRUST)) === "sigstore/bad-checkpoint");
+  check("CS3: an empty origin line is refused",
+    await codeOf(pki.sigstore.verifyBundle(withEnvelope(signedBody("\n1\n" + rootHash.toString("base64") + "\n")), TRUST)) === "sigstore/bad-checkpoint");
+  // "the ASCII decimal representation ... with no leading zeroes"
+  check("CS4: a tree size with a leading zero is refused",
+    await codeOf(pki.sigstore.verifyBundle(withEnvelope(signedBody("rekor.local\n01\n" + rootHash.toString("base64") + "\n")), TRUST)) === "sigstore/bad-checkpoint");
+  // A root that is not 32 bytes cannot be a SHA-256 tree head.
+  check("CS5: a root hash that is not 32 bytes is refused",
+    await codeOf(pki.sigstore.verifyBundle(withEnvelope(signedBody("rekor.local\n1\n" + Buffer.alloc(31).toString("base64") + "\n")), TRUST)) === "sigstore/bad-checkpoint");
+  // "MUST NOT contain any ASCII control characters (those below U+0020) other than newline"
+  check("CS6: a control byte in the note is refused",
+    await codeOf(pki.sigstore.verifyBundle(
+      withEnvelope(signedBody("rekor" + String.fromCharCode(7) + ".local\n1\n" + rootHash.toString("base64") + "\n")), TRUST)) === "sigstore/bad-checkpoint");
+  // "Verifiers SHOULD apply a maximum limit to the number of signatures."
+  var many = signedBody("rekor.local\n1\n" + rootHash.toString("base64") + "\n");
+  var pad = "";
+  for (var i = 0; i < 200; i++) pad += String.fromCharCode(0x2014) + " pad" + i + " AAAAAAAA\n";
+  check("CS7: a checkpoint carrying more signature lines than the cap is refused",
+    await codeOf(pki.sigstore.verifyBundle(withEnvelope(many + pad), TRUST)) === "sigstore/bad-checkpoint");
+  // The tree size the fold uses comes from the VERIFIED note, so a checkpoint
+  // whose size disagrees with the proof geometry is refused there rather than
+  // folding against a caller-supplied number.
+  var cs8 = await codeOf(pki.sigstore.verifyBundle(
+    withEnvelope(signedBody("rekor.local\n99\n" + rootHash.toString("base64") + "\n")), TRUST));
+  check("CS8: a tree size the proof geometry cannot match is refused (got " + cs8 + ")",
+    cs8 === "sigstore/bad-inclusion-proof");
+}
+
 async function runMessageSignature(TM) {
   var CFX = path.join(FX, "conformance");
   var ARTIFACT = fs.readFileSync(path.join(CFX, "a.txt"));

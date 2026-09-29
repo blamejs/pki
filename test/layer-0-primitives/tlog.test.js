@@ -112,6 +112,33 @@ async function runNoteFormat() {
   check("N8: a signature made over the text without its trailing newline is rejected",
     await codeOfAsync(pki.tlog.verifyNote(shortSigNote, [{ name: alice.name, publicKey: alice.raw }])) === "tlog/bad-signature");
 
+  /* "The note text MAY contain empty lines; the text is separated from the
+     signatures by the LAST empty line in the note."
+     The distinction is only visible on a note that has more than one empty line:
+     splitting at the first makes the text a PREFIX of what the signer signed, so
+     the remainder is read as signature lines and the note is refused even though
+     it conforms. The signature here is over the FULL text, which is what a log
+     would produce. */
+  var multiText = "example.com/log\n5\n" + pki.merkle.emptyRootHash().toString("base64") + "\n" +
+    "\nan extension line after an empty one\n";
+  var multiSig = Buffer.from(await pki.webcrypto.subtle.sign({ name: "Ed25519" },
+    alice.pair.privateKey, Buffer.from(multiText, "utf8")));
+  var multiNote = multiText + "\n" + EM_DASH + " " + alice.name + " " +
+    Buffer.concat([pki.tlog.keyId(alice.name, alice.raw), multiSig]).toString("base64") + "\n";
+  check("N8b: the text is separated at the LAST empty line, so an empty line inside it is text",
+    pki.tlog.parseNote(multiNote).signedBytes.length === Buffer.byteLength(multiText));
+  check("N8c: and a note carrying one verifies under the signature over its whole text",
+    (await pki.tlog.verifyNote(multiNote, [{ name: alice.name, publicKey: alice.raw }])).verified === true);
+  /* The converse: a signature over only the prefix up to the FIRST empty line is
+     what a verifier splitting there would accept, and it must not verify. */
+  var prefixText = "example.com/log\n5\n" + pki.merkle.emptyRootHash().toString("base64") + "\n";
+  var prefixSig = Buffer.from(await pki.webcrypto.subtle.sign({ name: "Ed25519" },
+    alice.pair.privateKey, Buffer.from(prefixText, "utf8")));
+  var prefixNote = multiText + "\n" + EM_DASH + " " + alice.name + " " +
+    Buffer.concat([pki.tlog.keyId(alice.name, alice.raw), prefixSig]).toString("base64") + "\n";
+  check("N8d: a signature over only the prefix before the first empty line is rejected",
+    await codeOfAsync(pki.tlog.verifyNote(prefixNote, [{ name: alice.name, publicKey: alice.raw }])) === "tlog/bad-signature");
+
   /* "Verifiers MUST ignore signatures from unknown keys" and "If no signature from a known key
    * verifies successfully, clients MUST reject the note." Those are two separate rules: an unknown
    * signature is not an error, and a note carrying only unknown ones is a rejection. */
@@ -250,16 +277,24 @@ async function runCheckpoint() {
   var extNote = await makeNote(withExt, [signer]);
   check("C10: extension lines are preserved opaquely, in order",
     JSON.stringify(pki.tlog.parseCheckpoint(extNote).extensions) === JSON.stringify(["ext one", "ext two"]));
-  /* "Extension lines, if any, MUST be non-empty." The note framing already guarantees it and no
-   * input can reach a check: the text ends at the FIRST blank line, so a blank line where an
-   * extension would sit terminates the body, and the line after it is read as a signature and
-   * refused. This asserts that outcome rather than a check that could never run. */
-  check("C11: a blank line where an extension would be ends the body rather than becoming an " +
-    "empty extension, and what follows is refused",
+  /* "Extension lines, if any, MUST be non-empty." A note's text is separated from its signatures at
+   * the LAST empty line, so an empty line where an extension would sit is INSIDE the text and does
+   * reach the check.
+   *
+   * This vector previously asserted the opposite outcome and said no input could reach a check,
+   * reasoning from the text ending at the FIRST empty line. That was the defect, not the framing:
+   * with the split at the last empty line the line is an empty extension and is refused as one. */
+  check("C11: an empty extension line is refused as an empty extension",
   (function () {
     var input = "o\n5\n" + root.toString("base64") + "\n\n\n" + EM_DASH + " o " +
         Buffer.alloc(8).toString("base64") + "\n";
-    return codeOf(function () { pki.tlog.parseCheckpoint(input); }) === "tlog/bad-note";
+    return codeOf(function () { pki.tlog.parseCheckpoint(input); }) === "tlog/bad-checkpoint";
+  })());
+  check("C11b: and an empty line before a real extension is refused too, not skipped",
+  (function () {
+    var input = "o\n5\n" + root.toString("base64") + "\n\next one\n\n" + EM_DASH + " o " +
+        Buffer.alloc(8).toString("base64") + "\n";
+    return codeOf(function () { pki.tlog.parseCheckpoint(input); }) === "tlog/bad-checkpoint";
   })());
   check("C12: a root hash that is not 32 bytes is refused",
     codeOf(function () {

@@ -1697,7 +1697,12 @@ The same provenance bundle can be verified offline with the toolkit itself.
 `pki.sigstore.verifyBundle` checks the DSSE signature, the Fulcio chain as of the
 Rekor log time, the RFC 9162 inclusion proof against a Rekor-signed root, and the
 in-toto SLSA subject digest, against trust material you pin: the Fulcio CA roots
-and Rekor log keys. It has no dependency tree of its own. An Ed25519 or Ed448
+and Rekor log keys. It has no dependency tree of its own. The checkpoint carrying
+that root is verified under the key the entry names in `logId.keyId`, so with more
+than one log pinned a signed tree root from one of them cannot satisfy an entry
+claiming another, and the tree size and root the proof folds against are read from
+the verified checkpoint rather than from the `inclusionProof` fields no signature
+covers. An Ed25519 or Ed448
 Fulcio leaf key is validated on-curve and full-order at the raw
 signature-verification sink rather than only at key parsing, so a low-order key
 that would verify a forged EdDSA signature is refused. That is the same gate

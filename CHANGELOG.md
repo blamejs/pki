@@ -4,6 +4,20 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.38 — 2026-09-29
+
+A Sigstore bundle's tree root must be signed by the log the entry names.
+
+### Fixed
+
+- A checkpoint is verified against the log the entry names. `verifyBundle` resolved the Rekor key by matching the first four bytes of a pinned key ID against the checkpoint's key hint and never read `logId.keyId`, so with two logs pinned a valid checkpoint signed by either one satisfied an entry claiming the other. A signed tree root from one log is not evidence about another log's tree. Only the key the entry names is now offered, and an entry naming a log the caller did not pin is `sigstore/unsigned-root`.
+- The inclusion proof folds against the tree size and root the VERIFIED checkpoint carries. `inclusionProof.rootHash` and `inclusionProof.treeSize` are covered by no signature, and folding against them and comparing afterwards decided the proof against numbers the bundle chose. A bundle whose unsigned `rootHash` disagrees with the attested one now verifies on the attested value rather than being judged against its own copy.
+- Every Rekor key the entry's identifier selects is tried, for both the checkpoint and the signed entry timestamp. Both legs stopped at the first key whose identifier matched and reported that key's failure, so a caller pinning a rotated pair, or a stale key beside a current one, could have a sound bundle refused as unattested.
+- The checkpoint body is held to the shape its specification fixes, which one reading of it now enforces for every caller: the body is three non-empty lines, the tree size carries no leading zero, the root is 32 bytes, no ASCII control byte appears outside a newline, and the signature lines are capped. A malformed signature line refuses the note instead of being passed over; a well-formed line from a key the caller did not pin is still ignored, which is what a witness cosignature needs.
+- A signed note's text ends at the LAST empty line in it, not the first. The specification allows the text to contain empty lines, so taking the first made the verified range a prefix of what the signer signed: the remainder was then read as signature lines and a conforming note refused. `pki.tlog.parseNote` now scans from the end, and a note whose text carries an empty line verifies under the signature over its whole text.
+- An empty extension line in a checkpoint is refused. With the text separated at the last empty line such a line is inside the body and reaches the check, where before it could not: `pki.tlog.parseCheckpoint` surfaced it as an empty extension. The specification requires every extension line to be non-empty.
+- `pki.tlog` takes its string and array operations from the captures bound at load, so a `String.prototype.split` or `indexOf` replaced after the module loads cannot steer which line of a checkpoint reads as the origin, the tree size or the root. It is now composed inside a verifier already hardened that way.
+
 ## v0.8.37 — 2026-09-29
 
 Read a transparency log's key whatever algorithm it signs with, and reject a note whose known signer does not verify.
