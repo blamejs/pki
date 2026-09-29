@@ -422,15 +422,31 @@ async function runEveryDetectedFormat() {
   // Asserted by searching the rendered text for a byte run of the key itself, in the encodings a
   // renderer could plausibly emit, rather than by reading the renderer and believing it.
   var privInner = pki.schema.pkcs8.parse(f.pkcs8).privateKey;
+  // The report is FLATTENED before the search, because these renderers wrap a long byte run across lines with
+  // colons and an indent: a contiguous search for the hex could not see a key the report had printed, so the
+  // check passed while the bytes were on the page. Base64 is searched as written, since nothing wraps it.
   function leaks(report, secret) {
-    var hex = secret.toString("hex");
-    return report.indexOf(hex) !== -1 ||
-      report.indexOf(secret.toString("base64")) !== -1 ||
-      report.indexOf(hex.replace(/(..)(?=.)/g, "$1:")) !== -1;
+    if (!Buffer.isBuffer(secret) || !secret.length) return false;
+    var flat = report.split("").filter(function (ch) {
+      return ch !== " " && ch !== ":" && ch !== "\n" && ch !== "\r" && ch !== "\t";
+    }).join("");
+    return flat.indexOf(secret.toString("hex")) !== -1 ||
+      report.indexOf(secret.toString("base64")) !== -1;
   }
   var p8 = pki.inspect.pkcs8(f.pkcs8);
   check("F3. a PKCS#8 report names the algorithm and does NOT carry the private key bytes",
     has(p8, "Ed25519") && !leaks(p8, privInner) && !leaks(p8, f.pkcs8));
+  // The parser checks that an RFC 5958 v2 OneAsymmetricKey HAS a public half, not that the half corresponds
+  // to the private key. So a file can carry the private bytes in the publicKey BIT STRING, and a report that
+  // prints the public half verbatim then writes the private key into wherever the report goes. That is the
+  // one guarantee this release makes, so the overlapping half is not rendered at all.
+  var secret = Buffer.from("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "hex");
+  var forgedPkcs8 = b.sequence([b.integer(1n), b.sequence([b.oid("1.3.101.112")]),
+    b.octetString(secret), b.implicit(1, b.bitString(secret, 0))]);
+  var forgedR = pki.inspect.pkcs8(forgedPkcs8);
+  check("F3b. and a public half that carries the private bytes is not rendered at all",
+    !leaks(forgedR, secret) && has(forgedR, "Private Key: present") &&
+    has(forgedR, "Ed25519"));
   var p12 = pki.inspect.pkcs12(f.pkcs12);
   check("F4. a PKCS#12 report does NOT carry the private key bytes",
     p12.length > 40 && !leaks(p12, privInner));
