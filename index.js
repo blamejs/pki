@@ -197,7 +197,7 @@ module.exports = {
   // rejectUnauthorized always on, a TLS floor, a streaming response cap, and a timeout.
   // Curated to the public `https` factory; the module's `isBlockedIp` classifier is an
   // internal helper pki.path.build reuses (require the module), not a public surface.
-  transport: { https: transport.https },
+  transport: { https: transport.https, peerChain: transport.peerChain },
   // `jose` is the RFC 7515 Flattened JWS + RFC 7638 JWK-thumbprint layer: a strict
   // base64url codec, a bounded duplicate-key-rejecting JSON reader, profiled
   // sign/verify (ACME-outer / EAB-inner / keyChange-inner), and an alg registry

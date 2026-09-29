@@ -488,6 +488,43 @@ async function run() {
     var vChain = cli(["verify", leafCert, "--anchor", caCert]);
     check("a certificate pki issue signed validates against the anchor pki issue signed",
       vChain.status === 0 && /valid/.test(vChain.stdout));
+
+    /* ---- fetch ----
+     * A fetched certificate is not a verified one, and the report must not read as though it were.
+     * These run offline: a reserved TLD never resolves, so the failure is the verb's own and the
+     * vector cannot depend on a network. */
+    var fetchUsage = cli(["fetch"]);
+    check("pki fetch requires a URL", fetchUsage.status !== 0 && /usage: pki fetch/.test(fetchUsage.stderr));
+    var fetchBad = cli(["fetch", "https://nothing.invalid/"]);
+    check("pki fetch against a host that does not resolve fails closed and does not hang",
+      fetchBad.status !== 0 && fetchBad.stdout.indexOf("-----BEGIN") === -1);
+    check("pki fetch reports the failure as the transport's typed fault",
+      /transport\//.test(fetchBad.stderr));
+    check("pki fetch refuses a URL that is not https, rather than fetching in the clear",
+      (function () { var r = cli(["fetch", "http://nothing.invalid/"]);
+        return r.status !== 0 && /insecure-url/.test(r.stderr); })());
+    /* The verb says what the handshake checked and what it did not. Without that an operator reads
+     * a printed chain as a validated one, which is the confusion `pki verify` exists to resolve. */
+    var fetchHelp = cli(["fetch", "--help"]).stderr;
+    check("pki fetch's help says it is not a verification and names the verb that is",
+      /not a verification|does not verify/i.test(fetchHelp) && /pki verify/.test(fetchHelp));
+
+    /* A file can be one complete DER value AND a well-formed PEM block at once, which the library
+     * refuses rather than guessing. Its advice is "pass PEM as a string, or the DER value on its
+     * own", and a reader holding a FILE cannot act on that, so the CLI names a command instead. */
+    var ambiguousText = "\n-----BEGIN A-----\n" +
+      pki.asn1.build.octetString(Buffer.alloc(17, 0x41)).toString("base64") + "\n-----END A-----\n";
+    var ambiguousPath = path.join(tmp, "ambiguous.bin");
+    fs.writeFileSync(ambiguousPath, Buffer.concat([Buffer.from([0x43, ambiguousText.length]),
+      Buffer.from(ambiguousText, "latin1")]));
+    var ambiguousGaps = [];
+    ["parse", "inspect", "lint"].forEach(function (verb) {
+      var r = cli([verb, ambiguousPath]);
+      if (r.status === 0) { ambiguousGaps.push(verb + " exited 0 on an ambiguous file"); return; }
+      if (!/pki convert/.test(r.stderr)) ambiguousGaps.push(verb + " gave no command to run: " + r.stderr.slice(0, 70));
+    });
+    check("a file that reads as both DER and PEM is refused with a command the reader can run: " +
+      ambiguousGaps.join("; "), ambiguousGaps.length === 0);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

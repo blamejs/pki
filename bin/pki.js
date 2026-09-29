@@ -16,6 +16,8 @@
  *   pki issue (--key <k> --subject <dn>   a certificate, self-signed or from a supplied issuer
  *              | --csr <req>) [--ca]
  *              [--issuer-cert <c> --issuer-key <k>] [--days N] [--serial HEX] [--san a,b] [--out F] [--pem]
+ *   pki fetch <https-url> --anchor <c>    the chain a live endpoint presents; NOT a verification
+ *              [--system] [--out F] [--der]
  *   pki lint <file> [--profile P]         lint the structure the file holds; exit non-zero on an error finding
  *              [--severity S] [--json]
  *   pki convert <file> --to der|pem       transcode a DER/PEM file between the two encodings
@@ -81,10 +83,25 @@ function usageOrArg(arg, usage) {
 // which is what preserves the linter's never-throw survey -- malformed bytes become a fatal
 // lint/unparseable finding rather than a CLI hard-fail. DER-first is unambiguous (a PEM file
 // is ASCII text and never decodes as one DER TLV).
+// The PEM grammar both readers match against: an uppercase A-Z0-9 label whose BEGIN and END agree.
+// One definition, so the ambiguity check and the convert extractor cannot disagree about what a
+// block is.
+var PEM_BLOCK_RE = /-----BEGIN ([A-Z0-9 ]+)-----([\s\S]*?)-----END \1-----/;
+
 function readForLib(file) {
   var bytes = readFileBytes(file);
-  try { pki.asn1.decode(bytes); return bytes; }
-  catch (_derErr) { return bytes.toString("latin1"); }   // not DER -- let the library pemDecode / report it
+  var isDer = true;
+  try { pki.asn1.decode(bytes); } catch (_derErr) { isDer = false; }
+  if (!isDer) return bytes.toString("latin1");   // not DER -- let the library pemDecode / report it
+  // A short DER header can be entirely printable, so a file can be one complete DER value AND a
+  // well-formed PEM block at once. Neither reading is wrong, so neither is chosen: reporting the
+  // DER reading's parse failure would send the reader after a fault in the wrong structure.
+  if (PEM_BLOCK_RE.test(bytes.toString("latin1"))) {
+    return fail(file + " reads as both one complete DER value and a PEM block, so which was meant " +
+      "cannot be read from the bytes: run `pki convert " + file + " --to pem` to settle it as the " +
+      "DER value, or delete the bytes before its -----BEGIN line to settle it as the PEM block");
+  }
+  return bytes;
 }
 
 // For `convert`, which transcodes RAW bytes and bypasses the library parse: extract DER
@@ -97,7 +114,7 @@ function readDer(file) {
   // Match the library's PEM grammar exactly (an uppercase A-Z0-9 label, and ONLY CR/LF/TAB/
   // space ignored in the body -- not every JS whitespace), so convert is not a looser
   // validation path than the codecs it composes.
-  var m = /-----BEGIN ([A-Z0-9 ]+)-----([\s\S]*?)-----END \1-----/.exec(bytes.toString("latin1"));
+  var m = PEM_BLOCK_RE.exec(bytes.toString("latin1"));
   if (!m) return fail(file + ": input is neither a well-formed DER structure nor a PEM block");
   var b64 = m[2].replace(/[\r\n\t ]+/g, "");
   // Enforce CANONICAL base64 (RFC 4648 sec. 3.5), matching the library's fail-closed PEM
@@ -367,6 +384,41 @@ function cmdIssue(args) {
   }).then(undefined, function (e) { return fail((e.code || "x509/sign-error") + ": " + e.message); });
 }
 
+var FETCH_USAGE = "usage: pki fetch <https-url> [--anchor <cert>] [--system] [--out <file>] [--der]\n" +
+  "  Prints the certificate chain the endpoint presented, leaf first, as PEM.\n" +
+  "  This is NOT a verification. The TLS handshake checked that the endpoint's chain builds to\n" +
+  "  a configured anchor and that its name matches the URL; it checked no revocation status, no\n" +
+  "  policy, and nothing about what the certificate is authorized to do. pki verify is the verb\n" +
+  "  that validates a path.\n" +
+  "  An anchor is required: --anchor names one, --system uses the platform's store.";
+
+// pki fetch <url> -- the chain a live endpoint presents, read from a TLS handshake that sends no
+// request, so nothing reaches the application behind it.
+function cmdFetch(args) {
+  var url = args._[0];
+  if (!url) return fail(FETCH_USAGE);
+  var anchors = args.anchor ? [readFileBytes(args.anchor)] : undefined;
+  var tlsOpts = {};
+  if (anchors) tlsOpts.anchors = anchors;
+  if (args.system) tlsOpts.useSystemStore = true;
+  return pki.transport.peerChain({ url: url }, { tls: tlsOpts }).then(function (channel) {
+    var chain = channel.peerChain || [];
+    if (!chain.length) return fail("fetch: the endpoint presented no certificate");
+    if (args.der) {
+      var der = Buffer.concat(chain);
+      writeOrPrint(args, der);
+    } else {
+      var pem = chain.map(function (d) { return pki.schema.x509.pemEncode(d, "CERTIFICATE"); }).join("");
+      writeOrPrint(args, pem);
+    }
+    // What the handshake established, on stderr so it does not land in a redirected chain file.
+    process.stderr.write("pki: " + channel.protocol + " " +
+      ((channel.cipher && channel.cipher.name) || "") + "; " + chain.length +
+      " certificate(s) presented; the handshake checked the chain against the configured anchor " +
+      "and the name in the URL, and checked no revocation status or policy -- pki verify validates a path\n");
+  }, function (e) { return fail((e.code || "transport/error") + ": " + e.message); });
+}
+
 // pki convert <file> --to der|pem -- transcode between DER and PEM. The input encoding is
 // auto-detected; the bytes must be well-formed DER (we never wrap/emit garbage).
 function cmdConvert(args) {
@@ -432,7 +484,7 @@ function cmdSign(args) {
 // Buffer. cms.sign accepts either for the certificate and needs a string for a PEM private key.
 function _asPemOrDer(buf) { return buf[0] === 0x2d ? buf.toString("latin1") : buf; }
 
-var USAGE = "usage: pki <version|oid|parse|inspect|keygen|csr|issue|lint|convert|verify|sign> [args]\n";
+var USAGE = "usage: pki <version|oid|parse|inspect|keygen|csr|issue|fetch|lint|convert|verify|sign> [args]\n";
 
 function main(argv) {
   var cmd = argv[0];
@@ -444,6 +496,7 @@ function main(argv) {
     case "keygen":  return cmdKeygen(parseArgs(argv.slice(1)));
     case "csr":     return cmdCsr(parseArgs(argv.slice(1)));
     case "issue":   return cmdIssue(parseArgs(argv.slice(1)));
+    case "fetch":   return cmdFetch(parseArgs(argv.slice(1)));
     case "lint":    return cmdLint(parseArgs(argv.slice(1)));
     case "convert": return cmdConvert(parseArgs(argv.slice(1)));
     case "verify":  return cmdVerify(parseArgs(argv.slice(1)));
