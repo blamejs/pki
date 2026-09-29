@@ -684,7 +684,7 @@ async function runPopulatedFormats(f) {
     { password: "1234" }));
   check("P1b. an enveloped safe is named as one, and the report asks for a recipient key, not a password",
     has(envR, "envelopedData:") && has(envR, "opts.recipientKey") &&
-    !/takes the password, which/.test(envR) && has(encR, "takes the password, which"));
+    !/needs the password\./.test(envR) && has(encR, "needs the password."));
   // And the guidance follows what the store IS rather than whether it has encrypted safes: a MAC-less store
   // of plaintext bags wants opts.allowUnauthenticated, not a password, and telling its reader to find one
   // sends them after something the store does not have.
@@ -692,7 +692,15 @@ async function runPopulatedFormats(f) {
     { safeContents: [{ bags: [{ type: "cert", cert: f.cert }] }] }, { mac: false }));
   check("P1c. a MAC-less store asks for opts.allowUnauthenticated rather than a password",
     has(noMacR, "Integrity Mode: none") && has(noMacR, "opts.allowUnauthenticated") &&
-    !has(noMacR, "takes the password"));
+    !has(noMacR, "needs the password."));
+  // A store can want a credential AND be unauthenticated, and pki.pkcs12.open checks both: a MAC-less store
+  // holding a shrouded key needs the password for the key and the opt for the missing MAC. Offered as
+  // alternatives, the opt went unmentioned for exactly the stores that need both.
+  var bothR = pki.inspect.pkcs12(await pki.pkcs12.build(
+    { safeContents: [{ bags: [{ type: "shroudedKey", key: f.key, encrypt: { password: "1234" } }] }] },
+    { mac: false }));
+  check("P1d. and a MAC-less store holding a shrouded key names both credentials",
+    has(bothR, "the password and opts.allowUnauthenticated"));
 
   // A CRMF template carrying every optional field the report reads.
   // A serialNumber is only a field of a REVOCATION template (crmf-sign's REVOCATION_TEMPLATE_KEYS), so a
@@ -795,6 +803,15 @@ async function runPopulatedFormats(f) {
     b.raw(spki), b.octetString(Buffer.alloc(20, 1)), b.explicit(1, b.sequence([bcExt]))]))]));
   check("P4e. and an anchor's own extensions are rendered, so a path-limited anchor reads differently",
     has(taWithExts, "Extensions:") && has(taWithExts, "Basic Constraints") && has(taWithExts, "pathlen:2"));
+  // RFC 5914 sec. 3 excludes some extension types from that field, and the parser drops one it finds there
+  // while recording its identifier. Unmentioned, an anchor that TRIED to carry a name constraint there read
+  // the same as one carrying nothing, while the constraint it named is not in force.
+  var droppedExt = pki.inspect.trustanchor(b.sequence([b.explicit(2, b.sequence([
+    b.raw(spki), b.octetString(Buffer.alloc(20, 1)),
+    b.explicit(1, b.sequence([b.sequence([b.oid("2.5.29.30"), b.octetString(b.sequence([]))])]))]))]));
+  check("P4f. and an extension the profile excludes there is named as dropped and not in force",
+    has(droppedExt, "excludes here, dropped and not in force") &&
+    has(droppedExt, "nameConstraints (2.5.29.30)"));
   // The other two forms hold a CERTIFICATE, whose subject and public key are what name the anchor. Read as
   // though every form were TrustAnchorInfo, both rendered their form and nothing else, so two different
   // anchors produced the same report and neither could be told from the other.
