@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.8.33",
+  "packageVersion": "0.8.34",
   "surface": {
     "C": {
       "kind": "object",
@@ -147,6 +147,9 @@
               "kind": "number"
             },
             "MDS_MAX_STATUS_REPORTS_PER_ENTRY": {
+              "kind": "number"
+            },
+            "MERKLE_MAX_LEAVES": {
               "kind": "number"
             },
             "MERKLE_MAX_PROOF_NODES": {
@@ -1628,6 +1631,9 @@
             "MDS_MAX_STATUS_REPORTS_PER_ENTRY": {
               "kind": "number"
             },
+            "MERKLE_MAX_LEAVES": {
+              "kind": "number"
+            },
             "MERKLE_MAX_PROOF_NODES": {
               "kind": "number"
             },
@@ -3027,9 +3033,17 @@
     "merkle": {
       "kind": "object",
       "members": {
+        "consistencyProof": {
+          "kind": "function",
+          "arity": 1
+        },
         "emptyRootHash": {
           "kind": "function",
           "arity": 0
+        },
+        "inclusionProof": {
+          "kind": "function",
+          "arity": 1
         },
         "leafHash": {
           "kind": "function",
@@ -3038,6 +3052,10 @@
         "nodeHash": {
           "kind": "function",
           "arity": 2
+        },
+        "root": {
+          "kind": "function",
+          "arity": 1
         },
         "verifyConsistency": {
           "kind": "function",
@@ -4311,6 +4329,9 @@
     "pki.merkle.emptyRootHash": "0.1.28",
     "pki.merkle.verifyInclusion": "0.1.28",
     "pki.merkle.verifyConsistency": "0.1.28",
+    "pki.merkle.root": "0.8.34",
+    "pki.merkle.inclusionProof": "0.8.34",
+    "pki.merkle.consistencyProof": "0.8.34",
     "pki.ocsp.buildRequest": "0.2.22",
     "pki.ocsp.sign": "0.2.22",
     "pki.ocsp.buildErrorResponse": "0.2.22",

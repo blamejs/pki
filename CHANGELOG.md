@@ -4,6 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.34 — 2026-09-29
+
+Build the tree, and produce the proofs a verifier folds back to its root.
+
+### Added
+
+- `pki.merkle.root(leafHashes)` computes the RFC 6962 Merkle Tree Hash over a whole tree and returns the 32-byte head to pass to `verifyInclusion` as `rootHash`. An empty array is the empty tree and answers `emptyRootHash()`; a single leaf is its own root, with no interior hashing.
+- `pki.merkle.inclusionProof({ leafHashes, leafIndex })` produces the audit path of RFC 6962 sec. 2.1.1 for one leaf, and `pki.merkle.consistencyProof({ leafHashes, oldSize })` produces the append-only proof of sec. 2.1.2 between an older size and the tree it is given. Each returns the array the matching verifier takes as `proof`.
+- The tree size is the length of the leaf array and is not a separate option on either verb. A caller who passes one is told the option is unknown rather than having a stated size and an actual array disagree, which on the consistency proof decides whether the old tree's own root belongs in the output.
+- Both verbs take leaf HASHES, the form `verifyInclusion` already takes as `leafHash`, and a leaf that is not exactly 32 bytes is refused. Entries map through `pki.merkle.leafHash` first. A 32-byte buffer cannot be read as an entry in one verb and a hash in another.
+- Every leaf slot is read once, into the buffer the length check and the fold both use, so an array whose accessor answers differently on a second read cannot put one value past the check and another into the tree. The leaf count is bounded by `C.LIMITS.MERKLE_MAX_LEAVES` before any slot is touched.
+- An `oldSize` of 0 against a non-empty tree is refused as `merkle/no-consistency-claim`, the same refusal `verifyConsistency` makes and for the same reason: RFC 6962 sec. 2.1.2 defines the proof for `0 < oldSize < newSize`, so there is no proof to produce.
+
 ## v0.8.33 — 2026-09-29
 
 Read a transparency log's checkpoint, and the tiles it serves beside it.

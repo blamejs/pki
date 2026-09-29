@@ -169,10 +169,179 @@ function testRejects() {
   // identity check, not a consistency proof, and BOTH roots must be the empty root -- a bogus
   // newRoot must not pass.
   check("cons-empty-to-empty accepts both empty roots", m.verifyConsistency({ oldSize: 0, newSize: 0, oldRoot: H(EMPTY), newRoot: H(EMPTY), proof: [] }) === true);
+  // Two empty trees admit only the empty proof: a node offered here folds into
+  // nothing, so accepting it would let a proof exist where none can.
+  check("rej-cons-empty-to-empty-nonempty-proof", code(function () {
+    m.verifyConsistency({ oldSize: 0, newSize: 0, oldRoot: H(EMPTY), newRoot: H(EMPTY), proof: P([L0]) });
+  }) === "merkle/bad-proof-length");
   check("rej-cons-empty-to-empty-wrongnewroot (false)", m.verifyConsistency({ oldSize: 0, newSize: 0, oldRoot: H(EMPTY), newRoot: H(flip(EMPTY)), proof: [] }) === false);
   check("rej-cons-wrong-oldroot non-pow2 (false)", m.verifyConsistency({ oldSize: 3, newSize: 7, oldRoot: H(flip(R3)), newRoot: H(R7), proof: P([L2, L3, R2, N456]) }) === false);
   check("rej-cons-wrong-oldroot POW2 (false) [load-bearing]", m.verifyConsistency({ oldSize: 4, newSize: 7, oldRoot: H(flip(R4)), newRoot: H(R7), proof: P([N456]) }) === false);
   check("rej-cons-wrong-newroot (false)", m.verifyConsistency({ oldSize: 3, newSize: 7, oldRoot: H(R3), newRoot: H(flip(R7)), proof: P([L2, L3, R2, N456]) }) === false);
+}
+
+// ---------------------------------------------------------------------------
+// The producing half: root, inclusionProof, consistencyProof.
+//
+// Every expected value below is one of the known-answer constants the verifying
+// vectors above are written against, so the producer is held to a table that
+// predates it. A round-trip alone would not say this much: a producer and a
+// verifier that share a wrong tree geometry agree with each other and with
+// nothing else.
+// ---------------------------------------------------------------------------
+
+var LEAVES = P([L0, L1, L2, L3, L4, L5, L6]);
+
+function hexes(bufs) { return bufs.map(function (b) { return b.toString("hex"); }).join(","); }
+
+// [id, treeSize, expected root]
+var ROOT_KAT = [
+  ["root-n0", 0, EMPTY], ["root-n1", 1, L0], ["root-n2", 2, R2], ["root-n3", 3, R3],
+  ["root-n4", 4, R4], ["root-n5", 5, R5], ["root-n6", 6, R6], ["root-n7", 7, R7],
+];
+
+function testRootKats() {
+  ROOT_KAT.forEach(function (v) {
+    check("root " + v[0] + " reproduces the known-answer root",
+      pki.merkle.root(LEAVES.slice(0, v[1])).toString("hex") === v[2]);
+  });
+  check("root of the empty tree is emptyRootHash()",
+    pki.merkle.root([]).toString("hex") === pki.merkle.emptyRootHash().toString("hex"));
+  check("root of one leaf is that leaf, with no interior hashing",
+    pki.merkle.root([H(L3)]).toString("hex") === L3);
+}
+
+// The producer must emit the exact audit path each verifying vector carries.
+function testProduceInclusion() {
+  INCLUSION_ACCEPT.forEach(function (v) {
+    var produced = pki.merkle.inclusionProof({ leafHashes: LEAVES.slice(0, v[2]), leafIndex: v[1] });
+    check("inclusionProof " + v[0] + " reproduces the known-answer path",
+      hexes(produced) === v[4].join(","));
+  });
+}
+
+function testProduceConsistency() {
+  CONSISTENCY_ACCEPT.forEach(function (v) {
+    var produced = pki.merkle.consistencyProof({ leafHashes: LEAVES.slice(0, v[2]), oldSize: v[1] });
+    check("consistencyProof " + v[0] + " reproduces the known-answer proof",
+      hexes(produced) === v[5].join(","));
+  });
+}
+
+// Geometry the seven-leaf table does not reach: every index of every tree size
+// through 33, which crosses two power-of-two boundaries and every partial-tree
+// shape between them. The counts are asserted, not a ratio, so a loop that
+// produced nothing cannot read as agreement.
+function testProduceRoundTrip() {
+  var m = pki.merkle;
+  var many = [];
+  for (var i = 0; i < 33; i++) many.push(m.leafHash(Buffer.from([i])));
+  var inclOk = 0, inclTotal = 0, consOk = 0, consTotal = 0;
+  for (var n = 1; n <= 33; n++) {
+    var leaves = many.slice(0, n);
+    var rootHash = m.root(leaves);
+    for (var idx = 0; idx < n; idx++) {
+      inclTotal++;
+      if (m.verifyInclusion({
+        leafIndex: idx, treeSize: n, leafHash: leaves[idx],
+        proof: m.inclusionProof({ leafHashes: leaves, leafIndex: idx }), rootHash: rootHash,
+      }) === true) inclOk++;
+    }
+    for (var old = 1; old <= n; old++) {
+      consTotal++;
+      if (m.verifyConsistency({
+        oldSize: old, newSize: n, oldRoot: m.root(leaves.slice(0, old)), newRoot: rootHash,
+        proof: m.consistencyProof({ leafHashes: leaves, oldSize: old }),
+      }) === true) consOk++;
+    }
+  }
+  check("every inclusion proof produced for sizes 1..33 verifies (" + inclOk + "/" + inclTotal + ")",
+    inclOk === inclTotal && inclTotal === 561);
+  check("every consistency proof produced for sizes 1..33 verifies (" + consOk + "/" + consTotal + ")",
+    consOk === consTotal && consTotal === 561);
+}
+
+// A produced proof must be REFUSED when it is offered for a neighboring leaf:
+// a producer that emitted a path independent of the index would still round-trip
+// against itself, so the discrimination is asserted directly.
+function testProducedProofIsIndexBound() {
+  var m = pki.merkle;
+  var rootHash = m.root(LEAVES);
+  var wrong = 0;
+  for (var i = 0; i < 7; i++) {
+    var proof = m.inclusionProof({ leafHashes: LEAVES, leafIndex: i });
+    var other = (i + 1) % 7;
+    var verdict;
+    try {
+      verdict = m.verifyInclusion({
+        leafIndex: other, treeSize: 7, leafHash: LEAVES[other], proof: proof, rootHash: rootHash,
+      });
+    } catch (err) {
+      // A path whose length does not fit the other index is refused on geometry
+      // before any fold, which is also "does not prove this leaf". Any other
+      // throw is recorded as itself so it cannot pass as a refusal.
+      verdict = err.code === "merkle/bad-proof-length" ? false : "THREW " + err.code;
+    }
+    if (verdict === false) wrong++;
+  }
+  check("a path produced for one leaf proves no other leaf (" + wrong + "/7)", wrong === 7);
+}
+
+function testProduceRejects() {
+  var m = pki.merkle;
+  check("rej-root-no-args", code(function () { m.root(); }) === "merkle/bad-input");
+  check("rej-root-not-array", code(function () { m.root("nope"); }) === "merkle/bad-input");
+  check("rej-root-bad-leaf-length", code(function () { m.root([Buffer.alloc(31)]); }) === "merkle/bad-hash-length");
+  check("rej-root-leaf-not-buffer", code(function () { m.root([H(L0), "x"]); }) === "merkle/bad-input");
+  check("rej-root-too-many-leaves", code(function () {
+    m.root(new Array(1048577).fill(H(L0)));
+  }) === "merkle/too-many-leaves");
+
+  check("rej-incl-proof-no-opts", code(function () { m.inclusionProof(); }) === "merkle/bad-input");
+  check("rej-incl-proof-empty-tree", code(function () { m.inclusionProof({ leafHashes: [], leafIndex: 0 }); }) === "merkle/empty-tree");
+  check("rej-incl-proof-index-oob", code(function () { m.inclusionProof({ leafHashes: LEAVES, leafIndex: 7 }); }) === "merkle/index-out-of-range");
+  check("rej-incl-proof-index-negative", code(function () { m.inclusionProof({ leafHashes: LEAVES, leafIndex: -1 }); }) === "merkle/bad-input");
+  // treeSize is not an option here: it is the leaf array's length, so a caller
+  // who passes one is told rather than having the two silently disagree.
+  check("rej-incl-proof-unknown-option", code(function () {
+    m.inclusionProof({ leafHashes: LEAVES, leafIndex: 0, treeSize: 7 });
+  }) === "merkle/bad-input");
+
+  check("rej-cons-proof-no-opts", code(function () { m.consistencyProof(); }) === "merkle/bad-input");
+  check("rej-cons-proof-old-exceeds-new", code(function () { m.consistencyProof({ leafHashes: LEAVES, oldSize: 8 }); }) === "merkle/old-size-exceeds-new");
+  check("rej-cons-proof-old-zero", code(function () { m.consistencyProof({ leafHashes: LEAVES, oldSize: 0 }); }) === "merkle/no-consistency-claim");
+  check("rej-cons-proof-unknown-option", code(function () {
+    m.consistencyProof({ leafHashes: LEAVES, oldSize: 1, newSize: 7 });
+  }) === "merkle/bad-input");
+
+  // The two degenerate proofs the verifier accepts, produced rather than written.
+  check("consistencyProof at equal sizes is the empty proof",
+    m.consistencyProof({ leafHashes: LEAVES, oldSize: 7 }).length === 0);
+  check("the empty-to-empty consistency proof round-trips", m.verifyConsistency({
+    oldSize: 0, newSize: 0, oldRoot: m.root([]), newRoot: m.root([]),
+    proof: m.consistencyProof({ leafHashes: [], oldSize: 0 }),
+  }) === true);
+}
+
+// The caller's array is snapshotted before the fold, so a slot that answers
+// differently on a second read cannot change the tree under the recursion.
+function testProducerSnapshotsItsInput() {
+  var m = pki.merkle;
+  var before = hexes(LEAVES);
+  m.root(LEAVES);
+  m.inclusionProof({ leafHashes: LEAVES, leafIndex: 3 });
+  m.consistencyProof({ leafHashes: LEAVES, oldSize: 3 });
+  check("producing does not mutate the caller's leaf array", hexes(LEAVES) === before);
+
+  var reads = 0;
+  var sneaky = [H(L0), H(L1), H(L2), H(L3)];
+  Object.defineProperty(sneaky, "0", {
+    configurable: true,
+    get: function () { reads++; return reads === 1 ? H(L0) : H(L6); },
+  });
+  var produced = m.root(sneaky);
+  check("a leaf slot is read exactly once (" + reads + ")", reads === 1);
+  check("the fold uses the leaf that was checked", produced.toString("hex") === R4);
 }
 
 // Advertised-surface exercise: every primitive reachable by its full path.
@@ -182,6 +351,9 @@ function testSurface() {
   check("pki.merkle.emptyRootHash is exposed", typeof pki.merkle.emptyRootHash === "function");
   check("pki.merkle.verifyInclusion is exposed", typeof pki.merkle.verifyInclusion === "function");
   check("pki.merkle.verifyConsistency is exposed", typeof pki.merkle.verifyConsistency === "function");
+  check("pki.merkle.root is exposed", typeof pki.merkle.root === "function");
+  check("pki.merkle.inclusionProof is exposed", typeof pki.merkle.inclusionProof === "function");
+  check("pki.merkle.consistencyProof is exposed", typeof pki.merkle.consistencyProof === "function");
 }
 
 function run() {
@@ -190,6 +362,13 @@ function run() {
   testInclusionAccept();
   testConsistencyAccept();
   testRejects();
+  testRootKats();
+  testProduceInclusion();
+  testProduceConsistency();
+  testProduceRoundTrip();
+  testProducedProofIsIndexBound();
+  testProduceRejects();
+  testProducerSnapshotsItsInput();
   console.log("CHECKS " + helpers.getChecks());
 }
 
