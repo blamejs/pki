@@ -753,6 +753,12 @@ async function runPopulatedFormats(f) {
   check("P5b. and the tbsCert form does too, so the two are not indistinguishable reports",
     has(taTbsArm, "Form: tbsCert") && has(taTbsArm, "Subject: CN=A Format CA") &&
     has(taTbsArm, "Subject Public Key Info:") && taTbsArm !== taCertArm);
+  // Both certificate-bearing arms render the anchor's extensions rather than counting them, for the reason
+  // the TrustAnchorInfo arm does: they bound what trusting the anchor means, and a count made a path-limited
+  // anchor read the same as an unlimited one. One rule, every arm.
+  check("P5b2. and both certificate-bearing arms render those extensions, not a count of them",
+    has(taCertArm, "Extensions:") && has(taCertArm, "Basic Constraints") &&
+    has(taTbsArm, "Basic Constraints") && !/Extensions: \d/.test(taCertArm));
   // A PBMAC1 store keeps the parameters that protect it inside its own structure, so a report reading the
   // outer MacData describes nothing: 2048 PBKDF2 iterations rendered as one iteration and an empty salt.
   var p12Pbmac1 = await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: cert }] }] },
