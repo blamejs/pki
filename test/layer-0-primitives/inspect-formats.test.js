@@ -355,8 +355,13 @@ async function runEveryDetectedFormat() {
   check("F2d. pki.inspect.cmp names the body arm and the transaction id",
     has(pki.inspect.cmp(f.cmp), "CMP Message:") && has(pki.inspect.cmp(f.cmp), "Arm: ir") &&
     has(pki.inspect.cmp(f.cmp), "Transaction ID:"));
-  check("F2e. pki.inspect.csrattrs names each requested item",
-    has(pki.inspect.csrattrs(f.csrattrs), "EST CSR Attributes:") && has(pki.inspect.csrattrs(f.csrattrs), "Items: 2"));
+  // The CONSTRAINT a client has to act on is what the parser added beside the raw value, so it is asserted
+  // rather than the count: a request for a 2048-bit key rendered as its four DER bytes told a reader nothing
+  // they could act on, which is the whole purpose of the response.
+  var csrattrsR = pki.inspect.csrattrs(f.csrattrs);
+  check("F2e. pki.inspect.csrattrs names each requested item and the constraint it carries",
+    has(csrattrsR, "EST CSR Attributes:") && has(csrattrsR, "Items: 2") &&
+    has(csrattrsR, "rsaEncryption") && has(csrattrsR, "keySize: 2048"));
   check("F2f. pki.inspect.trustanchor names the anchor form and its key identifier",
     has(pki.inspect.trustanchor(f.trustanchor), "Trust Anchor List:") &&
     has(pki.inspect.trustanchor(f.trustanchor), "Anchors: 1") &&
@@ -744,8 +749,13 @@ async function runPopulatedFormats(f) {
       singleExtensions: { archiveCutoff: NB } }] },
   { cert: cert, key: key }, { nonce: Buffer.alloc(32, 5) });
   var respExtR = pki.inspect.ocspResponse(respExt);
-  check("P7. an OCSP response renders both its per-answer and its response extensions",
-    has(respExtR, "Single Extensions:") && has(respExtR, "Response Extensions:"));
+  // An OCSP-specific extension is decoded by the OCSP parser, not by the certificate extension table the
+  // shared renderer consults, so its decoded value has to be read off the row: an archive cutoff rendered as
+  // a GeneralizedTime's octets is a date a reader cannot use.
+  check("P7. an OCSP response renders both its per-answer and its response extensions, decoded",
+    has(respExtR, "Single Extensions:") && has(respExtR, "Response Extensions:") &&
+    has(respExtR, "ocspArchiveCutoff") && /archiveCutoff: \w\w\w /.test(respExtR) &&
+    !/archiveCutoff[\s\S]{0,40}18:0f/.test(respExtR));
   // An answer stating no window, so the NONE branch runs beside the dated one. The signer DEFAULTS a
   // nextUpdate when one is merely omitted, and `null` is how a caller says there is none.
   var noNext = await pki.ocsp.sign({ responderID: "byName",
