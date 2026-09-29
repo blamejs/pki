@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.8.31",
+  "packageVersion": "0.8.32",
   "surface": {
     "C": {
       "kind": "object",
@@ -270,6 +270,9 @@
               "kind": "number"
             },
             "TLS_CERT_MSG_MAX_BYTES": {
+              "kind": "number"
+            },
+            "TLS_MAX_PEER_CHAIN": {
               "kind": "number"
             },
             "TRUST_MAX_BYTES": {
@@ -1734,6 +1737,9 @@
               "kind": "number"
             },
             "TLS_CERT_MSG_MAX_BYTES": {
+              "kind": "number"
+            },
+            "TLS_MAX_PEER_CHAIN": {
               "kind": "number"
             },
             "TRUST_MAX_BYTES": {
@@ -3907,6 +3913,10 @@
         "https": {
           "kind": "function",
           "arity": 1
+        },
+        "peerChain": {
+          "kind": "function",
+          "arity": 2
         }
       }
     },
@@ -4178,6 +4188,7 @@
     "pki.hpke.seal": "0.2.2",
     "pki.hpke.open": "0.2.2",
     "pki.transport.https": "0.3.16",
+    "pki.transport.peerChain": "0.8.32",
     "pki.identity.match": "0.8.8",
     "pki.inspect.certificate": "0.2.4",
     "pki.inspect.crl": "0.3.8",

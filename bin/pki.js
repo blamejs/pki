@@ -368,7 +368,7 @@ function cmdIssue(args) {
       subject: from.subject,
       subjectPublicKey: from.spki,
       notBefore: now,
-      notAfter: new Date(now.getTime() + days * 86400000),
+      notAfter: new Date(now.getTime() + pki.C.TIME.days(days)),
     };
     if (args.serial) spec.serialNumber = BigInt("0x" + String(args.serial).replace(/^0x/, ""));
     var exts = {};

@@ -397,6 +397,23 @@ security-only patches after the next major releases.
   much of a value it renders rather than whether it renders one, so it is a report
   size control and not a disclosure control. `pki.inspect.any` never routes to it, so
   the guarantee above holds for a report reached by format detection.
+- **A key the tool wrote where anyone could read it.** `pki keygen` is the first
+  verb in this toolkit that puts a private key on disk, and the decisions it makes
+  are inherited by whoever runs it. The key goes to the file `--out` names and
+  never to stdout, because a terminal's scrollback is a copy of the key and so is
+  the shell history of the pipeline it ran in. An existing file is never written
+  over, since a key written over another destroys the only copy of the first; the
+  refusal names the file in the way. The file is created with owner-only
+  permissions in the call that creates it rather than chmod'd afterwards, which
+  would leave a window where it is readable. On Windows Node does not apply the
+  mode argument, measured: a file created with `0600` reports `0666`. The help
+  text says so rather than implying a guarantee the platform does not give, and
+  the conformance vector asserts the claim against what the platform does. The
+  public half goes to a separate `--pub`, so sending a public key does not mean
+  handing over the file that holds the private one. A key path on a command line
+  is visible in the process table to every user on the machine while the process
+  runs; the help text says that too, since a reader who does not know it cannot
+  work around it.
 - **Untyped faults escaping the key boundary.** A `CryptoKey` is opaque, and one
   created by a different WebCrypto implementation is indistinguishable from one
   of this engine's by type, algorithm, and usages while holding its material
