@@ -221,13 +221,907 @@ async function run() {
     await codeOf(Promise.resolve().then(function () { return pki.inspect.cms({ contentType: "1.2.840.113549.1.7.2", contentTypeName: "signedData" }); })) === "inspect/bad-input");
   check("a partial pre-parsed EnvelopedData object (type/name/version but no structural fields) -> inspect/bad-input",
     await codeOf(Promise.resolve().then(function () { return pki.inspect.cms({ contentType: oid.byName("envelopedData"), contentTypeName: "envelopedData", version: 0 }); })) === "inspect/bad-input");
-  // any on an out-of-scope but detectable format (pkcs8) throws inspect/unsupported-format.
-  var pkcs8 = require("node:crypto").generateKeyPairSync("ed25519").privateKey.export({ format: "der", type: "pkcs8" });
-  check("any on an out-of-scope format -> inspect/unsupported-format",
-    await codeOf(Promise.resolve().then(function () { return pki.inspect.any(pkcs8); })) === "inspect/unsupported-format");
+  await runEveryDetectedFormat();
 
   console.log("CHECKS " + helpers.getChecks());
 }
+
+// ---------------------------------------------------------------------------------------------------
+// Every format pki.schema.all() detects reaches a report, and each is reachable BY NAME as well as by
+// detection, because a renderer only detection can reach is a feature an operator cannot ask for.
+//
+// The fixtures are built rather than captured, one per format, because a renderer written against a
+// schema read by eye renders fields the parser does not return. Recipes that cost something to
+// rediscover are noted where they are used.
+// ---------------------------------------------------------------------------------------------------
+
+var NB = new Date("2026-01-01T00:00:00Z"), NA = new Date("2030-01-01T00:00:00Z");
+
+async function buildEveryFormat() {
+  var nodeCrypto = require("node:crypto");
+  var kp = await pki.key.generate("Ed25519");
+  var key = await pki.key.export(kp.privateKey), spki = await pki.key.export(kp.publicKey);
+  var cert = await pki.x509.sign({ subject: "A Format CA", subjectPublicKey: spki, notBefore: NB, notAfter: NA,
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "cRLSign"] } }, { key: key });
+  var keyId = nodeCrypto.createHash("sha1").update(spki).digest();
+  var imprint = { hashAlgorithm: "sha256", hashedMessage: nodeCrypto.createHash("sha256").update("x").digest() };
+  // A TSA certificate needs a CRITICAL timeStamping extendedKeyUsage and a digitalSignature keyUsage,
+  // or pki.tsp.sign refuses to issue under it.
+  var tsaCert = await pki.x509.sign({ subject: "A Format TSA", subjectPublicKey: spki, notBefore: NB, notAfter: NA,
+    extensions: { keyUsage: ["digitalSignature"], extendedKeyUsage: ["timeStamping"], extendedKeyUsageCritical: true } },
+  { cert: cert, key: key });
+  var token = await pki.tsp.sign(imprint, { cert: tsaCert, key: key }, { policy: "1.2.3", serialNumber: 1 });
+
+  return {
+    key: key, spki: spki, cert: cert,
+    x509: cert,
+    crl: await pki.crl.sign({ thisUpdate: NB, nextUpdate: NA, crlNumber: 1n, revoked: [] }, { cert: cert, key: key }),
+    csr: await pki.csr.sign({ subject: "A Format Subject", subjectPublicKey: spki }, { key: key }),
+    cms: await pki.cms.sign(Buffer.from("format probe"), [{ cert: cert, key: key }]),
+    pkcs8: key,
+    // A shrouded key bag so the store carries private key material the report must not print.
+    pkcs12: await pki.pkcs12.build({ safeContents: [{ bags: [
+      { type: "cert", cert: cert },
+      { type: "shroudedKey", key: key, encrypt: { password: "1234" } }] }] },
+    { password: "1234", mac: { algorithm: "hmac", hash: "sha256", iterations: 2048 } }),
+    crmf: await pki.crmf.build({ certReqId: 0, certTemplate: { subject: "A Format Subject",
+      publicKey: spki, validity: { notBefore: NB, notAfter: NA } } }, { key: key }),
+    csrattrs: b.sequence([b.oid("1.2.840.113549.1.9.7"),
+      b.sequence([b.oid("1.2.840.113549.1.1.1"), b.set([b.integer(2048n)])])]),
+    // trustanchor: matches() requires a [1] or [2] tagged member, so a list of bare certificates is
+    // deliberately not claimed by it. The [2] arm is TrustAnchorInfo.
+    trustanchor: b.sequence([b.explicit(2, b.sequence([b.raw(spki), b.octetString(keyId)]))]),
+    "ocsp-request": await pki.ocsp.buildRequest({ cert: cert, issuer: cert }),
+    // The same request with the two optional fields present, so F2g2 can tell an absent field from a
+    // misnamed one.
+    ocspRequestFull: await pki.ocsp.buildRequest({ cert: cert, issuer: cert },
+      // RFC 9654 sec. 2.1 fixes a nonce at 32 to 128 octets.
+      { requestorName: pki.x509.parseDn("CN=A Format Requestor").bytes, nonce: Buffer.alloc(32, 5) }),
+    "ocsp-response": await pki.ocsp.sign({ responderID: "byName",
+      responses: [{ cert: cert, issuer: cert, status: "good", thisUpdate: NB, nextUpdate: NA }] },
+    { cert: cert, key: key }),
+    // A revoked answer: the status is an object whose `revoked` names the time, which is the shape the
+    // parser returns as certStatus.type plus revocationTime and revocationReason.
+    ocspRevoked: await pki.ocsp.sign({ responderID: "byName",
+      responses: [{ cert: cert, issuer: cert, thisUpdate: NB, nextUpdate: NA,
+        status: { revoked: new Date("2027-03-01T00:00:00Z"), revocationReason: "keyCompromise" } }] },
+    { cert: cert, key: key }),
+    // The registry's "tsp" entry detects a TimeStampResp: matches() wants a PKIStatusInfo first child.
+    // A bare token is a CMS ContentInfo and is detected as cms.
+    tsp: pki.tsp.response(token, {}),
+    tspToken: token,
+    attrcert: await pki.attrcert.sign({ holder: { entityName: { directoryName: "CN=Alice" } },
+      notBeforeTime: NB, notAfterTime: NA,
+      attributes: { role: { roleName: { uniformResourceIdentifier: "urn:role:format" } } } },
+    { name: "CN=A Format AA", publicKey: spki, key: key }),
+    cmp: await pki.cmp.build({ header: { sender: { directoryName: "CN=A Format Subject" },
+      recipient: { directoryName: "CN=A Format CA" }, transactionID: Buffer.alloc(16, 7) },
+    body: { ir: { certTemplate: { subject: [{ commonName: "A Format Subject" }], publicKey: spki } } } },
+    { cert: cert, key: key }),
+  };
+}
+
+async function runEveryDetectedFormat() {
+  var f = await buildEveryFormat();
+
+  // The claim, stated once over the whole registry rather than format by format: every name
+  // pki.schema.all() detects routes to a report. The expected set is the registry's own, so a format
+  // added later is a failure here until it has a renderer, which is what makes this the item's guard.
+  var names = pki.schema.all();
+  var unreachable = [], byName = [], mismatched = [];
+  names.forEach(function (n) {
+    if (NO_REPORT_BY_DESIGN[n]) return;
+    var der = f[n];
+    if (der === undefined) { unreachable.push(n + " (no fixture)"); return; }
+    var viaAny;
+    try { viaAny = pki.inspect.any(der); } catch (e) { unreachable.push(n + " -> " + e.code); return; }
+    if (!viaAny || viaAny.length < 10) { unreachable.push(n + " (empty report)"); return; }
+    // Reachable BY NAME too: the verb for this format, found on the shipped namespace rather than
+    // assumed, and rendering the same string as detection did.
+    var verb = INSPECT_VERB_FOR[n];
+    if (!verb || typeof pki.inspect[verb] !== "function") { byName.push(n + " (no verb " + verb + ")"); return; }
+    var viaVerb;
+    try { viaVerb = pki.inspect[verb](der); } catch (e) { byName.push(n + "." + verb + " -> " + e.code); return; }
+    if (viaVerb !== viaAny) mismatched.push(n);
+  });
+  check("F1. every format pki.schema.all() detects reaches a report through any() (" +
+    names.length + " formats, " + Object.keys(NO_REPORT_BY_DESIGN).length +
+    " with no report by design; unreachable: " + (unreachable.join(", ") || "none") + ")",
+    unreachable.length === 0 && names.length === 15);
+  check("F2. and every one is reachable by name, rendering the same report (" +
+    (byName.join(", ") || "all named") + (mismatched.length ? "; differs: " + mismatched.join(", ") : "") + ")",
+    byName.length === 0 && mismatched.length === 0);
+
+  // Each verb named in full, one vector apiece, asserting a field only that format has. F1 and F2 prove
+  // the SET is complete; these prove each report says something true about its own structure, and they
+  // fail readably when one renderer breaks rather than as a list.
+  check("F2a. pki.inspect.pkcs8 names the key algorithm",
+    has(pki.inspect.pkcs8(f.pkcs8), "PKCS#8 Private Key:") && has(pki.inspect.pkcs8(f.pkcs8), "Private Key Algorithm:"));
+  // An AlgorithmIdentifier's PARAMETERS say which curve an EC key is on, and they are public: they describe
+  // the algorithm rather than the key. Without them the report named only `ecPublicKey` and identified no
+  // curve anywhere, which the verb's own documentation promises it does.
+  var ecPkcs8 = require("node:crypto").generateKeyPairSync("ec", { namedCurve: "prime256v1" })
+    .privateKey.export({ format: "der", type: "pkcs8" });
+  var ecR = pki.inspect.pkcs8(ecPkcs8);
+  check("F2a2. and it identifies the curve an EC key is on, without printing the key",
+    has(ecR, "Private Key Algorithm: ecPublicKey") && has(ecR, "Algorithm Parameters: prime256v1") &&
+    !leaks(ecR, pki.schema.pkcs8.parse(ecPkcs8).privateKey));
+  check("F2b. pki.inspect.pkcs12 names the integrity mode and the bags",
+    has(pki.inspect.pkcs12(f.pkcs12), "PKCS#12 Store:") && has(pki.inspect.pkcs12(f.pkcs12), "Integrity Mode:") &&
+    has(pki.inspect.pkcs12(f.pkcs12), "Safe Bags:"));
+  check("F2c. pki.inspect.crmf names the request id and the template subject",
+    has(pki.inspect.crmf(f.crmf), "CRMF Certificate Request Messages:") &&
+    has(pki.inspect.crmf(f.crmf), "Request ID:") && has(pki.inspect.crmf(f.crmf), "A Format Subject"));
+  check("F2d. pki.inspect.cmp names the body arm and the transaction id",
+    has(pki.inspect.cmp(f.cmp), "CMP Message:") && has(pki.inspect.cmp(f.cmp), "Arm: ir") &&
+    has(pki.inspect.cmp(f.cmp), "Transaction ID:"));
+  // The CONSTRAINT a client has to act on is what the parser added beside the raw value, so it is asserted
+  // rather than the count: a request for a 2048-bit key rendered as its four DER bytes told a reader nothing
+  // they could act on, which is the whole purpose of the response.
+  var csrattrsR = pki.inspect.csrattrs(f.csrattrs);
+  check("F2e. pki.inspect.csrattrs names each requested item and the constraint it carries",
+    has(csrattrsR, "EST CSR Attributes:") && has(csrattrsR, "Items: 2") &&
+    has(csrattrsR, "rsaEncryption") && has(csrattrsR, "keySize: 2048"));
+  check("F2f. pki.inspect.trustanchor names the anchor form and its key identifier",
+    has(pki.inspect.trustanchor(f.trustanchor), "Trust Anchor List:") &&
+    has(pki.inspect.trustanchor(f.trustanchor), "Anchors: 1") &&
+    has(pki.inspect.trustanchor(f.trustanchor), "Key Identifier:"));
+  check("F2g. pki.inspect.ocspRequest names the CertID hash algorithm and the serial",
+    has(pki.inspect.ocspRequest(f["ocsp-request"]), "OCSP Request:") &&
+    has(pki.inspect.ocspRequest(f["ocsp-request"]), "Issuer Key Hash:") &&
+    has(pki.inspect.ocspRequest(f["ocsp-request"]), "Serial Number:"));
+  // A field a report calls absent has to be absent, not misnamed: the bare request above prints
+  // "(none)" for its requestor name and its extensions, so the populated request is rendered too and
+  // both must carry values. A wrong field name reads exactly like an absent optional field, and this is
+  // the difference between the two.
+  var bare = pki.inspect.ocspRequest(f["ocsp-request"]);
+  var full = pki.inspect.ocspRequest(f.ocspRequestFull);
+  check("F2g2. and a requestor name and a nonce render as values where the bare request says (none)",
+    has(bare, "Requestor Name: (none)") && has(bare, "Request Extensions: (none)") &&
+    !has(full, "Requestor Name: (none)") && has(full, "A Format Requestor") &&
+    !has(full, "Request Extensions: (none)") && has(full, "Nonce"));
+  check("F2h. pki.inspect.ocspResponse names the response status and the certificate status",
+    has(pki.inspect.ocspResponse(f["ocsp-response"]), "OCSP Response:") &&
+    has(pki.inspect.ocspResponse(f["ocsp-response"]), "Response Status:") &&
+    has(pki.inspect.ocspResponse(f["ocsp-response"]), "Cert Status: good"));
+  // A revoked answer carries two fields a good one does not, and reading the status as "unknown" is what
+  // a wrong field name looks like, so the revoked arm is its own vector rather than assumed to follow.
+  var revR = pki.inspect.ocspResponse(f.ocspRevoked);
+  check("F2h2. and a revoked answer carries its revocation time and reason",
+    has(revR, "Cert Status: revoked") && has(revR, "Revocation Time:") &&
+    has(revR, "Revocation Reason: keyCompromise") && !has(revR, "Cert Status: unknown"));
+  check("F2i. pki.inspect.tsp names the status and the message imprint",
+    has(pki.inspect.tsp(f.tsp), "Timestamp Response:") && has(pki.inspect.tsp(f.tsp), "Message Imprint:"));
+  // The attributes are what an attribute certificate exists to assert, so the DECODED value is asserted and
+  // not just the label: the parser decodes a role to the name it grants, and a report showing the bytes it
+  // decoded from tells a reader nothing they can act on.
+  var acReport = pki.inspect.attrcert(f.attrcert);
+  check("F2j. pki.inspect.attrcert names the holder and the decoded attributes it asserts",
+    has(acReport, "Attribute Certificate:") && has(acReport, "Holder:") && has(acReport, "Attributes:") &&
+    has(acReport, "roleName: URI:urn:role:format") && !/role:\n\s+30:/.test(acReport));
+  // The same for an extension the certificate decoders do not know: the attribute-certificate parser decoded
+  // it, and without reading that the report hex-dumped the bytes it had already decoded.
+  var acExt = await pki.attrcert.sign({ holder: { entityName: { directoryName: "CN=Alice" } },
+    notBeforeTime: NB, notAfterTime: NA, extensions: { noRevAvail: true },
+    attributes: { role: { roleName: { uniformResourceIdentifier: "urn:role:ext" } } } },
+  { name: "CN=A Format AA", publicKey: f.spki, key: f.key });
+  check("F2k. and an extension its own parser decoded renders decoded, not as its bytes",
+    has(pki.inspect.attrcert(acExt), "noRevAvail: true") &&
+    !/noRevAvail:\n\s+05:00/.test(pki.inspect.attrcert(acExt)));
+  // A decoded record that is NOT a name has to render as its own fields. Asked of every value, the name
+  // renderer answers a non-name with a truthy placeholder, and that answer stood in for the record: a group
+  // attribute rendered as that placeholder instead of the memberships it grants.
+  var acGroup = await pki.attrcert.sign({ holder: { entityName: { directoryName: "CN=Alice" } },
+    notBeforeTime: NB, notAfterTime: NA, attributes: { group: { values: [{ string: "admins" }] } } },
+  { name: "CN=A Format AA", publicKey: f.spki, key: f.key });
+  var groupR = pki.inspect.attrcert(acGroup);
+  check("F2l. and a decoded record that is not a name renders its own fields",
+    has(groupR, "admins") && !has(groupR, "tagundefined"));
+
+  // ---- the one security decision: a report never prints private key material ----
+  // Asserted by searching the rendered text for a byte run of the key itself, in the encodings a
+  // renderer could plausibly emit, rather than by reading the renderer and believing it.
+  var privInner = pki.schema.pkcs8.parse(f.pkcs8).privateKey;
+  // The report is FLATTENED before the search, because these renderers wrap a long byte run across lines with
+  // colons and an indent: a contiguous search for the hex could not see a key the report had printed, so the
+  // check passed while the bytes were on the page. Base64 is searched as written, since nothing wraps it.
+  function leaks(report, secret) {
+    if (!Buffer.isBuffer(secret) || !secret.length) return false;
+    var flat = report.split("").filter(function (ch) {
+      return ch !== " " && ch !== ":" && ch !== "\n" && ch !== "\r" && ch !== "\t";
+    }).join("");
+    return flat.indexOf(secret.toString("hex")) !== -1 ||
+      report.indexOf(secret.toString("base64")) !== -1;
+  }
+  var p8 = pki.inspect.pkcs8(f.pkcs8);
+  check("F3. a PKCS#8 report names the algorithm and does NOT carry the private key bytes",
+    has(p8, "Ed25519") && !leaks(p8, privInner) && !leaks(p8, f.pkcs8));
+  // The parser checks that an RFC 5958 v2 OneAsymmetricKey HAS a public half, not that the half corresponds
+  // to the private key. So a file can carry the private bytes in the publicKey BIT STRING, and a report that
+  // prints the public half verbatim then writes the private key into wherever the report goes. That is the
+  // one guarantee this release makes, so the overlapping half is not rendered at all.
+  var secret = Buffer.from("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "hex");
+  var forgedPkcs8 = b.sequence([b.integer(1n), b.sequence([b.oid("1.3.101.112")]),
+    b.octetString(secret), b.implicit(1, b.bitString(secret, 0))]);
+  var forgedR = pki.inspect.pkcs8(forgedPkcs8);
+  check("F3b. and a public half that carries the private bytes is not rendered at all",
+    !leaks(forgedR, secret) && has(forgedR, "Private Key: present") &&
+    has(forgedR, "Ed25519"));
+  // The private bytes can be placed where a comparison does not see them, which is why the rule is structural
+  // rather than a screen. An Ed25519 privateKey OCTET STRING holds `04 20 || seed`, so a public half carrying
+  // the seed ALONE matches neither direction of a whole-buffer compare against the wrapped value.
+  var wrapped = b.sequence([b.integer(1n), b.sequence([b.oid("1.3.101.112")]),
+    b.octetString(b.octetString(secret)), b.implicit(1, b.bitString(secret, 0))]);
+  check("F3c. including a half carrying only the seed inside an algorithm-wrapped private key",
+    !leaks(pki.inspect.pkcs8(wrapped), secret));
+  // And an attribute is structurally valid whatever it holds, so one carrying a copy of the private key would
+  // print it through the attribute renderer. No value from inside the file is rendered, only its type.
+  var attrLeak = b.sequence([b.integer(0n), b.sequence([b.oid("1.3.101.112")]), b.octetString(secret),
+    b.implicit(0, b.set([b.sequence([b.oid("1.3.6.1.4.1.99999.8"), b.set([b.octetString(secret)])])]))]);
+  var attrR = pki.inspect.pkcs8(attrLeak);
+  check("F3d. and an attribute whose value copies the private key is named, never rendered",
+    !leaks(attrR, secret) && has(attrR, "1.3.6.1.4.1.99999.8") && has(attrR, "not rendered"));
+  // Every byte run a report on a key-bearing file emits is a channel, because the file's author chooses what
+  // sits there. An unknown algorithm's PARAMETERS are such a place, so they are named or withheld, never
+  // dumped: an OCTET STRING there can hold the key and the parser has no reason to refuse it.
+  var paramLeak = b.sequence([b.integer(0n),
+    b.sequence([b.oid("1.3.6.1.4.1.99999.9"), b.octetString(secret)]), b.octetString(secret)]);
+  var paramR = pki.inspect.pkcs8(paramLeak);
+  check("F3e. and an unknown algorithm's parameters are named or withheld, never dumped",
+    !leaks(paramR, secret) && has(paramR, "Algorithm Parameters: present") && has(paramR, "not rendered"));
+  // A PKCS#12 MAC salt is caller-supplied, so a store can carry the key bytes there. Its LENGTH is what says
+  // anything about the protection, so that is what the report gives.
+  var saltLeak = pki.inspect.pkcs12(await pki.pkcs12.build(
+    { safeContents: [{ bags: [{ type: "cert", cert: f.cert }] }] },
+    { password: "1234", mac: { salt: secret } }));
+  check("F3f. and a PKCS#12 MAC salt is reported by length, never by value",
+    !leaks(saltLeak, secret) && /Salt: \d+ bytes \(not rendered\)/.test(saltLeak));
+  // The registry refuses a type that is not a dotted identifier with its own code, which is not this verb's
+  // contract, so an attribute carrying any other value prints as itself rather than faulting the report.
+  var badTypeCode = "NO-THROW";
+  try {
+    pki.inspect.pkcs8({ version: 0, privateKeyAlgorithm: { oid: "1.3.101.112" },
+      privateKey: Buffer.alloc(4), attributes: [{ type: "bad", values: [] }] });
+  } catch (e) { badTypeCode = (e && e.code) || ("RAW:" + e.constructor.name); }
+  check("F3g. and an attribute whose type is not an identifier does not fault the report (" + badTypeCode + ")",
+    badTypeCode === "NO-THROW" || badTypeCode === "inspect/bad-input");
+  var p12 = pki.inspect.pkcs12(f.pkcs12);
+  check("F4. a PKCS#12 report does NOT carry the private key bytes",
+    p12.length > 40 && !leaks(p12, privInner));
+  // A password-protected store cannot be opened by a verb that takes no password, so the report says
+  // what opening it needs. A report that silently showed nothing would read as an empty file.
+  check("F5. a PKCS#12 report shows its MAC and says what opening the contents needs",
+    has(p12, "MAC") && has(p12, "pki.pkcs12.open"));
+  // The report SAYS which bags hold a private key, and the statement is asserted rather than assumed: a
+  // parsed bag reports itself by its ASN.1 name, so a marker keyed on the builder's shorthand never fired.
+  check("F5b. and it marks the bags that hold a private key, by the name a parsed bag reports",
+    /pkcs8ShroudedKeyBag {2}\(private key, not rendered\)/.test(p12) && has(p12, "certBag"));
+  // A safeContentsBag holds further bags, and reporting only the container made a container of keys and
+  // certificates read the same as an empty one. The no-key-material rule carries into the nested level.
+  var nestedP12 = await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "safeContents",
+    nested: [{ type: "cert", cert: f.cert }, { type: "shroudedKey", key: f.key, encrypt: { password: "1234" } }] }] }] },
+  { password: "1234" });
+  var nestedR = pki.inspect.pkcs12(nestedP12);
+  check("F5c. and a container's nested bags are inventoried, still without rendering key material",
+    has(nestedR, "safeContentsBag  (2 nested)") && has(nestedR, "certBag") &&
+    /pkcs8ShroudedKeyBag {2}\(private key, not rendered\)/.test(nestedR) &&
+    !leaks(nestedR, pki.schema.pkcs8.parse(f.key).privateKey));
+
+  // ---- each new verb refuses the wrong format with its own typed code, as the four do ----
+  var wrong = f.cert;
+  var refusals = [];
+  Object.keys(INSPECT_VERB_FOR).forEach(function (n) {
+    var verb = INSPECT_VERB_FOR[n];
+    if (n === "x509" || typeof pki.inspect[verb] !== "function") return;
+    var code = "NO-THROW";
+    try { pki.inspect[verb](wrong); } catch (e) { code = (e && e.code) || "RAW"; }
+    if (code === "NO-THROW" || code.indexOf("inspect/") !== 0) refusals.push(verb + " -> " + code);
+  });
+  check("F6. every format verb refuses a certificate with its own inspect/ code (" +
+    (refusals.join(", ") || "all refuse") + ")", refusals.length === 0);
+
+  // A door that admits a caller's object on the strength of its MARKER and not its structure hands the
+  // renderer a shape it will fault on, and an untyped TypeError is not the typed refusal every one of these
+  // verbs documents. Each object below satisfies the marker its door selects on and carries nothing under it.
+  var markerOnly = [
+    ["pkcs8", { version: 1, privateKeyAlgorithm: {}, privateKey: Buffer.alloc(1) }],
+    ["pkcs12", { version: 3, integrityMode: "password", safeBags: [{}] }],
+    ["crmf", { messages: [{}] }],
+    ["crmf", { messages: [] }],
+    ["cmp", { header: {}, body: {} }],
+    ["csrattrs", { items: 7 }],
+    ["csrattrs", { items: [null] }],
+    ["csrattrs", { items: [{}] }],
+    ["csrattrs", { items: [{ kind: "attribute", values: "nope" }] }],
+    ["trustanchor", { anchors: [{}] }],
+    ["trustanchor", { anchors: [{ kind: "certificate" }] }],
+    ["ocspRequest", { version: 1, requestList: [{}], tbsRequestBytes: Buffer.alloc(1) }],
+    ["ocspResponse", { responseStatus: { code: 0, name: "successful" },
+      basicResponse: { version: 1, responderID: {}, responses: [{}] } }],
+    ["tsp", { status: 0, timeStampToken: {} }],
+    ["tsp", { status: 2, timeStampToken: null, failInfo: { bits: "badRequest" } }],
+    ["tsp", { status: 2, timeStampToken: null, failInfo: 7 }],
+    ["attrcert", { version: 2, holder: {}, attributes: [{}], signatureAlgorithm: {} }],
+  ];
+  var untyped = [];
+  markerOnly.forEach(function (row) {
+    var code = "NO-THROW";
+    try { pki.inspect[row[0]](row[1]); } catch (e) { code = (e && e.code) || ("RAW:" + e.constructor.name); }
+    if (code !== "inspect/bad-input") untyped.push(row[0] + " -> " + code);
+  });
+  check("F6b. and an object carrying only a door's marker is refused typed, never faulted on (" +
+    (untyped.join(", ") || "all typed") + ")", untyped.length === 0);
+
+  // The same contract one level deeper, and enumerated rather than sampled: take a REAL parsed object, set
+  // each of its members in turn to each of seven wrong values, and drive the verb. Every result has to be a
+  // rendered report or `inspect/bad-input`; an untyped fault is neither, and it is what `x && x.length` on a
+  // string and `(x || []).forEach` on a truthy non-array produced at fourteen separate members before the
+  // shared `_list` and `_obj` readers replaced them. Three review rounds found this class one member at a
+  // time, which is why it is driven exhaustively here.
+  var WRONG = [null, undefined, 7, "x", true, {}, []];
+  function memberPaths(o, at, acc, left) {
+    if (o === null || typeof o !== "object" || Buffer.isBuffer(o) || o instanceof Date) return acc;
+    var keys = Array.isArray(o) ? o.map(function (_, i) { return String(i); }) : Object.keys(o);
+    keys.forEach(function (k) {
+      var p = at.concat([k]);
+      acc.push(p);
+      if (left > 0) memberPaths(o[k], p, acc, left - 1);
+    });
+    return acc;
+  }
+  function deepCopy(v) {
+    if (v === null || typeof v !== "object") return v;
+    if (Buffer.isBuffer(v)) return Buffer.from(v);
+    if (v instanceof Date) return new Date(v.getTime());
+    if (Array.isArray(v)) return v.map(deepCopy);
+    var o = {};
+    Object.keys(v).forEach(function (k) { o[k] = deepCopy(v[k]); });
+    return o;
+  }
+  var CORRUPT_CASES = [["pkcs8", f.pkcs8], ["pkcs12", f.pkcs12], ["crmf", f.crmf], ["cmp", f.cmp],
+    ["csrattrs", f.csrattrs], ["trustanchor", f.trustanchor], ["ocspRequest", f["ocsp-request"]],
+    ["ocspResponse", f["ocsp-response"]], ["tsp", f.tsp], ["attrcert", f.attrcert],
+    // The ARMS as well as the base shape, because a member only one arm carries is never walked on another:
+    // a granted timestamp response has failInfo null, so corrupting the granted one never reached
+    // failInfo.bits and left that path unproven.
+    ["tsp", pki.tsp.response(null, { status: 2, statusString: "no", failInfo: ["badRequest"] })],
+    ["trustanchor", b.sequence([b.raw(f.cert)])],
+    ["ocspResponse", f.ocspRevoked]];
+  var PARSE_FOR = { pkcs8: pki.schema.pkcs8.parse, pkcs12: pki.schema.pkcs12.parse,
+    crmf: pki.schema.crmf.parse, cmp: pki.schema.cmp.parse, csrattrs: pki.schema.csrattrs.parse,
+    trustanchor: pki.schema.trustanchor.parse, ocspRequest: pki.schema.ocsp.parseRequest,
+    ocspResponse: pki.schema.ocsp.parseResponse, tsp: pki.schema.tsp.parseResponse,
+    attrcert: pki.schema.attrcert.parse };
+  var faulted = [], drivenCount = 0;
+  CORRUPT_CASES.forEach(function (row) {
+    var verb = row[0], parsed = PARSE_FOR[verb](row[1]);
+    memberPaths(parsed, [], [], 3).forEach(function (p) {
+      WRONG.forEach(function (bad) {
+        var copy = deepCopy(parsed), cur = copy;
+        for (var i = 0; i < p.length - 1; i++) cur = cur[p[i]];
+        if (cur === null || typeof cur !== "object") return;
+        cur[p[p.length - 1]] = bad;
+        drivenCount += 1;
+        try { pki.inspect[verb](copy); }
+        catch (e) {
+          if ((e && e.code) !== "inspect/bad-input") {
+            var at = verb + "." + p.join(".") + " -> " + ((e && e.code) || e.constructor.name);
+            if (faulted.indexOf(at) === -1) faulted.push(at);
+          }
+        }
+      });
+    });
+  });
+  check("F6c. no member of a parsed object, set to any wrong value, makes a report fault untyped (" +
+    drivenCount + " driven; " + (faulted.slice(0, 4).join(", ") || "none fault") + ")",
+  drivenCount > 1000 && faulted.length === 0);
+
+  // A timestamp TOKEN is a CMS ContentInfo, so it is detected as cms and rendered by that report. The
+  // tsp report is for the RESPONSE wrapper, and the two are different artifacts.
+  check("F7. a bare timestamp token renders as CMS, while the response wrapper renders as a timestamp",
+    pki.inspect.any(f.tspToken).split("\n")[0] === "CMS ContentInfo:" &&
+    pki.inspect.any(f.tsp).split("\n")[0] !== "CMS ContentInfo:");
+  check("F8. the timestamp response report carries its status and the TSTInfo inside the token",
+    has(pki.inspect.tsp(f.tsp), "Status") && has(pki.inspect.tsp(f.tsp), "1.2.3"));
+
+  // The CMS report's non-SignedData arm reads four other content types, and no vector had ever driven it:
+  // every CMS report in this suite was a SignedData, so the whole branch was unexercised and a report
+  // that named the wrong field for any of them would have said nothing wrong out loud.
+  // A key-encryption-key recipient, because the Ed25519 certificate above is signature-only and cannot
+  // be a CMS encryption recipient; the arm under test is the report's, not the key agreement's.
+  var env = await pki.cms.encrypt(Buffer.from("enveloped"),
+    [{ kek: Buffer.alloc(16, 3), kekId: Buffer.from("format-kek") }],
+    { contentEncryptionAlgorithm: "aes-128-cbc" });
+  var envR = pki.inspect.cms(env);
+  check("F11. an EnvelopedData report names its recipients and the content encryption algorithm",
+    has(envR, "envelopedData") && has(envR, "RecipientInfo:") && has(envR, "Content Encryption Algorithm:"));
+  var mac = await pki.cms.authenticate(Buffer.from("authenticated"), [{ password: "s3cret" }], {});
+  var macR = pki.inspect.cms(mac);
+  // The registry's name for RFC 5652 AuthenticatedData is `authData`, which is what the report prints.
+  check("F12. an AuthenticatedData report names its MAC algorithm",
+    has(macR, "authData") && has(macR, "MAC Algorithm: hmacWithSHA256"));
+  var comp = await pki.cms.compress(Buffer.from("compressed compressed compressed"));
+  var compR = pki.inspect.cms(comp);
+  check("F13. a CompressedData report names its compression algorithm",
+    has(compR, "compressedData") && has(compR, "Compression Algorithm:"));
+  var dig = await pki.cms.digest(Buffer.from("digested"));
+  check("F14. a DigestedData report renders its outer content type without throwing",
+    has(pki.inspect.cms(dig), "digestedData"));
+
+  await runPopulatedFormats(f);
+
+  // renderedExtensions answers a different question and this item does not touch it.
+  check("F9. renderedExtensions still lists extension renderers, not formats",
+    pki.inspect.renderedExtensions.indexOf("subjectAltName") !== -1 &&
+    pki.inspect.renderedExtensions.indexOf("pkcs12") === -1);
+
+  // An X.509-1997 attribute certificate owes a refusal rather than a report, and the refusal has to say
+  // WHICH form the reader is holding: "inspect does not support this format" sends an operator looking
+  // for a missing feature, where the truth is that the form is obsolete and this build will not parse
+  // it. The fixture matches the v1 detector: an acinfo of six children whose first is a [0]/[1] with
+  // children and whose second is a SEQUENCE.
+  var v1Acinfo = b.sequence([b.explicit(0, b.sequence([b.raw(nameDer("v1 holder"))])), b.sequence([b.raw(nameDer("v1 issuer"))]),
+    algId(), b.integer(1n), b.sequence([utc("2026-01-01T00:00:00Z"), utc("2027-01-01T00:00:00Z")]), b.sequence([])]);
+  var v1Der = b.sequence([v1Acinfo, algId(), b.bitString(Buffer.alloc(64, 0xff), 0)]);
+  var v1Code = "NO-THROW", v1Msg = "";
+  try { pki.inspect.any(v1Der); } catch (e) { v1Code = (e && e.code) || "RAW"; v1Msg = (e && e.message) || ""; }
+  check("F10. a v1 attribute certificate is refused by what it IS, not as an unsupported format (" +
+    v1Code + ")",
+  v1Code !== "NO-THROW" && v1Code !== "inspect/unsupported-format" &&
+    /v1|1997|obsolete/i.test(v1Msg + v1Code));
+}
+
+// ---------------------------------------------------------------------------------------------------
+// The fixtures above are minimal, so they drive the "field absent" half of every optional field a report
+// renders. These drive the other half: a structure carrying the fields, so the branch that prints a value
+// runs and a renderer reading the wrong field name is caught by the value not appearing. An absent field
+// and a misnamed one look identical in a minimal fixture, which is what makes this pass worth its length.
+// ---------------------------------------------------------------------------------------------------
+
+async function runPopulatedFormats(f) {
+  var key = f.key, spki = f.spki, cert = f.cert;
+
+  // PKCS#12 carrying an ENCRYPTED safe beside a plaintext one, so the encrypted-safes loop runs and the
+  // report names the encryption algorithm without decrypting it.
+  var p12Enc = await pki.pkcs12.build({ safeContents: [
+    { bags: [{ type: "cert", cert: cert }] },
+    { encrypt: { password: "1234" }, bags: [{ type: "cert", cert: cert }] }] },
+  { password: "1234", mac: { algorithm: "hmac", hash: "sha256", iterations: 4096 } });
+  var encR = pki.inspect.pkcs12(p12Enc);
+  // The ALGORITHM is the point of that line, so it is asserted by name: an encrypted safe is a CMS
+  // EncryptedData and the algorithm sits on its encryptedContentInfo, so reading it off the safe reported
+  // every encrypted store as "unknown" while the line itself still rendered.
+  check("P1. a PKCS#12 with an encrypted safe names the algorithm and says it is not decrypted",
+    has(encR, "Encrypted Safes: 1") && has(encR, "(not decrypted)") && has(encR, "Iterations: 4096") &&
+    /Encrypted Safes: 1\n\s+\[0\] encryptedData: pbes2/.test(encR) && !has(encR, "] unknown"));
+  // WHICH credential opens the contents, because naming the wrong one sends an operator looking for
+  // something the store does not want. RFC 7292 sec. 4.1's public-key privacy is an EnvelopedData opened with
+  // a recipient key, and pki.pkcs12.open refuses it with pkcs12/no-recipient-key rather than asking for a
+  // password, so a report telling its reader to find the password is telling them the wrong thing.
+  var rsa = require("node:crypto").generateKeyPairSync("rsa", { modulusLength: 2048 });
+  var rcpt = await pki.x509.sign({ subject: "A Recipient", notBefore: NB, notAfter: NA,
+    subjectPublicKey: rsa.publicKey.export({ format: "der", type: "spki" }),
+    extensions: { keyUsage: ["keyEncipherment"] } },
+  { key: rsa.privateKey.export({ format: "der", type: "pkcs8" }) });
+  var envR = pki.inspect.pkcs12(await pki.pkcs12.build(
+    { safeContents: [{ recipients: [{ cert: rcpt }], bags: [{ type: "cert", cert: rcpt }] }] },
+    { password: "1234" }));
+  check("P1b. an enveloped safe is named as one, and the report asks for a recipient key, not a password",
+    has(envR, "envelopedData:") && has(envR, "opts.recipientKey") &&
+    !/needs the password\./.test(envR) && has(encR, "needs the password."));
+  // And the guidance follows what the store IS rather than whether it has encrypted safes: a MAC-less store
+  // of plaintext bags wants opts.allowUnauthenticated, not a password, and telling its reader to find one
+  // sends them after something the store does not have.
+  var noMacR = pki.inspect.pkcs12(await pki.pkcs12.build(
+    { safeContents: [{ bags: [{ type: "cert", cert: f.cert }] }] }, { mac: false }));
+  check("P1c. a MAC-less store asks for opts.allowUnauthenticated rather than a password",
+    has(noMacR, "Integrity Mode: none") && has(noMacR, "opts.allowUnauthenticated") &&
+    !has(noMacR, "needs the password."));
+  // A store can want a credential AND be unauthenticated, and pki.pkcs12.open checks both: a MAC-less store
+  // holding a shrouded key needs the password for the key and the opt for the missing MAC. Offered as
+  // alternatives, the opt went unmentioned for exactly the stores that need both.
+  var bothR = pki.inspect.pkcs12(await pki.pkcs12.build(
+    { safeContents: [{ bags: [{ type: "shroudedKey", key: f.key, encrypt: { password: "1234" } }] }] },
+    { mac: false }));
+  check("P1d. and a MAC-less store holding a shrouded key names both credentials",
+    has(bothR, "the password and opts.allowUnauthenticated"));
+  // A public-key-integrity store is verified against the signer's certificate, and its SignedData may carry
+  // none: then the certificate has to be supplied and opening fails without it, so a report naming only the
+  // privacy credentials leaves out a required input. The shipped builder always embeds the certificate, so
+  // the fixture is a store whose SignedData has its [0] certificates field spliced out, which is a shape a
+  // third-party store legitimately has.
+  var signedStore = await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: f.cert }] }] },
+    { integrity: { mode: "public-key", signer: { cert: f.cert, key: f.key } } });
+  var pfxNode = pki.asn1.decode(signedStore);
+  var ciNode = pfxNode.children[1];
+  var sdNode = ciNode.children[1].children[0];
+  var noCerts = b.sequence([b.raw(pfxNode.children[0].bytes),
+    b.sequence([b.raw(ciNode.children[0].bytes), b.explicit(0, b.sequence(
+      sdNode.children.filter(function (k) { return !(k.tagClass === "context" && k.tagNumber === 0); })
+        .map(function (k) { return b.raw(k.bytes); })))])]);
+  var signedR = pki.inspect.pkcs12(signedStore), noCertsR = pki.inspect.pkcs12(noCerts);
+  check("P1e. a public-key-integrity store carrying no signer certificate says opts.signerCerts is needed",
+    has(noCertsR, "opts.signerCerts") && has(signedR, "it needs no password") &&
+    !has(signedR, "opts.signerCerts"));
+  // Counting the certificates answers the wrong question: a store can embed a chain certificate while leaving
+  // the SIGNER's own out, and verification needs the one that matches the signer. The embedded certificate is
+  // replaced with an unrelated one, so the count stays at one while nothing matches.
+  var otherCert = await pki.x509.sign({ subject: "An Unrelated Certificate", subjectPublicKey: f.spki,
+    notBefore: NB, notAfter: NA }, { key: f.key }, { profile: "none" });
+  var swapped = b.sequence([b.raw(pfxNode.children[0].bytes),
+    b.sequence([b.raw(ciNode.children[0].bytes), b.explicit(0, b.sequence(
+      sdNode.children.map(function (k) {
+        return (k.tagClass === "context" && k.tagNumber === 0)
+          ? b.explicit(0, b.raw(otherCert)) : b.raw(k.bytes);
+      })))])]);
+  var swappedR = pki.inspect.pkcs12(swapped);
+  check("P1f. and one embedding a certificate that does not match its signer says so too",
+    pki.schema.pkcs12.parse(swapped).authSafeSigned.certificates.length === 1 &&
+    has(swappedR, "opts.signerCerts"));
+  // Two encodings of one name are one name, so the match is the RFC 5280 sec. 7.1 canonical comparison through
+  // the shared home. The signer identifier here names `CN=signer` where the embedded certificate's issuer is
+  // `CN=Signer`: canonically the same, byte-different, and compared as bytes the report would ask for a
+  // certificate the store already has.
+  var siSet = sdNode.children[sdNode.children.length - 1];
+  var si = siSet.children[0];
+  var signerIssuerDn = pki.schema.x509.parse(f.cert).issuer.dn;
+  var lowerSid = b.sequence([b.raw(pki.x509.parseDn(signerIssuerDn.toLowerCase()).bytes),
+    b.raw(si.children[1].children[1].bytes)]);
+  var sdKids = sdNode.children.slice();
+  sdKids[sdKids.length - 1] = b.set([b.sequence(si.children.map(function (k, i) {
+    return i === 1 ? lowerSid : b.raw(k.bytes);
+  }))]);
+  var caseOnly = b.sequence([b.raw(pfxNode.children[0].bytes),
+    b.sequence([b.raw(ciNode.children[0].bytes), b.explicit(0, b.sequence(sdKids.map(function (k, i) {
+      return i === sdKids.length - 1 ? k : b.raw(k.bytes);
+    })))])]);
+  var caseR = pki.inspect.pkcs12(caseOnly);
+  // The signer identifier's name now differs from the certificate's issuer in case, which is a byte difference
+  // and not a name difference, so the canonical comparison matches them and no certificate is asked for.
+  var caseSidDn = pki.schema.pkcs12.parse(caseOnly).authSafeSigned.signerInfos[0].sid.issuer.dn;
+  check("P1g. and a signer named by a canonically equal encoding still counts as matched (" + caseSidDn + ")",
+    caseSidDn !== signerIssuerDn && caseSidDn.toLowerCase() === signerIssuerDn.toLowerCase() &&
+    !has(caseR, "opts.signerCerts"));
+
+  // A CRMF template carrying every optional field the report reads.
+  // A serialNumber is only a field of a REVOCATION template (crmf-sign's REVOCATION_TEMPLATE_KEYS), so a
+  // certificate request cannot carry one and the report's serial line is reached by the revocation form.
+  // RFC 4211 sec. 5: a supplied certTemplate version is the DER value 2, which names v3.
+  var crmfFull = await pki.crmf.build({ certReqId: 7, certTemplate: { version: 2,
+    issuer: [{ commonName: "A Populated Issuer" }], subject: [{ commonName: "A Populated Subject" }],
+    publicKey: spki, validity: { notBefore: NB, notAfter: NA },
+    extensions: { subjectAltName: [{ dNSName: "populated.example" }] } } }, { key: key });
+  var crmfR = pki.inspect.crmf(crmfFull);
+  // The proof of possession names its FORM: a key whose holder proved possession by signing and one an RA
+  // vouched for are different assurances, and "present" said which of them had happened for neither.
+  check("P2. a populated CRMF report carries the issuer, validity, extensions and the proof form",
+    has(crmfR, "Request ID: 7") && has(crmfR, "A Populated Issuer") &&
+    has(crmfR, "Not Before") && has(crmfR, "Requested Extensions:") && has(crmfR, "populated.example") &&
+    has(crmfR, "Proof of Possession: signature"));
+  // RFC 4211 sec. 5 carries the DER value, so 2 names v3 exactly as a certificate's version does. Printed
+  // raw it told an operator the template asks for v2, the opposite of what it asks for, and the certificate
+  // report beside it writes the same number the other way.
+  check("P2b. and a template version is labeled by what it means, as the certificate report labels it",
+    has(crmfR, "Version: 3 (0x2)") && !/Version: 2$/m.test(crmfR));
+  // The door admits a parsed object only when it carries the structure the report reads. Checking only that
+  // `messages` was an array admitted a caller's own object and the renderer then faulted on it, leaving an
+  // untyped TypeError where every other wrong input gets inspect/bad-input.
+  var malformed = ["NO-THROW", "NO-THROW", "NO-THROW"];
+  [{ messages: [{}] }, { messages: [] }, { messages: [{ certReq: {} }] }].forEach(function (bad, i) {
+    try { pki.inspect.crmf(bad); } catch (e) { malformed[i] = (e && e.code) || ("RAW:" + e.constructor.name); }
+  });
+  check("P2c. and a marker-only CRMF object is refused with the documented code, not an untyped fault (" +
+    malformed.join(", ") + ")",
+  malformed.every(function (c) { return c === "inspect/bad-input"; }));
+
+  // A CMP header carrying the times, nonces and key id the report reads.
+  var cmpFull = await pki.cmp.build({ header: { sender: { directoryName: "CN=A Populated Subject" },
+    recipient: { directoryName: "CN=A Populated CA" }, transactionID: Buffer.alloc(16, 7),
+    senderNonce: Buffer.alloc(16, 9), recipNonce: Buffer.alloc(16, 11), messageTime: NB },
+  body: { ir: { certTemplate: { subject: [{ commonName: "A Populated Subject" }], publicKey: spki } } } },
+  { cert: cert, key: key, extraCerts: [cert] });
+  var cmpR = pki.inspect.cmp(cmpFull);
+  // The builder carries the signing certificate in extraCerts beside the one named here, so the count is
+  // read as "more than none" rather than pinned to what the caller passed.
+  check("P3. a populated CMP report carries the message time, both nonces and the extra certificates",
+    has(cmpR, "Message Time:") && has(cmpR, "Sender Nonce:") && has(cmpR, "Recipient Nonce:") &&
+    has(cmpR, "Protection Algorithm:") && has(cmpR, "Protection: present") &&
+    /Extra Certificates: [1-9]/.test(cmpR));
+
+  // A trust anchor carrying a title and certificate path controls, and one taking the certificate arm.
+  // TrustAnchorInfo's version is DEFAULT v1, so DER omits it; including it is a malformed encoding the
+  // strict parser refuses.
+  var taFull = b.sequence([b.explicit(2, b.sequence([
+    b.raw(spki), b.octetString(Buffer.alloc(20, 0xab)), b.utf8("A Populated Anchor"),
+    b.sequence([b.raw(pki.x509.parseDn("CN=A Populated Anchor").bytes),
+      b.implicit(1, b.sequence([b.sequence([b.oid("2.5.29.32.0")])])),
+      b.implicit(4, b.integer(3n))])]))]);
+  var taR = pki.inspect.trustanchor(taFull);
+  check("P4. a populated trust anchor report carries its title and path controls",
+    has(taR, "Form: taInfo") && has(taR, "Title: A Populated Anchor") &&
+    has(taR, "Certificate Path Controls:") && has(taR, "Path Length: 3") &&
+    has(taR, "Policies:") && has(taR, "anyPolicy"));
+  // policyFlags is a BIT STRING the parser decodes to a record of named booleans, so the report has to
+  // enumerate the ones that are SET: read as an array the line never ran at all and a trust anchor's
+  // active policy restrictions were simply absent from the report.
+  var taFlags = pki.inspect.trustanchor(b.sequence([b.explicit(2, b.sequence([
+    b.raw(spki), b.octetString(Buffer.alloc(20, 0xab)),
+    b.sequence([b.raw(pki.x509.parseDn("CN=A Flagged Anchor").bytes),
+      b.implicit(2, b.namedBitString([0, 2]))])]))]));
+  check("P4b. and a trust anchor's set policy flags are named, not dropped",
+    has(taFlags, "Policy Flags: inhibitPolicyMapping, inhibitAnyPolicy") &&
+    !has(taFlags, "requireExplicitPolicy"));
+  // The subtrees an anchor may certify within bound what trusting it means, so an anchor restricted to one
+  // name must not read the same as an unrestricted one. Omitted, the two reports were identical.
+  var ncDer = b.sequence([b.implicit(0, b.sequence([b.sequence([
+    b.contextPrimitive(2, Buffer.from("constrained.example", "latin1"))])]))]);
+  function anchorWith(extra) {
+    return b.sequence([b.explicit(2, b.sequence([b.raw(spki), b.octetString(Buffer.alloc(20, 1)),
+      b.sequence([b.raw(pki.x509.parseDn("CN=A Constrained Anchor").bytes)].concat(extra))]))]);
+  }
+  var taConstrained = pki.inspect.trustanchor(anchorWith([b.implicit(3, ncDer)]));
+  var taOpen = pki.inspect.trustanchor(anchorWith([]));
+  check("P4c. a trust anchor's name constraints are rendered, so a restricted anchor reads differently",
+    has(taConstrained, "Name Constraints:") && has(taConstrained, "Permitted:") &&
+    has(taConstrained, "constrained.example") && taConstrained !== taOpen &&
+    !has(taOpen, "Name Constraints:"));
+  // Which policies, not how many: a count made two anchors restricted to different single policies read the
+  // same, and which ones an anchor is restricted to is the question a reader is asking.
+  function policyAnchor(policyOid) {
+    return b.sequence([b.explicit(2, b.sequence([b.raw(spki), b.octetString(Buffer.alloc(20, 1)),
+      b.sequence([b.raw(pki.x509.parseDn("CN=A Policy Anchor").bytes),
+        b.implicit(1, b.sequence([b.sequence([b.oid(policyOid)])]))])]))]);
+  }
+  var polA = pki.inspect.trustanchor(policyAnchor("2.5.29.32.0"));
+  var polB = pki.inspect.trustanchor(policyAnchor("1.3.6.1.4.1.99999.5"));
+  check("P4d. and its policy identifiers are named, so two single-policy anchors differ",
+    has(polA, "anyPolicy (2.5.29.32.0)") && has(polB, "1.3.6.1.4.1.99999.5") && polA !== polB);
+  // RFC 5914 sec. 3's exts carry extensions that bound what trusting the anchor means, a basicConstraints
+  // path length among them. Skipped, an anchor carrying one read the same as one carrying none.
+  var bcExt = b.sequence([b.oid("2.5.29.19"), b.boolean(true),
+    b.octetString(b.sequence([b.boolean(true), b.integer(2n)]))]);
+  var taWithExts = pki.inspect.trustanchor(b.sequence([b.explicit(2, b.sequence([
+    b.raw(spki), b.octetString(Buffer.alloc(20, 1)), b.explicit(1, b.sequence([bcExt]))]))]));
+  check("P4e. and an anchor's own extensions are rendered, so a path-limited anchor reads differently",
+    has(taWithExts, "Extensions:") && has(taWithExts, "Basic Constraints") && has(taWithExts, "pathlen:2"));
+  // RFC 5914 sec. 3 excludes some extension types from that field, and the parser drops one it finds there
+  // while recording its identifier. Unmentioned, an anchor that TRIED to carry a name constraint there read
+  // the same as one carrying nothing, while the constraint it named is not in force.
+  var droppedExt = pki.inspect.trustanchor(b.sequence([b.explicit(2, b.sequence([
+    b.raw(spki), b.octetString(Buffer.alloc(20, 1)),
+    b.explicit(1, b.sequence([b.sequence([b.oid("2.5.29.30"), b.octetString(b.sequence([]))])]))]))]));
+  check("P4f. and an extension the profile excludes there is named as dropped and not in force",
+    has(droppedExt, "excludes here, dropped and not in force") &&
+    has(droppedExt, "nameConstraints (2.5.29.30)"));
+  // The other two forms hold a CERTIFICATE, whose subject and public key are what name the anchor. Read as
+  // though every form were TrustAnchorInfo, both rendered their form and nothing else, so two different
+  // anchors produced the same report and neither could be told from the other.
+  var taCertArm = pki.inspect.trustanchor(b.sequence([b.raw(cert)]));
+  var taTbsArm = pki.inspect.trustanchor(b.sequence([b.explicit(1, b.raw(pki.schema.x509.parse(cert).tbsBytes))]));
+  check("P5. the certificate anchor form names the certificate that is the anchor",
+    has(taCertArm, "Form: certificate") && has(taCertArm, "Subject: CN=A Format CA") &&
+    has(taCertArm, "Subject Public Key Info:") && has(taCertArm, "Ed25519"));
+  check("P5b. and the tbsCert form does too, so the two are not indistinguishable reports",
+    has(taTbsArm, "Form: tbsCert") && has(taTbsArm, "Subject: CN=A Format CA") &&
+    has(taTbsArm, "Subject Public Key Info:") && taTbsArm !== taCertArm);
+  // Both certificate-bearing arms render the anchor's extensions rather than counting them, for the reason
+  // the TrustAnchorInfo arm does: they bound what trusting the anchor means, and a count made a path-limited
+  // anchor read the same as an unlimited one. One rule, every arm.
+  check("P5b2. and both certificate-bearing arms render those extensions, not a count of them",
+    has(taCertArm, "Extensions:") && has(taCertArm, "Basic Constraints") &&
+    has(taTbsArm, "Basic Constraints") && !/Extensions: \d/.test(taCertArm));
+  // A PBMAC1 store keeps the parameters that protect it inside its own structure, so a report reading the
+  // outer MacData describes nothing: 2048 PBKDF2 iterations rendered as one iteration and an empty salt.
+  var p12Pbmac1 = await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: cert }] }] },
+    { password: "1234", mac: { algorithm: "pbmac1", hash: "sha256", iterations: 2048 } });
+  var pbR = pki.inspect.pkcs12(p12Pbmac1);
+  // The salt is reported by LENGTH, for the reason F3f gives: it is caller-supplied, so its value is another
+  // place a store could carry key bytes, and its length is what says anything about the protection.
+  check("P5c. a PBMAC1 store reports the iterations and the salt length that actually protect it",
+    has(pbR, "Kind: pbmac1") && has(pbR, "Iterations: 2048") && has(pbR, "Key Derivation: hmacWithSHA256") &&
+    /Salt: \d+ bytes \(not rendered\)/.test(pbR) && !has(pbR, "Iterations: 1"));
+
+  // An OCSP request carrying a per-request extension, which is a different list from the request's own.
+  // singleRequestExtensions takes pre-encoded Extension DER, one per array member.
+  var singleExt = b.sequence([b.oid("1.3.6.1.4.1.99999.2"), b.octetString(b.nullValue())]);
+  var reqExt = await pki.ocsp.buildRequest({ cert: cert, issuer: cert, singleRequestExtensions: [singleExt] });
+  check("P6. an OCSP request with a single-request extension renders that list",
+    has(pki.inspect.ocspRequest(reqExt), "Single Request Extensions:"));
+
+  // An OCSP response carrying a per-answer extension and a response extension.
+  // The nonce a response echoes back is an opts field, not a responseData field: it becomes a response
+  // extension, which is the list this vector needs beside the per-answer one.
+  var respExt = await pki.ocsp.sign({ responderID: "byName",
+    responses: [{ cert: cert, issuer: cert, status: "good", thisUpdate: NB, nextUpdate: NA,
+      singleExtensions: { archiveCutoff: NB } }] },
+  { cert: cert, key: key }, { nonce: Buffer.alloc(32, 5) });
+  var respExtR = pki.inspect.ocspResponse(respExt);
+  // An OCSP-specific extension is decoded by the OCSP parser, not by the certificate extension table the
+  // shared renderer consults, so its decoded value has to be read off the row: an archive cutoff rendered as
+  // a GeneralizedTime's octets is a date a reader cannot use.
+  check("P7. an OCSP response renders both its per-answer and its response extensions, decoded",
+    has(respExtR, "Single Extensions:") && has(respExtR, "Response Extensions:") &&
+    has(respExtR, "ocspArchiveCutoff") && /archiveCutoff: \w\w\w /.test(respExtR) &&
+    !/archiveCutoff[\s\S]{0,40}18:0f/.test(respExtR));
+  // An answer stating no window, so the NONE branch runs beside the dated one. The signer DEFAULTS a
+  // nextUpdate when one is merely omitted, and `null` is how a caller says there is none.
+  var noNext = await pki.ocsp.sign({ responderID: "byName",
+    responses: [{ cert: cert, issuer: cert, status: "good", thisUpdate: NB, nextUpdate: null }] },
+  { cert: cert, key: key });
+  check("P8. an answer with no nextUpdate says NONE rather than omitting the line",
+    has(pki.inspect.ocspResponse(noNext), "Next Update: NONE"));
+
+  // A timestamp carrying accuracy, ordering, a nonce and a TSA name.
+  var tsaCert = await pki.x509.sign({ subject: "A Populated TSA", subjectPublicKey: spki, notBefore: NB, notAfter: NA,
+    extensions: { keyUsage: ["digitalSignature"], extendedKeyUsage: ["timeStamping"], extendedKeyUsageCritical: true } },
+  { cert: cert, key: key });
+  var imprint = { hashAlgorithm: "sha256", hashedMessage: require("node:crypto").createHash("sha256").update("p").digest() };
+  // The TSTInfo's tsa field is not a sign option: it is derived, so this fixture drives the accuracy,
+  // ordering, nonce and serial branches and the tsa line is whatever the signer put there.
+  var fullToken = await pki.tsp.sign(imprint, { cert: tsaCert, key: key },
+    { policy: "1.2.3.4", serialNumber: 99, nonce: 1234n, ordering: true,
+      accuracy: { seconds: 1, millis: 500 } });
+  var tspR = pki.inspect.tsp(pki.tsp.response(fullToken, {}));
+  check("P9. a populated timestamp report carries the accuracy, ordering, nonce and serial",
+    has(tspR, "Accuracy: 1s") && has(tspR, "Ordering: true") && has(tspR, "Nonce:") &&
+    has(tspR, "Serial Number: 99") && has(tspR, "1.2.3.4"));
+  // A failure response carries no token at all, which is the other half of the token branch.
+  var failResp = pki.tsp.response(null, { status: 2, statusString: "rejected by policy", failInfo: ["badRequest"] });
+  var failR = pki.inspect.tsp(failResp);
+  // RFC 3161 sec. 2.4.2's statuses need different handling from each other, and a bare integer said which
+  // only to a reader who already knows the table: a rejection and a response still being waited on both read
+  // as a number.
+  check("P10. a rejected timestamp response names its status, its strings, and reports no token",
+    has(failR, "Status: 2 (rejection)") && has(failR, "rejected by policy") && has(failR, "Token: (none)"));
+  check("P10a2. and a waiting response is named as waiting rather than as 3",
+    has(pki.inspect.tsp(pki.tsp.response(null, { status: 3 })), "Status: 3 (waiting)"));
+  // The failure REASON is the one thing that line is for, and PKIFailureInfo is a BIT STRING the parser
+  // decodes to named bits: read as an array it rendered as object notation and the reason was lost. So the
+  // assertion is the decoded reason, not the presence of a label.
+  check("P10b. and it names the decoded failure reason rather than its object notation",
+    has(failR, "Failure Info: badRequest") && !has(failR, "[object Object]"));
+  // The same response handed to the verb as a PARSED object renders the same way. A rejection carries
+  // timeStampToken: null, and requiring a token here refused a shape the parser returns.
+  check("P10c. and the parsed form of that response renders identically to its bytes",
+    pki.inspect.tsp(pki.schema.tsp.parseResponse(failResp)) === failR);
+  // A statusString is text a RESPONDER chose, and a report is read in a terminal. Copied raw, a newline
+  // forges a report line and an escape sequence rewrites the screen around it. The certificate report has
+  // escaped distinguished names against exactly this since it shipped, and every field these renderers add
+  // that carries chosen text is held to the same rule. The control bytes are built at runtime because the
+  // source of this file stays ASCII.
+  var forge = "oops" + String.fromCharCode(10) + "    Status: 0" + String.fromCharCode(27) + "[2J";
+  var injected = pki.inspect.tsp(pki.tsp.response(null, { status: 2, statusString: forge }));
+  check("P10d. a responder's status string cannot forge a report line or move the terminal",
+    injected.indexOf(String.fromCharCode(27)) === -1 &&
+    injected.split(String.fromCharCode(10)).filter(function (l) { return /^\s+Status: 0$/.test(l); }).length === 0 &&
+    has(injected, "oops"));
+  // A TSTInfo's tsa names the authority that stamped the time, and the parser hands it over RAW: with a
+  // context tag and its bytes and no decoded value, the shape a GeneralNames member also arrives in. The
+  // list path decoded one and the single path did not, so a directoryName rendered as its label with no
+  // name after it and the authority was absent from the report. The shipped signer writes no tsa field, so
+  // the fixture is a TSTInfo built here and spliced into a real token's eContent; the renderer parses and
+  // does not verify, which is why an unsigned splice is a fair input to it.
+  var tsaName = b.explicit(0, b.explicit(4, pki.x509.parseDn("CN=A Named TSA").bytes));
+  var tstWithTsa = b.sequence([b.integer(1n), b.oid("1.2.3"),
+    b.sequence([b.sequence([b.oid("2.16.840.1.101.3.4.2.1"), b.nullValue()]),
+      b.octetString(Buffer.alloc(32, 0))]),
+    b.integer(1n), b.generalizedTime(NB), tsaName]);
+  var tokNode = pki.asn1.decode(f.tspToken);
+  var sd = tokNode.children[1].children[0];
+  var newEci = b.sequence([b.raw(sd.children[2].children[0].bytes), b.explicit(0, b.octetString(tstWithTsa))]);
+  var splicedToken = b.sequence([b.raw(tokNode.children[0].bytes),
+    b.explicit(0, b.sequence(sd.children.map(function (k, i) { return i === 2 ? newEci : b.raw(k.bytes); })))]);
+  var tsaR = pki.inspect.tsp(b.sequence([b.sequence([b.integer(0n)]), b.raw(splicedToken)]));
+  check("P10f. a timestamp's TSA name is decoded, not rendered as an empty label",
+    has(tsaR, "TSA: DirName:CN=A Named TSA"));
+
+  // The same for a trust anchor's title, which whoever wrote the anchor list chose.
+  var forgedTitle = pki.inspect.trustanchor(b.sequence([b.explicit(2, b.sequence([
+    b.raw(spki), b.octetString(Buffer.alloc(20, 0xab)), b.utf8(forge)]))]));
+  check("P10e. and neither can a trust anchor's title",
+    forgedTitle.indexOf(String.fromCharCode(27)) === -1 &&
+    forgedTitle.split(String.fromCharCode(10)).filter(function (l) { return /^\s+Status: 0$/.test(l); }).length === 0);
+
+  // RFC 6960 sec. 4.2.1 gives ResponderID two forms. The key form is a hash, not a name, so a report that
+  // sent it to the name renderer identified the responder as nothing at all.
+  var byKeyResp = await pki.ocsp.sign({ responderID: "byKey",
+    responses: [{ cert: cert, issuer: cert, status: "good", thisUpdate: NB, nextUpdate: NA }] },
+  { cert: cert, key: key });
+  var byKeyR = pki.inspect.ocspResponse(byKeyResp);
+  check("P11b. a byKey responder is identified by its key hash, in both forms of the field",
+    /Responder ID: keyHash:[0-9a-f]{2}:/.test(byKeyR) && !has(byKeyR, "tagundefined") &&
+    has(pki.inspect.ocspResponse(f["ocsp-response"]), "Responder ID: CN="));
+
+  // The third CertStatus arm. RFC 6960 sec. 2.2's "unknown" is a real answer, distinct from a status a
+  // report could not read, and the two would be indistinguishable if the renderer defaulted to the word.
+  var unknownResp = await pki.ocsp.sign({ responderID: "byName",
+    responses: [{ cert: cert, issuer: cert, status: "unknown", thisUpdate: NB, nextUpdate: NA }] },
+  { cert: cert, key: key });
+  check("P11c. the unknown certificate status is rendered as the answer it is",
+    has(pki.inspect.ocspResponse(unknownResp), "Cert Status: unknown"));
+
+  // A SIGNED OCSP request, so the signature line reads "present" rather than "(unsigned)".
+  var signedReq = await pki.ocsp.buildRequest({ cert: cert, issuer: cert },
+    { requestorName: pki.x509.parseDn("CN=A Signing Requestor").bytes, signer: { cert: cert, key: key } });
+  check("P12. a signed OCSP request reports its signature as present",
+    has(pki.inspect.ocspRequest(signedReq), "Signature: present"));
+
+  // A MAC-protected CMP message. Its shared secret is what a senderKID names, so the header carries one
+  // where a signature-protected message does not. The mac option's own field is `secret`.
+  var macCmp = await pki.cmp.build({ header: { sender: { directoryName: "CN=A MAC Subject" },
+    recipient: { directoryName: "CN=A MAC CA" }, transactionID: Buffer.alloc(16, 7),
+    senderKID: Buffer.from("kid-1") },
+  body: { ir: { certTemplate: { subject: [{ commonName: "A MAC Subject" }], publicKey: spki } } } },
+  { mac: { secret: "s3cret" } });
+  check("P13. a MAC-protected CMP message reports its sender key id",
+    has(pki.inspect.cmp(macCmp), "Sender Key ID:"));
+  // The error arm is expanded where the others are only named, because its CONTENT is the whole diagnostic and
+  // no other verb renders it: naming the arm told a reader only that something went wrong.
+  var errCmp = await pki.cmp.build({ header: { sender: { directoryName: "CN=An Erroring Subject" },
+    recipient: { directoryName: "CN=An Erroring CA" }, transactionID: Buffer.alloc(16, 7) },
+  body: { error: { pKIStatusInfo: { status: 2, statusString: ["no good"], failInfo: ["badRequest"] },
+    errorCode: 7, errorDetails: ["a detail"] } } }, { cert: cert, key: key });
+  var errR = pki.inspect.cmp(errCmp);
+  check("P13b. and an error body renders its status, failure bits, code and details",
+    has(errR, "Arm: error") && has(errR, "name: rejection") && has(errR, "no good") &&
+    has(errR, "badRequest") && has(errR, "errorCode: 7") && has(errR, "a detail"));
+
+  // An attribute certificate whose holder takes the baseCertificateID form rather than a name, and which
+  // carries an extension: two branches a holder named by entity alone never reaches.
+  // A baseCertificateID's serial field is `serial` (attrcert-sign's accepted set is issuer, serial, issuerUID).
+  var acBase = await pki.attrcert.sign({ holder: { baseCertificateID: { issuer: { directoryName: "CN=A Format CA" },
+    serial: pki.schema.x509.parse(cert).serialNumber } }, notBeforeTime: NB, notAfterTime: NA,
+  attributes: { role: { roleName: { uniformResourceIdentifier: "urn:role:populated" } } },
+  extensions: { noRevAvail: true } }, { name: "CN=A Populated AA", publicKey: spki, key: key });
+  var acR = pki.inspect.attrcert(acBase);
+  check("P11. an attribute certificate held by base certificate id renders that form and its extensions",
+    has(acR, "Base Certificate ID:") && has(acR, "Serial Number:") && has(acR, "Extensions:"));
+  // The third Holder arm of RFC 5755 sec. 4.1: a digest of the object held rather than a name for it.
+  var acDigest = await pki.attrcert.sign({ holder: { objectDigestInfo: { digestedObjectType: "publicKey",
+    digestAlgorithm: "sha256", objectDigest: Buffer.alloc(32, 1) } }, notBeforeTime: NB, notAfterTime: NA,
+  attributes: { role: { roleName: { uniformResourceIdentifier: "urn:role:digest" } } } },
+  { name: "CN=A Populated AA", publicKey: spki, key: key });
+  // The DIGEST is what identifies a holder named this way, so the algorithm alone left every holder
+  // identified by one digest algorithm reading the same and the report carrying no identity at all.
+  var digestR = pki.inspect.attrcert(acDigest);
+  check("P11d. a holder named by object digest renders the type, the algorithm and the digest itself",
+    has(digestR, "Object Digest Info:") && has(digestR, "Digested Object Type: publicKey") &&
+    has(digestR, "Digest Algorithm: sha256") && /Digest:\n\s+01:01:01/.test(digestR));
+  // The holder's own certificate serial, which is what distinguishes two holders under one issuer. RFC 5755
+  // IssuerSerial names the field `serial`, not the `serialNumber` a certificate carries, and read by the
+  // wrong name the line vanished while the attribute certificate's OWN serial line still matched a test
+  // looking only for the label.
+  // RFC 5755's IssuerSerial carries an optional issuerUID, which distinguishes two issuers sharing a name, so
+  // a holder identified with one was reported without the field that identifies it.
+  var acUid = await pki.attrcert.sign({ holder: { baseCertificateID: {
+    issuer: { directoryName: "CN=A Format CA" }, serial: pki.schema.x509.parse(cert).serialNumber,
+    issuerUID: Buffer.from([0xa1, 0xb2, 0xc3]) } }, notBeforeTime: NB, notAfterTime: NA,
+  attributes: { role: { roleName: { uniformResourceIdentifier: "urn:role:uid" } } } },
+  { name: "CN=A Populated AA", publicKey: spki, key: key });
+  check("P11f. and a holder's issuerUID is rendered, since it is what tells two same-named issuers apart",
+    has(pki.inspect.attrcert(acUid), "Issuer Unique ID: a1:b2:c3"));
+
+  var holderSerial = pki.schema.attrcert.parse(acBase).holder.baseCertificateID.serialHex;
+  var holderColon = holderSerial.replace(/(..)(?=.)/g, "$1:");
+  check("P11e. and a holder named by base certificate id carries that certificate's own serial",
+    holderSerial.length > 0 && has(acR, holderColon) &&
+    acR.split("Serial Number").length === 3);
+}
+
+/** The verb that renders each detected format, so F2 asks the namespace by name rather than assuming
+ *  a naming rule. `x509` is the certificate renderer, which predates this table. */
+var INSPECT_VERB_FOR = Object.assign(Object.create(null), {
+  x509: "certificate", crl: "crl", csr: "csr", cms: "cms",
+  pkcs8: "pkcs8", pkcs12: "pkcs12", crmf: "crmf", cmp: "cmp", csrattrs: "csrattrs",
+  trustanchor: "trustanchor", "ocsp-request": "ocspRequest", "ocsp-response": "ocspResponse",
+  tsp: "tsp", attrcert: "attrcert",
+});
+
+/** `attrcert-v1` is in the detect set so that an X.509-1997 attribute certificate can be REFUSED by
+ *  name instead of misparsed as the v2 form: its parser always throws
+ *  `attrcert/legacy-v1-not-supported` (RFC 5755 sec. 1 obsoletes it). So it owes no renderer, and what
+ *  it owes instead is that a reader of one is told which form it holds, which F10 asserts. */
+var NO_REPORT_BY_DESIGN = Object.assign(Object.create(null), { "attrcert-v1": true });
 
 module.exports = { run: run };
 

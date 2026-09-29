@@ -20,6 +20,24 @@ var os = require("os");
 
 function codeOf(fn) { try { fn(); return "NO-THROW"; } catch (e) { return e.code || e.constructor.name; } }
 
+/** Append an RFC 3779 ipAddrBlocks extension carrying the IPv6 prefix 2001:db8::/32 to a certificate's
+ *  own extension list, rebuilding the enclosing structures around it. The prefix is the BIT STRING of
+ *  the leading 32 bits, which is how sec. 2.1.1 writes a prefix. */
+function withIpAddrBlocks(certDer) {
+  var b = pki.asn1.build;
+  var family = b.sequence([b.octetString(Buffer.from([0x00, 0x02])),
+    b.sequence([b.bitString(Buffer.from([0x20, 0x01, 0x0d, 0xb8]), 0)])]);
+  var newExt = b.sequence([b.oid("1.3.6.1.5.5.7.1.7"), b.octetString(b.sequence([family]))]);
+  var cert = pki.asn1.decode(certDer);
+  var tbsKids = cert.children[0].children.map(function (k) {
+    if (!(k.tagClass === "context" && k.tagNumber === 3)) return b.raw(k.bytes);
+    var exts = k.children[0].children.map(function (e) { return b.raw(e.bytes); });
+    exts.push(newExt);
+    return b.explicit(3, b.sequence(exts));
+  });
+  return b.sequence([b.sequence(tbsKids), b.raw(cert.children[1].bytes), b.raw(cert.children[2].bytes)]);
+}
+
 // A real EC cert (from the shared vectors) and a real Fulcio cert (rich extensions).
 var ecPem = helpers.vectors.CERT_EC_PEM;
 var ecDer = pki.schema.x509.pemDecode(ecPem, "CERTIFICATE");
@@ -78,6 +96,17 @@ function run() {
   check("inspect: and that is exactly what the shared address renderer produces",
     r.indexOf("IP Address:" + require("../../lib/ip-utils.js")
       .textFromOctets(Buffer.from("20010db8000000000000000000000001", "hex"))) !== -1);
+  // The other half of that agreement, which had no vector: the RFC 3779 block renderer reaches the same
+  // home by a different route, so ONE certificate carrying the same octets in both places is what proves
+  // one address reads one way. Without this, either renderer could drift alone and a diff of two reports
+  // would disagree about whether two certificates name the same address. The block is spliced into this
+  // certificate's own extension list rather than signed into a new one, because the renderer parses and
+  // does not verify, and because reusing this certificate keeps both renderings in one report.
+  var bothWays = pki.inspect.certificate(withIpAddrBlocks(
+    pki.schema.x509.pemDecode(richPem, "CERTIFICATE")));
+  check("inspect: an RFC 3779 block and a SAN render one address the same way",
+    /IP Address:2001:db8::1/.test(bothWays) && /2001:db8::\/32/.test(bothWays) &&
+    !/2001:DB8/.test(bothWays) && !/2001:db8:0:0/.test(bothWays));
   check("inspect: directoryName SAN as a DN (not [object Object])", /DirName:.*CN=altdir/.test(r) && r.indexOf("[object Object]") < 0);
   check("inspect: whole SAN on one line (no IP byte injects a newline)", /DNS:rich\.blamejs\.test, IP Address:192\.168\.1\.10, IP Address:2001:db8::1, email:hostmaster@blamejs\.test, URI:https:\/\/blamejs\.test\/, DirName:CN=altdir/.test(r));
   check("inspect: high-bit serial has no DER 00 sign byte", /Serial Number:\n\s+f1:e2:d3/.test(r) && !/Serial Number:\n\s+00:f1/.test(r));

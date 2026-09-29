@@ -380,6 +380,17 @@ security-only patches after the next major releases.
 
 ### Keys, secrets, and the crypto engine
 
+- **A key written out by the tool used to look at it (CWE-532).** A report goes
+  somewhere: a terminal with scrollback, a log, a ticket, a screenshot. A PKCS#8
+  file and a PKCS#12 store both carry a private key, so a renderer that wrote the
+  key bytes into its report would make an inspection tool a way of copying a key
+  out of a file somebody opened only to read its metadata. `pki.inspect.pkcs8` and
+  `pki.inspect.pkcs12` name the key algorithm, the public half where the structure
+  carries one, and that a private key is present with its length, and never its
+  bytes. A PKCS#12's encrypted safes are named rather than decrypted, because
+  these verbs take no password. The rule is measured rather than asserted: the
+  conformance vectors search each rendered report for byte runs of the key in hex,
+  base64 and colon-hex, so a renderer that started printing one would fail.
 - **Untyped faults escaping the key boundary.** A `CryptoKey` is opaque, and one
   created by a different WebCrypto implementation is indistinguishable from one
   of this engine's by type, algorithm, and usages while holding its material

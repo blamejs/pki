@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.8.28",
+  "packageVersion": "0.8.29",
   "surface": {
     "C": {
       "kind": "object",
@@ -2787,7 +2787,15 @@
           "kind": "function",
           "arity": 1
         },
+        "attrcert": {
+          "kind": "function",
+          "arity": 1
+        },
         "certificate": {
+          "kind": "function",
+          "arity": 1
+        },
+        "cmp": {
           "kind": "function",
           "arity": 1
         },
@@ -2799,13 +2807,45 @@
           "kind": "function",
           "arity": 1
         },
+        "crmf": {
+          "kind": "function",
+          "arity": 1
+        },
         "csr": {
+          "kind": "function",
+          "arity": 1
+        },
+        "csrattrs": {
+          "kind": "function",
+          "arity": 1
+        },
+        "ocspRequest": {
+          "kind": "function",
+          "arity": 1
+        },
+        "ocspResponse": {
+          "kind": "function",
+          "arity": 1
+        },
+        "pkcs12": {
+          "kind": "function",
+          "arity": 1
+        },
+        "pkcs8": {
           "kind": "function",
           "arity": 1
         },
         "renderedExtensions": {
           "kind": "array",
           "length": 31
+        },
+        "trustanchor": {
+          "kind": "function",
+          "arity": 1
+        },
+        "tsp": {
+          "kind": "function",
+          "arity": 1
         }
       }
     },
@@ -4127,6 +4167,16 @@
     "pki.inspect.crl": "0.3.8",
     "pki.inspect.csr": "0.3.8",
     "pki.inspect.cms": "0.3.8",
+    "pki.inspect.pkcs8": "0.8.29",
+    "pki.inspect.pkcs12": "0.8.29",
+    "pki.inspect.crmf": "0.8.29",
+    "pki.inspect.cmp": "0.8.29",
+    "pki.inspect.csrattrs": "0.8.29",
+    "pki.inspect.trustanchor": "0.8.29",
+    "pki.inspect.ocspRequest": "0.8.29",
+    "pki.inspect.ocspResponse": "0.8.29",
+    "pki.inspect.tsp": "0.8.29",
+    "pki.inspect.attrcert": "0.8.29",
     "pki.inspect.any": "0.3.8",
     "pki.jose.base64url.encode": "0.1.25",
     "pki.jose.base64url.decode": "0.1.25",
