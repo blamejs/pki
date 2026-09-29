@@ -485,6 +485,8 @@ async function runEveryDetectedFormat() {
     ["ocspResponse", { responseStatus: { code: 0, name: "successful" },
       basicResponse: { version: 1, responderID: {}, responses: [{}] } }],
     ["tsp", { status: 0, timeStampToken: {} }],
+    ["tsp", { status: 2, timeStampToken: null, failInfo: { bits: "badRequest" } }],
+    ["tsp", { status: 2, timeStampToken: null, failInfo: 7 }],
     ["attrcert", { version: 2, holder: {}, attributes: [{}], signatureAlgorithm: {} }],
   ];
   var untyped = [];
@@ -524,7 +526,13 @@ async function runEveryDetectedFormat() {
   }
   var CORRUPT_CASES = [["pkcs8", f.pkcs8], ["pkcs12", f.pkcs12], ["crmf", f.crmf], ["cmp", f.cmp],
     ["csrattrs", f.csrattrs], ["trustanchor", f.trustanchor], ["ocspRequest", f["ocsp-request"]],
-    ["ocspResponse", f["ocsp-response"]], ["tsp", f.tsp], ["attrcert", f.attrcert]];
+    ["ocspResponse", f["ocsp-response"]], ["tsp", f.tsp], ["attrcert", f.attrcert],
+    // The ARMS as well as the base shape, because a member only one arm carries is never walked on another:
+    // a granted timestamp response has failInfo null, so corrupting the granted one never reached
+    // failInfo.bits and left that path unproven.
+    ["tsp", pki.tsp.response(null, { status: 2, statusString: "no", failInfo: ["badRequest"] })],
+    ["trustanchor", b.sequence([b.raw(f.cert)])],
+    ["ocspResponse", f.ocspRevoked]];
   var PARSE_FOR = { pkcs8: pki.schema.pkcs8.parse, pkcs12: pki.schema.pkcs12.parse,
     crmf: pki.schema.crmf.parse, cmp: pki.schema.cmp.parse, csrattrs: pki.schema.csrattrs.parse,
     trustanchor: pki.schema.trustanchor.parse, ocspRequest: pki.schema.ocsp.parseRequest,
