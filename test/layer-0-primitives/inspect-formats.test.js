@@ -716,6 +716,24 @@ async function runPopulatedFormats(f) {
     { mac: false }));
   check("P1d. and a MAC-less store holding a shrouded key names both credentials",
     has(bothR, "the password and opts.allowUnauthenticated"));
+  // A public-key-integrity store is verified against the signer's certificate, and its SignedData may carry
+  // none: then the certificate has to be supplied and opening fails without it, so a report naming only the
+  // privacy credentials leaves out a required input. The shipped builder always embeds the certificate, so
+  // the fixture is a store whose SignedData has its [0] certificates field spliced out, which is a shape a
+  // third-party store legitimately has.
+  var signedStore = await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: f.cert }] }] },
+    { integrity: { mode: "public-key", signer: { cert: f.cert, key: f.key } } });
+  var pfxNode = pki.asn1.decode(signedStore);
+  var ciNode = pfxNode.children[1];
+  var sdNode = ciNode.children[1].children[0];
+  var noCerts = b.sequence([b.raw(pfxNode.children[0].bytes),
+    b.sequence([b.raw(ciNode.children[0].bytes), b.explicit(0, b.sequence(
+      sdNode.children.filter(function (k) { return !(k.tagClass === "context" && k.tagNumber === 0); })
+        .map(function (k) { return b.raw(k.bytes); })))])]);
+  var signedR = pki.inspect.pkcs12(signedStore), noCertsR = pki.inspect.pkcs12(noCerts);
+  check("P1e. a public-key-integrity store carrying no signer certificate says opts.signerCerts is needed",
+    has(noCertsR, "opts.signerCerts") && has(signedR, "it needs no password") &&
+    !has(signedR, "opts.signerCerts"));
 
   // A CRMF template carrying every optional field the report reads.
   // A serialNumber is only a field of a REVOCATION template (crmf-sign's REVOCATION_TEMPLATE_KEYS), so a
