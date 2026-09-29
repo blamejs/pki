@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.8.40",
+  "packageVersion": "0.8.41",
   "surface": {
     "C": {
       "kind": "object",
@@ -306,6 +306,9 @@
               "kind": "number"
             },
             "TRUST_MAX_OCTAL_BYTES": {
+              "kind": "number"
+            },
+            "TUF_MAX_ROOT_CHAIN": {
               "kind": "number"
             },
             "WEBAUTHN_COMPOUND_MAX_STATEMENTS": {
@@ -1793,6 +1796,9 @@
             "TRUST_MAX_OCTAL_BYTES": {
               "kind": "number"
             },
+            "TUF_MAX_ROOT_CHAIN": {
+              "kind": "number"
+            },
             "WEBAUTHN_COMPOUND_MAX_STATEMENTS": {
               "kind": "number"
             },
@@ -2667,6 +2673,10 @@
           "arity": 3
         },
         "TspError": {
+          "kind": "function",
+          "arity": 3
+        },
+        "TufError": {
           "kind": "function",
           "arity": 3
         },
@@ -4136,6 +4146,39 @@
         }
       }
     },
+    "tuf": {
+      "kind": "object",
+      "members": {
+        "ROLES": {
+          "kind": "array",
+          "length": 4
+        },
+        "canonicalJson": {
+          "kind": "function",
+          "arity": 1
+        },
+        "checkExpiry": {
+          "kind": "function",
+          "arity": 2
+        },
+        "keyId": {
+          "kind": "function",
+          "arity": 1
+        },
+        "parseMetadata": {
+          "kind": "function",
+          "arity": 1
+        },
+        "updateRoot": {
+          "kind": "function",
+          "arity": 1
+        },
+        "verifySignatures": {
+          "kind": "function",
+          "arity": 1
+        }
+      }
+    },
     "version": {
       "kind": "string"
     },
@@ -4544,6 +4587,12 @@
     "pki.tsp.response": "0.2.19",
     "pki.tsp.parseResponse": "0.2.19",
     "pki.tsp.verify": "0.2.19",
+    "pki.tuf.canonicalJson": "0.8.41",
+    "pki.tuf.keyId": "0.8.41",
+    "pki.tuf.parseMetadata": "0.8.41",
+    "pki.tuf.checkExpiry": "0.8.41",
+    "pki.tuf.verifySignatures": "0.8.41",
+    "pki.tuf.updateRoot": "0.8.41",
     "pki.webauthn.parseCoseKey": "0.5.2",
     "pki.webauthn.parseAttestationObject": "0.2.5",
     "pki.webauthn.verify": "0.2.5",

@@ -4,6 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.41 — 2026-09-29
+
+Verify a TUF trust root, and walk its key rotations.
+
+### Added
+
+- `pki.tuf.canonicalJson` is the encoding TUF signatures cover, so it is a wire format rather than a formatting choice: object keys sort by code point, no whitespace is emitted, and inside a string only backslash and quote are escaped. A literal control character stays itself, which is where a general JSON writer differs by writing an escape and signing other bytes. Keys sort by code point rather than by UTF-16 code unit, which are not the same order for a key outside the basic multilingual plane. A float, a number past the exactly-representable integers, `undefined` and a function are refused rather than approximated, because the reference encoder cannot write any of them.
+- `pki.tuf.keyId` derives a key's identifier as the hex SHA-256 of the key's own canonical form, and `pki.tuf.verifySignatures` recomputes it for every key a role names before checking any signature. A key filed under an identifier that is not its own is refused as malformed metadata rather than treated as a signature that failed.
+- A threshold counts one verified signature per distinct key identifier. A key listed twice, or signing twice, counts once, so a threshold cannot be met by repetition; a signature from a key the role does not name counts for nothing whatever it verifies over. A shortfall resolves `verified: false` rather than throwing, since whether a threshold was met is a verdict about the metadata, while a key or signature this build cannot read is a fault in the document and throws.
+- `pki.tuf.updateRoot` walks the root chain under the two rules that make a rotation safe: each new root must be signed by a threshold of the keys the previous root names AND a threshold of the keys it names itself, and its version must be exactly one more than the trusted one. A root meeting only one threshold is refused, a candidate that skips a version is refused so no intermediate can be passed over, and one at or below the trusted version is refused by the same rule, which is the rollback check. The trusted root is verified against its own role and expiry before any candidate is read.
+- `pki.tuf.checkExpiry` is the freeze-attack check: a repository that stops publishing leaves a client holding metadata that stays valid forever unless its expiry is read. The instant is a caller value rather than the system clock read inside the check, so a verdict is reproducible.
+- `pki.tuf.parseMetadata` refuses a duplicate JSON member before reading any field. The canonical form would carry only one of a repeated member, so the signature would cover a document different from the one delivered.
+
 ## v0.8.40 — 2026-09-29
 
 Talk to a Certificate Transparency log: ask for its tree head, its proofs, and its entries.

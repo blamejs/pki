@@ -2046,7 +2046,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/cmp-build.js:<top>", "lib/crmf-sign.js:<top>", "lib/key.js:<top>", "lib/sigstore.js:<top>",
         "lib/ip-utils.js:<top>", "lib/pkcs11-uri.js:<top>", "lib/guard-encoding.js:_alphabet",
         "lib/identity-match.js:<top>", "lib/identity-match.js:E", "lib/tlog.js:<top>",
-        "lib/sign-scheme.js:O",
+        "lib/sign-scheme.js:O", "lib/tuf.js:_err", "lib/tuf.js:<top>",
       ],
       mode: "family-subset",
       reason: "The per-module capture header binds each module's subset of guard-intrinsic to local names at load. The repeated shape is a deliberate convention so the set is comparable across modules; the subsets differ per module and a shared indirection would put back the call-site property read the capture removes. The regex-free character scanners (the IP-literal parser, the base-N alphabet-table builder) share the same captured-primitive binding run and char-code-loop idiom while doing genuinely different work.",

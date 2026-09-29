@@ -115,6 +115,8 @@ var SPEC_PATTERNS = [
   // static-CT API all cite these, and _specUrl maps the name to its page so the
   // recognized set and the linkable set stay identical.
   new RegExp("^C2SP [a-z][a-z0-9-]*" + _SPEC_OPT + "$"),
+  // The Update Framework, whose specification is versioned but not numbered like an RFC.
+  new RegExp("^TUF( [0-9]+\\.[0-9]+(\\.[0-9]+)?)?" + _SPEC_OPT + "$"),
   new RegExp("^(?:SemVer|semver\\.org)\\b.*$"),
   new RegExp("^internal(?:\\s+\\([^)]*\\))?$"),
 ];
