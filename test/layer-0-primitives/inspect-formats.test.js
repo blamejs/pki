@@ -447,6 +447,20 @@ async function runEveryDetectedFormat() {
   check("F3b. and a public half that carries the private bytes is not rendered at all",
     !leaks(forgedR, secret) && has(forgedR, "Private Key: present") &&
     has(forgedR, "Ed25519"));
+  // The private bytes can be placed where a comparison does not see them, which is why the rule is structural
+  // rather than a screen. An Ed25519 privateKey OCTET STRING holds `04 20 || seed`, so a public half carrying
+  // the seed ALONE matches neither direction of a whole-buffer compare against the wrapped value.
+  var wrapped = b.sequence([b.integer(1n), b.sequence([b.oid("1.3.101.112")]),
+    b.octetString(b.octetString(secret)), b.implicit(1, b.bitString(secret, 0))]);
+  check("F3c. including a half carrying only the seed inside an algorithm-wrapped private key",
+    !leaks(pki.inspect.pkcs8(wrapped), secret));
+  // And an attribute is structurally valid whatever it holds, so one carrying a copy of the private key would
+  // print it through the attribute renderer. No value from inside the file is rendered, only its type.
+  var attrLeak = b.sequence([b.integer(0n), b.sequence([b.oid("1.3.101.112")]), b.octetString(secret),
+    b.implicit(0, b.set([b.sequence([b.oid("1.3.6.1.4.1.99999.8"), b.set([b.octetString(secret)])])]))]);
+  var attrR = pki.inspect.pkcs8(attrLeak);
+  check("F3d. and an attribute whose value copies the private key is named, never rendered",
+    !leaks(attrR, secret) && has(attrR, "1.3.6.1.4.1.99999.8") && has(attrR, "not rendered"));
   var p12 = pki.inspect.pkcs12(f.pkcs12);
   check("F4. a PKCS#12 report does NOT carry the private key bytes",
     p12.length > 40 && !leaks(p12, privInner));
