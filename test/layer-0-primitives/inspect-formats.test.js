@@ -476,6 +476,15 @@ async function runEveryDetectedFormat() {
     { password: "1234", mac: { salt: secret } }));
   check("F3f. and a PKCS#12 MAC salt is reported by length, never by value",
     !leaks(saltLeak, secret) && /Salt: \d+ bytes \(not rendered\)/.test(saltLeak));
+  // The registry refuses a type that is not a dotted identifier with its own code, which is not this verb's
+  // contract, so an attribute carrying any other value prints as itself rather than faulting the report.
+  var badTypeCode = "NO-THROW";
+  try {
+    pki.inspect.pkcs8({ version: 0, privateKeyAlgorithm: { oid: "1.3.101.112" },
+      privateKey: Buffer.alloc(4), attributes: [{ type: "bad", values: [] }] });
+  } catch (e) { badTypeCode = (e && e.code) || ("RAW:" + e.constructor.name); }
+  check("F3g. and an attribute whose type is not an identifier does not fault the report (" + badTypeCode + ")",
+    badTypeCode === "NO-THROW" || badTypeCode === "inspect/bad-input");
   var p12 = pki.inspect.pkcs12(f.pkcs12);
   check("F4. a PKCS#12 report does NOT carry the private key bytes",
     p12.length > 40 && !leaks(p12, privInner));
@@ -734,6 +743,21 @@ async function runPopulatedFormats(f) {
   check("P1e. a public-key-integrity store carrying no signer certificate says opts.signerCerts is needed",
     has(noCertsR, "opts.signerCerts") && has(signedR, "it needs no password") &&
     !has(signedR, "opts.signerCerts"));
+  // Counting the certificates answers the wrong question: a store can embed a chain certificate while leaving
+  // the SIGNER's own out, and verification needs the one that matches the signer. The embedded certificate is
+  // replaced with an unrelated one, so the count stays at one while nothing matches.
+  var otherCert = await pki.x509.sign({ subject: "An Unrelated Certificate", subjectPublicKey: f.spki,
+    notBefore: NB, notAfter: NA }, { key: f.key }, { profile: "none" });
+  var swapped = b.sequence([b.raw(pfxNode.children[0].bytes),
+    b.sequence([b.raw(ciNode.children[0].bytes), b.explicit(0, b.sequence(
+      sdNode.children.map(function (k) {
+        return (k.tagClass === "context" && k.tagNumber === 0)
+          ? b.explicit(0, b.raw(otherCert)) : b.raw(k.bytes);
+      })))])]);
+  var swappedR = pki.inspect.pkcs12(swapped);
+  check("P1f. and one embedding a certificate that does not match its signer says so too",
+    pki.schema.pkcs12.parse(swapped).authSafeSigned.certificates.length === 1 &&
+    has(swappedR, "opts.signerCerts"));
 
   // A CRMF template carrying every optional field the report reads.
   // A serialNumber is only a field of a REVOCATION template (crmf-sign's REVOCATION_TEMPLATE_KEYS), so a
@@ -1033,6 +1057,16 @@ async function runPopulatedFormats(f) {
   // IssuerSerial names the field `serial`, not the `serialNumber` a certificate carries, and read by the
   // wrong name the line vanished while the attribute certificate's OWN serial line still matched a test
   // looking only for the label.
+  // RFC 5755's IssuerSerial carries an optional issuerUID, which distinguishes two issuers sharing a name, so
+  // a holder identified with one was reported without the field that identifies it.
+  var acUid = await pki.attrcert.sign({ holder: { baseCertificateID: {
+    issuer: { directoryName: "CN=A Format CA" }, serial: pki.schema.x509.parse(cert).serialNumber,
+    issuerUID: Buffer.from([0xa1, 0xb2, 0xc3]) } }, notBeforeTime: NB, notAfterTime: NA,
+  attributes: { role: { roleName: { uniformResourceIdentifier: "urn:role:uid" } } } },
+  { name: "CN=A Populated AA", publicKey: spki, key: key });
+  check("P11f. and a holder's issuerUID is rendered, since it is what tells two same-named issuers apart",
+    has(pki.inspect.attrcert(acUid), "Issuer Unique ID: a1:b2:c3"));
+
   var holderSerial = pki.schema.attrcert.parse(acBase).holder.baseCertificateID.serialHex;
   var holderColon = holderSerial.replace(/(..)(?=.)/g, "$1:");
   check("P11e. and a holder named by base certificate id carries that certificate's own serial",
