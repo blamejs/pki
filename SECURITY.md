@@ -391,6 +391,12 @@ security-only patches after the next major releases.
   these verbs take no password. The rule is measured rather than asserted: the
   conformance vectors search each rendered report for byte runs of the key in hex,
   base64 and colon-hex, so a renderer that started printing one would fail.
+  `pki.inspect.asn1` is the one verb outside that rule, and it says so where it is
+  documented: a structural dump exists to show the bytes, so it withholds no value
+  and prints private key material like any other. Its `maxValueBytes` cap bounds how
+  much of a value it renders rather than whether it renders one, so it is a report
+  size control and not a disclosure control. `pki.inspect.any` never routes to it, so
+  the guarantee above holds for a report reached by format detection.
 - **Untyped faults escaping the key boundary.** A `CryptoKey` is opaque, and one
   created by a different WebCrypto implementation is indistinguishable from one
   of this engine's by type, algorithm, and usages while holding its material

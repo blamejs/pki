@@ -620,6 +620,93 @@ function testCoerceAndDecodeRoot() {
   var out = pkix.coerceToDer(craft, derOpts);
   check("coerceToDer: binary-prefixed BEGIN routed as DER (not PEM-unwrapped)", Buffer.isBuffer(out) && out.equals(craft));
 
+  /* The armor probe stops at the first byte no text file carries, so it answers correctly only
+   * while a DER header holds one. A short-form header can be entirely text: an APPLICATION 3
+   * primitive is identifier 0x43 ("C") and any content length from 32 to 126 is a printable
+   * length octet. Such a value carrying an armor line satisfies the probe while being valid DER,
+   * and the resolution is the one `pki convert` already takes: a byte source that decodes as one
+   * complete DER value IS DER, and the probe decides only for bytes that are not. */
+  var innerPem = "-----BEGIN ANY-----\n" + asn1.build.sequence([asn1.build.integer(1)]).toString("base64") +
+    "\n-----END ANY-----\n";
+  var textHeaderDer = Buffer.concat([Buffer.from([0x43, innerPem.length]), Buffer.from(innerPem, "latin1")]);
+  check("coerceToDer: the fixture is valid DER whose whole header is text bytes, so the probe " +
+    "cannot tell it from armor on bytes alone",
+  (function () {
+    var n = asn1.decode(textHeaderDer);
+    return n.tagClass === "application" && n.tagNumber === 3 && n.length === innerPem.length &&
+        textHeaderDer[0] >= 0x20 && textHeaderDer[0] < 0x7f &&
+        textHeaderDer[1] >= 0x20 && textHeaderDer[1] < 0x7f;
+  })());
+  check("coerceToDer: valid DER whose header is text and whose content carries an armor line is " +
+    "routed as DER, not unwrapped",
+  (function () {
+    var r = pkix.coerceToDer(textHeaderDer, derOpts);
+    return Buffer.isBuffer(r) && r.equals(textHeaderDer);
+  })());
+  check("CONTROL: a byte source that is genuinely armor and not DER is still PEM-decoded",
+    (function () {
+      var r = pkix.coerceToDer(Buffer.from(innerPem, "latin1"), derOpts);
+      return Buffer.isBuffer(r) && r.equals(asn1.build.sequence([asn1.build.integer(1)]));
+    })());
+
+  /* The ambiguity does not always resolve. A primitive tag makes any content valid, so a buffer can
+   * be one complete DER value AND a well-formed PEM block at once: an APPLICATION 3 primitive whose
+   * declared length is exactly the armored text that follows it, with the line break the PEM grammar
+   * wants before the boundary. Neither reading is wrong, so neither is chosen: picking one silently
+   * would hand a caller the other one's bytes. */
+  var bodyPem = "-----BEGIN A-----\n" + asn1.build.octetString(Buffer.alloc(17, 0x41)).toString("base64") +
+    "\n-----END A-----\n";
+  var bothText = "\n" + bodyPem;
+  var both = Buffer.concat([Buffer.from([0x43, bothText.length]), Buffer.from(bothText, "latin1")]);
+  check("coerceToDer: the fixture really is both readings at once",
+    (function () {
+      var derCode = code(function () { asn1.decode(both); });
+      var pemCode = code(function () { pkix.pemDecode(both, null, errors.PemError); });
+      return derCode === "NO-THROW" && pemCode === "NO-THROW" &&
+        pkix.pemDecode(both, null, errors.PemError).length === 19 && bothText.length <= 126;
+    })());
+  check("coerceToDer: a byte source that is both one complete DER value and a PEM block is refused " +
+    "rather than read as one of them",
+  (function () {
+    var e = null;
+    try { pkix.coerceToDer(both, derOpts); } catch (err) { e = err; }
+    return !!e && e.code === "path/bad-input" && e.message.indexOf("both") !== -1;
+  })());
+  check("CONTROL: the same text as a string is PEM, which is the unambiguous way to say so",
+    pkix.pemDecode(bothText, null, errors.PemError).length === 19);
+  check("CONTROL: one more byte breaks the DER length, so the same text as bytes is PEM again",
+    (function () {
+      var r = pkix.coerceToDer(Buffer.concat([both, Buffer.from("\n", "latin1")]), derOpts);
+      return Buffer.isBuffer(r) && r.length === 19;
+    })());
+
+  /* The rule is that a boundary preceded by a byte no text file carries is not armor, since DER is
+   * binary. ASCII whitespace is carried by text files, and the set has six members: tab, line feed,
+   * vertical tab, form feed, carriage return and space. Vertical tab and form feed were missing, so a
+   * PEM file whose preamble held one was routed to the DER parser and refused there. The other bytes
+   * outside the set stay outside it: a preamble holding a NUL or a high byte means the buffer is not
+   * text, and a PEM file that genuinely carries one is passed as a string. */
+  var certPem = require("../helpers").vectors.CERT_EC_PEM;
+  var asciiWhitespace = [0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x20];
+  var whitespaceGap = [];
+  asciiWhitespace.forEach(function (c) {
+    var buf = Buffer.from(String.fromCharCode(c) + "\n" + certPem, "latin1");
+    var r;
+    try { r = pkix.coerceToDer(buf, { pemLabel: "CERTIFICATE", PemError: errors.PemError,
+      ErrorClass: errors.PathError, prefix: "path" }); }
+    catch (e) { whitespaceGap.push("0x" + c.toString(16) + " -> " + e.code); return; }
+    if (r.length >= buf.length) whitespaceGap.push("0x" + c.toString(16) + " -> routed as DER");
+  });
+  check("coerceToDer: a PEM boundary after any of the six ASCII whitespace bytes is armor: " +
+    whitespaceGap.join("; "), whitespaceGap.length === 0);
+  check("coerceToDer: a boundary after a byte no text file carries is still routed as DER",
+    [0x00, 0x01, 0x7f, 0x80, 0xfe].every(function (c) {
+      var buf = Buffer.from(String.fromCharCode(c) + "\n" + certPem, "latin1");
+      var r = pkix.coerceToDer(buf, { pemLabel: "CERTIFICATE", PemError: errors.PemError,
+        ErrorClass: errors.PathError, prefix: "path" });
+      return Buffer.isBuffer(r) && r.length === buf.length;
+    }));
+
   // decodeRoot wraps a codec fault in the caller's <prefix>/bad-der (indefinite
   // length is rejected by the strict DER decoder).
   check("decodeRoot: undecodable DER -> <prefix>/bad-der",

@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.8.30",
+  "packageVersion": "0.8.31",
   "surface": {
     "C": {
       "kind": "object",
@@ -96,6 +96,12 @@
               "kind": "number"
             },
             "DH_PRIME_MEMO_ENTRIES": {
+              "kind": "number"
+            },
+            "DUMP_MAX_NODES": {
+              "kind": "number"
+            },
+            "DUMP_MAX_VALUE_BYTES": {
               "kind": "number"
             },
             "HEADER_LINE_MAX_OCTETS": {
@@ -1556,6 +1562,12 @@
             "DH_PRIME_MEMO_ENTRIES": {
               "kind": "number"
             },
+            "DUMP_MAX_NODES": {
+              "kind": "number"
+            },
+            "DUMP_MAX_VALUE_BYTES": {
+              "kind": "number"
+            },
             "HEADER_LINE_MAX_OCTETS": {
               "kind": "number"
             },
@@ -2786,6 +2798,10 @@
         "any": {
           "kind": "function",
           "arity": 1
+        },
+        "asn1": {
+          "kind": "function",
+          "arity": 2
         },
         "attrcert": {
           "kind": "function",
@@ -4177,6 +4193,7 @@
     "pki.inspect.ocspResponse": "0.8.29",
     "pki.inspect.tsp": "0.8.29",
     "pki.inspect.attrcert": "0.8.29",
+    "pki.inspect.asn1": "0.8.31",
     "pki.inspect.any": "0.3.8",
     "pki.jose.base64url.encode": "0.1.25",
     "pki.jose.base64url.decode": "0.1.25",
