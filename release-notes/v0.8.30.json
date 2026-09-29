@@ -1,8 +1,8 @@
 {
-  "version": "0.8.29",
+  "version": "0.8.30",
   "date": "2026-09-29",
-  "headline": "Every format the toolkit detects now renders a report, and a report never prints a private key.",
-  "summary": "`pki.inspect` rendered four of the fifteen formats `pki.schema.all()` detects, and refused the rest with `inspect/unsupported-format`. It now renders all of them, each through its own named verb as well as through `pki.inspect.any`, so an operator holding a PKCS#12 file or an OCSP response reads it the same way they read a certificate. A PKCS#8 and a PKCS#12 both carry a private key, and neither report prints one: each names the algorithm and says a private key is present, never its bytes.",
+  "headline": "The 0.8.30 tarball is the one to install for everything 0.8.29 added.",
+  "summary": "0.8.29 was tagged but never published: its changelog entry carried the day its commit fell on locally rather than the UTC day the release gate reads, and the publish run stopped on the mismatch. The tag cannot be moved, so this release carries the same contents under a version that ships. Everything listed below arrives here; install 0.8.30. `pki.inspect` rendered four of the fifteen formats `pki.schema.all()` detects, and refused the rest with `inspect/unsupported-format`. It now renders all of them, each through its own named verb as well as through `pki.inspect.any`, so an operator holding a PKCS#12 file or an OCSP response reads it the same way they read a certificate. A PKCS#8 and a PKCS#12 both carry a private key, and neither report prints one: each names the algorithm and says a private key is present, never its bytes.",
   "sections": {
     "Added": [
       "Ten reports, one per format that had none: `pki.inspect.pkcs8`, `pki.inspect.pkcs12`, `pki.inspect.crmf`, `pki.inspect.cmp`, `pki.inspect.csrattrs`, `pki.inspect.trustanchor`, `pki.inspect.ocspRequest`, `pki.inspect.ocspResponse`, `pki.inspect.tsp` and `pki.inspect.attrcert`. Each takes a PEM string, a DER Buffer, or that format's own parse result, refuses a wrong-format input with its own `inspect/bad-*` code, and is best-effort in the same way the certificate report is: a valid but unusual structure renders rather than throwing.",
