@@ -758,6 +758,30 @@ async function runPopulatedFormats(f) {
   check("P1f. and one embedding a certificate that does not match its signer says so too",
     pki.schema.pkcs12.parse(swapped).authSafeSigned.certificates.length === 1 &&
     has(swappedR, "opts.signerCerts"));
+  // Two encodings of one name are one name, so the match is the RFC 5280 sec. 7.1 canonical comparison through
+  // the shared home. The signer identifier here names `CN=signer` where the embedded certificate's issuer is
+  // `CN=Signer`: canonically the same, byte-different, and compared as bytes the report would ask for a
+  // certificate the store already has.
+  var siSet = sdNode.children[sdNode.children.length - 1];
+  var si = siSet.children[0];
+  var signerIssuerDn = pki.schema.x509.parse(f.cert).issuer.dn;
+  var lowerSid = b.sequence([b.raw(pki.x509.parseDn(signerIssuerDn.toLowerCase()).bytes),
+    b.raw(si.children[1].children[1].bytes)]);
+  var sdKids = sdNode.children.slice();
+  sdKids[sdKids.length - 1] = b.set([b.sequence(si.children.map(function (k, i) {
+    return i === 1 ? lowerSid : b.raw(k.bytes);
+  }))]);
+  var caseOnly = b.sequence([b.raw(pfxNode.children[0].bytes),
+    b.sequence([b.raw(ciNode.children[0].bytes), b.explicit(0, b.sequence(sdKids.map(function (k, i) {
+      return i === sdKids.length - 1 ? k : b.raw(k.bytes);
+    })))])]);
+  var caseR = pki.inspect.pkcs12(caseOnly);
+  // The signer identifier's name now differs from the certificate's issuer in case, which is a byte difference
+  // and not a name difference, so the canonical comparison matches them and no certificate is asked for.
+  var caseSidDn = pki.schema.pkcs12.parse(caseOnly).authSafeSigned.signerInfos[0].sid.issuer.dn;
+  check("P1g. and a signer named by a canonically equal encoding still counts as matched (" + caseSidDn + ")",
+    caseSidDn !== signerIssuerDn && caseSidDn.toLowerCase() === signerIssuerDn.toLowerCase() &&
+    !has(caseR, "opts.signerCerts"));
 
   // A CRMF template carrying every optional field the report reads.
   // A serialNumber is only a field of a REVOCATION template (crmf-sign's REVOCATION_TEMPLATE_KEYS), so a
@@ -1031,6 +1055,16 @@ async function runPopulatedFormats(f) {
   { mac: { secret: "s3cret" } });
   check("P13. a MAC-protected CMP message reports its sender key id",
     has(pki.inspect.cmp(macCmp), "Sender Key ID:"));
+  // The error arm is expanded where the others are only named, because its CONTENT is the whole diagnostic and
+  // no other verb renders it: naming the arm told a reader only that something went wrong.
+  var errCmp = await pki.cmp.build({ header: { sender: { directoryName: "CN=An Erroring Subject" },
+    recipient: { directoryName: "CN=An Erroring CA" }, transactionID: Buffer.alloc(16, 7) },
+  body: { error: { pKIStatusInfo: { status: 2, statusString: ["no good"], failInfo: ["badRequest"] },
+    errorCode: 7, errorDetails: ["a detail"] } } }, { cert: cert, key: key });
+  var errR = pki.inspect.cmp(errCmp);
+  check("P13b. and an error body renders its status, failure bits, code and details",
+    has(errR, "Arm: error") && has(errR, "name: rejection") && has(errR, "no good") &&
+    has(errR, "badRequest") && has(errR, "errorCode: 7") && has(errR, "a detail"));
 
   // An attribute certificate whose holder takes the baseCertificateID form rather than a name, and which
   // carries an extension: two branches a holder named by entity alone never reaches.
