@@ -188,6 +188,28 @@ async function runCheckpoint() {
   check("C6: a tree size of 0 is accepted, which is how an empty tree states itself",
     pki.tlog.parseCheckpoint("o\n0\n" + pki.merkle.emptyRootHash().toString("base64") + "\n\n" +
       EM_DASH + " o " + Buffer.alloc(8).toString("base64") + "\n").treeSize === 0n);
+  /* A tree size is a uint64, which is the width pki.merkle carries a coordinate
+     at. Parsing one it will not fold defers the refusal to the fold and hands a
+     caller reading treeSize an unbounded value in the meantime. */
+  function sized(sz) {
+    return "o\n" + sz + "\n" + root.toString("base64") + "\n\n" + EM_DASH + " o " +
+      Buffer.alloc(8).toString("base64") + "\n";
+  }
+  check("C6a: the largest uint64 tree size is accepted",
+    pki.tlog.parseCheckpoint(sized("18446744073709551615")).treeSize === 18446744073709551615n);
+  check("C6b: a tree size one past the uint64 ceiling is refused",
+    codeOf(function () { pki.tlog.parseCheckpoint(sized("18446744073709551616")); }) === "tlog/bad-checkpoint");
+  check("C6c: a 400-digit tree size is refused on its width, not folded into a BigInt",
+    codeOf(function () { pki.tlog.parseCheckpoint(sized(new Array(401).join("9"))); }) === "tlog/bad-checkpoint");
+  /* The bounds agree: whatever pki.merkle then says about the proof geometry,
+     it does not reject the coordinate itself as out of range. */
+  check("C6d: the largest tree size pki.tlog accepts is one pki.merkle's coordinate guard takes",
+    codeOf(function () {
+      pki.merkle.verifyInclusion({
+        leafIndex: 0n, treeSize: pki.tlog.parseCheckpoint(sized("18446744073709551615")).treeSize,
+        leafHash: root, proof: [], rootHash: root,
+      });
+    }) === "merkle/bad-proof-length");
   check("C7: a tree size that is not decimal is refused",
     codeOf(function () {
       pki.tlog.parseCheckpoint("o\n0x5\n" + root.toString("base64") + "\n\n" + EM_DASH + " o " +

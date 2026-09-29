@@ -4,6 +4,20 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.35 — 2026-09-29
+
+A builder encodes the number you wrote, or refuses it.
+
+### Changed
+
+- `pki.cbor.build.uint`, `int`, `nint`, `biguint`, `time` and `tag` refuse a string, a boolean, an array, `null` and a fractional or out-of-range Number where they previously converted some of them. A caller passing an integer, a BigInt, or a Date to `build.time` is unaffected. This is the shape those builders were documented to take; nothing in the toolkit passed anything else.
+
+### Fixed
+
+- A CBOR builder no longer converts a non-integer argument. `build.uint("")` encoded CBOR `0`, so a value that was never supplied became a legitimate zero; `build.uint("0x10")` encoded 16; `build.uint(" 16 ")` and `build.uint("007")` encoded 16 and 7; `build.uint(true)` encoded 1; and `build.tag("", inner)` produced tag 0, the RFC 8949 date-time tag, over content that was not a date. Each is now `cbor/bad-argument`, naming the value. A safe-integer Number, a BigInt and a Date where one was already accepted are unchanged.
+- A non-integer Number reaching a CBOR builder is a typed `cbor/bad-argument` rather than a raw `RangeError` escaping from the conversion, so a caller catching the toolkit's own error class sees it.
+- A checkpoint tree size is bounded to a uint64. `pki.tlog.parseCheckpoint` accepted a size of any width while `pki.merkle` refuses a coordinate at or above 2^64, so a checkpoint parsed and then failed at the fold, and a caller reading `treeSize` in between held an unbounded value. A size past the ceiling, or a run of digits too long to be one, is now `tlog/bad-checkpoint` at the parse.
+
 ## v0.8.34 — 2026-09-29
 
 Build the tree, and produce the proofs a verifier folds back to its root.
