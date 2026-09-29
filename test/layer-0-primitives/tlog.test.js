@@ -89,12 +89,28 @@ async function runNoteFormat() {
    * a re-serializing parser gets wrong, because it rebuilds the text it wanted rather than reading
    * the text that was signed. */
   var alteredText = note.replace("\n5\n", "\n6\n");
-  check("N7: altering a byte of the text fails verification",
-    (await pki.tlog.verifyNote(alteredText, [{ name: alice.name, publicKey: alice.raw }])).verified === false);
-  var noTrailingNewline = text.slice(0, -1) + "\n\n" + note.slice(note.indexOf(EM_DASH));
-  check("N8: a note whose text lost its trailing newline does not verify under the original signature",
-    (await pki.tlog.verifyNote(noTrailingNewline, [{ name: alice.name, publicKey: alice.raw }])).verified === false ||
-      true);
+  /* The signature line still names a key the caller supplied, by name and by id,
+     so this is the specification's "a signature from a known key fails to verify"
+     case and the whole note is rejected. That is a different rule from "no
+     signature from a known key verifies", which resolves a false verdict. */
+  check("N7: altering a byte of the text rejects the note",
+    await codeOfAsync(pki.tlog.verifyNote(alteredText, [{ name: alice.name, publicKey: alice.raw }])) === "tlog/bad-signature");
+
+  /* The signed range includes the text's trailing newline. Proven by signing the
+     text WITHOUT it and offering that signature on a well-formed note: the
+     verifier hashes the newline the signer did not, so it must not verify.
+
+     The previous form of this vector built its input as
+     `text.slice(0, -1) + "\n\n"`, which is byte-identical to `text + "\n"`, so it
+     re-signed and re-checked the same note and could only pass; its assertion was
+     also written `x === false || true`, which is true whatever x is. Both are
+     replaced here. */
+  var sigOverShortText = Buffer.from(await pki.webcrypto.subtle.sign({ name: "Ed25519" },
+    alice.pair.privateKey, Buffer.from(text.slice(0, -1), "utf8")));
+  var shortSigNote = text + "\n" + EM_DASH + " " + alice.name + " " +
+    Buffer.concat([pki.tlog.keyId(alice.name, alice.raw), sigOverShortText]).toString("base64") + "\n";
+  check("N8: a signature made over the text without its trailing newline is rejected",
+    await codeOfAsync(pki.tlog.verifyNote(shortSigNote, [{ name: alice.name, publicKey: alice.raw }])) === "tlog/bad-signature");
 
   /* "Verifiers MUST ignore signatures from unknown keys" and "If no signature from a known key
    * verifies successfully, clients MUST reject the note." Those are two separate rules: an unknown
@@ -655,8 +671,14 @@ async function runTileProofs() {
     pki.tlog.parseTile(new Uint8Array(64)).length === 2);
   check("X20: an entry bundle still parses from bytes",
     pki.tlog.parseEntryBundle(Buffer.from([0, 3, 97, 98, 99])).length === 1);
+  /* A real key, not a placeholder: 32 zero bytes are not a valid Edwards point,
+     and the low-order gate refuses them at resolution rather than letting an
+     unusable key be given an identifier. */
+  var realEd = await makeSigner("x21.example");
   check("X21: a key ID is still derived from raw key bytes",
-    pki.tlog.keyId("example.com/log", Buffer.alloc(32)).length === 4);
+    pki.tlog.keyId("example.com/log", realEd.raw).length === 4);
+  check("X21b: and a key that is not a full-order Edwards point never gets one",
+    codeOf(function () { pki.tlog.keyId("example.com/log", Buffer.alloc(32)); }) === "tlog/bad-input");
   check("X22: something that is neither text nor bytes is refused as neither",
     codeOf(function () { pki.tlog.parseTile(null); }) === "tlog/bad-input" &&
     codeOf(function () { pki.tlog.parseTile(42); }) === "tlog/bad-input" &&
@@ -731,6 +753,200 @@ async function runTileProofs() {
     }) === true);
 }
 
+// ---------------------------------------------------------------------------
+// The three signed-note signature types, and the verifier key text form.
+//
+// signed-note fixes one derivation per algorithm, and they are NOT variations
+// on a theme: Ed25519 hashes the name, a newline, the type byte and the raw 32
+// key bytes, while ECDSA hashes the DER SPKI ALONE -- no name, no type byte.
+// Sigstore adds an RSA form with type 0xFF and a literal format tag. A verifier
+// that applied one derivation to every key would match no key at all on a log
+// that does not use its assumed algorithm.
+// ---------------------------------------------------------------------------
+var RSA_FORMAT_TAG = "PKIX-RSA-PKCS#1v1.5";
+
+function rawOf(spki) {
+  return pki.asn1.decode(spki).children[1].content.subarray(1);
+}
+function sha4(buf) { return nodeCrypto.createHash("sha256").update(buf).digest().subarray(0, 4); }
+
+async function runKeyTypes() {
+  /* The specification's own worked verifier key. Confirmed to reproduce before
+     this vector was written, so it is a control minted from the spec rather than
+     from the implementation. */
+  var VKEY = "example.com/foo+530d903a+AekyeRrm56hApGFkyQR4ZCbV54Id2LKaANYcrnKv3U2k";
+  var parsed = pki.tlog.parseVkey(VKEY);
+  check("K1: the specification's own vkey parses into its three parts",
+    parsed.name === "example.com/foo" && parsed.signatureType === 0x01 &&
+    parsed.publicKey.length === 32 && parsed.keyId.toString("hex") === "530d903a");
+  check("K1b: and the ID it states is the ID its key material derives",
+    pki.tlog.keyId(parsed.name, parsed.publicKey).toString("hex") === "530d903a");
+
+  /* Ed25519: name, newline, the type byte, then the RAW key. */
+  var ed = await pki.key.generate("Ed25519");
+  var edSpki = await pki.key.export(ed.publicKey);
+  var edRaw = rawOf(edSpki);
+  var expectEd = sha4(Buffer.concat([Buffer.from("a.example\n", "utf8"), Buffer.from([0x01]), edRaw]));
+  check("K2: an Ed25519 key ID is SHA-256(name || 0x0A || 0x01 || raw32)[:4]",
+    pki.tlog.keyId("a.example", edRaw).toString("hex") === expectEd.toString("hex"));
+  /* One key must have one ID however the caller holds it. */
+  check("K3: the same Ed25519 key gives the same ID from its SPKI as from its raw bytes",
+    pki.tlog.keyId("a.example", edSpki).toString("hex") === expectEd.toString("hex"));
+
+  /* ECDSA: the SPKI alone. The name and the type byte are absent, which is the
+     departure the specification calls out, and the point of this vector. */
+  var ec = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var ecSpki = ec.publicKey.export({ format: "der", type: "spki" });
+  check("K4: an ECDSA key ID is SHA-256(spkiDer)[:4], with no name and no type byte",
+    pki.tlog.keyId("a.example", ecSpki).toString("hex") === sha4(ecSpki).toString("hex"));
+  check("K4b: so the same ECDSA key has one ID under two different names",
+    pki.tlog.keyId("a.example", ecSpki).toString("hex") ===
+    pki.tlog.keyId("b.example", ecSpki).toString("hex"));
+  check("K4c: while an Ed25519 key's ID does depend on its name",
+    pki.tlog.keyId("a.example", edRaw).toString("hex") !==
+    pki.tlog.keyId("b.example", edRaw).toString("hex"));
+
+  /* RSA: type 0xFF and a literal format tag between it and the SPKI. */
+  var rsa = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  var rsaSpki = rsa.publicKey.export({ format: "der", type: "spki" });
+  var expectRsa = sha4(Buffer.concat([Buffer.from("a.example\n", "utf8"), Buffer.from([0xff]),
+    Buffer.from(RSA_FORMAT_TAG, "utf8"), rsaSpki]));
+  check("K5: an RSA key ID carries type 0xFF and the PKIX-RSA format tag",
+    pki.tlog.keyId("a.example", rsaSpki).toString("hex") === expectRsa.toString("hex"));
+
+  /* An algorithm with no stated derivation is refused, not hashed anyway. */
+  var x = nodeCrypto.generateKeyPairSync("x25519");
+  check("K6: a key whose algorithm has no stated derivation is refused",
+    codeOf(function () { pki.tlog.keyId("a.example", x.publicKey.export({ format: "der", type: "spki" })); }) === "tlog/bad-input");
+  check("K6b: and so is a byte string that is neither raw Ed25519 nor an SPKI",
+    codeOf(function () { pki.tlog.keyId("a.example", Buffer.alloc(40)); }) === "tlog/bad-input");
+
+  /* parseVkey refusals. The stated ID is checked against the derived one, so a
+     vkey cannot name a key it does not carry. */
+  check("K7: a vkey with no separators is refused",
+    codeOf(function () { pki.tlog.parseVkey("example.com/foo"); }) === "tlog/bad-input");
+  check("K7b: a vkey whose stated ID is not 8 hex digits is refused",
+    codeOf(function () { pki.tlog.parseVkey("n+53+" + Buffer.from([1]).toString("base64")); }) === "tlog/bad-input");
+  check("K7c: a vkey whose stated ID is not the one its key derives is refused",
+    codeOf(function () {
+      pki.tlog.parseVkey("example.com/foo+deadbeef+AekyeRrm56hApGFkyQR4ZCbV54Id2LKaANYcrnKv3U2k");
+    }) === "tlog/bad-input");
+  check("K7d: a vkey with an empty name is refused",
+    codeOf(function () { pki.tlog.parseVkey("+530d903a+AekyeRrm56hApGFkyQR4ZCbV54Id2LKaANYcrnKv3U2k"); }) === "tlog/bad-input");
+  check("K7e: a vkey whose blob is empty is refused",
+    codeOf(function () { pki.tlog.parseVkey("n+530d903a+"); }) === "tlog/bad-input");
+  /* A key name may not carry a plus, so the name is everything before the FIRST
+     separator rather than the last; a vkey with three pluses is not a name
+     containing one. */
+  check("K7f: a name may not carry a plus",
+    codeOf(function () {
+      pki.tlog.parseVkey("a+b+530d903a+AekyeRrm56hApGFkyQR4ZCbV54Id2LKaANYcrnKv3U2k");
+    }) === "tlog/bad-input");
+
+  /* A note signed under each algorithm verifies, which is what says the key ID
+     derivation and the signature check agree about which key is which. */
+  var text = "example.com/log\n0\n" + pki.merkle.emptyRootHash().toString("base64") + "\n";
+  var msg = Buffer.from(text, "utf8");
+
+  var ecSig = nodeCrypto.sign("sha256", msg, { key: ec.privateKey, dsaEncoding: "der" });
+  var ecNote = text + "\n" + EM_DASH + " example.com/log " +
+    Buffer.concat([pki.tlog.keyId("example.com/log", ecSpki), ecSig]).toString("base64") + "\n";
+  var ecV = await pki.tlog.verifyNote(ecNote, [{ name: "example.com/log", publicKey: ecSpki }]);
+  check("K8: a note signed by an ECDSA P-256 log key verifies", ecV.verified === true);
+
+  /* All three curves the specification names, not just the one Rekor happens to
+     use: the hash follows the curve, so a P-384 key checked with SHA-256 would
+     fail and a claim of three curves tested on one says nothing about the other
+     two. */
+  var CURVES = [["prime256v1", "sha256"], ["secp384r1", "sha384"], ["secp521r1", "sha512"]];
+  var curveOk = 0;
+  for (var ci = 0; ci < CURVES.length; ci++) {
+    var kp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: CURVES[ci][0] });
+    var spki = kp.publicKey.export({ format: "der", type: "spki" });
+    var sg = nodeCrypto.sign(CURVES[ci][1], msg, { key: kp.privateKey, dsaEncoding: "der" });
+    var nt = text + "\n" + EM_DASH + " example.com/log " +
+      Buffer.concat([pki.tlog.keyId("example.com/log", spki), sg]).toString("base64") + "\n";
+    var vv = await pki.tlog.verifyNote(nt, [{ name: "example.com/log", publicKey: spki }]);
+    if (vv.verified === true) curveOk++;
+  }
+  check("K8b: every ECDSA curve the specification names verifies (" + curveOk + "/3)", curveOk === 3);
+  /* And the hash is not fixed: a P-384 key whose signature was made with SHA-256
+     does not verify, which is what says the curve chose the hash. */
+  var p384 = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "secp384r1" });
+  var p384Spki = p384.publicKey.export({ format: "der", type: "spki" });
+  var wrongHashSig = nodeCrypto.sign("sha256", msg, { key: p384.privateKey, dsaEncoding: "der" });
+  var wrongHashNote = text + "\n" + EM_DASH + " example.com/log " +
+    Buffer.concat([pki.tlog.keyId("example.com/log", p384Spki), wrongHashSig]).toString("base64") + "\n";
+  check("K8c: a P-384 signature made with SHA-256 is rejected, so the curve chose the hash",
+    await codeOfAsync(pki.tlog.verifyNote(wrongHashNote,
+      [{ name: "example.com/log", publicKey: p384Spki }])) === "tlog/bad-signature");
+
+  var rsaSig = nodeCrypto.sign("sha256", msg, rsa.privateKey);
+  var rsaNote = text + "\n" + EM_DASH + " example.com/log " +
+    Buffer.concat([pki.tlog.keyId("example.com/log", rsaSpki), rsaSig]).toString("base64") + "\n";
+  var rsaV = await pki.tlog.verifyNote(rsaNote, [{ name: "example.com/log", publicKey: rsaSpki }]);
+  check("K9: a note signed by an RSA log key verifies", rsaV.verified === true);
+
+  /* A signature that does not verify under a key whose name AND ID both match
+     rejects the note, per the specification, rather than being skipped. */
+  var badEc = Buffer.from(ecSig); badEc[badEc.length - 1] ^= 0x01;
+  var badNote = text + "\n" + EM_DASH + " example.com/log " +
+    Buffer.concat([pki.tlog.keyId("example.com/log", ecSpki), badEc]).toString("base64") + "\n";
+  check("K10: a matched ECDSA key whose signature fails rejects the note",
+    await codeOfAsync(pki.tlog.verifyNote(badNote, [{ name: "example.com/log", publicKey: ecSpki }])) === "tlog/bad-signature");
+  /* The load-bearing form: a FAILING matched line beside a VALID matched line.
+     Without the second line this tests only "nothing verified"; with it, it tests
+     that a forged line from a known signer is not masked by a real one. */
+  var ed2Sig = Buffer.from(await pki.webcrypto.subtle.sign({ name: "Ed25519" }, ed.privateKey, msg));
+  var goodEdLine = EM_DASH + " second.example " +
+    Buffer.concat([pki.tlog.keyId("second.example", edRaw), ed2Sig]).toString("base64");
+  var badThenGood = text + "\n" +
+    EM_DASH + " example.com/log " + Buffer.concat([pki.tlog.keyId("example.com/log", ecSpki), badEc]).toString("base64") + "\n" +
+    goodEdLine + "\n";
+  check("K10b: a valid line does not rescue a note carrying a failing matched line",
+    await codeOfAsync(pki.tlog.verifyNote(badThenGood, [
+      { name: "example.com/log", publicKey: ecSpki },
+      { name: "second.example", publicKey: edRaw },
+    ])) === "tlog/bad-signature");
+  /* And the control: the same note without the failing line verifies, so the
+     refusal above is about that line and not about the note's shape. */
+  check("K10c: the same note without the failing line verifies",
+    (await pki.tlog.verifyNote(text + "\n" + goodEdLine + "\n",
+      [{ name: "second.example", publicKey: edRaw }])).verified === true);
+  /* A line naming a key the caller never supplied is ignored, not a failure:
+     that is the cosignature case, and it carries no claim to check. */
+  var unknownLine = EM_DASH + " witness.example " + Buffer.concat([Buffer.from([1, 2, 3, 4]), Buffer.alloc(64)]).toString("base64");
+  check("K10d: a line from a key the caller did not supply is ignored, not a rejection",
+    (await pki.tlog.verifyNote(text + "\n" + goodEdLine + "\n" + unknownLine + "\n",
+      [{ name: "second.example", publicKey: edRaw }])).verified === true);
+
+  /* The origin binding. A valid signature from log A over log A's tree is not
+     evidence about log B, and with two logs pinned that is the whole difference. */
+  var okOrigin = await pki.tlog.verifyCheckpoint(ecNote,
+    [{ name: "example.com/log", publicKey: ecSpki }], { origin: "example.com/log" });
+  check("K11: a checkpoint whose origin is the one pinned for the signing key verifies",
+    okOrigin.verified === true && okOrigin.checkpoint.origin === "example.com/log");
+  check("K12: a checkpoint whose origin is not the pinned one is refused even though it verifies",
+    await codeOfAsync(pki.tlog.verifyCheckpoint(ecNote,
+      [{ name: "example.com/log", publicKey: ecSpki }], { origin: "other.example/log" })) === "tlog/origin-mismatch");
+  check("K13: with no expected origin the origin is read but not judged",
+    (await pki.tlog.verifyCheckpoint(ecNote, [{ name: "example.com/log", publicKey: ecSpki }])).verified === true);
+  /* A Rekor v1 origin carries the tree ID after a space, so it is not the key
+     name. Reading the origin off the key name would reject every v1 checkpoint. */
+  var v1Text = "rekor.sigstore.dev - 1193050959916656506\n0\n" +
+    pki.merkle.emptyRootHash().toString("base64") + "\n";
+  var v1Sig = nodeCrypto.sign("sha256", Buffer.from(v1Text, "utf8"), { key: ec.privateKey, dsaEncoding: "der" });
+  var v1Note = v1Text + "\n" + EM_DASH + " rekor.sigstore.dev " +
+    Buffer.concat([pki.tlog.keyId("rekor.sigstore.dev", ecSpki), v1Sig]).toString("base64") + "\n";
+  var v1 = await pki.tlog.verifyCheckpoint(v1Note, [{ name: "rekor.sigstore.dev", publicKey: ecSpki }],
+    { origin: "rekor.sigstore.dev - 1193050959916656506" });
+  check("K14: an origin that is not the key name, as Rekor v1 writes it, still verifies",
+    v1.verified === true);
+  check("K15: an unknown verifyCheckpoint option is refused",
+    await codeOfAsync(pki.tlog.verifyCheckpoint(ecNote,
+      [{ name: "example.com/log", publicKey: ecSpki }], { Origin: "x" })) === "tlog/bad-input");
+}
+
 async function run() {
   await runNoteFormat();
   await runCheckpoint();
@@ -738,6 +954,7 @@ async function run() {
   runTileData();
   runTileWidths();
   await runTileProofs();
+  await runKeyTypes();
   await runDoors();
   await runHostileBytes();
 }

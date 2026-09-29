@@ -4,6 +4,22 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.37 — 2026-09-29
+
+Read a transparency log's key whatever algorithm it signs with, and reject a note whose known signer does not verify.
+
+### Added
+
+- `pki.tlog.keyId` and `pki.tlog.verifyNote` take an ECDSA key over P-256, P-384 or P-521, and an RSA key, alongside Ed25519. The derivation is read off the key material, so a key cannot be hashed under an algorithm it is not: Ed25519 is `SHA-256(name || 0x0A || 0x01 || raw32)`, ECDSA is `SHA-256(spkiDer)` with neither the name nor a type byte, and RSA is `SHA-256(name || 0x0A || 0xFF || "PKIX-RSA-PKCS#1v1.5" || spkiDer)`. An ECDSA signature is checked with the hash its curve calls for, so a P-384 log key is not verified with SHA-256. An algorithm with no stated derivation is refused rather than hashed under an assumed one.
+- An Ed25519 key may be supplied as its raw 32 bytes or as a SubjectPublicKeyInfo, and both give the same identifier, because one key has one identity.
+- `pki.tlog.parseVkey` reads the `<name>+<hex key ID>+<base64 signature type and key>` form a log publishes to identify itself. The stated key ID is checked against the one the key material derives and the stated signature type against the algorithm that material is, so a verifier key cannot name a key it does not carry. A key name may not contain a plus, so the name ends at the first separator.
+- `pki.tlog.verifyCheckpoint` takes `opts.origin` and refuses `tlog/origin-mismatch` when the checkpoint names a different one, even where the signature verifies. A valid signature from one log over its own tree is not evidence about another log's tree, and with more than one log pinned that is the whole difference. The expected origin is the caller's value and never the key name from the signature line: a Rekor v1 origin appends the tree ID after a space, which a key name may not contain.
+
+### Fixed
+
+- A signature line naming a supplied key by both name and key ID, which no such key verifies, now rejects the whole note with `tlog/bad-signature`. It was skipped, so a note carrying a forged line from a known signer resolved `verified: true` on the strength of a different line. A line naming a key the caller did not supply is still ignored, which is the separate rule for a co-signature, and a note carrying no signature from a supplied key still resolves `verified: false` without throwing.
+- An Ed25519 key passes the Edwards-point low-order gate where it is resolved rather than only where it is used, so a key that is not a full-order point is refused before it can be given an identifier or become a verification candidate.
+
 ## v0.8.36 — 2026-09-29
 
 Assemble a transparency-log inclusion proof from the tiles a log serves.

@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.8.36",
+  "packageVersion": "0.8.37",
   "surface": {
     "C": {
       "kind": "object",
@@ -3975,6 +3975,10 @@
           "kind": "function",
           "arity": 1
         },
+        "parseVkey": {
+          "kind": "function",
+          "arity": 1
+        },
         "tilePath": {
           "kind": "function",
           "arity": 3
@@ -3985,7 +3989,7 @@
         },
         "verifyCheckpoint": {
           "kind": "function",
-          "arity": 2
+          "arity": 3
         },
         "verifyNote": {
           "kind": "function",
@@ -4464,6 +4468,7 @@
     "pki.tlog.verifyNote": "0.8.33",
     "pki.tlog.parseCheckpoint": "0.8.33",
     "pki.tlog.verifyCheckpoint": "0.8.33",
+    "pki.tlog.parseVkey": "0.8.37",
     "pki.tlog.tilePath": "0.8.33",
     "pki.tlog.entryBundlePath": "0.8.33",
     "pki.tlog.checkpointPath": "0.8.33",
