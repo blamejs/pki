@@ -523,7 +523,16 @@ function runCaps() {
       "Incomplete: the report stopped after 2 nodes, the cap on one dump; " +
       "the next value begins at offset 4."));
 
-  check("G35: a cap that is not a non-negative integer is refused at the door",
+  /* `maxBytes` tightens and never raises: the shared parse door carries its own byte ceiling and
+   * applies it first, so a larger value could not take effect and is refused rather than accepted
+   * and then contradicted. The other three caps have no such ceiling above them. */
+  check("G35: a maxBytes above the byte ceiling is refused, since it could not take effect",
+    codeOf(function () { pki.inspect.asn1(CONTROL, { maxBytes: C.DER_MAX_BYTES + 1 }); }) === "TypeError");
+  check("G36: a maxBytes at the ceiling is accepted, and a smaller one still tightens",
+    typeof pki.inspect.asn1(CONTROL, { maxBytes: C.DER_MAX_BYTES }) === "string" &&
+      codeOf(function () { pki.inspect.asn1(CONTROL, { maxBytes: 4 }); }) === "inspect/bad-input");
+
+  check("G37: a cap that is not a non-negative integer is refused at the door",
     codeOf(function () { pki.inspect.asn1(CONTROL, { maxDepth: -1 }); }) === "TypeError" &&
       codeOf(function () { pki.inspect.asn1(CONTROL, { maxNodes: 1.5 }); }) === "TypeError" &&
       codeOf(function () { pki.inspect.asn1(CONTROL, { maxValueBytes: "8" }); }) === "TypeError");
