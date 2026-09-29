@@ -2005,6 +2005,19 @@ function testNoDuplicateCodeBlocks() {
       reason: "The options door a public verb opens with: settle the caller's options object, then refuse any key the verb does not accept. Both steps ARE the shared primitives, already factored into guard-identifier, so what repeats is the pair of calls and nothing else; the arguments differ at every site, since each verb has its own accepted-key table and its own label. Settling has to happen at the verb, before it reads anything, so the call cannot move inside the key check. family-subset so any 3+ match as more verbs adopt the door.",
     },
     {
+      // The caps a decoder declares before it reads a byte: one guard.limits call per cap it
+      // honors, each naming its own limit. guard.limits.cap and guard.limits.depthCap ARE the
+      // shared primitives, and the stack-safe ceiling depthCap adds is already enforced by the
+      // guard-shape-reinlined detector on `opts.maxDepth` / `depth + 1`, so what repeats here is
+      // the declaration of WHICH caps a decoder enforces and with what defaults. That declaration
+      // belongs at the decoder: a reader of decode() sees the caps it applies, and a shared table
+      // would name caps for decoders that do not read them. family-subset so a new decoder's run
+      // joins without re-editing the entry.
+      mode: "family-subset",
+      files: ["lib/asn1-der.js:decode", "lib/cbor-det.js:decode", "lib/inspect.js:asn1Dump"],
+      reason: "One guard.limits call per cap a decoder honors, each naming its own limit and default. cap and depthCap are the shared primitives already, so the repetition is the per-decoder declaration of which caps apply; the arguments differ at every site and the declaration has to stay at the decoder that enforces them.",
+    },
+    {
       // The per-module capture header: a run of `var _x = intrinsic.y;` bindings taking what the
       // module reads from the runtime before any caller code can reach it. The uniformity IS the
       // point -- every module binds the same names to the same intrinsics, so a reader comparing two

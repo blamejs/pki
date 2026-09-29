@@ -4,6 +4,18 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.31 — 2026-09-29
+
+A structural dump of any DER file, and it still reads the file when the strict decoder refuses it.
+
+### Added
+
+- `pki.inspect.asn1(input, opts?)` takes a PEM string or a DER Buffer and returns the structural dump as a string: per value the byte offset, the nesting depth, the header length, the content length, whether the value is constructed, the tag name, and for a primitive its rendered content. The offset, depth, header length, content length and form are written in the same fixed columns `openssl asn1parse` uses and are compared against it line for line across every seed corpus the toolkit ships, so the two outputs can be diffed directly. An OBJECT IDENTIFIER carries its dotted form and the name the registry has for it, which is the part `openssl` shows only for the OIDs its own table knows. An INTEGER carries its exact magnitude, read from the content bytes, with the bytes beside it once the value passes what a machine integer holds.
+- A UTCTime or a GeneralizedTime renders the bytes as written rather than a formatted date. A dump is what you reach for when a file is wrong, and a time normalized through a Date hides the malformation being looked for: a month of 13 rolls into January of the next year and reads as valid.
+- The report says which route produced it. `pki.asn1.decode` reads the input first. If it refuses, the first two lines name the walk and the refusal with its code and message, so a file that is not DER is explained rather than rejected: a truncated file, bytes after the top-level value, an indefinite length with its end-of-contents octets, a segmented OCTET STRING, a non-minimal long-form length, a SEQUENCE encoded primitive. The last line always states the outcome: the offset where the structure ends, or the offset of the value the walk could not read through and why, or the bytes that follow the top-level value, or the cap that stopped the report and where the next value begins. A partial dump cannot be read as a whole structure.
+- The walk returns text and never a node tree, so nothing downstream can consume a tolerantly read structure and no verify path is reached by it. It carries the same caps a parse carries, and the report is bounded on a hostile file rather than becoming the denial of service the parsers refuse: nesting past the depth cap and a report past the node cap each stop and say so on the last line, and a value past the byte cap renders the bytes the cap allows and states how many it left out. The node cap reaches the decoder as its item cap too, so a file of many small values never builds a tree larger than the report will print. `opts.maxBytes`, `opts.maxDepth`, `opts.maxNodes` and `opts.maxValueBytes` set the four per call, defaulting to `C.LIMITS.DER_MAX_BYTES`, `C.LIMITS.DER_MAX_DEPTH` and the new `C.LIMITS.DUMP_MAX_NODES` and `C.LIMITS.DUMP_MAX_VALUE_BYTES`.
+- This verb withholds no value, which is what a byte-level dump is for and the one place in `pki.inspect` where it is true: where the other reports name a key and print none of it, this one prints bytes, private key material included. The value cap bounds how much of a value is rendered rather than whether it is, so it controls report size and not disclosure. `pki.inspect.any` does not route to it, so a report reached by format detection still names a key without printing it, and `pki.inspect.pkcs8` remains the report for a key file.
+
 ## v0.8.30 — 2026-09-29
 
 The 0.8.30 tarball is the one to install for everything 0.8.29 added.
