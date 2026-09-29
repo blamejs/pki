@@ -697,7 +697,8 @@ async function runPopulatedFormats(f) {
   var taR = pki.inspect.trustanchor(taFull);
   check("P4. a populated trust anchor report carries its title and path controls",
     has(taR, "Form: taInfo") && has(taR, "Title: A Populated Anchor") &&
-    has(taR, "Certificate Path Controls:") && has(taR, "Path Length: 3") && has(taR, "Policies: 1"));
+    has(taR, "Certificate Path Controls:") && has(taR, "Path Length: 3") &&
+    has(taR, "Policies:") && has(taR, "anyPolicy"));
   // policyFlags is a BIT STRING the parser decodes to a record of named booleans, so the report has to
   // enumerate the ones that are SET: read as an array the line never ran at all and a trust anchor's
   // active policy restrictions were simply absent from the report.
@@ -722,6 +723,25 @@ async function runPopulatedFormats(f) {
     has(taConstrained, "Name Constraints:") && has(taConstrained, "Permitted:") &&
     has(taConstrained, "constrained.example") && taConstrained !== taOpen &&
     !has(taOpen, "Name Constraints:"));
+  // Which policies, not how many: a count made two anchors restricted to different single policies read the
+  // same, and which ones an anchor is restricted to is the question a reader is asking.
+  function policyAnchor(policyOid) {
+    return b.sequence([b.explicit(2, b.sequence([b.raw(spki), b.octetString(Buffer.alloc(20, 1)),
+      b.sequence([b.raw(pki.x509.parseDn("CN=A Policy Anchor").bytes),
+        b.implicit(1, b.sequence([b.sequence([b.oid(policyOid)])]))])]))]);
+  }
+  var polA = pki.inspect.trustanchor(policyAnchor("2.5.29.32.0"));
+  var polB = pki.inspect.trustanchor(policyAnchor("1.3.6.1.4.1.99999.5"));
+  check("P4d. and its policy identifiers are named, so two single-policy anchors differ",
+    has(polA, "anyPolicy (2.5.29.32.0)") && has(polB, "1.3.6.1.4.1.99999.5") && polA !== polB);
+  // RFC 5914 sec. 3's exts carry extensions that bound what trusting the anchor means, a basicConstraints
+  // path length among them. Skipped, an anchor carrying one read the same as one carrying none.
+  var bcExt = b.sequence([b.oid("2.5.29.19"), b.boolean(true),
+    b.octetString(b.sequence([b.boolean(true), b.integer(2n)]))]);
+  var taWithExts = pki.inspect.trustanchor(b.sequence([b.explicit(2, b.sequence([
+    b.raw(spki), b.octetString(Buffer.alloc(20, 1)), b.explicit(1, b.sequence([bcExt]))]))]));
+  check("P4e. and an anchor's own extensions are rendered, so a path-limited anchor reads differently",
+    has(taWithExts, "Extensions:") && has(taWithExts, "Basic Constraints") && has(taWithExts, "pathlen:2"));
   // The other two forms hold a CERTIFICATE, whose subject and public key are what name the anchor. Read as
   // though every form were TrustAnchorInfo, both rendered their form and nothing else, so two different
   // anchors produced the same report and neither could be told from the other.
