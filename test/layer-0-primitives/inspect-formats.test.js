@@ -461,6 +461,21 @@ async function runEveryDetectedFormat() {
   var attrR = pki.inspect.pkcs8(attrLeak);
   check("F3d. and an attribute whose value copies the private key is named, never rendered",
     !leaks(attrR, secret) && has(attrR, "1.3.6.1.4.1.99999.8") && has(attrR, "not rendered"));
+  // Every byte run a report on a key-bearing file emits is a channel, because the file's author chooses what
+  // sits there. An unknown algorithm's PARAMETERS are such a place, so they are named or withheld, never
+  // dumped: an OCTET STRING there can hold the key and the parser has no reason to refuse it.
+  var paramLeak = b.sequence([b.integer(0n),
+    b.sequence([b.oid("1.3.6.1.4.1.99999.9"), b.octetString(secret)]), b.octetString(secret)]);
+  var paramR = pki.inspect.pkcs8(paramLeak);
+  check("F3e. and an unknown algorithm's parameters are named or withheld, never dumped",
+    !leaks(paramR, secret) && has(paramR, "Algorithm Parameters: present") && has(paramR, "not rendered"));
+  // A PKCS#12 MAC salt is caller-supplied, so a store can carry the key bytes there. Its LENGTH is what says
+  // anything about the protection, so that is what the report gives.
+  var saltLeak = pki.inspect.pkcs12(await pki.pkcs12.build(
+    { safeContents: [{ bags: [{ type: "cert", cert: f.cert }] }] },
+    { password: "1234", mac: { salt: secret } }));
+  check("F3f. and a PKCS#12 MAC salt is reported by length, never by value",
+    !leaks(saltLeak, secret) && /Salt: \d+ bytes \(not rendered\)/.test(saltLeak));
   var p12 = pki.inspect.pkcs12(f.pkcs12);
   check("F4. a PKCS#12 report does NOT carry the private key bytes",
     p12.length > 40 && !leaks(p12, privInner));
@@ -834,9 +849,11 @@ async function runPopulatedFormats(f) {
   var p12Pbmac1 = await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: cert }] }] },
     { password: "1234", mac: { algorithm: "pbmac1", hash: "sha256", iterations: 2048 } });
   var pbR = pki.inspect.pkcs12(p12Pbmac1);
-  check("P5c. a PBMAC1 store reports the iterations and salt that actually protect it",
+  // The salt is reported by LENGTH, for the reason F3f gives: it is caller-supplied, so its value is another
+  // place a store could carry key bytes, and its length is what says anything about the protection.
+  check("P5c. a PBMAC1 store reports the iterations and the salt length that actually protect it",
     has(pbR, "Kind: pbmac1") && has(pbR, "Iterations: 2048") && has(pbR, "Key Derivation: hmacWithSHA256") &&
-    /Salt: [0-9a-f]{2}:/.test(pbR) && !has(pbR, "Iterations: 1"));
+    /Salt: \d+ bytes \(not rendered\)/.test(pbR) && !has(pbR, "Iterations: 1"));
 
   // An OCSP request carrying a per-request extension, which is a different list from the request's own.
   // singleRequestExtensions takes pre-encoded Extension DER, one per array member.
