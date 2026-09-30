@@ -1505,6 +1505,36 @@ security-only patches after the next major releases.
   inner message, a non-`message/rfc822` payload, or a duplicate Content-Type on
   either part reports `legacy: null`.
 
+- **A related-certificate proof answers one question, and only that one
+  (CWE-347).** RFC 9763 §3.1 signs the DER `IssuerAndSerialNumber` and the DER
+  `BinaryTime`, and nothing more. `locationInfo` rides in the same attribute and is
+  outside the signature, so a `true` from `pki.relatedCert.verifyRequest` says the
+  requester holds the certificate `certID` names and says nothing about the URIs
+  beside it: a caller that fetches from `locationInfo` on the strength of that
+  verdict is fetching from an unauthenticated field. The verb's vectors assert this
+  scope in both directions, that altering `requestTime` breaks the proof and that
+  altering `locationInfo` does not. Handing the verb a certificate other than the
+  one `certID` names throws rather than returning `false`, because a proof checked
+  against an unnamed certificate answers a different question than the one asked.
+  The three issuer-side checks §4.1 requires beyond the signature — retrieving and
+  path-validating the referenced certificate, judging `requestTime` freshness, and
+  confirming the key usages being asserted are present on the related certificate —
+  need a fetch and a freshness policy, so they remain the caller's, and
+  `pki.path.validate` is the route for the first.
+
+- **A certificate identity is not bound with SHA-1 (CWE-328).** The
+  `relatedCertificate` extension names a certificate by a digest of the whole
+  certificate, which makes that digest an identity to compare against. `sha1` is
+  refused by `pki.relatedCert.certificateHash` and `matchesCertificate` even where
+  it is what the related certificate's own signature OID indicates, a chosen-prefix
+  collision on a certificate being a demonstrated attack rather than a theoretical
+  one. A certificate whose signature OID indicates no hash at all, such as one
+  signed with Ed25519 or ML-DSA, throws `relatedcert/no-digest` rather than falling
+  back to a default the document does not name. A value naming an algorithm this
+  build cannot compute, or carrying a digest of the wrong length for the algorithm
+  it names, throws rather than reporting no match: a `false` from a comparison
+  nobody made reads as a certificate that does not match.
+
 ### Network fetches that could widen trust
 
 - **CT log-list fetch verifies before it parses (CWE-345 / CWE-347 / CWE-295 /

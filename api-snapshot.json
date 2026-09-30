@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.8.41",
+  "packageVersion": "0.8.42",
   "surface": {
     "C": {
       "kind": "object",
@@ -2628,6 +2628,10 @@
           "kind": "function",
           "arity": 2
         },
+        "RelatedCertError": {
+          "kind": "function",
+          "arity": 3
+        },
         "ScepError": {
           "kind": "function",
           "arity": 3
@@ -2945,7 +2949,7 @@
         },
         "renderedExtensions": {
           "kind": "array",
-          "length": 31
+          "length": 32
         },
         "trustanchor": {
           "kind": "function",
@@ -3306,6 +3310,35 @@
           "arity": 3
         },
         "verifyMac": {
+          "kind": "function",
+          "arity": 3
+        }
+      }
+    },
+    "relatedCert": {
+      "kind": "object",
+      "members": {
+        "certificateHash": {
+          "kind": "function",
+          "arity": 2
+        },
+        "digestValue": {
+          "kind": "function",
+          "arity": 2
+        },
+        "matchesCertificate": {
+          "kind": "function",
+          "arity": 2
+        },
+        "requestSignedData": {
+          "kind": "function",
+          "arity": 1
+        },
+        "setEngine": {
+          "kind": "function",
+          "arity": 1
+        },
+        "verifyRequest": {
           "kind": "function",
           "arity": 3
         }
@@ -4458,6 +4491,10 @@
     "pki.pkcs12.build": "0.3.11",
     "pki.pkcs12.verifyMac": "0.3.11",
     "pki.pkcs12.open": "0.3.12",
+    "pki.relatedCert.requestSignedData": "0.8.42",
+    "pki.relatedCert.certificateHash": "0.8.42",
+    "pki.relatedCert.matchesCertificate": "0.8.42",
+    "pki.relatedCert.verifyRequest": "0.8.42",
     "pki.path.fetchingChecker": "0.8.8",
     "pki.scep.build": "0.6.2",
     "pki.scep.parse": "0.6.2",

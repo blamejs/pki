@@ -65,6 +65,7 @@ jobs:
           - merkle-produce
           - tlog-parse
           - tlog-proof
+          - related-cert
           - smime-parse
           - smime-verify
           - smime-decrypt

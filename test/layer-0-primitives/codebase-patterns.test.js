@@ -2047,6 +2047,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/ip-utils.js:<top>", "lib/pkcs11-uri.js:<top>", "lib/guard-encoding.js:_alphabet",
         "lib/identity-match.js:<top>", "lib/identity-match.js:E", "lib/tlog.js:<top>",
         "lib/sign-scheme.js:O", "lib/tuf.js:_err", "lib/tuf.js:<top>",
+        "lib/related-cert.js:<top>", "lib/related-cert.js:_err",
       ],
       mode: "family-subset",
       reason: "The per-module capture header binds each module's subset of guard-intrinsic to local names at load. The repeated shape is a deliberate convention so the set is comparable across modules; the subsets differ per module and a shared indirection would put back the call-site property read the capture removes. The regex-free character scanners (the IP-literal parser, the base-N alphabet-table builder) share the same captured-primitive binding run and char-code-loop idiom while doing genuinely different work.",
@@ -2151,7 +2152,8 @@ function testNoDuplicateCodeBlocks() {
       files: [
         "lib/attrcert-sign.js:_buildExtensions", "lib/cmc-build.js:popLinkWitnessV2",
         "lib/cms-sign.js:_pemToDer", "lib/cms-sign.js:_targetPreimage",
-        "lib/csr-sign.js:_challengePassword", "lib/tsp-sign.js:_signingCertV2",
+        "lib/csr-sign.js:_challengePassword", "lib/csr-sign.js:_relatedCertRequest",
+        "lib/tsp-sign.js:_signingCertV2",
         "lib/x509-sign.js:_hasCriticalSan",
       ],
       mode: "family-subset",
@@ -2183,7 +2185,8 @@ function testNoDuplicateCodeBlocks() {
         "lib/schema-ocsp.js:_validateOcspExtensions",
         "lib/schema-csrattrs.js:<top>", "lib/schema-smime.js:signingCertificateSchema",
         "lib/schema-cmc.js:<top>", "lib/schema-cmc.js:rawList", "lib/schema-crmf.js:crmfName",
-        "lib/schema-cms.js:keyIdentifierSchema",
+        "lib/schema-cms.js:keyIdentifierSchema", "lib/schema-csr.js:<top>",
+        "lib/schema-crmf.js:popoPrivKey",
       ],
       mode: "family-subset",
       reason: "per-format schema.seq/decode declarations + build-fn output assembly share the combinator idiom (different fields/codes each); the combinators live in the engine, nothing further to extract.",
@@ -2200,7 +2203,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/cms-sign.js:<top>", "lib/tsp-sign.js:<top>", "lib/x509-sign.js:<top>", "lib/csr-sign.js:<top>", "lib/attrcert-sign.js:<top>", "lib/crmf-sign.js:<top>", "lib/cmp-build.js:<top>", "lib/crl-sign.js:<top>",
         "lib/cmc-build.js:<top>", "lib/cmc-verify.js:<top>", "lib/schema-cmc.js:<top>",
         "lib/cms-digest.js:<top>", "lib/cms-digest.js:_err",
-        "lib/trustanchor-build.js:<top>",
+        "lib/trustanchor-build.js:<top>", "lib/related-cert.js:<top>", "lib/related-cert.js:_err",
         "lib/cms-sign.js:_err", "lib/tsp-sign.js:_err", "lib/x509-sign.js:_err", "lib/csr-sign.js:_err", "lib/attrcert-sign.js:_err", "lib/crmf-sign.js:_err", "lib/cmp-build.js:_err", "lib/crl-sign.js:_err",
         // The run continues past the factories: makeNS(domain) then makeBuilder({...})
         // with that domain's error class and schemas. Same idiom, same reason -- the
@@ -2296,7 +2299,8 @@ function testNoDuplicateCodeBlocks() {
         // lands on whatever function precedes it in each module. These are those neighbors.
         "lib/attrcert-sign.js:_buildExtensions", "lib/cmp-build.js:_classifyCmpResponse",
         "lib/cms-sign.js:_pemToDer", "lib/cms-sign.js:_targetPreimage",
-        "lib/csr-sign.js:_challengePassword", "lib/ocsp.js:_normCertDer",
+        "lib/csr-sign.js:_challengePassword", "lib/csr-sign.js:_relatedCertRequest",
+        "lib/ocsp.js:_normCertDer",
         "lib/tsp-sign.js:_signingCertV2", "lib/cmp-build.js:_transfer",
         "lib/x509-sign.js:_buildExtensions", "lib/crl-sign.js:_buildCrlExtensions",
         "lib/crmf-sign.js:_buildCertReqMsg", "lib/cmc-verify.js:_verify",

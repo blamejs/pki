@@ -4,6 +4,24 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.42 — 2026-09-29
+
+Let one subject hold a classical certificate and a post-quantum one, and have each name the other.
+
+### Added
+
+- `pki.relatedCert.requestSignedData` builds the bytes a related-certificate request is proved with. Section 3.1 fixes them as the DER `IssuerAndSerialNumber` followed by the DER `BinaryTime`, and nothing further. `locationInfo` travels in the attribute outside those bytes, so a proof that verifies says the requester holds the certificate and says nothing about where it can be fetched: a caller acting on `locationInfo` is acting on an unauthenticated field, and the toolkit's own vectors pin that scope rather than assume it.
+- `pki.csr.sign` takes the whole attribute as `spec.relatedCertRequest`, and encodes its first two fields through `requestSignedData` itself, so the bytes signed and the bytes emitted cannot drift apart. `locationInfo` is a `SEQUENCE OF` IA5String URIs rather than a single URI, and the order the requester writes is the order carried; a non-ASCII URI, an empty list and a missing field are each refused. `pki.schema.csr.parse` reads the attribute back, and a pre-encoded one is refused so a producer cannot route around that validation, which is the rule the `extensionRequest` and `challengePassword` attributes already follow.
+- `pki.relatedCert.verifyRequest` checks the proof through the same engine that verifies a certificate path, so the algorithm it resolves is bound to the key the same way. The structure carries no algorithm identifier, so one is derived: the key decides the algorithm, resolved through the same resolver `pki.x509.sign` and `pki.csr.sign` use, and the digest comes from the hash the certificate's signature OID indicates, which is the relation section 4.1 names. Every algorithm those verbs sign with is therefore reached, RSA PKCS#1 v1.5, RSASSA-PSS, ECDSA, Ed25519, Ed448 and all three ML-DSA parameter sets, each with a vector. `opts.digestAlgorithm` names the digest instead, and a key whose algorithm fixes its own digest refuses that option instead of ignoring it; `opts.signatureAlgorithm` takes a DER `AlgorithmIdentifier` outright. A key that cannot sign, such as an ML-KEM or X25519 key, is refused. Handing over a certificate other than the one `certID` names throws, since verifying a proof against a certificate the request did not name answers a different question.
+- `pki.relatedCert.certificateHash` and `pki.relatedCert.matchesCertificate` are the extension side, over the whole related certificate rather than its `tbsCertificate`. With no algorithm named, the digest is the one the related certificate's own signature OID indicates, which is what section 4.1 directs; a certificate signed with Ed25519 or ML-DSA indicates none, and that throws `relatedcert/no-digest` instead of falling back to a hash the document does not name. `sha1` is refused, a chosen-prefix collision on a certificate being a demonstrated attack. A value this build cannot compute throws instead of comparing to nothing and reporting no match.
+- `pki.x509.sign` takes `extensions.relatedCertificate`. Handed the related certificate it computes the digest, which is the form in which no caller can name one algorithm while carrying the output of another; handed a `hashAlgorithm` and `hashValue` it emits a digest computed elsewhere, held to that algorithm's output length. Supplying both is refused, the two being able to disagree while only one is emitted. The extension is emitted non-critical, which section 4.1 asks for at SHOULD NOT.
+- `pki.lint.certificate` gains the `rfc9763` profile. A critical `relatedCertificate` extension is graded as a warning, at the strength the SHOULD NOT clause states, and still parses: refusing it would report that clause as a prohibition. The extension on a `cA: true` certificate is graded as an error, section 4.1 requiring that a chain carry it only in the end-entity certificate. `pki.inspect.certificate` renders the extension as its digest algorithm and the full digest.
+- An ECDSA proof goes into the attribute's BIT STRING as the DER `SEQUENCE { r, s }` of RFC 5480 section 2, as in every other ASN.1 signature field. A WebCrypto `sign` returns the fixed-width `r || s` instead, and handing that form over resolves `false`; the documented example re-encodes it.
+
+### Changed
+
+- `IssuerAndSerialNumber` is now defined once and read by both CMS and the RFC 9763 attribute, so the two cannot diverge on the structure they share. The signature-algorithm-to-digest relation and the digest output lengths are likewise defined once for the readers that need them.
+
 ## v0.8.41 — 2026-09-29
 
 Verify a TUF trust root, and walk its key rotations.

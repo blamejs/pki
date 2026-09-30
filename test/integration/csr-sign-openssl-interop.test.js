@@ -64,6 +64,54 @@ async function run() {
     check("openssl req -verify still accepts the proof of possession with them present", v.code === 0);
   });
 
+  // RFC 9763 sec. 3.1's relatedCertRequest attribute. The two properties an independent
+  // implementation has to confirm are that an unknown attribute does not stop the request being read,
+  // and that the request's own proof of possession still verifies with it present -- an attribute that
+  // broke `req -verify` would make the extension unusable in enrollment. openssl has no name for the
+  // OID, so its ASN.1 parser is the oracle for the value: it walks the RequesterCertificate and
+  // reports the serial, the BinaryTime and each IA5String URI, independently of our decoder.
+  var rcHeld = signing.makeSigner("ec-p256", { cn: "Held Interop", serial: 0x77 });
+  var rcHeldParsed = pki.schema.x509.parse(rcHeld.cert);
+  var rcNew = signing.makeSigner("ec-p256");
+  var rcCertId = { issuer: rcHeldParsed.issuer.bytes, serialNumber: rcHeldParsed.serialNumber };
+  var rcWhen = 1800000000;
+  var rcUris = ["https://a.interop.example/held.cer", "https://b.interop.example/held.cer"];
+  var rcProof = require("node:crypto").sign("sha256",
+    pki.relatedCert.requestSignedData({ certID: rcCertId, requestTime: rcWhen }),
+    { key: rcHeld.keyObject, dsaEncoding: "der" });
+  var rcPem = await pki.csr.sign({
+    subject: [{ commonName: "related.interop.example" }], subjectPublicKey: rcNew.spki,
+    relatedCertRequest: { certID: rcCertId, requestTime: rcWhen, locationInfo: rcUris, signature: rcProof },
+  }, { key: rcNew.key }, { pem: true });
+  var rcDer = pki.schema.csr.pemDecode(rcPem);
+  var rcAttr = pki.schema.csr.parse(rcDer).attributes
+    .filter(function (a) { return a.type === "1.2.840.113549.1.9.16.2.60"; })[0];
+  ctx.withTmp(Buffer.from(rcPem, "utf8"), "csr-related.pem", function (p) {
+    var t = ctx.runOpenssl(["req", "-in", p, "-noout", "-text"], { allowNonZero: true });
+    check("openssl req -text parses a request carrying the relatedCertRequest attribute", t.code === 0);
+    check("openssl reports the attribute by its OID", t.stdout.indexOf("1.2.840.113549.1.9.16.2.60") >= 0);
+    var v = ctx.runOpenssl(["req", "-in", p, "-noout", "-verify"], { allowNonZero: true });
+    check("openssl req -verify still accepts the request's own proof of possession with it present", v.code === 0);
+    var reDer = p.replace(/\.pem$/, ".der");
+    var re = ctx.runOpenssl(["req", "-in", p, "-outform", "DER", "-out", reDer], { allowNonZero: true });
+    check("openssl re-encodes the request to the same bytes, carrying the attribute unaltered",
+      re.code === 0 && Buffer.compare(require("node:fs").readFileSync(reDer), rcDer) === 0);
+  });
+  ctx.withTmp(rcAttr.values[0], "related-attr.der", function (p) {
+    var a1 = ctx.runOpenssl(["asn1parse", "-inform", "DER", "-in", p], { allowNonZero: true });
+    check("openssl's ASN.1 parser walks the RequesterCertificate value", a1.code === 0);
+    check("openssl reads the certID serial the attribute names",
+      /INTEGER\s*:77\b/.test(a1.stdout));
+    check("openssl reads the BinaryTime as the integer seconds it is",
+      a1.stdout.indexOf(":6B49D200") >= 0);
+    check("openssl reads every locationInfo URI as an IA5String, in the order written",
+      a1.stdout.indexOf("IA5STRING         :" + rcUris[0]) >= 0 &&
+      a1.stdout.indexOf("IA5STRING         :" + rcUris[1]) >= 0 &&
+      a1.stdout.indexOf(rcUris[0]) < a1.stdout.indexOf(rcUris[1]));
+  });
+  check("the proof in the request openssl accepted verifies here too",
+    (await pki.relatedCert.verifyRequest(rcAttr.relatedCertRequest, rcHeld.cert)) === true);
+
   // A tampered proof-of-possession signature is rejected.
   var s2 = signing.makeSigner("ec-p256");
   var der = await pki.csr.sign({ subject: "tamper.example", subjectPublicKey: s2.spki }, { key: s2.key });
