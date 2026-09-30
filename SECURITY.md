@@ -134,6 +134,21 @@ security-only patches after the next major releases.
   named option once, at entry, before any of it is examined, as do the `pki.smime`
   verbs and the `pki.hpke` setup verbs (whose `mode` was read at the default and
   again at the use, so an accessor answering auth then base got a base setup).
+
+  The same rule now covers what a verify verb is given as well as how it is
+  configured, because a verification that awaits gives a caller a window in which to
+  change what it still holds. `pki.tlog.verifyNote`, `pki.tlog.verifyCheckpoint`,
+  `pki.tuf.verifySignatures`, `pki.tuf.updateRoot`, `pki.ct.verifySct`,
+  `pki.ct.getSth`, `pki.ct.addChain`, `pki.ct.getProofByHash`,
+  `pki.ct.getSthConsistency`, `pki.ct.fetchLogList` and `pki.jose.verify` each take
+  the document, the keys, the pinned trust inputs and the validation instant ONCE, at
+  entry, and every check and every verification below reads those copies. Held as
+  views across a key import or a network fetch, the bytes verified need not have been
+  the bytes reported: a TUF role's threshold could be met by key material nobody
+  authorized, a note's signature line attributed to a signer whose key never signed
+  it, a tree head checked under a log that was not the one pinned, and an expired
+  root accepted by moving the `Date` supplied to it. None of that requires the
+  caller to be hostile, only to reuse a buffer while a verification is pending.
   `pki.webauthn.verify` and `pki.webauthn.verifyAssertion` already copied their
   inputs.
 - **Decompression bombs (CWE-409).** Every decompression in the toolkit runs
@@ -397,6 +412,23 @@ security-only patches after the next major releases.
   much of a value it renders rather than whether it renders one, so it is a report
   size control and not a disclosure control. `pki.inspect.any` never routes to it, so
   the guarantee above holds for a report reached by format detection.
+- **A key the tool wrote where anyone could read it.** `pki keygen` is the first
+  verb in this toolkit that puts a private key on disk, and the decisions it makes
+  are inherited by whoever runs it. The key goes to the file `--out` names and
+  never to stdout, because a terminal's scrollback is a copy of the key and so is
+  the shell history of the pipeline it ran in. An existing file is never written
+  over, since a key written over another destroys the only copy of the first; the
+  refusal names the file in the way. The file is created with owner-only
+  permissions in the call that creates it rather than chmod'd afterwards, which
+  would leave a window where it is readable. On Windows Node does not apply the
+  mode argument, measured: a file created with `0600` reports `0666`. The help
+  text says so rather than implying a guarantee the platform does not give, and
+  the conformance vector asserts the claim against what the platform does. The
+  public half goes to a separate `--pub`, so sending a public key does not mean
+  handing over the file that holds the private one. A key path on a command line
+  is visible in the process table to every user on the machine while the process
+  runs; the help text says that too, since a reader who does not know it cannot
+  work around it.
 - **Untyped faults escaping the key boundary.** A `CryptoKey` is opaque, and one
   created by a different WebCrypto implementation is indistinguishable from one
   of this engine's by type, algorithm, and usages while holding its material
@@ -436,6 +468,24 @@ security-only patches after the next major releases.
   sec. 7.2 check at import (length and modulus), an encapsulated key to the
   sec. 7.3 length check before decapsulation, and the auth modes, which the ML-KEM
   KEMs do not define, are refused with `hpke/auth-unsupported` at both ends.
+- **A PQ/T hybrid KEM binds both components into one secret.** The MLKEM768-P256,
+  MLKEM1024-P384 and MLKEM768-X25519 suites derive the HPKE shared secret from the
+  ML-KEM secret and the nominal-group secret together, through the CFRG C2PRI
+  combiner, so neither component alone determines it and a break of one does not
+  yield the secret. A hybrid private key is the 32-byte seed both component keys
+  expand from, and a public key or encapsulated key is the two components
+  concatenated at the exact component widths, which differ between the two
+  directions: ML-KEM-768 has a 1184-byte encapsulation key and a 1088-byte
+  ciphertext. A seed of any other length, a concatenation of any other total
+  length, a `pkm` that is not the derivation of the supplied seed, and on
+  MLKEM768-P256 and MLKEM1024-P384 a traditional half that is not a point on the
+  curve, are each refused with `hpke/bad-key` before any decapsulation runs. On
+  MLKEM768-X25519 every 32-byte string is a valid X25519 public key (RFC 7748
+  sec. 5), so there is no point check to make; a half that drives the agreement to
+  the all-zero output is refused with `hpke/bad-key`. The auth modes are refused
+  with `hpke/auth-unsupported` at both ends for the same reason they are for
+  ML-KEM. There is no negotiation to a single component and no path that returns a
+  secret derived from one of the two.
 - **WebCrypto import algorithm confusion and raw cipher faults.**
   `pki.webcrypto` derives an imported asymmetric key's type from the key material
   rather than the caller's claim, so an RSA key imported under an Ed25519,
@@ -1488,6 +1538,90 @@ security-only patches after the next major releases.
   inner message, a non-`message/rfc822` payload, or a duplicate Content-Type on
   either part reports `legacy: null`.
 
+- **A related-certificate proof answers one question, and only that one
+  (CWE-347).** RFC 9763 §3.1 signs the DER `IssuerAndSerialNumber` and the DER
+  `BinaryTime`, and nothing more. `locationInfo` rides in the same attribute and is
+  outside the signature, so a `true` from `pki.relatedCert.verifyRequest` says the
+  requester holds the certificate `certID` names and says nothing about the URIs
+  beside it: a caller that fetches from `locationInfo` on the strength of that
+  verdict is fetching from an unauthenticated field. The verb's vectors assert this
+  scope in both directions, that altering `requestTime` breaks the proof and that
+  altering `locationInfo` does not. Handing the verb a certificate other than the
+  one `certID` names throws rather than returning `false`, because a proof checked
+  against an unnamed certificate answers a different question than the one asked.
+  The three issuer-side checks §4.1 requires beyond the signature — retrieving and
+  path-validating the referenced certificate, judging `requestTime` freshness, and
+  confirming the key usages being asserted are present on the related certificate —
+  need a fetch and a freshness policy, so they remain the caller's, and
+  `pki.path.validate` is the route for the first.
+
+- **A possession statement moves the proof to another key, and says so
+  (CWE-347).** RFC 9883 lets a certification request for a key-establishment key be
+  signed by a different key, one the requester already holds a certificate for. That
+  is a real weakening of what a proof of possession demonstrates, and the toolkit is
+  explicit about it rather than quiet. `pki.crmf.verifyPop` reports
+  `subjectBound: false` whenever the control is present, however complete the
+  template is: the proof demonstrates possession of the SIGNATURE key, and nothing in
+  the message demonstrates possession of the requested key, because that key cannot
+  sign. What the statement buys a CA is a signature it can attribute to the same
+  entity, which is why RFC 9883 §4 then makes path validation of the signature
+  certificate a MUST. `pki.possession.verifyRequest` requires `trustAnchors` and
+  throws without them rather than returning a verdict that skipped that MUST.
+  Accepting a signing key that is not the subject's, and a subject key that cannot
+  sign, is scoped to a request that declares the statement; a request without one is
+  still held to signing with the key it asks to have certified, and vectors assert
+  both refusals still stand.
+- **A possession statement's two halves must name one certificate (CWE-347).** The
+  statement carries an issuer-and-serial and, optionally, the certificate itself.
+  Those could name different certificates, and therefore different keys, while only
+  one of them signed the request. `pki.possession.parse` refuses that, on the way in
+  and on the way out, so a statement this toolkit emits is one it would accept; the
+  builders construct the statement and then read it back through the same reader
+  rather than re-checking with a second copy of the rule. A caller supplying the
+  certificate for a compact statement is held to the same rule. The two name
+  comparisons RFC 9883 states as SHOULDs are deliberately NOT enforced: each ends in
+  "the certificate policy MUST describe how the CA can determine that the two subject
+  names identify the same entity", so the comparison is reported and `valid` is
+  `false` with a reason naming the policy decision. A library that answered that
+  question would be inventing a policy the operator owns.
+- **An alternative signature is rebuilt from original bytes, not re-serialized
+  (CWE-347).** ITU-T X.509 (2019) clause 7.2.2 requires a verifier to reconstruct
+  an encoding that never appears on the wire: the certificate with its outer
+  signature component and its `altSignatureValue` extension removed, "re-DER-encoded"
+  after those modifications. Everywhere else this toolkit surfaces a raw byte range
+  rather than rebuilding what it parsed, because rebuilding is how a verifier comes
+  to accept something altered in a byte it did not reproduce. Here the specification
+  leaves no choice, so `pki.altSig.signedData` keeps the bytes of every component it
+  retains and recomputes only the three SEQUENCE headers whose lengths change.
+  Nothing is written out of a decoded model: a model that normalized any byte would
+  either fail every verification, or accept an encoding the issuer never signed. The
+  vectors compare the result against bytes built independently of the implementation,
+  field by field, and assert that the extensions block loses that one extension and
+  no other.
+- **Two signatures, and the native one still covers both (CWE-347).** Clause 7.2.2
+  fixes an order: the alternative signature is generated over the certificate without
+  it, and the native signature is then generated over the certificate with it.
+  Reversing that leaves a native signature that does not cover the alternative
+  signature or the alternative key, so a party reading only the native signature
+  would accept a certificate whose alternative half had been substituted.
+  `pki.x509.sign` and `pki.crl.sign` perform both passes, so the order is not the
+  caller's to arrange, and `altSignatureValue` is computed rather than accepted as an
+  option. `pki.altSig.verify` answers one question, whether the issuer's alternative
+  key signed the structure; it does not validate a path or read the native signature,
+  which `pki.path.validate` does.
+- **A certificate identity is not bound with SHA-1 (CWE-328).** The
+  `relatedCertificate` extension names a certificate by a digest of the whole
+  certificate, which makes that digest an identity to compare against. `sha1` is
+  refused by `pki.relatedCert.certificateHash` and `matchesCertificate` even where
+  it is what the related certificate's own signature OID indicates, a chosen-prefix
+  collision on a certificate being a demonstrated attack rather than a theoretical
+  one. A certificate whose signature OID indicates no hash at all, such as one
+  signed with Ed25519 or ML-DSA, throws `relatedcert/no-digest` rather than falling
+  back to a default the document does not name. A value naming an algorithm this
+  build cannot compute, or carrying a digest of the wrong length for the algorithm
+  it names, throws rather than reporting no match: a `false` from a comparison
+  nobody made reads as a certificate that does not match.
+
 ### Network fetches that could widen trust
 
 - **CT log-list fetch verifies before it parses (CWE-345 / CWE-347 / CWE-295 /
@@ -1680,7 +1814,12 @@ The same provenance bundle can be verified offline with the toolkit itself.
 `pki.sigstore.verifyBundle` checks the DSSE signature, the Fulcio chain as of the
 Rekor log time, the RFC 9162 inclusion proof against a Rekor-signed root, and the
 in-toto SLSA subject digest, against trust material you pin: the Fulcio CA roots
-and Rekor log keys. It has no dependency tree of its own. An Ed25519 or Ed448
+and Rekor log keys. It has no dependency tree of its own. The checkpoint carrying
+that root is verified under the key the entry names in `logId.keyId`, so with more
+than one log pinned a signed tree root from one of them cannot satisfy an entry
+claiming another, and the tree size and root the proof folds against are read from
+the verified checkpoint rather than from the `inclusionProof` fields no signature
+covers. An Ed25519 or Ed448
 Fulcio leaf key is validated on-curve and full-order at the raw
 signature-verification sink rather than only at key parsing, so a low-order key
 that would verify a forged EdDSA signature is refused. That is the same gate

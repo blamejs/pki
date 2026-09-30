@@ -25,10 +25,18 @@ var pki = require("..");
 var SK_R = Buffer.from("009f2181fba5f8908632c10ea1137c40a849728fde016c4602458b943a5dc048", "hex");
 var PK_R = Buffer.from("8c7781768956b9dd38997c5a83ab5b9315270a9f73d87d676573c5bca74e3e48", "hex");
 var SEED_ML768 = Buffer.from("80008d036609972cf761d7e2d3b831e48d3e941cda94fbf9bae09bca87373f9bb7411f58fd3324ba1d0daa5a7b42768c5b53e1df29c28d4f5428a8233a905089", "hex");
+// The 32-byte hybrid seed of draft-irtf-cfrg-concrete-hybrid-kems-04 Appendix B, which all three
+// suites' vectors use. A hybrid decapsulation key IS this seed: both component keys are expanded
+// from it inside the KEM, so the mutator reaches the ML-KEM decap, the nominal-group exponentiation
+// and the combiner through one constant.
+var SEED_HYBRID = Buffer.alloc(32, 0x09);
 var S = pki.hpke.suites;
 var RECIPIENTS = [
   { kem: S.KEM.DHKEM_X25519_HKDF_SHA256, skR: { skm: SK_R, pkm: PK_R } },
   { kem: S.KEM.ML_KEM_768, skR: { skm: SEED_ML768 } },
+  { kem: S.KEM.MLKEM768_P256, skR: { skm: SEED_HYBRID } },
+  { kem: S.KEM.MLKEM1024_P384, skR: { skm: SEED_HYBRID } },
+  { kem: S.KEM.MLKEM768_X25519, skR: { skm: SEED_HYBRID } },
 ];
 var KDFS = [S.KDF.HKDF_SHA256, S.KDF.HKDF_SHA384, S.KDF.HKDF_SHA512];
 var AEADS = [S.AEAD.AES_128_GCM, S.AEAD.AES_256_GCM, S.AEAD.CHACHA20_POLY1305, S.AEAD.EXPORT_ONLY];
@@ -59,6 +67,14 @@ module.exports.fuzz = function (data) {
   // still held to the PkiError-only contract.
   try {
     pki.hpke.setupR(ids, enc, skR, { info: aad });
+  } catch (e) {
+    if (!(e instanceof pki.errors.PkiError)) throw e;
+  }
+  // The KEM alone, through the standalone decap export. It reaches the same
+  // decapsulation as setupR but without a key schedule after it, so a throw the
+  // key schedule would otherwise mask is attributed to the KEM that raised it.
+  try {
+    pki.hpke.decap(ids.kem, enc, skR);
   } catch (e) {
     if (!(e instanceof pki.errors.PkiError)) throw e;
   }

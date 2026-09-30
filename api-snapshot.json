@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.8.31",
+  "packageVersion": "0.8.45",
   "surface": {
     "C": {
       "kind": "object",
@@ -72,6 +72,9 @@
               "kind": "number"
             },
             "CT_LOG_LIST_MAX_BYTES": {
+              "kind": "number"
+            },
+            "CT_MAX_ENTRIES_PER_REQUEST": {
               "kind": "number"
             },
             "DER_MAX_BYTES": {
@@ -147,6 +150,9 @@
               "kind": "number"
             },
             "MDS_MAX_STATUS_REPORTS_PER_ENTRY": {
+              "kind": "number"
+            },
+            "MERKLE_MAX_LEAVES": {
               "kind": "number"
             },
             "MERKLE_MAX_PROOF_NODES": {
@@ -266,10 +272,25 @@
             "TLOG_MAX_COUNT": {
               "kind": "number"
             },
+            "TLOG_MAX_ENTRY_BUNDLE_BYTES": {
+              "kind": "number"
+            },
+            "TLOG_MAX_EXTENSION_LINES": {
+              "kind": "number"
+            },
+            "TLOG_MAX_NOTE_BYTES": {
+              "kind": "number"
+            },
+            "TLOG_MAX_SIGNATURES": {
+              "kind": "number"
+            },
             "TLS_CERT_MAX_ENTRIES": {
               "kind": "number"
             },
             "TLS_CERT_MSG_MAX_BYTES": {
+              "kind": "number"
+            },
+            "TLS_MAX_PEER_CHAIN": {
               "kind": "number"
             },
             "TRUST_MAX_BYTES": {
@@ -285,6 +306,9 @@
               "kind": "number"
             },
             "TRUST_MAX_OCTAL_BYTES": {
+              "kind": "number"
+            },
+            "TUF_MAX_ROOT_CHAIN": {
               "kind": "number"
             },
             "WEBAUTHN_COMPOUND_MAX_STATEMENTS": {
@@ -949,6 +973,36 @@
         }
       }
     },
+    "altSig": {
+      "kind": "object",
+      "members": {
+        "OID_ALT_ALG": {
+          "kind": "string"
+        },
+        "OID_ALT_VAL": {
+          "kind": "string"
+        },
+        "OID_SAPKI": {
+          "kind": "string"
+        },
+        "setEngine": {
+          "kind": "function",
+          "arity": 1
+        },
+        "signedData": {
+          "kind": "function",
+          "arity": 1
+        },
+        "subjectAltPublicKey": {
+          "kind": "function",
+          "arity": 1
+        },
+        "verify": {
+          "kind": "function",
+          "arity": 3
+        }
+      }
+    },
     "asn1": {
       "kind": "object",
       "members": {
@@ -1538,6 +1592,9 @@
             "CT_LOG_LIST_MAX_BYTES": {
               "kind": "number"
             },
+            "CT_MAX_ENTRIES_PER_REQUEST": {
+              "kind": "number"
+            },
             "DER_MAX_BYTES": {
               "kind": "number"
             },
@@ -1611,6 +1668,9 @@
               "kind": "number"
             },
             "MDS_MAX_STATUS_REPORTS_PER_ENTRY": {
+              "kind": "number"
+            },
+            "MERKLE_MAX_LEAVES": {
               "kind": "number"
             },
             "MERKLE_MAX_PROOF_NODES": {
@@ -1730,10 +1790,25 @@
             "TLOG_MAX_COUNT": {
               "kind": "number"
             },
+            "TLOG_MAX_ENTRY_BUNDLE_BYTES": {
+              "kind": "number"
+            },
+            "TLOG_MAX_EXTENSION_LINES": {
+              "kind": "number"
+            },
+            "TLOG_MAX_NOTE_BYTES": {
+              "kind": "number"
+            },
+            "TLOG_MAX_SIGNATURES": {
+              "kind": "number"
+            },
             "TLS_CERT_MAX_ENTRIES": {
               "kind": "number"
             },
             "TLS_CERT_MSG_MAX_BYTES": {
+              "kind": "number"
+            },
+            "TLS_MAX_PEER_CHAIN": {
               "kind": "number"
             },
             "TRUST_MAX_BYTES": {
@@ -1749,6 +1824,9 @@
               "kind": "number"
             },
             "TRUST_MAX_OCTAL_BYTES": {
+              "kind": "number"
+            },
+            "TUF_MAX_ROOT_CHAIN": {
               "kind": "number"
             },
             "WEBAUTHN_COMPOUND_MAX_STATEMENTS": {
@@ -2363,11 +2441,39 @@
             }
           }
         },
+        "addChain": {
+          "kind": "function",
+          "arity": 1
+        },
+        "addPreChain": {
+          "kind": "function",
+          "arity": 1
+        },
         "encodeSctList": {
           "kind": "function",
           "arity": 1
         },
         "fetchLogList": {
+          "kind": "function",
+          "arity": 1
+        },
+        "getEntries": {
+          "kind": "function",
+          "arity": 1
+        },
+        "getProofByHash": {
+          "kind": "function",
+          "arity": 1
+        },
+        "getRoots": {
+          "kind": "function",
+          "arity": 1
+        },
+        "getSth": {
+          "kind": "function",
+          "arity": 1
+        },
+        "getSthConsistency": {
           "kind": "function",
           "arity": 1
         },
@@ -2387,6 +2493,10 @@
           "kind": "function",
           "arity": 3
         },
+        "sthSignedData": {
+          "kind": "function",
+          "arity": 1
+        },
         "verifyLogListSignature": {
           "kind": "function",
           "arity": 3
@@ -2403,6 +2513,10 @@
           "kind": "function",
           "arity": 4
         },
+        "verifySth": {
+          "kind": "function",
+          "arity": 2
+        },
         "x509CertEntry": {
           "kind": "function",
           "arity": 2
@@ -2413,6 +2527,10 @@
       "kind": "object",
       "members": {
         "AcmeError": {
+          "kind": "function",
+          "arity": 3
+        },
+        "AltSigError": {
           "kind": "function",
           "arity": 3
         },
@@ -2544,6 +2662,14 @@
           "kind": "function",
           "arity": 2
         },
+        "PossessionError": {
+          "kind": "function",
+          "arity": 3
+        },
+        "RelatedCertError": {
+          "kind": "function",
+          "arity": 3
+        },
         "ScepError": {
           "kind": "function",
           "arity": 3
@@ -2568,6 +2694,10 @@
           "kind": "function",
           "arity": 3
         },
+        "TlogError": {
+          "kind": "function",
+          "arity": 3
+        },
         "TlsError": {
           "kind": "function",
           "arity": 3
@@ -2585,6 +2715,10 @@
           "arity": 3
         },
         "TspError": {
+          "kind": "function",
+          "arity": 3
+        },
+        "TufError": {
           "kind": "function",
           "arity": 3
         },
@@ -2686,6 +2820,102 @@
     "hpke": {
       "kind": "object",
       "members": {
+        "decap": {
+          "kind": "function",
+          "arity": 3
+        },
+        "deriveKeyPair": {
+          "kind": "function",
+          "arity": 2
+        },
+        "encap": {
+          "kind": "function",
+          "arity": 2
+        },
+        "generateKeyPair": {
+          "kind": "function",
+          "arity": 1
+        },
+        "nominalGroups": {
+          "kind": "object",
+          "members": {
+            "P-256": {
+              "kind": "object",
+              "members": {
+                "Nelem": {
+                  "kind": "number"
+                },
+                "Nscalar": {
+                  "kind": "number"
+                },
+                "Nseed": {
+                  "kind": "number"
+                },
+                "Nss": {
+                  "kind": "number"
+                },
+                "curve": {
+                  "kind": "string"
+                },
+                "kind": {
+                  "kind": "string"
+                },
+                "nodeCurve": {
+                  "kind": "string"
+                }
+              }
+            },
+            "P-384": {
+              "kind": "object",
+              "members": {
+                "Nelem": {
+                  "kind": "number"
+                },
+                "Nscalar": {
+                  "kind": "number"
+                },
+                "Nseed": {
+                  "kind": "number"
+                },
+                "Nss": {
+                  "kind": "number"
+                },
+                "curve": {
+                  "kind": "string"
+                },
+                "kind": {
+                  "kind": "string"
+                },
+                "nodeCurve": {
+                  "kind": "string"
+                }
+              }
+            },
+            "X25519": {
+              "kind": "object",
+              "members": {
+                "Nelem": {
+                  "kind": "number"
+                },
+                "Nscalar": {
+                  "kind": "number"
+                },
+                "Nseed": {
+                  "kind": "number"
+                },
+                "Nss": {
+                  "kind": "number"
+                },
+                "curve": {
+                  "kind": "string"
+                },
+                "kind": {
+                  "kind": "string"
+                }
+              }
+            }
+          }
+        },
         "open": {
           "kind": "function",
           "arity": 6
@@ -2749,6 +2979,15 @@
                   "kind": "number"
                 },
                 "DHKEM_X448_HKDF_SHA512": {
+                  "kind": "number"
+                },
+                "MLKEM1024_P384": {
+                  "kind": "number"
+                },
+                "MLKEM768_P256": {
+                  "kind": "number"
+                },
+                "MLKEM768_X25519": {
                   "kind": "number"
                 },
                 "ML_KEM_1024": {
@@ -2853,7 +3092,7 @@
         },
         "renderedExtensions": {
           "kind": "array",
-          "length": 31
+          "length": 35
         },
         "trustanchor": {
           "kind": "function",
@@ -2993,9 +3232,17 @@
     "merkle": {
       "kind": "object",
       "members": {
+        "consistencyProof": {
+          "kind": "function",
+          "arity": 1
+        },
         "emptyRootHash": {
           "kind": "function",
           "arity": 0
+        },
+        "inclusionProof": {
+          "kind": "function",
+          "arity": 1
         },
         "leafHash": {
           "kind": "function",
@@ -3004,6 +3251,10 @@
         "nodeHash": {
           "kind": "function",
           "arity": 2
+        },
+        "root": {
+          "kind": "function",
+          "arity": 1
         },
         "verifyConsistency": {
           "kind": "function",
@@ -3202,6 +3453,63 @@
           "arity": 3
         },
         "verifyMac": {
+          "kind": "function",
+          "arity": 3
+        }
+      }
+    },
+    "possession": {
+      "kind": "object",
+      "members": {
+        "OID_SOP": {
+          "kind": "string"
+        },
+        "namesCertificate": {
+          "kind": "function",
+          "arity": 2
+        },
+        "parse": {
+          "kind": "function",
+          "arity": 1
+        },
+        "setEngine": {
+          "kind": "function",
+          "arity": 1
+        },
+        "statementOf": {
+          "kind": "function",
+          "arity": 1
+        },
+        "verifyRequest": {
+          "kind": "function",
+          "arity": 2
+        }
+      }
+    },
+    "relatedCert": {
+      "kind": "object",
+      "members": {
+        "certificateHash": {
+          "kind": "function",
+          "arity": 2
+        },
+        "digestValue": {
+          "kind": "function",
+          "arity": 2
+        },
+        "matchesCertificate": {
+          "kind": "function",
+          "arity": 2
+        },
+        "requestSignedData": {
+          "kind": "function",
+          "arity": 1
+        },
+        "setEngine": {
+          "kind": "function",
+          "arity": 1
+        },
+        "verifyRequest": {
           "kind": "function",
           "arity": 3
         }
@@ -3884,6 +4192,67 @@
         }
       }
     },
+    "tlog": {
+      "kind": "object",
+      "members": {
+        "checkpointPath": {
+          "kind": "function",
+          "arity": 0
+        },
+        "entryBundlePath": {
+          "kind": "function",
+          "arity": 2
+        },
+        "inclusionProof": {
+          "kind": "function",
+          "arity": 1
+        },
+        "keyId": {
+          "kind": "function",
+          "arity": 2
+        },
+        "parseCheckpoint": {
+          "kind": "function",
+          "arity": 1
+        },
+        "parseEntryBundle": {
+          "kind": "function",
+          "arity": 1
+        },
+        "parseNote": {
+          "kind": "function",
+          "arity": 1
+        },
+        "parseTile": {
+          "kind": "function",
+          "arity": 2
+        },
+        "parseTilePath": {
+          "kind": "function",
+          "arity": 1
+        },
+        "parseVkey": {
+          "kind": "function",
+          "arity": 1
+        },
+        "tilePath": {
+          "kind": "function",
+          "arity": 3
+        },
+        "tileWidth": {
+          "kind": "function",
+          "arity": 3
+        },
+        "verifyCheckpoint": {
+          "kind": "function",
+          "arity": 3
+        },
+        "verifyNote": {
+          "kind": "function",
+          "arity": 2
+        }
+      }
+    },
     "tls": {
       "kind": "object",
       "members": {
@@ -3907,6 +4276,10 @@
         "https": {
           "kind": "function",
           "arity": 1
+        },
+        "peerChain": {
+          "kind": "function",
+          "arity": 2
         }
       }
     },
@@ -3974,6 +4347,39 @@
         "verify": {
           "kind": "function",
           "arity": 3
+        }
+      }
+    },
+    "tuf": {
+      "kind": "object",
+      "members": {
+        "ROLES": {
+          "kind": "array",
+          "length": 4
+        },
+        "canonicalJson": {
+          "kind": "function",
+          "arity": 1
+        },
+        "checkExpiry": {
+          "kind": "function",
+          "arity": 2
+        },
+        "keyId": {
+          "kind": "function",
+          "arity": 1
+        },
+        "parseMetadata": {
+          "kind": "function",
+          "arity": 1
+        },
+        "updateRoot": {
+          "kind": "function",
+          "arity": 1
+        },
+        "verifySignatures": {
+          "kind": "function",
+          "arity": 1
         }
       }
     },
@@ -4093,6 +4499,9 @@
     "pki.acme.parseAriCertId": "0.1.25",
     "pki.acme.validateRenewalInfo": "0.1.25",
     "pki.acme.client": "0.3.18",
+    "pki.altSig.signedData": "0.8.43",
+    "pki.altSig.subjectAltPublicKey": "0.8.43",
+    "pki.altSig.verify": "0.8.43",
     "pki.asn1.decode": "0.1.0",
     "pki.asn1.read.oid": "0.1.15",
     "pki.asn1.encode": "0.1.0",
@@ -4158,6 +4567,15 @@
     "pki.ct.verifySctList": "0.6.1",
     "pki.ct.x509CertEntry": "0.6.1",
     "pki.ct.verifyLogListSignature": "0.2.29",
+    "pki.ct.sthSignedData": "0.8.40",
+    "pki.ct.verifySth": "0.8.40",
+    "pki.ct.getSth": "0.8.40",
+    "pki.ct.getProofByHash": "0.8.40",
+    "pki.ct.getSthConsistency": "0.8.40",
+    "pki.ct.getEntries": "0.8.40",
+    "pki.ct.getRoots": "0.8.40",
+    "pki.ct.addChain": "0.8.40",
+    "pki.ct.addPreChain": "0.8.40",
     "pki.ct.fetchLogList": "0.3.21",
     "pki.est.transferDecode": "0.1.24",
     "pki.est.transferEncode": "0.1.24",
@@ -4177,7 +4595,12 @@
     "pki.hpke.setupR": "0.2.2",
     "pki.hpke.seal": "0.2.2",
     "pki.hpke.open": "0.2.2",
+    "pki.hpke.deriveKeyPair": "0.8.45",
+    "pki.hpke.generateKeyPair": "0.8.45",
+    "pki.hpke.encap": "0.8.45",
+    "pki.hpke.decap": "0.8.45",
     "pki.transport.https": "0.3.16",
+    "pki.transport.peerChain": "0.8.32",
     "pki.identity.match": "0.8.8",
     "pki.inspect.certificate": "0.2.4",
     "pki.inspect.crl": "0.3.8",
@@ -4223,6 +4646,9 @@
     "pki.merkle.emptyRootHash": "0.1.28",
     "pki.merkle.verifyInclusion": "0.1.28",
     "pki.merkle.verifyConsistency": "0.1.28",
+    "pki.merkle.root": "0.8.34",
+    "pki.merkle.inclusionProof": "0.8.34",
+    "pki.merkle.consistencyProof": "0.8.34",
     "pki.ocsp.buildRequest": "0.2.22",
     "pki.ocsp.sign": "0.2.22",
     "pki.ocsp.buildErrorResponse": "0.2.22",
@@ -4243,6 +4669,12 @@
     "pki.pkcs12.build": "0.3.11",
     "pki.pkcs12.verifyMac": "0.3.11",
     "pki.pkcs12.open": "0.3.12",
+    "pki.possession.parse": "0.8.44",
+    "pki.possession.verifyRequest": "0.8.44",
+    "pki.relatedCert.requestSignedData": "0.8.42",
+    "pki.relatedCert.certificateHash": "0.8.42",
+    "pki.relatedCert.matchesCertificate": "0.8.42",
+    "pki.relatedCert.verifyRequest": "0.8.42",
     "pki.path.fetchingChecker": "0.8.8",
     "pki.scep.build": "0.6.2",
     "pki.scep.parse": "0.6.2",
@@ -4342,6 +4774,20 @@
     "pki.smime.compress": "0.2.27",
     "pki.smime.decompress": "0.2.27",
     "pki.smime.buildCertsOnly": "0.6.3",
+    "pki.tlog.keyId": "0.8.33",
+    "pki.tlog.parseNote": "0.8.33",
+    "pki.tlog.verifyNote": "0.8.33",
+    "pki.tlog.parseCheckpoint": "0.8.33",
+    "pki.tlog.verifyCheckpoint": "0.8.33",
+    "pki.tlog.parseVkey": "0.8.37",
+    "pki.tlog.tilePath": "0.8.33",
+    "pki.tlog.entryBundlePath": "0.8.33",
+    "pki.tlog.checkpointPath": "0.8.33",
+    "pki.tlog.parseTilePath": "0.8.33",
+    "pki.tlog.parseTile": "0.8.33",
+    "pki.tlog.parseEntryBundle": "0.8.33",
+    "pki.tlog.tileWidth": "0.8.36",
+    "pki.tlog.inclusionProof": "0.8.36",
     "pki.tls.decompressCertificate": "0.4.3",
     "pki.tls.parseCertificateMessage": "0.4.3",
     "pki.tls.compressCertificate": "0.4.3",
@@ -4358,6 +4804,12 @@
     "pki.tsp.response": "0.2.19",
     "pki.tsp.parseResponse": "0.2.19",
     "pki.tsp.verify": "0.2.19",
+    "pki.tuf.canonicalJson": "0.8.41",
+    "pki.tuf.keyId": "0.8.41",
+    "pki.tuf.parseMetadata": "0.8.41",
+    "pki.tuf.checkExpiry": "0.8.41",
+    "pki.tuf.verifySignatures": "0.8.41",
+    "pki.tuf.updateRoot": "0.8.41",
     "pki.webauthn.parseCoseKey": "0.5.2",
     "pki.webauthn.parseAttestationObject": "0.2.5",
     "pki.webauthn.verify": "0.2.5",

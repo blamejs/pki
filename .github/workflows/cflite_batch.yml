@@ -53,6 +53,12 @@ jobs:
           - ct-log-list
           - ct-log-list-sig
           - merkle-verify
+          - merkle-produce
+          - tlog-parse
+          - tlog-proof
+          - related-cert
+          - alt-sig
+          - possession
           - smime-parse
           - smime-verify
           - smime-decrypt

@@ -37,6 +37,10 @@ var schema    = require("./lib/schema-all");
 var path      = require("./lib/path-validate");
 var identity  = require("./lib/identity-match");
 var ct        = require("./lib/ct");
+var tuf       = require("./lib/tuf");
+var relatedCert = require("./lib/related-cert");
+var altSig    = require("./lib/alt-sig");
+var possession = require("./lib/possession");
 var tls       = require("./lib/tls-cert-compress");
 var cms       = require("./lib/cms-verify");
 var smime     = require("./lib/smime");
@@ -53,6 +57,7 @@ var key       = require("./lib/key");
 var pkcs12    = require("./lib/pkcs12-build");
 var pkcs11    = require("./lib/pkcs11-uri");
 var merkle    = require("./lib/merkle");
+var tlog      = require("./lib/tlog");
 var shbs      = require("./lib/shbs");
 var hpke      = require("./lib/hpke");
 var compositeKem = require("./lib/composite-kem");
@@ -97,6 +102,10 @@ module.exports = {
   // SCT-list extension a certificate / OCSP response carries; the signature is
   // surfaced raw for external verification (pki.ct.reconstructSignedData).
   ct:        ct,
+  tuf:       tuf,
+  relatedCert: relatedCert,
+  altSig:    altSig,
+  possession: possession,
   // 'tls' is TLS handshake structures that carry certificates -- RFC 8879 compressed
   // certificate messages (zlib / brotli / zstd) and the RFC 8446 Certificate message
   // inside them, decoded to per-entry certificate DER. Structure only; no handshake.
@@ -166,6 +175,10 @@ module.exports = {
   // verifyConsistency fold an audit / consistency proof and constant-time-
   // compare to a checkpoint root. Pure sync hashing, fail-closed, transport-free.
   merkle:    merkle,
+  // `tlog` is the C2SP transparency-log envelope over those hashes: a signed
+  // note, the checkpoint body a log signs into one, and the tile paths a static
+  // log serves them beside. Verifying only; nothing signs and nothing fetches.
+  tlog:      tlog,
   // `shbs` verifies stateful hash-based signatures -- HSS/LMS (RFC 8554),
   // carried by RFC 9802 (X.509) and RFC 9708 (CMS), profiled by NIST SP 800-208.
   // VERIFY ONLY by design: stateful signing requires atomic one-time-key index
@@ -197,7 +210,7 @@ module.exports = {
   // rejectUnauthorized always on, a TLS floor, a streaming response cap, and a timeout.
   // Curated to the public `https` factory; the module's `isBlockedIp` classifier is an
   // internal helper pki.path.build reuses (require the module), not a public surface.
-  transport: { https: transport.https },
+  transport: { https: transport.https, peerChain: transport.peerChain },
   // `jose` is the RFC 7515 Flattened JWS + RFC 7638 JWK-thumbprint layer: a strict
   // base64url codec, a bounded duplicate-key-rejecting JSON reader, profiled
   // sign/verify (ACME-outer / EAB-inner / keyChange-inner), and an alg registry

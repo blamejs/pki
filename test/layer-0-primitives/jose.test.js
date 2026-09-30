@@ -97,6 +97,30 @@ async function testJws() {
     (await acode(function () { return pki.jose.verify(jws, Object.assign({}, OUTER, { key: otherJwk })); })) === "jose/key-mismatch");
   check("25d. ...and agreeing keys verify, naming opts.key as the one used",
     (await pki.jose.verify(jws, Object.assign({}, OUTER, { key: ecJwk }))).keySource === "opts.key");
+
+  /* The JWS is the CALLER's object, and the same rule the module already applies to `opts` applies to it:
+     a member reached through an accessor answers every read separately, so a field read more than once
+     need not answer the same twice. `protected` decides the header the profile rules are applied to AND
+     the signing input the signature is checked over; `signature` and `payload` likewise reach the
+     verification. Read repeatedly, the rules can be applied to one message and the signature checked over
+     another, and the verdict can describe a header that is not the one it verified.
+
+     The observable is the READ COUNT, not a swapped value: asserting "the verdict names the original url"
+     is satisfied both by a correct implementation and by one that verified the other message and reported
+     the first header, so it cannot tell them apart. Counting reads can. */
+  var counts = { protected: 0, signature: 0, payload: 0 };
+  var probe = {};
+  ["protected", "signature", "payload"].forEach(function (k) {
+    Object.defineProperty(probe, k, {
+      enumerable: true, get: function () { counts[k] += 1; return jws[k]; },
+    });
+  });
+  var probed = await pki.jose.verify(probe, Object.assign({}, OUTER, { key: ecJwk }));
+  check("25e. CONTROL the accessor-backed JWS still verifies, so the counts below are from a real run",
+    probed.header.url === "https://ca.example/o");
+  check("25f. each JWS member is read exactly once, so no accessor can answer two reads differently " +
+    "(protected " + counts.protected + ", signature " + counts.signature + ", payload " + counts.payload + ")",
+    counts.protected === 1 && counts.signature === 1 && counts.payload === 1);
   // Member order must not decide the outcome: the same key written differently still agrees.
   var reordered = { crv: ecJwk.crv, y: ecJwk.y, x: ecJwk.x, kty: ecJwk.kty };
   check("25e. ...compared canonically, so member order does not make an equal key disagree",

@@ -44,7 +44,7 @@ function writeBadSerialCert(dir) {
   return p;
 }
 
-function run() {
+async function run() {
   var pkg = require("../../package.json");
   var tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pki-cli-"));
   try {
@@ -139,8 +139,19 @@ function run() {
     var csrDer = b.sequence([b.sequence([b.integer(0n), DN, b.sequence([b.sequence([b.oid(O("ecPublicKey")), b.oid(O("prime256v1"))]), b.bitString(Buffer.alloc(65, 4), 0)]), b.contextConstructed(0, Buffer.alloc(0))]), ALG, SIG]);
     var csrPath = path.join(tmp, "req.csr");
     fs.writeFileSync(csrPath, csrDer);
-    check("pki lint refuses a structure no profile exists for, naming what it found",
-      (function () { var r = cli(["lint", csrPath]); return r.status !== 0 && /csr/.test(r.stderr) && /certificate, CRL, or OCSP response/.test(r.stderr); })());
+    check("pki lint lints a PKCS#10 request, which the library has a verb for",
+      (function () { var r = cli(["lint", csrPath]); return /finding\(s\)/.test(r.stdout); })());
+    /* A structure the detector NAMES but no lint verb covers is refused by that name rather than
+     * linted as something else. A PKCS#8 key is the case: pki.lint ships no key profile, and the
+     * refusal names the structures it does cover so the reader learns the set from the failure. */
+    var keyOnlyPath = path.join(tmp, "key-only.der");
+    fs.writeFileSync(keyOnlyPath, await pki.key.export((await pki.key.generate("Ed25519")).privateKey));
+    check("pki lint refuses a structure no verb covers, naming what it found and what it covers",
+      (function () {
+        var r = cli(["lint", keyOnlyPath]);
+        return r.status !== 0 && /pkcs8/.test(r.stderr) && /pki lint covers/.test(r.stderr) &&
+          /x509/.test(r.stderr) && /attrcert/.test(r.stderr);
+      })());
 
     // ---- convert ----
     var toDer = cliBuf(["convert", FIXTURE, "--to", "der"]);
@@ -225,6 +236,295 @@ function run() {
       signedPem.stdout.indexOf("-----BEGIN CMS-----") === 0 &&
       pki.schema.cms.parse(signedPem.stdout).encapContentInfo.eContent == null);
     check("pki sign without --key is a usage error (non-zero exit)", cli(["sign", contentPath, "--cert", certPath]).status !== 0);
+
+    /* ---- --help reaches every verb ----
+     * The first flag anyone tries. Four verbs printed a usage line when their arguments were
+     * missing and three took a bare positional, so `pki oid --help` answered "unknown OID name"
+     * and `pki parse --help` tried to open a file called --help. The set is derived from the
+     * usage banner rather than written out here, so a verb added later is covered by this vector
+     * without an edit. */
+    var banner = cli([]).stdout;
+    var verbs = (/usage: pki <([a-z|-]+)>/.exec(banner) || [])[1];
+    check("the usage banner names the verb set this vector derives from", typeof verbs === "string");
+    var verbList = String(verbs).split("|").filter(function (v) { return v !== "version"; });
+    var helpGaps = [];
+    verbList.forEach(function (verb) {
+      var h = cli([verb, "--help"]);
+      var text = h.stdout + h.stderr;
+      if (text.indexOf("usage: pki " + verb) === -1) {
+        helpGaps.push(verb + " -> " + JSON.stringify((text.split("\n")[0] || "").slice(0, 60)));
+      }
+    });
+    check("pki <verb> --help prints that verb's usage line, for every verb (" + verbList.length +
+      " verbs): " + helpGaps.join("; "), helpGaps.length === 0);
+    var missingArgGaps = [];
+    verbList.forEach(function (verb) {
+      var m = cli([verb]);
+      if (m.status === 0) missingArgGaps.push(verb + " exited 0 with no arguments");
+    });
+    check("pki <verb> with no arguments exits non-zero: " + missingArgGaps.join("; "),
+      missingArgGaps.length === 0);
+
+    /* ---- inspect reaches every format the library renders ----
+     * `pki inspect` called pki.inspect.certificate, so the CLI could not open a CRL, a CSR or a
+     * CMS message the library already rendered. Routing it through pki.inspect.any carries every
+     * format the library detects, and the set is read from the library so a format added there
+     * needs no edit here. */
+    var inspectCsr = path.join(tmp, "req.der");
+    var csrKeys = await pki.key.generate("Ed25519");
+    fs.writeFileSync(inspectCsr, await pki.csr.sign(
+      { subject: "cli.example", subjectPublicKey: await pki.key.export(csrKeys.publicKey) },
+      { key: await pki.key.export(csrKeys.privateKey) }));
+    var iCsr = cli(["inspect", inspectCsr]);
+    check("pki inspect renders a PKCS#10 request, not only a certificate",
+      iCsr.status === 0 && /Certificate Request/i.test(iCsr.stdout));
+    var inspectCms = path.join(tmp, "signed.der");
+    fs.writeFileSync(inspectCms, signed.stdout);
+    var iCms = cli(["inspect", inspectCms]);
+    check("pki inspect renders a CMS message", iCms.status === 0 && /SignerInfo|Content Type/i.test(iCms.stdout));
+    var iDump = cli(["inspect", FIXTURE, "--asn1"]);
+    check("pki inspect --asn1 dumps the TLV tree instead of the field report",
+      iDump.status === 0 && /^ASN\.1 structure: \d+ bytes, decoded as DER$/m.test(iDump.stdout) &&
+        /^ +0:d=0 +hl=4 l= 544 cons: SEQUENCE$/m.test(iDump.stdout));
+    /* The library's rule is that a report reached by format detection names a key without printing
+     * it, and the CLI inherits that only while inspect routes through `any`. A terminal's scrollback
+     * is a copy, so this is the vector that keeps the CLI from becoming the way a key escapes. */
+    var keyFile = path.join(tmp, "key-report.der");
+    var keyPair = await pki.key.generate("Ed25519");
+    var keyDer = await pki.key.export(keyPair.privateKey);
+    fs.writeFileSync(keyFile, keyDer);
+    var iKey = cli(["inspect", keyFile]);
+    var keyInner = pki.asn1.decode(keyDer).children[2].content;
+    check("pki inspect on a private key names it and prints none of its bytes",
+      iKey.status === 0 && /Private Key: present/.test(iKey.stdout) &&
+        iKey.stdout.indexOf(keyInner.toString("hex")) === -1 &&
+        iKey.stdout.indexOf(keyInner.toString("base64")) === -1);
+
+    /* ---- lint reaches every verb the library ships ----
+     * The CLI's table named three structures while pki.lint ships seven verbs. The expectation is
+     * derived from the library's own surface, so a lint verb added there fails this vector until
+     * the CLI's table names it. */
+    /* The artifact set is derived, not listed: pki.lint.rules(null, name) returns that artifact's
+     * rule rows and refuses a name that is not an artifact, which separates the seven lint verbs
+     * from the two introspection exports without naming either group here. */
+    var libLintVerbs = Object.keys(pki.lint).filter(function (k) {
+      try { return pki.lint.rules(null, k).length > 0; } catch (e) { return e.code !== "lint/bad-input" && false; }
+    });
+    check("the derived lint-verb set is the artifacts and not the introspection exports",
+      libLintVerbs.length >= 7 && libLintVerbs.indexOf("rules") === -1 &&
+        libLintVerbs.indexOf("profiles") === -1);
+    var cliLintUsage = cli(["lint"]).stderr;
+    var lintGaps = libLintVerbs.filter(function (v) { return cliLintUsage.indexOf(v) === -1; });
+    check("pki lint's usage names every lint verb the library ships (" + libLintVerbs.length +
+      " verbs): missing " + lintGaps.join(", "), lintGaps.length === 0);
+    var lintCsr = cli(["lint", inspectCsr]);
+    check("pki lint lints a PKCS#10 request rather than refusing it as an uncovered structure",
+      lintCsr.stderr.indexOf("pki lint covers") === -1);
+    var lintCms = cli(["lint", inspectCms]);
+    check("pki lint lints a CMS message rather than refusing it as an uncovered structure",
+      lintCms.stderr.indexOf("pki lint covers") === -1);
+
+    /* ---- keygen: the first verb that puts a private key on disk ----
+     * Each check below is one of the decisions an operator inherits from it, and each fails loudly
+     * rather than being a sentence in a help string. */
+    var kgOut = path.join(tmp, "kg.key");
+    var kgPub = path.join(tmp, "kg.pub");
+    var kg = cli(["keygen", "--out", kgOut, "--pub", kgPub]);
+    check("pki keygen exits 0 and writes the key file it was given", kg.status === 0 && fs.existsSync(kgOut));
+    check("pki keygen writes a PKCS#8 private key the library parses",
+      (function () { var k = pki.schema.pkcs8.parse(fs.readFileSync(kgOut)); return k.privateKeyAlgorithm != null; })());
+    check("pki keygen writes the public half to a separate file, as an SPKI the library parses",
+      fs.existsSync(kgPub) && pki.schema.x509.decodeExtensions !== undefined &&
+        (function () { var n = pki.asn1.decode(fs.readFileSync(kgPub)); return n.tagNumber === 16; })());
+    /* A terminal's scrollback is a copy of whatever it printed, and so is the shell history of the
+     * pipeline it ran in, so the private key is never on stdout unless it was asked for. */
+    var kgKeyBytes = pki.asn1.decode(fs.readFileSync(kgOut)).children[2].content;
+    check("pki keygen puts no byte of the private key on stdout",
+      kgKeyBytes.length > 8 &&
+        kg.stdout.indexOf(kgKeyBytes.toString("hex")) === -1 &&
+        kg.stdout.indexOf(kgKeyBytes.toString("base64")) === -1 &&
+        kg.stdout.indexOf(fs.readFileSync(kgOut).toString("base64")) === -1);
+    /* A key written over another key destroys the only copy of the first. */
+    var before = fs.readFileSync(kgOut);
+    var kgAgain = cli(["keygen", "--out", kgOut]);
+    check("pki keygen refuses to write over an existing file, names it, and leaves it unchanged",
+      kgAgain.status !== 0 && kgAgain.stderr.indexOf(kgOut) !== -1 &&
+        Buffer.compare(fs.readFileSync(kgOut), before) === 0);
+    check("pki keygen requires --out rather than defaulting to stdout",
+      cli(["keygen"]).status !== 0 && /usage: pki keygen/.test(cli(["keygen"]).stderr));
+    /* PQC-first: an ML-DSA key is as reachable as a classical one, and the default is one of the
+     * suites the toolkit leads with. The default is read from the file rather than assumed. */
+    var kgDefault = pki.schema.pkcs8.parse(fs.readFileSync(kgOut));
+    check("pki keygen defaults to a post-quantum signature suite (" +
+      kgDefault.privateKeyAlgorithm.name + ")",
+    /^id-ml-dsa/.test(String(kgDefault.privateKeyAlgorithm.name)));
+    var kgEd = path.join(tmp, "kg-ed.key");
+    check("pki keygen --alg reaches a classical suite too",
+      cli(["keygen", "--alg", "Ed25519", "--out", kgEd]).status === 0 &&
+        pki.schema.pkcs8.parse(fs.readFileSync(kgEd)).privateKeyAlgorithm.name === "Ed25519");
+    check("pki keygen refuses an algorithm the engine does not generate, naming it",
+      (function () { var r = cli(["keygen", "--alg", "NOT-A-SUITE", "--out", path.join(tmp, "x.key")]);
+        return r.status !== 0 && r.stderr.indexOf("NOT-A-SUITE") !== -1; })());
+    /* The mode claim is checked against what the platform GIVES, not against an assumption: on
+     * win32 a mode argument is not applied and the help text says so. */
+    var kgMode = fs.statSync(kgOut).mode & 0o777;
+    var kgHelp = cli(["keygen", "--help"]).stderr;
+    check("the keygen help text's permission claim matches what this platform does (mode " +
+      kgMode.toString(8) + " on " + process.platform + ")",
+    process.platform === "win32"
+      ? /not applied on Windows|Windows/.test(kgHelp)
+      : kgMode === 0o600);
+    check("pki keygen --pem writes an armored key rather than DER",
+      (function () {
+        var p = path.join(tmp, "kg.pem");
+        var r = cli(["keygen", "--alg", "Ed25519", "--out", p, "--pem"]);
+        return r.status === 0 && fs.readFileSync(p, "utf8").indexOf("-----BEGIN PRIVATE KEY-----") === 0;
+      })());
+
+    /* ---- csr: a request over a supplied key ---- */
+    var reqKey = path.join(tmp, "req.key");
+    check("keygen produced the key the request vectors sign with",
+      cli(["keygen", "--alg", "Ed25519", "--out", reqKey]).status === 0);
+    var reqOut = path.join(tmp, "req-cli.der");
+    var csrRun = cli(["csr", "--key", reqKey, "--subject", "CN=req.example", "--san", "req.example,www.req.example", "--out", reqOut]);
+    check("pki csr exits 0 and writes a request the library parses",
+      csrRun.status === 0 && (function () {
+        var c = pki.schema.csr.parse(fs.readFileSync(reqOut));
+        return c.subject.dn === "CN=req.example";
+      })());
+    check("pki csr carries the requested names into the request's extensions",
+      (function () {
+        var rows = pki.schema.csr.decodeExtensions(pki.schema.csr.parse(fs.readFileSync(reqOut)));
+        return rows.some(function (r) {
+          return r.name === "subjectAltName" && JSON.stringify(r.decoded).indexOf("www.req.example") !== -1;
+        });
+      })());
+    check("pki csr writes a request whose signature verifies, so a CA can act on it",
+      await pki.csr.verify(fs.readFileSync(reqOut)).then(function (v) { return v === true || (v && v.valid === true); },
+        function () { return false; }));
+    check("pki csr requires a key and a subject", cli(["csr"]).status !== 0 &&
+      /usage: pki csr/.test(cli(["csr"]).stderr) &&
+      cli(["csr", "--key", reqKey]).status !== 0);
+
+    /* ---- issue: self-signed, from a CA, and from a request ---- */
+    var selfCert = path.join(tmp, "self.der");
+    var issueSelf = cli(["issue", "--key", reqKey, "--subject", "CN=self.example", "--days", "30", "--out", selfCert]);
+    check("pki issue self-signs when no issuer is given",
+      issueSelf.status === 0 && (function () {
+        var c = pki.schema.x509.parse(fs.readFileSync(selfCert));
+        return c.subject.dn === "CN=self.example" && c.issuer.dn === "CN=self.example";
+      })());
+    check("pki issue honors --days in the validity window it writes",
+      (function () {
+        var c = pki.schema.x509.parse(fs.readFileSync(selfCert));
+        var days = (c.validity.notAfter - c.validity.notBefore) / 86400000;
+        return Math.round(days) === 30;
+      })());
+    var caKey = path.join(tmp, "ca.key");
+    var caCert = path.join(tmp, "ca.der");
+    check("pki issue --ca marks the certificate as a CA that may sign certificates",
+      cli(["keygen", "--alg", "Ed25519", "--out", caKey]).status === 0 &&
+        cli(["issue", "--key", caKey, "--subject", "CN=ca.example", "--ca", "--days", "365", "--out", caCert]).status === 0 &&
+        (function () {
+          var rows = pki.schema.x509.decodeExtensions(pki.schema.x509.parse(fs.readFileSync(caCert)));
+          var bc = rows.filter(function (r) { return r.name === "basicConstraints"; })[0];
+          var ku = rows.filter(function (r) { return r.name === "keyUsage"; })[0];
+          return bc && bc.decoded.cA === true && ku && ku.decoded.keyCertSign === true;
+        })());
+    var leafCert = path.join(tmp, "leaf.der");
+    var issueLeaf = cli(["issue", "--key", reqKey, "--subject", "CN=leaf.example",
+      "--issuer-cert", caCert, "--issuer-key", caKey, "--days", "30", "--out", leafCert]);
+    check("pki issue signs from a supplied issuer certificate and key",
+      issueLeaf.status === 0 && (function () {
+        var c = pki.schema.x509.parse(fs.readFileSync(leafCert));
+        return c.subject.dn === "CN=leaf.example" && c.issuer.dn === "CN=ca.example";
+      })());
+    /* Asking for a CA-signed certificate and silently getting a self-signed one is the failure
+     * mode this pair exists to prevent: half an issuer is a usage error, not a self-sign. */
+    check("pki issue refuses an issuer certificate with no issuer key, rather than self-signing",
+      (function () {
+        var r = cli(["issue", "--key", reqKey, "--subject", "CN=half.example",
+          "--issuer-cert", caCert, "--out", path.join(tmp, "half1.der")]);
+        return r.status !== 0 && /--issuer-key/.test(r.stderr);
+      })());
+    check("pki issue refuses an issuer key with no issuer certificate",
+      (function () {
+        var r = cli(["issue", "--key", reqKey, "--subject", "CN=half.example",
+          "--issuer-key", caKey, "--out", path.join(tmp, "half2.der")]);
+        return r.status !== 0 && /--issuer-cert/.test(r.stderr);
+      })());
+    /* Certifying a request whose signature does not verify certifies a key the requester may not
+     * hold, so the CSR path verifies before it issues. */
+    var fromCsr = path.join(tmp, "from-csr.der");
+    var issueCsr = cli(["issue", "--csr", reqOut, "--issuer-cert", caCert, "--issuer-key", caKey,
+      "--days", "30", "--out", fromCsr]);
+    check("pki issue --csr certifies the subject and key the request carries",
+      issueCsr.status === 0 && (function () {
+        var c = pki.schema.x509.parse(fs.readFileSync(fromCsr));
+        return c.subject.dn === "CN=req.example" && c.issuer.dn === "CN=ca.example";
+      })());
+    var tamperedCsr = path.join(tmp, "tampered.der");
+    fs.writeFileSync(tamperedCsr, (function () {
+      var der = fs.readFileSync(reqOut);
+      var node = pki.asn1.decode(der);
+      var sig = Buffer.from(node.children[2].content);
+      sig[sig.length - 1] ^= 0xff;
+      return pki.asn1.build.sequence([pki.asn1.build.raw(node.children[0].bytes),
+        pki.asn1.build.raw(node.children[1].bytes), pki.asn1.build.bitString(sig, 0)]);
+    })());
+    check("pki issue --csr refuses a request whose signature does not verify",
+      (function () {
+        var r = cli(["issue", "--csr", tamperedCsr, "--issuer-cert", caCert, "--issuer-key", caKey,
+          "--out", path.join(tmp, "never.der")]);
+        return r.status !== 0 && !fs.existsSync(path.join(tmp, "never.der"));
+      })());
+    check("pki issue refuses both --key and --csr at once, since they name the same thing twice",
+      cli(["issue", "--key", reqKey, "--csr", reqOut, "--subject", "CN=x",
+        "--out", path.join(tmp, "both.der")]).status !== 0);
+    check("pki issue requires a subject source", cli(["issue"]).status !== 0 &&
+      /usage: pki issue/.test(cli(["issue"]).stderr));
+    /* The certificate the CLI issued validates against the CA the CLI issued, through the library's
+     * own path validator: the two verbs compose or neither is usable. */
+    var vChain = cli(["verify", leafCert, "--anchor", caCert]);
+    check("a certificate pki issue signed validates against the anchor pki issue signed",
+      vChain.status === 0 && /valid/.test(vChain.stdout));
+
+    /* ---- fetch ----
+     * A fetched certificate is not a verified one, and the report must not read as though it were.
+     * These run offline: a reserved TLD never resolves, so the failure is the verb's own and the
+     * vector cannot depend on a network. */
+    var fetchUsage = cli(["fetch"]);
+    check("pki fetch requires a URL", fetchUsage.status !== 0 && /usage: pki fetch/.test(fetchUsage.stderr));
+    var fetchBad = cli(["fetch", "https://nothing.invalid/"]);
+    check("pki fetch against a host that does not resolve fails closed and does not hang",
+      fetchBad.status !== 0 && fetchBad.stdout.indexOf("-----BEGIN") === -1);
+    check("pki fetch reports the failure as the transport's typed fault",
+      /transport\//.test(fetchBad.stderr));
+    check("pki fetch refuses a URL that is not https, rather than fetching in the clear",
+      (function () { var r = cli(["fetch", "http://nothing.invalid/"]);
+        return r.status !== 0 && /insecure-url/.test(r.stderr); })());
+    /* The verb says what the handshake checked and what it did not. Without that an operator reads
+     * a printed chain as a validated one, which is the confusion `pki verify` exists to resolve. */
+    var fetchHelp = cli(["fetch", "--help"]).stderr;
+    check("pki fetch's help says it is not a verification and names the verb that is",
+      /not a verification|does not verify/i.test(fetchHelp) && /pki verify/.test(fetchHelp));
+
+    /* A file can be one complete DER value AND a well-formed PEM block at once, which the library
+     * refuses rather than guessing. Its advice is "pass PEM as a string, or the DER value on its
+     * own", and a reader holding a FILE cannot act on that, so the CLI names a command instead. */
+    var ambiguousText = "\n-----BEGIN A-----\n" +
+      pki.asn1.build.octetString(Buffer.alloc(17, 0x41)).toString("base64") + "\n-----END A-----\n";
+    var ambiguousPath = path.join(tmp, "ambiguous.bin");
+    fs.writeFileSync(ambiguousPath, Buffer.concat([Buffer.from([0x43, ambiguousText.length]),
+      Buffer.from(ambiguousText, "latin1")]));
+    var ambiguousGaps = [];
+    ["parse", "inspect", "lint"].forEach(function (verb) {
+      var r = cli([verb, ambiguousPath]);
+      if (r.status === 0) { ambiguousGaps.push(verb + " exited 0 on an ambiguous file"); return; }
+      if (!/pki convert/.test(r.stderr)) ambiguousGaps.push(verb + " gave no command to run: " + r.stderr.slice(0, 70));
+    });
+    check("a file that reads as both DER and PEM is refused with a command the reader can run: " +
+      ambiguousGaps.join("; "), ambiguousGaps.length === 0);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

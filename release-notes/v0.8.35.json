@@ -1,0 +1,16 @@
+{
+  "version": "0.8.35",
+  "date": "2026-09-29",
+  "headline": "A builder encodes the number you wrote, or refuses it.",
+  "summary": "`pki.cbor.build.uint`, `int`, `nint`, `biguint`, `time` and `tag` converted whatever they were handed into an integer instead of holding it to being one. `BigInt(x)` accepts far more than it looks like it does, so a string in any radix, a padded or empty string, and a boolean each produced a well-formed encoding of a number nobody wrote. Every builder now refuses a value that is not already an integer, and a C2SP checkpoint's tree size is bounded to the width `pki.merkle` folds a proof at.",
+  "sections": {
+    "Fixed": [
+      "A CBOR builder no longer converts a non-integer argument. `build.uint(\"\")` encoded CBOR `0`, so a value that was never supplied became a legitimate zero; `build.uint(\"0x10\")` encoded 16; `build.uint(\" 16 \")` and `build.uint(\"007\")` encoded 16 and 7; `build.uint(true)` encoded 1; and `build.tag(\"\", inner)` produced tag 0, the RFC 8949 date-time tag, over content that was not a date. Each is now `cbor/bad-argument`, naming the value. A safe-integer Number, a BigInt and a Date where one was already accepted are unchanged.",
+      "A non-integer Number reaching a CBOR builder is a typed `cbor/bad-argument` rather than a raw `RangeError` escaping from the conversion, so a caller catching the toolkit's own error class sees it.",
+      "A checkpoint tree size is bounded to a uint64. `pki.tlog.parseCheckpoint` accepted a size of any width while `pki.merkle` refuses a coordinate at or above 2^64, so a checkpoint parsed and then failed at the fold, and a caller reading `treeSize` in between held an unbounded value. A size past the ceiling, or a run of digits too long to be one, is now `tlog/bad-checkpoint` at the parse."
+    ],
+    "Changed": [
+      "`pki.cbor.build.uint`, `int`, `nint`, `biguint`, `time` and `tag` refuse a string, a boolean, an array, `null` and a fractional or out-of-range Number where they previously converted some of them. A caller passing an integer, a BigInt, or a Date to `build.time` is unaffected. This is the shape those builders were documented to take; nothing in the toolkit passed anything else."
+    ]
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "version": "0.8.33",
+  "date": "2026-09-29",
+  "headline": "Read a transparency log's checkpoint, and the tiles it serves beside it.",
+  "summary": "`pki.merkle` verified inclusion and consistency against a root, and getting that root meant writing the envelope around it yourself. `pki.tlog` is that envelope: the C2SP signed note a log signs, the checkpoint body inside it, and the tile addressing a static log serves them at. Static-CT, Merkle Tree Certificates and Rekor v2 all speak exactly this, differing in what they put in the origin line and what they do with the root.",
+  "sections": {
+    "Added": [
+      "`pki.tlog.parseNote` and `pki.tlog.verifyNote` read and check a C2SP signed note: text, a blank line, then one signature line per signer. The signature covers the text including its trailing newline, so `signedBytes` is returned as a view of the input and never as a re-serialization of what was parsed; a verifier that rebuilt the text from its lines would accept a note altered in the delimiter byte. A signature from a key not supplied is ignored, and a note carrying none from a supplied key resolves `verified: false` without throwing, because that is a verdict about the note and not a fault in it.",
+      "Every Ed25519 key passes the shared Edwards-point gate before it reaches a verify. Node imports a low-order key without complaint and such a key verifies a forged signature, so a key list that picked one up would otherwise make every note verify under it.",
+      "`pki.tlog.keyId` derives the four-byte identifier a signature carries in front of itself, from the key name and the raw 32 key bytes. The specification calls these identifiers and not strong hashes, so `verifyNote` treats a match as selecting a candidate and checks every supplied key whose identifier matches before reporting.",
+      "`pki.tlog.parseCheckpoint` and `pki.tlog.verifyCheckpoint` read the body a log signs into that note: the origin, the tree size as a `BigInt`, the 32-byte root hash ready for `pki.merkle.verifyInclusion`, and any opaque extension lines. A tree size carrying a leading zero, an empty origin, a root that is not 32 bytes, or a body of fewer than three lines is refused. The origin is not checked as a URL: the specification recommends a schema-less one and then says a client must not assume the origin follows that shape or names a reachable endpoint.",
+      "`pki.tlog.tilePath`, `pki.tlog.entryBundlePath` and `pki.tlog.checkpointPath` build the paths a tiled log serves, with the index in the zero-padded three-digit segments that let a log hold its tiles in a filesystem without a directory and a file colliding on one name. `pki.tlog.parseTilePath` reads one back, refusing a level above 63 or carrying a leading zero, a segment that is not three digits, a leading segment without its `x`, a final segment with one, or a partial width outside 1 to 255.",
+      "`pki.tlog.parseTile` splits a tile into its 32-byte hashes, holding a full tile to exactly 256 of them, and `pki.tlog.parseEntryBundle` splits the big-endian uint16 length-prefixed entries a bundle carries, refusing a prefix that overruns the buffer instead of reading a short final entry. Each entry's `pki.merkle.leafHash` is the matching hash in the level-0 tile, which is what makes a bundle checkable against the tree.",
+      "Verifying only: nothing here signs a checkpoint and nothing fetches one. Producing a tree is `pki.merkle`'s side, and a transport is the caller's."
+    ]
+  }
+}
