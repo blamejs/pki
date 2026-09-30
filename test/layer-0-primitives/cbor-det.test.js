@@ -443,6 +443,72 @@ function testBuildEncoder() {
   check("build-array within the depth cap decodes", d(deep).majorType === 4);
 }
 
+// An integer argument to a builder is authoring-tier input: it is what the
+// developer wrote, so a value that is not an integer is a typo to report at the
+// call, never a thing to convert. `BigInt(x)` converts far more than it looks
+// like it does, and each conversion below produces a well-formed encoding of a
+// number nobody wrote.
+function testBuildIntegerArgumentIsNotCoerced() {
+  var b = pki.cbor.build;
+  // Each entry: [label, value] -- every one of these a bare BigInt() converts.
+  var COERCIBLE = [
+    ["a decimal string", "16"],
+    ["an empty string", ""],
+    ["a hex-prefixed string", "0x10"],
+    ["a space-padded string", " 16 "],
+    ["a leading-zero string", "007"],
+    ["a binary-prefixed string", "0b11"],
+    ["true", true],
+    ["false", false],
+    ["an empty array", []],
+    ["a one-element array", [7]],
+  ];
+  COERCIBLE.forEach(function (v) {
+    check("build.uint refuses " + v[0], code(function () { b.uint(v[1]); }) === "cbor/bad-argument");
+    check("build.int refuses " + v[0], code(function () { b.int(v[1]); }) === "cbor/bad-argument");
+    check("build.tag refuses " + v[0] + " as a tag number",
+      code(function () { b.tag(v[1], b.uint(1n)); }) === "cbor/bad-argument");
+  });
+  // nint's own guard reads the sign, so it must reject the same values before
+  // that read rather than after converting them to a non-negative number.
+  check("build.nint refuses a decimal string", code(function () { b.nint("-1"); }) === "cbor/bad-argument");
+  check("build.nint refuses an empty string", code(function () { b.nint(""); }) === "cbor/bad-argument");
+
+  // Every builder taking an integer, not only the first three: a rule that
+  // reaches some of them leaves the others encoding whatever BigInt returns.
+  check("build.biguint refuses a hex-prefixed string",
+    code(function () { b.biguint("0x1ffffffffffffffff"); }) === "cbor/bad-argument");
+  check("build.biguint refuses an empty string", code(function () { b.biguint(""); }) === "cbor/bad-argument");
+  check("build.biguint refuses true", code(function () { b.biguint(true); }) === "cbor/bad-argument");
+  check("build.time refuses a decimal string", code(function () { b.time("0"); }) === "cbor/bad-argument");
+  check("build.time refuses an empty string", code(function () { b.time(""); }) === "cbor/bad-argument");
+  check("build.time refuses true", code(function () { b.time(true); }) === "cbor/bad-argument");
+  // ...and both still take what they always took.
+  check("build.biguint still takes a large BigInt",
+    b.biguint(0x1ffffffffffffffffn).toString("hex") === "c24901ffffffffffffffff");
+  check("build.time still takes a Number", b.time(0).toString("hex") === "c100");
+  check("build.time still takes a BigInt", b.time(0n).toString("hex") === "c100");
+  check("build.time still takes a Date", b.time(new Date(0)).toString("hex") === "c100");
+
+  // A non-integer Number is a typed refusal, not a raw RangeError from BigInt.
+  check("build.uint refuses a fractional Number with a typed code",
+    code(function () { b.uint(1.5); }) === "cbor/bad-argument");
+  check("build.int refuses NaN with a typed code", code(function () { b.int(NaN); }) === "cbor/bad-argument");
+  check("build.uint refuses Infinity with a typed code", code(function () { b.uint(Infinity); }) === "cbor/bad-argument");
+  check("build.uint refuses a Number past 2^53 with a typed code",
+    code(function () { b.uint(Number.MAX_SAFE_INTEGER + 2); }) === "cbor/bad-argument");
+  check("build.uint refuses null with a typed code", code(function () { b.uint(null); }) === "cbor/bad-argument");
+  check("build.uint refuses undefined with a typed code", code(function () { b.uint(undefined); }) === "cbor/bad-argument");
+
+  // The forms a builder does take still encode, so the tightening did not
+  // narrow the contract to bigint alone.
+  check("build.uint still takes a safe-integer Number", b.uint(16).toString("hex") === "10");
+  check("build.uint still takes a BigInt", b.uint(16n).toString("hex") === "10");
+  check("build.int still takes a negative Number", b.int(-1).toString("hex") === "20");
+  check("build.nint still takes a negative BigInt", b.nint(-1n).toString("hex") === "20");
+  check("build.tag still takes a Number tag", b.tag(6, b.uint(1n)).toString("hex") === "c601");
+}
+
 function run() {
   testSurface();
   testAccept();
@@ -453,6 +519,7 @@ function run() {
   testConfig();
   testEdgeBranches();
   testBuildEncoder();
+  testBuildIntegerArgumentIsNotCoerced();
   console.log("CHECKS " + helpers.getChecks());
 }
 

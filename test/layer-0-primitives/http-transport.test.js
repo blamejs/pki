@@ -302,6 +302,58 @@ async function testConnectStallTimeout() {
   } finally { raw.close(); }
 }
 
+// ---- the peerChain handshake is bounded by a WALL-CLOCK deadline -----------
+// `socket.setTimeout` bounds INACTIVITY, not elapsed time: every byte that arrives resets it. An endpoint
+// that trickles handshake bytes below that interval keeps the socket "active" forever and the advertised
+// timeout never fires, so `pki.transport.peerChain` (and the verbs built on it) hang past their budget.
+// The server here accepts the connection and writes one byte every 40ms without ever speaking TLS, which
+// is inactivity-timeout-proof, so only an absolute timer can end it.
+async function testPeerChainTrickleDeadline() {
+  var net = require("node:net");
+  var sockets = [];
+  var raw = net.createServer(function (s) {
+    sockets.push(s);
+    // A well-formed TLS record HEADER announcing a 16384-byte handshake body, then the body one byte at a
+    // time. The client cannot act on a partial record, so it waits; every byte resets an inactivity
+    // timeout while the record never completes. Writing garbage instead makes TLS fail fast, which tests
+    // the error path rather than the stall.
+    var iv = null;
+    // The socket's own state decides whether to write, rather than a try/catch around the write: a
+    // destroyed socket is the only reason it would fail here, and asking is clearer than swallowing.
+    s.on("data", function () {
+      if (iv !== null || s.destroyed) return;
+      s.write(Buffer.from([0x16, 0x03, 0x03, 0x40, 0x00]));
+      iv = setInterval(function () {
+        if (s.destroyed) { clearInterval(iv); return; }
+        s.write(Buffer.from([0x00]));
+      }, 40);
+    });
+    // The client destroys the connection when its deadline fires, which surfaces here as an error or a
+    // close; either ends the trickle.
+    s.on("error", function () { if (iv !== null) clearInterval(iv); });
+    s.on("close", function () { if (iv !== null) clearInterval(iv); });
+  });
+  var port = await new Promise(function (res) { raw.listen(0, "127.0.0.1", function () { res(raw.address().port); }); });
+  try {
+    var started = Date.now();
+    var code = await codeOf(pki.transport.peerChain({
+      url: "https://127.0.0.1:" + port + "/",
+      tls: { anchors: [Buffer.from("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----")] },
+      timeout: 400,
+    }));
+    var elapsed = Date.now() - started;
+    check("14h a trickling handshake is ended by the wall-clock deadline (" + code + ")",
+      code === "transport/timeout");
+    // The budget is 400ms. A generous ceiling, since the point is that it ends at all rather than the
+    // precision of when: an inactivity timeout would never have fired while bytes kept arriving.
+    check("14i and it ends within a bounded wall-clock, not when the peer stops writing (" + elapsed + "ms)",
+      elapsed < 8000);
+  } finally {
+    sockets.forEach(function (s) { s.destroy(); });   // destroy() is idempotent and does not throw
+    raw.close();
+  }
+}
+
 // ---- useSystemStore loads a real CA store ----------------------------------
 async function testSystemStoreLoaded() {
   var tls = await selfSigned("Loopback A");
@@ -491,6 +543,75 @@ function startConnectProxy(opts) {
   var srv = opts.tls ? require("node:tls").createServer({ cert: opts.tls.certPem, key: opts.tls.keyPem }, onConn) : net.createServer(onConn);
   srv.on("tlsClientError", function () { });
   return new Promise(function (resolve) { srv.listen(0, opts.listenHost || "127.0.0.1", function () { resolve({ srv: srv, port: srv.address().port, seen: seen }); }); });
+}
+
+/* peerChain negotiates TLS and hands back the channel without sending a request, which is what a
+ * verb that reads a certificate off an endpoint needs: a request would reach the application. It is
+ * built on the SAME _prepare the request path uses, so the anchors, the SNI, the version floor, the
+ * identity hook and the private-address block are one policy rather than two.
+ *
+ * The chain is what this exercises: the server presents a leaf issued by a CA, and the vector
+ * asserts both certificates come back leaf-first as DER the parsers read. A single self-signed
+ * certificate cannot tell a one-element chain from a walk that stopped after one step. */
+async function testPeerChain() {
+  var ca = signing.makeSigner("ec-p256", { cn: "chain-ca.example" });
+  var caCert = await pki.x509.sign({
+    subject: "chain-ca.example", subjectPublicKey: ca.spki,
+    notBefore: new Date("2024-01-01T00:00:00Z"), notAfter: new Date("2044-01-01T00:00:00Z"),
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: true },
+  }, { key: ca.key });
+  var leaf = signing.makeSigner("ec-p256", { cn: "localhost" });
+  var leafCert = await pki.x509.sign({
+    subject: "localhost", subjectPublicKey: leaf.spki,
+    notBefore: new Date("2024-01-01T00:00:00Z"), notAfter: new Date("2044-01-01T00:00:00Z"),
+    extensions: { subjectAltName: [{ iPAddress: "127.0.0.1" }], keyUsage: ["digitalSignature"], subjectKeyIdentifier: true },
+  }, { key: ca.key, cert: caCert });
+
+  var srv = https.createServer({
+    cert: pki.schema.x509.pemEncode(leafCert, "CERTIFICATE") + pki.schema.x509.pemEncode(caCert, "CERTIFICATE"),
+    key: pki.schema.pkcs8.pemEncode(leaf.key, "PRIVATE KEY"),
+  }, function (req, res) { res.end("should not be reached"); });
+  var requests = 0;
+  srv.on("request", function () { requests += 1; });
+  srv.on("clientError", function () { /* a bare TLS close is not an HTTP error the test cares about */ });
+  var port = await new Promise(function (res) { srv.listen(0, "127.0.0.1", function () { res(srv.address().port); }); });
+  try {
+    var anchors = [pki.schema.x509.pemEncode(caCert, "CERTIFICATE")];
+    var ch = await pki.transport.peerChain({ url: urlFor(port, "/") }, { tls: { anchors: anchors } });
+    check("P1 peerChain returns the channel facts the request path returns",
+      ch !== null && typeof ch.protocol === "string" && Buffer.isBuffer(ch.peerCertificate));
+    check("P2 peerChain returns the whole chain the endpoint presented, leaf first",
+      Array.isArray(ch.peerChain) && ch.peerChain.length === 2 &&
+        Buffer.compare(ch.peerChain[0], leafCert) === 0 &&
+        Buffer.compare(ch.peerChain[1], caCert) === 0);
+    check("P3 the chain's entries are certificates the parser reads",
+      pki.schema.x509.parse(ch.peerChain[0]).subject.dn === "CN=localhost" &&
+        pki.schema.x509.parse(ch.peerChain[1]).subject.dn === "CN=chain-ca.example");
+    check("P4 peerCertificate is the same leaf, so the request path's field is unchanged",
+      Buffer.compare(ch.peerCertificate, ch.peerChain[0]) === 0);
+    check("P5 no request reached the application", requests === 0);
+
+    /* The identity check is the request path's, not a second one: an endpoint whose certificate
+     * does not chain to the configured anchors is refused here exactly as it is there. */
+    check("P6 an unpinned endpoint is refused by the gate _prepare applies, before any connect",
+      (await codeOf(pki.transport.peerChain({ url: urlFor(port, "/") }, {}))) === "transport/no-trust-anchors");
+    var otherCa = signing.makeSigner("ec-p256", { cn: "other-ca.example" });
+    var otherCert = await pki.x509.sign({
+      subject: "other-ca.example", subjectPublicKey: otherCa.spki,
+      notBefore: new Date("2024-01-01T00:00:00Z"), notAfter: new Date("2044-01-01T00:00:00Z"),
+      extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: true },
+    }, { key: otherCa.key });
+    check("P6b an endpoint that does not chain to the configured anchors is refused",
+      (await codeOf(pki.transport.peerChain({ url: urlFor(port, "/") },
+        { tls: { anchors: [pki.schema.x509.pemEncode(otherCert, "CERTIFICATE")] } }))) === "transport/server-auth-failed");
+    check("P7 an http: URL is refused by the same gate the request path applies",
+      (await codeOf(pki.transport.peerChain({ url: "http://127.0.0.1:" + port + "/" }, {}))) === "transport/insecure-url");
+    check("P8 a private address is blocked when the caller asks for it",
+      (await codeOf(pki.transport.peerChain({ url: urlFor(port, "/"), blockPrivateAddresses: true },
+        { tls: { anchors: anchors } }))) === "transport/blocked-address");
+  } finally {
+    await new Promise(function (res) { srv.close(res); });
+  }
 }
 
 async function testProxyConnect() {
@@ -952,6 +1073,7 @@ async function main() {
   await testBlockPrivateAddresses();
   await testChunkedBodyAccumulation();
   await testConnectStallTimeout();
+  await testPeerChainTrickleDeadline();
   await testSystemStoreLoaded();
   await testSocketNotReusedAcrossIdentityPolicy();
   await testHappy();
@@ -970,6 +1092,7 @@ async function main() {
   await testBodyFunctionChannelBinding();
   await testSystemStore();
   await testErrorFactoryParam();
+  await testPeerChain();
   await testProxyConnect();
   console.log("CHECKS " + helpers.getChecks());
 }

@@ -146,12 +146,67 @@ function testKeyOf() {
   check("a table indexed by keyOf(a valid key) still hits", MAP[text.keyOf("aes-256-cbc")] === 1);
 }
 
+// assertWellFormedUtf16: the guard's own contract. An unpaired UTF-16 surrogate has no UTF-8 encoding
+// and every conversion in the platform substitutes U+FFFD for it rather than failing, so two strings
+// differing only in that code unit convert to the SAME bytes. Wherever those bytes are signed or hashed
+// that is a collision. The surrogate halves are built with String.fromCharCode so this source stays
+// pure ASCII; a literal would put a lone surrogate in the file.
+var HI = String.fromCharCode(0xd800), HI_MAX = String.fromCharCode(0xdbff);
+var LO = String.fromCharCode(0xdc00), LO_MAX = String.fromCharCode(0xdfff);
+// U+FFFD is built the same way: written as an escape, the file on disk ends up holding the character's
+// raw UTF-8 bytes, and this source stays ASCII.
+var REPLACEMENT = String.fromCharCode(0xfffd);
+function wf(s) { return text.assertWellFormedUtf16(s, TestError, "x/bad-utf16", "the value"); }
+
+function testWellFormedUtf16() {
+  // The collision the guard exists to prevent, measured rather than asserted from memory: without a
+  // check, these two distinct strings convert to identical bytes.
+  check("the premise: a lone surrogate and U+FFFD convert to the same UTF-8 bytes",
+    Buffer.from(HI, "utf8").equals(Buffer.from(REPLACEMENT, "utf8")));
+
+  check("a lone high surrogate is refused", codeOf(function () { wf(HI); }) === "x/bad-utf16");
+  check("the top of the high range is refused", codeOf(function () { wf(HI_MAX); }) === "x/bad-utf16");
+  check("a lone low surrogate is refused", codeOf(function () { wf(LO); }) === "x/bad-utf16");
+  check("the top of the low range is refused", codeOf(function () { wf(LO_MAX); }) === "x/bad-utf16");
+  check("a reversed pair is refused, the low half coming first",
+    codeOf(function () { wf(LO + HI); }) === "x/bad-utf16");
+  check("a high surrogate at the very end is refused, there being no next unit",
+    codeOf(function () { wf("ab" + HI); }) === "x/bad-utf16");
+  check("a high surrogate followed by an ordinary character is refused",
+    codeOf(function () { wf(HI + "a"); }) === "x/bad-utf16");
+  check("a high surrogate followed by another high surrogate is refused",
+    codeOf(function () { wf(HI + HI + LO); }) === "x/bad-utf16");
+
+  // Every well-formed pair passes, including both corners of the range, or the guard would be refusing
+  // ordinary characters above the BMP rather than the malformed ones.
+  [[HI, LO], [HI, LO_MAX], [HI_MAX, LO], [HI_MAX, LO_MAX]].forEach(function (p, i) {
+    check("CONTROL well-formed pair " + i + " passes", codeOf(function () { wf(p[0] + p[1]); }) === "NO-THROW");
+  });
+  check("CONTROL a pair between ordinary characters passes, the scan resuming after it",
+    codeOf(function () { wf("a" + HI + LO + "b" + HI_MAX + LO_MAX + "c"); }) === "NO-THROW");
+  check("CONTROL the empty string and plain ASCII pass",
+    codeOf(function () { wf(""); }) === "NO-THROW" && codeOf(function () { wf("plain"); }) === "NO-THROW");
+  check("CONTROL U+FFFD itself passes, being an ordinary code point",
+    codeOf(function () { wf(REPLACEMENT); }) === "NO-THROW");
+  check("the string is returned, so the guard can wrap a value in place",
+    wf("ok") === "ok");
+
+  // The caller's own class and code carry the fault, so each boundary keeps its domain/reason.
+  var e = null;
+  try { wf(HI); } catch (err) { e = err; }
+  check("the fault is the caller's error class and code",
+    e instanceof TestError && e.code === "x/bad-utf16");
+  check("and it names the value and the index",
+    e.message.indexOf("the value") === 0 && e.message.indexOf("index 0") !== -1);
+}
+
 function run() {
   testDecode();
   testAuthoringBounds();
   testDecodeNotCallerReplaceable();
   testShowValue();
   testKeyOf();
+  testWellFormedUtf16();
 }
 
 module.exports = { run: run };

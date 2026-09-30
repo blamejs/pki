@@ -81,7 +81,13 @@ function _cmpSemver(a, b) {
 // lib/ sources use — or `§N`) and/or `(label)` is allowed in any order;
 // `internal (design: ...)` is the only escape for genuine infrastructure
 // with no external standard.
-var _SPEC_OPT = "(?:\\s+(?:sec\\. [\\w.]+|§[\\w.]+|\\([^)]*\\)))*";
+//
+// `clause N` is the third accepted form, because an ITU-T Recommendation is
+// divided into clauses and calling one a section misnames it. All three take a
+// slash-separated list, so one primitive deriving from several clauses of one
+// document cites them without repeating the document name per clause.
+var _SPEC_NUM = "[\\w.]+(?:\\s*/\\s*[\\w.]+)*";
+var _SPEC_OPT = "(?:\\s+(?:sec\\. " + _SPEC_NUM + "|clause " + _SPEC_NUM + "|§" + _SPEC_NUM + "|\\([^)]*\\)))*";
 var SPEC_PATTERNS = [
   new RegExp("^FIPS \\d+(?:-\\d+)?" + _SPEC_OPT + "$"),
   new RegExp("^(?:NIST )?SP 800-\\d+[A-Za-z]?(?:\\s+Rev\\.?\\s*\\d+)?" + _SPEC_OPT + "$"),
@@ -109,6 +115,19 @@ var SPEC_PATTERNS = [
   new RegExp("^Sigstore(?: bundle)?(?: v\\d+\\.\\d+)?" + _SPEC_OPT + "$"),
   new RegExp("^SLSA(?: provenance)?(?: v\\d+)?" + _SPEC_OPT + "$"),
   new RegExp("^in-toto(?:\\s+\\S.*)?$"),
+  // Community Cryptography Specification Project documents, each published at
+  // c2sp.org/<name>: the signed note, the transparency-log checkpoint and the
+  // tile layout a static log serves. Go's checksum database, Sigstore and the
+  // static-CT API all cite these, and _specUrl maps the name to its page so the
+  // recognized set and the linkable set stay identical.
+  new RegExp("^C2SP [a-z][a-z0-9-]*" + _SPEC_OPT + "$"),
+  // The Update Framework, whose specification is versioned but not numbered like an RFC.
+  new RegExp("^TUF( [0-9]+\\.[0-9]+(\\.[0-9]+)?)?" + _SPEC_OPT + "$"),
+  // An ITU-T Recommendation cited with its edition, which the bare `X.NNN` row above cannot carry.
+  // The edition is what makes the citation exact: X.509 (10/2019) has an amendment and three
+  // corrigenda after it, so a clause reference without an edition names a moving target. _specUrl maps
+  // the recommendation to its ITU-T page so the recognized set and the linkable set stay identical.
+  new RegExp("^ITU-T X\\.\\d+(?:-\\d+)?(?: \\(\\d{4}\\))?" + _SPEC_OPT + "$"),
   new RegExp("^(?:SemVer|semver\\.org)\\b.*$"),
   new RegExp("^internal(?:\\s+\\([^)]*\\))?$"),
 ];
