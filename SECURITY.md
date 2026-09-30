@@ -486,6 +486,25 @@ security-only patches after the next major releases.
   with `hpke/auth-unsupported` at both ends for the same reason they are for
   ML-KEM. There is no negotiation to a single component and no path that returns a
   secret derived from one of the two.
+- **A single-stage HPKE key schedule refuses an input it cannot length-prefix.** The
+  SHAKE128 and SHAKE256 KDFs run the one-stage schedule of draft-ietf-hpke-hpke
+  sec. 5.1, which feeds `psk`, `psk_id` and `info` to the derive behind a two-byte
+  length. Each is therefore capped at 65535 bytes and a longer one is refused with
+  `hpke/input-length`, as is an export longer than 65535 with `hpke/export-length`
+  (sec. 7.2.1 states the first as a MUST). Truncating a length instead would let a
+  sender and a recipient derive different keys from inputs each accepted.
+  TurboSHAKE128 and TurboSHAKE256 are registered in the same table and are not
+  offered, because no released OpenSSL exposes either XOF; a request for one is
+  refused with `hpke/unknown-suite` rather than key-scheduled as if it were HKDF.
+- **A width check reads the bytes that will be used, not a length the caller
+  states.** A Buffer can carry an own `length` property that differs from its real
+  byte count, so `pki.hpke` snapshots every key, seed, encapsulated key, `info`,
+  `psk`, `psk_id`, aad and ciphertext a caller supplies before any width or limit
+  is read. A value wider than the suite's width is refused with `hpke/bad-key` and
+  one over a single-stage KDF's 65535-byte bound with `hpke/input-length`,
+  whichever length the caller's object reports. The snapshot also means the bytes
+  verified are the bytes used: a caller holding a reference cannot change them
+  after the check.
 - **WebCrypto import algorithm confusion and raw cipher faults.**
   `pki.webcrypto` derives an imported asymmetric key's type from the key material
   rather than the caller's claim, so an RSA key imported under an Ed25519,

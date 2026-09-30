@@ -218,6 +218,36 @@ async function runGetSth() {
   check("S12: and returns false, not a throw, when it is another log's",
     await pki.ct.verifySth({ treeSize: 3n, timestamp: BigInt(TS), rootHash: t.root,
       signature: Buffer.from(held.tree_head_signature, "base64") }, other.spki) === false);
+
+  // The verdict is about the signature supplied at entry. Verification imports the log key with an await,
+  // so a signature held as a VIEW onto the caller's buffer could be overwritten in that window and the
+  // bytes verified would not be the bytes handed in. The caller's buffer is filled with the real
+  // signature immediately after the call returns its promise; the verdict must still be false.
+  // The log here signs with RSA, because that is the arm where the window exists: an ECDSA signature is
+  // converted from DER to P1363 before the key import, and the conversion already makes a copy. One byte
+  // inside the signature is flipped rather than the buffer zeroed, so the header and length still parse;
+  // a value refused before the import never reaches the window this is about.
+  var rsaKp = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  var rsaLog = { kp: rsaKp, spki: rsaKp.publicKey.export({ format: "der", type: "spki" }) };
+  var rsaSth = { treeSize: 3n, timestamp: BigInt(TS), rootHash: t.root };
+  var rsaRaw = crypto.sign("sha256", sthPreimage(TS, 3, t.root), rsaKp.privateKey);
+  var good = Buffer.concat([Buffer.from([4, 1, (rsaRaw.length >> 8) & 0xff, rsaRaw.length & 0xff]), rsaRaw]);
+  var mutable = Buffer.from(good);
+  mutable[mutable.length - 1] ^= 0xff;
+  var mutatingSth = { treeSize: rsaSth.treeSize, timestamp: rsaSth.timestamp, rootHash: rsaSth.rootHash, signature: mutable };
+  var verdict = pki.ct.verifySth(mutatingSth, rsaLog.spki);
+  good.copy(mutable);
+  check("S13: an RSA tree-head signature overwritten while verification is in flight does not change the verdict",
+    (await verdict) === false);
+  // Two controls, so S13 is the mutation being ignored rather than this arm failing for another reason:
+  // the correct signature verifies, and the corrupted one on its own does not.
+  check("S13a: control -- the same RSA signature supplied at entry verifies",
+    await pki.ct.verifySth({ treeSize: 3n, timestamp: BigInt(TS), rootHash: t.root,
+      signature: Buffer.from(good) }, rsaLog.spki) === true);
+  var stillBad = Buffer.from(good); stillBad[stillBad.length - 1] ^= 0xff;
+  check("S13b: control -- the corrupted RSA signature alone does not verify",
+    await pki.ct.verifySth({ treeSize: 3n, timestamp: BigInt(TS), rootHash: t.root,
+      signature: stillBad }, rsaLog.spki) === false);
 }
 
 // ---------------------------------------------------------------------------
@@ -365,6 +395,27 @@ async function runAddChain() {
   check("A2: the request crossed the seam as a POST of a base64 chain to the sec. 4.1 path",
     f.transport.calls[0].method === "POST" && f.transport.calls[0].url === u("add-chain") &&
     JSON.parse(f.transport.calls[0].body).chain[0] === leaf.toString("base64"));
+
+  // The certificate submitted and the certificate the returned SCT is verified over are one read of the
+  // caller's array. An indexed accessor answering with a second certificate on its second read would have
+  // the log receipt for one certificate accepted as a receipt for another. Here the SCT is genuinely
+  // signed over `other`, so a second read of `other` would make the verification pass while `leaf` was
+  // what went out; with one read the receipt does not match what was submitted and is refused.
+  var swappedIn = Buffer.from("a DIFFERENT certificate the log never saw");
+  var otherSigned = pki.ct.reconstructSignedData({ entryType: 0, leafCert: swappedIn }, sct);
+  var otherDer = crypto.sign("sha256", otherSigned, { key: log.kp.privateKey, dsaEncoding: "der" });
+  var otherBody = JSON.stringify({ sct_version: 0, id: log.logId.toString("base64"),
+    timestamp: TS, extensions: "", signature: digitallySigned(otherDer).toString("base64") });
+  var swap = opts(log, { [u("add-chain")]: resp(200, otherBody, "application/json") });
+  var reads = 0;
+  var twoFaced = [];
+  Object.defineProperty(twoFaced, "0", { enumerable: true, get: function () { reads += 1; return reads === 1 ? leaf : swappedIn; } });
+  Object.defineProperty(twoFaced, "length", { value: 1 });
+  var swapCode = await code(function () { return pki.ct.addChain(Object.assign(swap.o, { chain: twoFaced })); });
+  check("A2a: a chain element read twice cannot submit one certificate and be verified against another (" +
+    swapCode + ", " + reads + " read(s))", swapCode === "ct/sct-untrusted" && reads === 1);
+  check("A2b: and the certificate that went out is the one read first",
+    JSON.parse(swap.transport.calls[0].body).chain[0] === leaf.toString("base64"));
 
   /* The receipt is in the SCT shape the rest of the module reads. A receipt is only useful if it can be
      embedded and re-verified, and both of those go through verbs that take the parsed shape `parseSctList`

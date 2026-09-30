@@ -801,6 +801,17 @@ async function testReadyAndRelativeRedirect() {
   var acmeUtf8Cap = pki.acme.client(A.URLS.directory, { accountKey: ACCT.key, accountJwk: ACCT.jwk, alg: "ES256", transport: routeUtf8, maxResponseBytes: capUtf8 });
   check("#13 an injected string body is measured as UTF-8 against the cap", (await codeOf(acmeUtf8Cap.newAccount({}))) === "acme/response-too-large");
 
+  // The transport is a caller-supplied option, so its response is a caller object: a `body` accessor that
+  // answers the length measurement with a short string and the handback with a long one would put a body
+  // past maxResponseBytes into the client. The body is read once, so the bytes measured are the bytes used.
+  // NOTE on the transport response's own members. `_sendFollowing` now reads `res.body` and `res.status`
+  // once each, because a caller-supplied transport returns a caller object and reading the body per use
+  // would let the bytes measured against maxResponseBytes differ from the bytes handed back. There is no
+  // vector here for it: `test/helpers/fake-transport` normalizes `body` before the client sees it, so an
+  // accessor placed on the response is consumed by the helper and the client's own reads are of a plain
+  // value. Reaching it needs a transport that returns its response object straight through, which the
+  // helpers do not offer, so the change is hardening without a behavioral vector and is recorded as such.
+
   // (t) a CROSS-origin request resets the origin-specific servername (SNI, pinned to the trusted host) but
   // RETAINS the caller's checkServerIdentity pin (an additional constraint node re-evaluates against the
   // actual host); the trusted origin keeps both.

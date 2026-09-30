@@ -278,13 +278,28 @@ async function buildV2Bundle(opts) {
   // The timestamp authority, self-signed with the critical exclusive timeStamping EKU RFC 3161 asks
   // for, and a token over the SIGNATURE bytes.
   var tsaKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
-  var tsaDer = synCert({ serial: 3n, issuer: "v2-tsa", subject: "v2-tsa", notBefore: NB, notAfter: NA,
+  // The authority outlives the ephemeral signing certificate, which is what lets a token be VERIFIABLE
+  // and still date the signing outside the leaf's life. With one window for both, such a token cannot be
+  // built and a vector about timestamp ordering would pass without exercising it.
+  var tsaDer = synCert({ serial: 3n, issuer: "v2-tsa", subject: "v2-tsa", notBefore: NB,
+    notAfter: new Date("2040-01-01T00:00:00Z"),
     subjectKey: tsaKp.publicKey, signerKey: tsaKp.privateKey,
     extensions: [synExt("extKeyUsage", true, B.sequence([synOid("timeStamping")]))] });
-  var token = await pki.tsp.sign(
-    { hashAlgorithm: "sha256", hashedMessage: crypto.createHash("sha256").update(opts.tsaOver || derSig).digest() },
-    { cert: tsaDer, key: tsaKp.privateKey.export({ format: "der", type: "pkcs8" }) },
-    { policy: "1.2.3", serialNumber: 7, genTime: genTime });
+  async function mintToken(at, serial) {
+    return pki.tsp.sign(
+      { hashAlgorithm: "sha256", hashedMessage: crypto.createHash("sha256").update(opts.tsaOver || derSig).digest() },
+      { cert: tsaDer, key: tsaKp.privateKey.export({ format: "der", type: "pkcs8" }) },
+      { policy: "1.2.3", serialNumber: serial, genTime: at });
+  }
+  var token = await mintToken(genTime, 7);
+  // Further tokens from the SAME authority over the SAME signature, at other instants. A bundle really
+  // does carry these: a signature is re-timestamped while it is archived, so the token listed first need
+  // not be the one made at signing.
+  var extraTokens = [];
+  var extraTimes = opts.extraGenTimes || [];
+  for (var xt = 0; xt < extraTimes.length; xt++) {
+    extraTokens.push({ signedTimestamp: (await mintToken(extraTimes[xt], 8 + xt)).toString("base64") });
+  }
 
   var te = {
     logId: { keyId: logIdFull.toString("base64") },
@@ -300,7 +315,8 @@ async function buildV2Bundle(opts) {
       certificate: { rawBytes: leafDer.toString("base64") },
       tlogEntries: [te],
       timestampVerificationData: opts.omitTimestamps === true ? undefined
-        : { rfc3161Timestamps: opts.timestamps || [{ signedTimestamp: token.toString("base64") }] },
+        : { rfc3161Timestamps: opts.timestamps ||
+            extraTokens.concat([{ signedTimestamp: token.toString("base64") }]) },
     },
   };
   if (isMsg) bundle.messageSignature = ms; else bundle.dsseEnvelope = env;
@@ -1412,6 +1428,99 @@ async function runRekorV2() {
     ok.checkpointKeyId.length === 8);
   check("V3: the instant is the timestamp token's, not the entry's zero",
     ok.timestampSource === "rfc3161" && ok.integratedTime === null);
+
+  // A signature that is re-timestamped while it is archived carries more than one token, and the one a
+  // bundle lists first need not be the one made at signing. The leaf here expires 2030-01-01, so a 2035
+  // token dates the signing outside the certificate's life while the 2027 token proves it inside. Taking
+  // only the first refused a bundle another token verifies, which denies a sound bundle rather than
+  // enforcing anything.
+  var laterFirst = await buildV2Bundle({ extraGenTimes: [new Date("2035-06-01T00:00:00Z")] });
+  check("V3a: the bundle offers both tokens, the out-of-validity one first",
+    laterFirst.bundle.verificationMaterial.timestampVerificationData.rfc3161Timestamps.length === 2);
+  var lf = await pki.sigstore.verifyBundle(laterFirst.bundle, laterFirst.trust);
+  check("V3b: a later timestamp listed first does not refuse a bundle an earlier one dates inside the certificate",
+    lf && lf.verified === true && lf.timestampSource === "rfc3161");
+  // The control: with ONLY the out-of-validity token the bundle must still be refused, so V3b is the
+  // ordering being tolerated and not the validity check being skipped.
+  var onlyLater = await buildV2Bundle({ genTime: new Date("2035-06-01T00:00:00Z") });
+  var onlyLaterCode = await codeOf(pki.sigstore.verifyBundle(onlyLater.bundle, onlyLater.trust));
+  check("V3c: control -- a bundle whose only token is the out-of-validity one is refused (" + onlyLaterCode + ")",
+    onlyLaterCode !== "NO-THROW");
+
+  // The pinned Rekor keys are copied before the first await, so a caller mutating its own trust material
+  // while verification is in flight cannot have the checkpoint and the signed entry timestamp checked
+  // under different key material filed under one identifier. Observed from the benign side: a valid
+  // bundle still verifies although the caller replaces the key mid-flight.
+  var mutating = await buildV2Bundle({});
+  var record = mutating.trust.rekorKeys[0];
+  var verdictPromise = pki.sigstore.verifyBundle(mutating.bundle, mutating.trust);
+  Promise.resolve().then(function () {
+    record.spki = Buffer.alloc(record.spki.length, 0x09);
+    record.keyId = Buffer.alloc(record.keyId.length, 0x09);
+    mutating.trust.rekorKeys[0] = { keyId: Buffer.alloc(8, 1), spki: Buffer.alloc(8, 1) };
+  });
+  var mutated = await verdictPromise;
+  check("V3d: replacing a pinned Rekor key while verification is in flight does not change what it runs on",
+    mutated && mutated.verified === true);
+
+  // The anchors are read from the caller before the first await too. Starting with NO anchor and adding
+  // the real ones while verification is pending must not decide the chain: the call was made without an
+  // anchor for it. The list grows in a microtask, which is inside the window the timestamp check opens.
+  var growing = await buildV2Bundle({});
+  var realRoots = growing.trust.fulcioRoots;
+  var emptyTrust = _assignTrust(growing.trust, { fulcioRoots: [] });
+  var growingPromise = pki.sigstore.verifyBundle(growing.bundle, emptyTrust);
+  Promise.resolve().then(function () { emptyTrust.fulcioRoots.push(realRoots[0]); });
+  var grownCode = await codeOf(growingPromise);
+  check("V3f: anchors added while verification is pending do not decide the chain (" + grownCode + ")",
+    grownCode === "sigstore/chain-incomplete");
+  // The control: the same anchor pinned from the start does verify, so V3f is the late addition being
+  // ignored and not the anchor being unusable.
+  var pinnedFromStart = await pki.sigstore.verifyBundle(growing.bundle, _assignTrust(growing.trust, { fulcioRoots: realRoots }));
+  check("V3g: control -- the same anchor pinned before the call verifies", pinnedFromStart.verified === true);
+
+  // And measured rather than inferred: each field of a pinned key record is read from the caller's object
+  // exactly once, so there is no second read for a mutation to answer differently. The checkpoint and the
+  // signed entry timestamp sit on either side of an await, so two reads would be two answers.
+  var counted = await buildV2Bundle({});
+  var src = counted.trust.rekorKeys[0];
+  var reads = { keyId: 0, spki: 0, validFor: 0 };
+  var probed = {};
+  ["keyId", "spki", "validFor"].forEach(function (f) {
+    var v = src[f];
+    Object.defineProperty(probed, f, { enumerable: true, get: function () { reads[f] += 1; return v; } });
+  });
+  var countedTrust = _assignTrust(counted.trust, { rekorKeys: [probed] });
+  var countedOk = await pki.sigstore.verifyBundle(counted.bundle, countedTrust);
+  check("V3e: each pinned Rekor key field is read from the caller exactly once (keyId " + reads.keyId +
+    ", spki " + reads.spki + ", validFor " + reads.validFor + ")",
+    countedOk && countedOk.verified === true &&
+    reads.keyId === 1 && reads.spki === 1 && reads.validFor === 1);
+
+  // The bounds INSIDE a validity window are one read each too. Normalizing a bound takes a presence test,
+  // a conversion and an assignment, which is three reads of the same member: a bound that answers the
+  // first reads and then reports absent would be discarded after it had already been parsed, and the
+  // window it states would impose nothing.
+  var win = await buildV2Bundle({});
+  var winSrc = win.trust.rekorKeys[0];
+  var endReads = 0;
+  var lyingWindow = {};
+  Object.defineProperty(lyingWindow, "end", {
+    enumerable: true,
+    get: function () { endReads += 1; return endReads <= 2 ? 1 : null; },
+  });
+  var windowTrust = _assignTrust(win.trust, {
+    rekorKeys: [{ keyId: winSrc.keyId, spki: winSrc.spki, validFor: lyingWindow }],
+  });
+  var windowCode = await codeOf(pki.sigstore.verifyBundle(win.bundle, windowTrust));
+  check("V3h: a validity bound that reports absent on a later read is not discarded (" + windowCode +
+    ", " + endReads + " read(s))", windowCode !== "NO-THROW" && endReads === 1);
+  // The control: a fixed `end` of 1 refuses the same bundle, so V3h is the accessor being read once and
+  // not the window being ignored altogether.
+  var fixedEndCode = await codeOf(pki.sigstore.verifyBundle(win.bundle,
+    _assignTrust(win.trust, { rekorKeys: [{ keyId: winSrc.keyId, spki: winSrc.spki, validFor: { end: 1 } }] })));
+  check("V3i: control -- a fixed end bound of 1 refuses the bundle too (" + fixedEndCode + ")",
+    fixedEndCode === windowCode);
 
   /* The three binding legs. Dropping any one leaves inclusion proving nothing
      about this bundle, so each is its own vector. */

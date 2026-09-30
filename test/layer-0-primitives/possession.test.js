@@ -244,6 +244,43 @@ async function testPathThroughAnIntermediate() {
   check("P4: intermediates must be an array of certificates",
     (await codeAsync(pki.possession.verifyRequest(der,
       { trustAnchors: [rootDer], time: AT, intermediates: sigCertDer }))) === "possession/bad-input");
+
+  // A certificate whose keyUsage confines its key to keyAgreement does not authorize a signature over a
+  // certification request (RFC 5280 sec. 4.2.1.3), so it must not authorize issuance either. The signature
+  // itself still verifies, which is why the two verdicts stay separate: an authorization gate is not a
+  // cryptographic one.
+  var agreeOnly = await world({ caSubject: "Agree CA", caSerial: 9, sigSerial: 0x33,
+    sigExts: { keyUsage: ["keyAgreement"] } });
+  var agreeCsr = await pki.csr.sign({
+    subject: "kem.example", subjectPublicKey: agreeOnly.kemSpki,
+    privateKeyPossessionStatement: { signer: agreeOnly.signer, certificate: agreeOnly.sigCertDer },
+  }, { key: agreeOnly.sigKp.key });
+  var agreeVerdict = await pki.possession.verifyRequest(agreeCsr,
+    { trustAnchors: [agreeOnly.caDer], time: AT });
+  check("P5: a signature certificate confined to keyAgreement does not authorize the request",
+    agreeVerdict.valid === false && agreeVerdict.signerMaySign === false);
+  check("P6: and the signature still verifies, so the authorization gate is separate from the cryptography",
+    agreeVerdict.verified === true && agreeVerdict.pathValidated === true);
+  check("P7: the reason names the key usage rather than leaving valid false unexplained",
+    typeof agreeVerdict.reason === "string" && agreeVerdict.reason.indexOf("keyUsage") >= 0);
+  // The controls: digitalSignature is accepted, and so is a certificate with no keyUsage at all, which
+  // RFC 5280 leaves unconfined. Without these, P5 would also pass for a gate that refused everything.
+  var signOk = await world({ caSubject: "Sign CA", caSerial: 10, sigSerial: 0x34,
+    sigExts: { keyUsage: ["digitalSignature"] } });
+  var signCsr = await pki.csr.sign({
+    subject: "kem.example", subjectPublicKey: signOk.kemSpki,
+    privateKeyPossessionStatement: { signer: signOk.signer, certificate: signOk.sigCertDer },
+  }, { key: signOk.sigKp.key });
+  check("P8: CONTROL a digitalSignature certificate is accepted",
+    (await pki.possession.verifyRequest(signCsr, { trustAnchors: [signOk.caDer], time: AT })).valid === true);
+  var noKu = await world({ caSubject: "NoKu CA", caSerial: 11, sigSerial: 0x35, sigExts: {} });
+  var noKuCsr = await pki.csr.sign({
+    subject: "kem.example", subjectPublicKey: noKu.kemSpki,
+    privateKeyPossessionStatement: { signer: noKu.signer, certificate: noKu.sigCertDer },
+  }, { key: noKu.sigKp.key });
+  var noKuVerdict = await pki.possession.verifyRequest(noKuCsr, { trustAnchors: [noKu.caDer], time: AT });
+  check("P9: CONTROL a certificate with no keyUsage is unconfined and is accepted",
+    noKuVerdict.valid === true && noKuVerdict.signerMaySign === true);
 }
 
 // A requested extension that will not decode is not an absent one. The two policy comparisons RFC 9883

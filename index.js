@@ -184,10 +184,10 @@ module.exports = {
   // VERIFY ONLY by design: stateful signing requires atomic one-time-key index
   // state that belongs in an HSM, so this module never mints a signature.
   shbs:      shbs,
-  // `hpke` is RFC 9180 Hybrid Public Key Encryption -- the KEM + HKDF key
-  // schedule + AEAD context construction behind TLS ECH / MLS / OHTTP. Pure
-  // composition over node:crypto; the four DHKEM suites and the three ML-KEM
-  // suites, all four modes.
+  // `hpke` is RFC 9180 Hybrid Public Key Encryption -- the KEM + key schedule +
+  // AEAD context construction behind TLS ECH / MLS / OHTTP. Pure composition over
+  // node:crypto; five DHKEM suites, three ML-KEM suites and three PQ/T hybrids,
+  // over the two-stage HKDF and single-stage SHAKE key schedules, all four modes.
   hpke:      hpke,
   // `kem` is composite ML-KEM key establishment (draft-ietf-lamps-pq-composite-kem):
   // pki.kem.encapsulate / decapsulate over a post-quantum ML-KEM hybridized with a

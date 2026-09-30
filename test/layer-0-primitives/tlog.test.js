@@ -191,6 +191,29 @@ async function runNoteFormat() {
     EM_DASH + " k " + Buffer.alloc(8).toString("base64") + "\n";
   check("N13: a control byte in the note text is refused",
     codeOf(function () { pki.tlog.parseNote(withControl); }) === "tlog/bad-note");
+  /* The UTF-8 half of that same clause. A lossy conversion turns a malformed byte into U+FFFD, so the note
+     verified and the origin it reported did not encode back to the bytes signed. The bytes are built here
+     rather than written as a string, because a string cannot hold a lone 0xFF. */
+  var goodNote = Buffer.from("example.com/log\n5\nAAA\n\n" + EM_DASH + " k " + Buffer.alloc(8).toString("base64") + "\n", "utf8");
+  check("N13a: control -- the same note as valid UTF-8 parses",
+    pki.tlog.parseNote(goodNote).text.indexOf("example.com/log") === 0);
+  /* The verify entry points snapshot their note so the bytes verified are the bytes reported, so they owe
+     the same cap-before-copy as the parsers: an oversized note was copied in full before the 1 MiB limit
+     was read. Measured on `arrayBuffers`, where Buffer data lives. */
+  var oversizeNote = Buffer.alloc(64 * 1024 * 1024);
+  var beforeAb = process.memoryUsage().arrayBuffers;
+  var vnCode = await codeOfAsync(pki.tlog.verifyNote(oversizeNote, []));
+  var vcCode = await codeOfAsync(pki.tlog.verifyCheckpoint(oversizeNote, []));
+  var grewBy = process.memoryUsage().arrayBuffers - beforeAb;
+  check("N13d: verifyNote and verifyCheckpoint refuse an oversized note before copying it (" +
+    vnCode + ", " + vcCode + ", " + Math.round(grewBy / 1024) + " KiB for a 65536 KiB input)",
+    vnCode === "tlog/bad-input" && vcCode === "tlog/bad-input" && grewBy < 8 * 1024 * 1024);
+  var badUtf8 = Buffer.concat([Buffer.from([0xff]), goodNote.subarray(1)]);
+  check("N13b: a note that is not valid UTF-8 is refused rather than decoded lossily",
+    codeOf(function () { return pki.tlog.parseNote(badUtf8); }) === "tlog/bad-note");
+  var badInSig = Buffer.concat([goodNote.subarray(0, goodNote.length - 2), Buffer.from([0xc0]), goodNote.subarray(goodNote.length - 1)]);
+  check("N13c: and a malformed byte in the signature half is refused too, the whole note being checked",
+    codeOf(function () { return pki.tlog.parseNote(badInSig); }) === "tlog/bad-note");
   check("N14: a note with no blank line separating its signatures is refused",
     codeOf(function () { pki.tlog.parseNote("text\n" + EM_DASH + " k AAAA\n"); }) === "tlog/bad-note");
   check("N15: a signature line that is not an em dash, space, name, space, base64 is refused",
@@ -502,6 +525,18 @@ function runTileData() {
     codeOf(function () { pki.tlog.parseTile(Buffer.alloc(33)); }) === "tlog/bad-tile");
   check("F4: a tile wider than 256 hashes is refused",
     codeOf(function () { pki.tlog.parseTile(Buffer.alloc(8192 + 32)); }) === "tlog/bad-tile");
+  /* And refused BEFORE it is copied. The parser snapshots its input, so an oversized one would otherwise
+     cost a second allocation its own size before the limit that rejects it was read. Measured rather than
+     asserted, on `arrayBuffers`, which is where Buffer data lives: `heapUsed` does not move for a large
+     Buffer and would report a pass either way. A 64 MiB input is 8192 times the tile limit. */
+  var oversize = Buffer.alloc(64 * 1024 * 1024);
+  var beforeAb = process.memoryUsage().arrayBuffers;
+  var oversizeCode = codeOf(function () { return pki.tlog.parseTile(oversize); });
+  var grewBy = process.memoryUsage().arrayBuffers - beforeAb;
+  check("F4a: an oversized tile is refused with the tile's own code (" + oversizeCode + ")",
+    oversizeCode === "tlog/bad-tile");
+  check("F4b: and refused before it is copied, the buffer pool growing far less than the input (" +
+    Math.round(grewBy / 1024) + " KiB for a 65536 KiB input)", grewBy < 8 * 1024 * 1024);
   check("F5: an empty tile is refused, since a tile of width 0 is not one the log serves",
     codeOf(function () { pki.tlog.parseTile(Buffer.alloc(0)); }) === "tlog/bad-tile");
   check("F6: a partial tile of width 1 to 255 parses",
@@ -534,6 +569,16 @@ function runTileData() {
     codeOf(function () { pki.tlog.parseEntryBundle(Buffer.concat([bundle, Buffer.alloc(1)])); }) === "tlog/bad-bundle");
   check("E4: an empty bundle is an empty list rather than a fault",
     pki.tlog.parseEntryBundle(Buffer.alloc(0)).length === 0);
+  /* The COUNT is capped, not only the byte length. A zero-length entry costs two bytes on the wire and an
+     object in memory, so a megabyte of zeroes is half a million entries: the byte cap admits an input that
+     allocates hundreds of megabytes. A tile is 256 wide, which is the bound C2SP tlog-tiles states. */
+  var maxEntries = pki.C.LIMITS.TLOG_MAX_ENTRY_BUNDLE_ENTRIES;
+  check("E4a: exactly the cap of zero-length entries is accepted",
+    pki.tlog.parseEntryBundle(Buffer.alloc(maxEntries * 2)).length === maxEntries);
+  check("E4b: one past the cap is refused, though it is far under the byte cap",
+    codeOf(function () { return pki.tlog.parseEntryBundle(Buffer.alloc((maxEntries + 1) * 2)); }) === "tlog/bad-bundle");
+  check("E4c: and a megabyte of zeroes is refused rather than decoded into half a million entries",
+    codeOf(function () { return pki.tlog.parseEntryBundle(Buffer.alloc(1024 * 1024)); }) === "tlog/bad-bundle");
   check("E5: the entries hash to the level-0 tile the log would serve beside them",
     (function () {
       var tile = Buffer.concat(read.map(function (e) { return pki.merkle.leafHash(e); }));
@@ -787,6 +832,39 @@ async function runTileProofs() {
       var w = r.split("/")[2];
       return w === "null" || (Number(w) >= 1 && Number(w) <= 255);
     }));
+
+  /* A `read` callback is the caller's, and a real one may hand back a SCRATCH buffer it reuses between
+     fetches. The hashes a tile is parsed into must be copies, not views into what arrived, or a later fetch
+     overwrites proof nodes already collected and the proof folded is not the proof that was served. The
+     scratch log below returns the same buffer object every time, refilled. */
+  var scratchSrc = tiledLog(70000);
+  var scratch = Buffer.alloc(0);
+  var scratchReads = 0;
+  async function scratchRead(level, index, width) {
+    var served = await scratchSrc.read(level, index, width);
+    scratchReads += 1;
+    if (scratch.length < served.length) scratch = Buffer.alloc(served.length);
+    var view = scratch.subarray(0, served.length);
+    view.fill(0);
+    served.copy(view);
+    return view;
+  }
+  var scratchProof = await pki.tlog.inclusionProof({ index: 0n, size: 70000n, read: scratchRead });
+  check("X4a: the scratch log served more than one tile, so the reuse actually happened (" +
+    scratchReads + " read(s))", scratchReads >= 2);
+  check("X4b: a proof assembled through a read callback that reuses one buffer still folds to the tree head",
+    pki.merkle.verifyInclusion({
+      leafIndex: 0, treeSize: 70000, leafHash: scratchSrc.leaves[0], proof: scratchProof,
+      rootHash: scratchSrc.root,
+    }) === true);
+  /* The control: the same index through a log that returns a fresh buffer each time folds too, so X4b is
+     the copying and not the index being one that needs no second tile. */
+  check("X4c: control -- the same index through fresh buffers folds as well",
+    pki.merkle.verifyInclusion({
+      leafIndex: 0, treeSize: 70000, leafHash: log.leaves[0],
+      proof: await pki.tlog.inclusionProof({ index: 0n, size: 70000n, read: log.read }),
+      rootHash: log.root,
+    }) === true);
 
   /* "Clients MUST NOT fetch arbitrary partial tiles without verifying a
      checkpoint with a size that requires their existence." */

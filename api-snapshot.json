@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.8.45",
+  "packageVersion": "0.8.46",
   "surface": {
     "C": {
       "kind": "object",
@@ -273,6 +273,9 @@
               "kind": "number"
             },
             "TLOG_MAX_ENTRY_BUNDLE_BYTES": {
+              "kind": "number"
+            },
+            "TLOG_MAX_ENTRY_BUNDLE_ENTRIES": {
               "kind": "number"
             },
             "TLOG_MAX_EXTENSION_LINES": {
@@ -1793,6 +1796,9 @@
             "TLOG_MAX_ENTRY_BUNDLE_BYTES": {
               "kind": "number"
             },
+            "TLOG_MAX_ENTRY_BUNDLE_ENTRIES": {
+              "kind": "number"
+            },
             "TLOG_MAX_EXTENSION_LINES": {
               "kind": "number"
             },
@@ -2963,6 +2969,12 @@
                 },
                 "HKDF_SHA512": {
                   "kind": "number"
+                },
+                "SHAKE128": {
+                  "kind": "number"
+                },
+                "SHAKE256": {
+                  "kind": "number"
                 }
               }
             },
@@ -2970,6 +2982,9 @@
               "kind": "object",
               "members": {
                 "DHKEM_P256_HKDF_SHA256": {
+                  "kind": "number"
+                },
+                "DHKEM_P384_HKDF_SHA384": {
                   "kind": "number"
                 },
                 "DHKEM_P521_HKDF_SHA512": {

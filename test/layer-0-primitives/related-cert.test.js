@@ -166,6 +166,25 @@ async function testCsrAttribute() {
   check("C10: a certificate whose issuer and serial are not the ones certID names is refused",
     (await codeAsync(pki.relatedCert.verifyRequest(rc, other.cert))) === "relatedcert/cert-mismatch");
 
+  // The identifier is ENCODED ONCE and those bytes are both hashed into the preimage and compared with
+  // the certificate. Two encodings would read the caller's record twice, so an accessor could answer the
+  // preimage with one identifier and the binding check with another, and a proof made for one certificate
+  // would verify against a different one that shares its key. Measured as a read count, at the record and
+  // at the fields inside it, because the encoding walks into both.
+  var reads = { certID: 0, issuer: 0, serialNumber: 0 };
+  var inner = rc.certID;
+  var countedId = {};
+  ["issuer", "serialNumber"].forEach(function (f) {
+    var v = inner[f];
+    Object.defineProperty(countedId, f, { enumerable: true, get: function () { reads[f] += 1; return v; } });
+  });
+  var countedReq = { requestTime: rc.requestTime, locationInfo: rc.locationInfo, signature: rc.signature };
+  Object.defineProperty(countedReq, "certID", { enumerable: true, get: function () { reads.certID += 1; return countedId; } });
+  var countedOk = await pki.relatedCert.verifyRequest(countedReq, held.cert);
+  check("C10a: certID and each field inside it are read from the caller exactly once (certID " +
+    reads.certID + ", issuer " + reads.issuer + ", serialNumber " + reads.serialNumber + ")",
+    countedOk === true && reads.certID === 1 && reads.issuer === 1 && reads.serialNumber === 1);
+
   check("C11: altering requestTime breaks the proof, since the time is inside the preimage",
     (await pki.relatedCert.verifyRequest({ certID: rc.certID, requestTime: rc.requestTime + 1n,
       locationInfo: rc.locationInfo, signature: rc.signature }, held.cert)) === false);

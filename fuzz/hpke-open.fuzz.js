@@ -30,6 +30,10 @@ var SEED_ML768 = Buffer.from("80008d036609972cf761d7e2d3b831e48d3e941cda94fbf9ba
 // from it inside the KEM, so the mutator reaches the ML-KEM decap, the nominal-group exponentiation
 // and the combiner through one constant.
 var SEED_HYBRID = Buffer.alloc(32, 0x09);
+// The DHKEM(P-384) pair of draft-ietf-hpke-pq-05 Appendix A.8, so the P-384 scalar multiplication and
+// its HKDF-SHA384 ExtractAndExpand are reached under a key the draft publishes.
+var SK_P384 = Buffer.from("679172205e04663f40fda1018cd46c18ebaa876ede6998ba86b051614ca4d5e4bfbea34b720617a4b958cc80f6305244", "hex");
+var PK_P384 = Buffer.from("04a5f53da8564364255bc36850df793672782a5c9e4a7fb5fb2e2146eb12e4d8477ab1f326a361dfd1e41212109510e813380547c68c0964c1908f16f67b902a061be27b2f8b43f1fab1bf0dbf89f5167ce80aca2c210b8fc0f040699db9ee1229", "hex");
 var S = pki.hpke.suites;
 var RECIPIENTS = [
   { kem: S.KEM.DHKEM_X25519_HKDF_SHA256, skR: { skm: SK_R, pkm: PK_R } },
@@ -37,17 +41,31 @@ var RECIPIENTS = [
   { kem: S.KEM.MLKEM768_P256, skR: { skm: SEED_HYBRID } },
   { kem: S.KEM.MLKEM1024_P384, skR: { skm: SEED_HYBRID } },
   { kem: S.KEM.MLKEM768_X25519, skR: { skm: SEED_HYBRID } },
+  { kem: S.KEM.DHKEM_P384_HKDF_SHA384, skR: { skm: SK_P384, pkm: PK_P384 } },
 ];
-var KDFS = [S.KDF.HKDF_SHA256, S.KDF.HKDF_SHA384, S.KDF.HKDF_SHA512];
+// Both key schedules: the two-stage HKDF sizes and the single-stage SHAKE XOFs, whose schedule derives
+// the key, base nonce and exporter secret from one squeeze and caps its length-prefixed inputs.
+var KDFS = [S.KDF.HKDF_SHA256, S.KDF.HKDF_SHA384, S.KDF.HKDF_SHA512, S.KDF.SHAKE128, S.KDF.SHAKE256];
 var AEADS = [S.AEAD.AES_128_GCM, S.AEAD.AES_256_GCM, S.AEAD.CHACHA20_POLY1305, S.AEAD.EXPORT_ONLY];
+
+// Suite selectors: the high nibble of the first byte picks a baked recipient, its whole value picks the
+// KDF and the second byte picks the AEAD, so every KEM x key schedule x AEAD combination is reachable
+// (including export-only, which must reject seal/open). Exported because the seed corpus is generated
+// against this exact mapping; a corpus built against a stale copy would name suites it does not select.
+function selectSuite(data) {
+  var recipient = RECIPIENTS[(data[0] >> 4) % RECIPIENTS.length];
+  return {
+    recipient: recipient,
+    ids: { kem: recipient.kem, kdf: KDFS[data[0] % KDFS.length], aead: AEADS[data[1] % AEADS.length] },
+  };
+}
+module.exports._selectSuite = selectSuite;
+module.exports._counts = { recipients: RECIPIENTS.length, kdfs: KDFS.length, aeads: AEADS.length };
 
 module.exports.fuzz = function (data) {
   if (data.length < 5) return;
-  // Suite selectors: the KEM picks one of the two baked recipients; the KDF and
-  // AEAD are fuzzer-chosen from the registry so every key-schedule variant and
-  // every AEAD (including export-only, which must reject seal/open) is hit.
-  var recipient = RECIPIENTS[(data[0] >> 4) % RECIPIENTS.length];
-  var ids = { kem: recipient.kem, kdf: KDFS[data[0] % KDFS.length], aead: AEADS[data[1] % AEADS.length] };
+  var sel = selectSuite(data);
+  var recipient = sel.recipient, ids = sel.ids;
   var encLen = data.readUInt16BE(2) % (data.length + 1);
   var body = data.subarray(4);
   var enc = body.subarray(0, Math.min(encLen, body.length));
