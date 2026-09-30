@@ -4,6 +4,24 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.44 — 2026-09-29
+
+Certify a key that cannot sign, by signing the request with one that can.
+
+### Added
+
+- `pki.csr.sign` takes `spec.privateKeyPossessionStatement`, and signs with the key given rather than the key being certified. That is the one case where it accepts a signing key that is not the subject's and a subject key that cannot sign, and both remain refused for a request that declares no statement, so the relaxation reaches only the request that asks for it. The signature algorithm is resolved from the statement certificate's key, which is the key that signs. `includeCertificate: false` emits the compact form RFC 9883 allows, where the CA looks the certificate up; the builder still needs it, because it resolves the algorithm from that key and checks its own signature against it.
+- `pki.crmf.build` takes the same thing as a registration control, `controls.statementOfPossession`, which RFC 9883 gives the value of its PKCS#10 attribute, so one OID carries one structure in both places. The proof of possession is signed by the statement certificate's key for the same reason.
+- `pki.possession.verifyRequest` is the CA's side, and it enforces the two requirements RFC 9883 states as MUSTs. The signature on the request is validated with the public key from the signature certificate, which for a key-establishment key is the only key that could have signed anything. The signature certificate's certification path is validated, so `opts.trustAnchors` is required and the verb throws without it instead of returning a verdict that skipped a MUST.
+- The two name comparisons RFC 9883 states as SHOULDs are reported rather than enforced, because each ends in "the certificate policy MUST describe how the CA can determine that the two subject names identify the same entity". `subjectMatches` and `subjectAltNamesMatch` carry the comparison, `valid` is `false` with a reason naming the policy decision when they differ, and a caller whose policy resolves it reads the fields and decides. A request asking for no alternative names reports `null` rather than a match.
+- `requestsSignatureCertificate` reports the prohibition: "The privateKeyPossessionStatement attribute MUST NOT be used to obtain a signature certificate." A request carrying the statement while asking for `digitalSignature`, `nonRepudiation`, `keyCertSign` or `cRLSign` is that misuse, and `pki.lint.csr` with the new `rfc9883` profile grades it as an error.
+- `pki.possession.parse` reads a `PrivateKeyPossessionStatement` from either carrier. A statement that carries a certificate its `signer` does not name is refused: the two would describe different certificates, and therefore different keys, while only one of them signed the request. The same check runs on the way out, so a statement this toolkit emits is one it would accept.
+- `pki.crmf.verifyPop` checks the proof under the statement certificate's key when the control is present, and reports `subjectBound: false` for it. That is the trade the mechanism makes and the verdict says so: the proof demonstrates possession of the signature key, and nothing in the message demonstrates possession of the key-establishment key being requested, because that key cannot sign.
+
+### Changed
+
+- The signed envelope every format composes now documents why its outer arity is exactly three. ITU-T X.509 (2019) added optional `altAlgorithmIdentifier` and `altSignature` components to the SIGNED type and then required them absent for every structure it profiles, so declaring either as an optional field would admit a second signature the text excludes. Certificates, CRLs, certification requests and attribute certificates each gained vectors for that refusal.
+
 ## v0.8.43 — 2026-09-29
 
 Issue one certificate carrying two signatures, so a PKI can change algorithms without reissuing to everyone at once.

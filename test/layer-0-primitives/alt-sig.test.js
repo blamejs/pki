@@ -502,6 +502,69 @@ function testInspect() {
     pki.inspect.certificate(signing.makeSigner("ec-p256").cert).indexOf("altSignature") === -1);
 }
 
+// ---- the OUTER alternative-signature fields, which the 2019 text forbids ----
+//
+// X.509 (2019) extended the SIGNED parameterized type itself, at an extension marker, with two more
+// optional components AFTER the native signature:
+//
+//   SIGNED{ToBeSigned} ::= SEQUENCE {
+//     toBeSigned ToBeSigned, COMPONENTS OF SIGNATURE, ...,
+//     [[4: altAlgorithmIdentifier AlgorithmIdentifier{{SupportedAltAlgorithms}} OPTIONAL,
+//          altSignature BIT STRING OPTIONAL]] }
+//
+// so an alternative signature could in principle ride in the outer SEQUENCE rather than in an
+// extension. The same edition then forbids it, in one sentence repeated once per structure it
+// profiles: "When generating a digital signature using the SIGNED parameterized data type, only one
+// digital signature shall be generated, i.e., the altAlgorithmIdentifier and the altSignature
+// components shall be absent." That sentence appears in clause 7.2.1 (certificate), 7.10.2 (CRL),
+// 11.3 (authorization and validation list) and 14.2 (attribute certificate).
+//
+// The shared signed envelope already fixes the outer arity at three, so every structure composing it
+// refuses these components in one place. Nothing here asserted that, which is the gap these vectors
+// close: a rule the specification states as a shall, and a reader that honors it only as long as one
+// shared arity stays exact.
+async function testOuterAltFieldsRefused() {
+  var s = signing.makeSigner("ec-p256");
+  var ca = await pki.x509.sign({
+    subject: "Envelope CA", subjectPublicKey: s.spki, serialNumber: 0xa0n, notBefore: NB, notAfter: NA,
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "cRLSign"] },
+  }, { key: s.key });
+  var crl = await pki.crl.sign({ thisUpdate: NB, nextUpdate: NA, crlNumber: 1n }, { cert: ca, key: s.key });
+  var csr = await pki.csr.sign({ subject: "envelope.example", subjectPublicKey: s.spki }, { key: s.key });
+  var ac = await pki.attrcert.sign({
+    holder: { entityName: { directoryName: "CN=Alice" } }, notBeforeTime: NB, notAfterTime: NA,
+    attributes: { role: { roleName: { uniformResourceIdentifier: "urn:role:admin" } } },
+  }, { name: "CN=Example AA", publicKey: s.spki, key: s.key });
+
+  // The two components appended to a structure that is otherwise valid and would parse.
+  function appended(der, howMany) {
+    var n = pki.asn1.decode(der);
+    var kids = [b.raw(n.children[0].bytes), b.raw(n.children[1].bytes), b.raw(n.children[2].bytes)];
+    if (howMany >= 1) kids.push(b.sequence([b.oid(O("id-ml-dsa-65"))]));
+    if (howMany >= 2) kids.push(b.bitString(Buffer.alloc(64, 7), 0));
+    return b.sequence(kids);
+  }
+
+  var subjects = [
+    ["a certificate", ca, function (d) { return pki.schema.x509.parse(d); }, "x509/not-a-certificate"],
+    ["a CRL", crl, function (d) { return pki.schema.crl.parse(d); }, "crl/not-a-crl"],
+    ["a certification request", csr, function (d) { return pki.schema.csr.parse(d); }, "csr/not-a-certification-request"],
+    ["an attribute certificate", ac, function (d) { return pki.schema.attrcert.parse(d); }, "attrcert/not-an-attribute-certificate"],
+  ];
+  subjects.forEach(function (row, i) {
+    // A passing control on the same route: the structure parses before the components are appended, so
+    // a refusal below is the appended components and not a broken fixture.
+    check("S" + (i + 1) + ".0: " + row[0] + " parses before the outer components are appended",
+      code(function () { return row[2](row[1]); }) === "NO-THROW");
+    check("S" + (i + 1) + ".1: " + row[0] + " carrying altAlgorithmIdentifier and altSignature is refused",
+      code(function () { return row[2](appended(row[1], 2)); }) === row[3]);
+    check("S" + (i + 1) + ".2: and carrying altAlgorithmIdentifier alone is refused, the two being both-or-neither",
+      code(function () { return row[2](appended(row[1], 1)); }) === row[3]);
+    check("S" + (i + 1) + ".3: the format detector does not route " + row[0] + " with them either",
+      code(function () { return pki.schema.parse(appended(row[1], 2)); }) === "schema/unknown-format");
+  });
+}
+
 async function run() {
   testSurface();
   testPreimage();
@@ -512,6 +575,7 @@ async function run() {
   await testCrl(bctx);
   await testLint(bctx);
   testInspect();
+  await testOuterAltFieldsRefused();
   console.log("CHECKS " + helpers.getChecks());
 }
 

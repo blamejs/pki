@@ -1522,6 +1522,35 @@ security-only patches after the next major releases.
   need a fetch and a freshness policy, so they remain the caller's, and
   `pki.path.validate` is the route for the first.
 
+- **A possession statement moves the proof to another key, and says so
+  (CWE-347).** RFC 9883 lets a certification request for a key-establishment key be
+  signed by a different key, one the requester already holds a certificate for. That
+  is a real weakening of what a proof of possession demonstrates, and the toolkit is
+  explicit about it rather than quiet. `pki.crmf.verifyPop` reports
+  `subjectBound: false` whenever the control is present, however complete the
+  template is: the proof demonstrates possession of the SIGNATURE key, and nothing in
+  the message demonstrates possession of the requested key, because that key cannot
+  sign. What the statement buys a CA is a signature it can attribute to the same
+  entity, which is why RFC 9883 §4 then makes path validation of the signature
+  certificate a MUST. `pki.possession.verifyRequest` requires `trustAnchors` and
+  throws without them rather than returning a verdict that skipped that MUST.
+  Accepting a signing key that is not the subject's, and a subject key that cannot
+  sign, is scoped to a request that declares the statement; a request without one is
+  still held to signing with the key it asks to have certified, and vectors assert
+  both refusals still stand.
+- **A possession statement's two halves must name one certificate (CWE-347).** The
+  statement carries an issuer-and-serial and, optionally, the certificate itself.
+  Those could name different certificates, and therefore different keys, while only
+  one of them signed the request. `pki.possession.parse` refuses that, on the way in
+  and on the way out, so a statement this toolkit emits is one it would accept; the
+  builders construct the statement and then read it back through the same reader
+  rather than re-checking with a second copy of the rule. A caller supplying the
+  certificate for a compact statement is held to the same rule. The two name
+  comparisons RFC 9883 states as SHOULDs are deliberately NOT enforced: each ends in
+  "the certificate policy MUST describe how the CA can determine that the two subject
+  names identify the same entity", so the comparison is reported and `valid` is
+  `false` with a reason naming the policy decision. A library that answered that
+  question would be inventing a policy the operator owns.
 - **An alternative signature is rebuilt from original bytes, not re-serialized
   (CWE-347).** ITU-T X.509 (2019) clause 7.2.2 requires a verifier to reconstruct
   an encoding that never appears on the wire: the certificate with its outer

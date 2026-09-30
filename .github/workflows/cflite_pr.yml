@@ -67,6 +67,7 @@ jobs:
           - tlog-proof
           - related-cert
           - alt-sig
+          - possession
           - smime-parse
           - smime-verify
           - smime-decrypt

@@ -40,6 +40,7 @@ var ct        = require("./lib/ct");
 var tuf       = require("./lib/tuf");
 var relatedCert = require("./lib/related-cert");
 var altSig    = require("./lib/alt-sig");
+var possession = require("./lib/possession");
 var tls       = require("./lib/tls-cert-compress");
 var cms       = require("./lib/cms-verify");
 var smime     = require("./lib/smime");
@@ -104,6 +105,7 @@ module.exports = {
   tuf:       tuf,
   relatedCert: relatedCert,
   altSig:    altSig,
+  possession: possession,
   // 'tls' is TLS handshake structures that carry certificates -- RFC 8879 compressed
   // certificate messages (zlib / brotli / zstd) and the RFC 8446 Certificate message
   // inside them, decoded to per-entry certificate DER. Structure only; no handshake.

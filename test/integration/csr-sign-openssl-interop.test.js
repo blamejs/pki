@@ -112,6 +112,62 @@ async function run() {
   check("the proof in the request openssl accepted verifies here too",
     (await pki.relatedCert.verifyRequest(rcAttr.relatedCertRequest, rcHeld.cert)) === true);
 
+  // RFC 9883: a request for a key that cannot sign, signed by another key. The most important thing an
+  // independent implementation confirms here is a NEGATIVE: `openssl req -verify` FAILS on such a
+  // request, because it is not self-signed and cannot be. That is by design and it is why
+  // `pki.possession.verifyRequest` exists -- a CA that reaches for the conventional check rejects a
+  // conforming request. The request still parses, the attribute is reported, and the bytes survive a
+  // re-encode, so what fails is only the check that no longer applies.
+  var posCa = signing.makeSigner("ec-p256");
+  var posSig = signing.makeSigner("ec-p256");
+  var posCaDer = await pki.x509.sign({
+    subject: [{ commonName: "Possession Interop CA" }], subjectPublicKey: posCa.spki, serialNumber: 0x31n,
+    notBefore: new Date("2027-01-01T00:00:00Z"), notAfter: new Date("2028-01-01T00:00:00Z"),
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] },
+  }, { key: posCa.key });
+  var posSigCert = await pki.x509.sign({
+    subject: [{ commonName: "kem.interop.example" }], subjectPublicKey: posSig.spki, serialNumber: 0x32n,
+    notBefore: new Date("2027-01-01T00:00:00Z"), notAfter: new Date("2028-01-01T00:00:00Z"),
+    extensions: { keyUsage: ["digitalSignature"] },
+  }, { cert: posCaDer, key: posCa.key });
+  var posParsed = pki.schema.x509.parse(posSigCert);
+  var kemSpki = require("node:crypto").generateKeyPairSync("ml-kem-768")
+    .publicKey.export({ format: "der", type: "spki" });
+  var posPem = await pki.csr.sign({
+    subject: [{ commonName: "kem.interop.example" }], subjectPublicKey: kemSpki,
+    privateKeyPossessionStatement: {
+      signer: { issuer: posParsed.issuer.bytes, serialNumber: posParsed.serialNumber },
+      certificate: posSigCert,
+    },
+  }, { key: posSig.key }, { pem: true });
+  var posDer = pki.schema.csr.pemDecode(posPem);
+  check("the possession statement verifies here, under the certificate it names",
+    (await pki.possession.verifyRequest(posDer,
+      { trustAnchors: [posCaDer], time: new Date("2027-06-01T00:00:00Z") })).valid === true);
+
+  ctx.withTmp(Buffer.from(posPem, "utf8"), "csr-possession.pem", function (p) {
+    var t = ctx.runOpenssl(["req", "-in", p, "-noout", "-text"], { allowNonZero: true });
+    check("openssl req -text parses a request for a key that cannot sign", t.code === 0);
+    check("openssl reports the statementOfPossession attribute by its OID",
+      t.stdout.indexOf("1.3.6.1.4.1.22112.2.1") >= 0);
+    var v = ctx.runOpenssl(["req", "-in", p, "-noout", "-verify"], { allowNonZero: true });
+    check("openssl req -verify FAILS, the request not being self-signed, which is the mechanism's premise",
+      v.code !== 0 && /self.?signature|verif/i.test(v.stdout + v.stderr));
+    var reDer = p.replace(/\.pem$/, ".der");
+    var re = ctx.runOpenssl(["req", "-in", p, "-outform", "DER", "-out", reDer], { allowNonZero: true });
+    check("openssl re-encodes the request to the same bytes, carrying the attribute unaltered",
+      re.code === 0 && Buffer.compare(require("node:fs").readFileSync(reDer), posDer) === 0);
+  });
+  var posAttr = pki.schema.csr.parse(posDer).attributes
+    .filter(function (a) { return a.type === "1.3.6.1.4.1.22112.2.1"; })[0];
+  ctx.withTmp(posAttr.values[0], "possession-attr.der", function (p) {
+    var a1 = ctx.runOpenssl(["asn1parse", "-inform", "DER", "-in", p], { allowNonZero: true });
+    check("openssl's ASN.1 parser walks the PrivateKeyPossessionStatement", a1.code === 0);
+    check("openssl reads the issuer the statement names",
+      a1.stdout.indexOf("Possession Interop CA") >= 0);
+    check("openssl reads the serial the statement names", /INTEGER\s*:32\b/.test(a1.stdout));
+  });
+
   // A tampered proof-of-possession signature is rejected.
   var s2 = signing.makeSigner("ec-p256");
   var der = await pki.csr.sign({ subject: "tamper.example", subjectPublicKey: s2.spki }, { key: s2.key });

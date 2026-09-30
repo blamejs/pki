@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.8.43",
+  "packageVersion": "0.8.44",
   "surface": {
     "C": {
       "kind": "object",
@@ -2662,6 +2662,10 @@
           "kind": "function",
           "arity": 2
         },
+        "PossessionError": {
+          "kind": "function",
+          "arity": 3
+        },
         "RelatedCertError": {
           "kind": "function",
           "arity": 3
@@ -3346,6 +3350,34 @@
         "verifyMac": {
           "kind": "function",
           "arity": 3
+        }
+      }
+    },
+    "possession": {
+      "kind": "object",
+      "members": {
+        "OID_SOP": {
+          "kind": "string"
+        },
+        "namesCertificate": {
+          "kind": "function",
+          "arity": 2
+        },
+        "parse": {
+          "kind": "function",
+          "arity": 1
+        },
+        "setEngine": {
+          "kind": "function",
+          "arity": 1
+        },
+        "statementOf": {
+          "kind": "function",
+          "arity": 1
+        },
+        "verifyRequest": {
+          "kind": "function",
+          "arity": 2
         }
       }
     },
@@ -4528,6 +4560,8 @@
     "pki.pkcs12.build": "0.3.11",
     "pki.pkcs12.verifyMac": "0.3.11",
     "pki.pkcs12.open": "0.3.12",
+    "pki.possession.parse": "0.8.44",
+    "pki.possession.verifyRequest": "0.8.44",
     "pki.relatedCert.requestSignedData": "0.8.42",
     "pki.relatedCert.certificateHash": "0.8.42",
     "pki.relatedCert.matchesCertificate": "0.8.42",
