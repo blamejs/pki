@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.8.44",
+  "packageVersion": "0.8.45",
   "surface": {
     "C": {
       "kind": "object",
@@ -2820,6 +2820,102 @@
     "hpke": {
       "kind": "object",
       "members": {
+        "decap": {
+          "kind": "function",
+          "arity": 3
+        },
+        "deriveKeyPair": {
+          "kind": "function",
+          "arity": 2
+        },
+        "encap": {
+          "kind": "function",
+          "arity": 2
+        },
+        "generateKeyPair": {
+          "kind": "function",
+          "arity": 1
+        },
+        "nominalGroups": {
+          "kind": "object",
+          "members": {
+            "P-256": {
+              "kind": "object",
+              "members": {
+                "Nelem": {
+                  "kind": "number"
+                },
+                "Nscalar": {
+                  "kind": "number"
+                },
+                "Nseed": {
+                  "kind": "number"
+                },
+                "Nss": {
+                  "kind": "number"
+                },
+                "curve": {
+                  "kind": "string"
+                },
+                "kind": {
+                  "kind": "string"
+                },
+                "nodeCurve": {
+                  "kind": "string"
+                }
+              }
+            },
+            "P-384": {
+              "kind": "object",
+              "members": {
+                "Nelem": {
+                  "kind": "number"
+                },
+                "Nscalar": {
+                  "kind": "number"
+                },
+                "Nseed": {
+                  "kind": "number"
+                },
+                "Nss": {
+                  "kind": "number"
+                },
+                "curve": {
+                  "kind": "string"
+                },
+                "kind": {
+                  "kind": "string"
+                },
+                "nodeCurve": {
+                  "kind": "string"
+                }
+              }
+            },
+            "X25519": {
+              "kind": "object",
+              "members": {
+                "Nelem": {
+                  "kind": "number"
+                },
+                "Nscalar": {
+                  "kind": "number"
+                },
+                "Nseed": {
+                  "kind": "number"
+                },
+                "Nss": {
+                  "kind": "number"
+                },
+                "curve": {
+                  "kind": "string"
+                },
+                "kind": {
+                  "kind": "string"
+                }
+              }
+            }
+          }
+        },
         "open": {
           "kind": "function",
           "arity": 6
@@ -2883,6 +2979,15 @@
                   "kind": "number"
                 },
                 "DHKEM_X448_HKDF_SHA512": {
+                  "kind": "number"
+                },
+                "MLKEM1024_P384": {
+                  "kind": "number"
+                },
+                "MLKEM768_P256": {
+                  "kind": "number"
+                },
+                "MLKEM768_X25519": {
                   "kind": "number"
                 },
                 "ML_KEM_1024": {
@@ -4490,6 +4595,10 @@
     "pki.hpke.setupR": "0.2.2",
     "pki.hpke.seal": "0.2.2",
     "pki.hpke.open": "0.2.2",
+    "pki.hpke.deriveKeyPair": "0.8.45",
+    "pki.hpke.generateKeyPair": "0.8.45",
+    "pki.hpke.encap": "0.8.45",
+    "pki.hpke.decap": "0.8.45",
     "pki.transport.https": "0.3.16",
     "pki.transport.peerChain": "0.8.32",
     "pki.identity.match": "0.8.8",

@@ -371,19 +371,32 @@ async function testBuilder() {
   check("B11: a self-signed Catalyst certificate verifies under the key it certifies",
     (await pki.altSig.verify(selfDer, altSpki)) === true);
 
-  // Every algorithm class the toolkit signs with, as the alternative one.
+  // Every algorithm class the toolkit signs with, as the alternative one. Each algorithm needs its own
+  // issuing CA, because an alternative signature is bound to the alternative key the ISSUER's certificate
+  // publishes: signing a leaf under a key the issuer does not publish would emit a certificate no relying
+  // party could check, and is refused. So the CA is self-signed with the algorithm under test as its own
+  // alternative key, and the leaf is then issued from it.
   var kinds = ["ml-dsa-44", "ml-dsa-87", "ed25519", "rsa"];
   for (var i = 0; i < kinds.length; i++) {
     var kp = kinds[i] === "rsa" ? crypto.generateKeyPairSync("rsa", { modulusLength: 2048 })
       : crypto.generateKeyPairSync(kinds[i]);
     var sp = kp.publicKey.export({ format: "der", type: "spki" });
     var pk = kp.privateKey.export({ format: "der", type: "pkcs8" });
+    var kindCa = signing.makeSigner("ec-p256");
+    var kindCaDer = await pki.x509.sign({
+      subject: "Alt CA " + kinds[i], subjectPublicKey: kindCa.spki, serialNumber: BigInt(0x80 + i),
+      notBefore: NB, notAfter: NA,
+      extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "cRLSign"],
+        subjectAltPublicKeyInfo: sp },
+    }, { key: kindCa.key, altKey: pk, altPublicKey: sp });
     var d = await pki.x509.sign({
       subject: "alt." + kinds[i], subjectPublicKey: subject.spki, serialNumber: BigInt(0x70 + i),
       notBefore: NB, notAfter: NA, extensions: { subjectAltPublicKeyInfo: sp },
-    }, { cert: nativeS.cert, key: nativeS.key, altKey: pk, altPublicKey: sp });
+    }, { cert: kindCaDer, key: kindCa.key, altKey: pk, altPublicKey: sp });
     check("B12." + (i + 1) + ": an alternative signature by a " + kinds[i] + " key verifies",
       (await pki.altSig.verify(d, sp)) === true);
+    check("B12." + (i + 1) + "a: and it verifies under the key read off the issuer's own certificate",
+      (await pki.altSig.verify(d, pki.altSig.subjectAltPublicKey(kindCaDer))) === true);
   }
   // The alternative CHAIN, which is the mechanism's whole point: a leaf's alternative signature is
   // verified with the key read out of the ISSUER's subjectAltPublicKeyInfo (clause 9.8.4), so a relying
@@ -443,6 +456,119 @@ async function testCrl(ctx) {
     pki.asn1.decode(pki.altSig.signedData(crlDer)).children.length === 2);
   check("C6: subjectAltPublicKey refuses a CRL, the extension being certificate-only",
     code(function () { pki.altSig.subjectAltPublicKey(crlDer); }) === "altsig/absent");
+}
+
+// The alternative signature is checked against the alternative public key BEFORE it is emitted, which is
+// the gate the native pass has always had. Without it, an altKey and an altPublicKey that are different
+// keys of the same algorithm sign and emit without complaint, and what ships is a certificate whose
+// alternative signature does not verify under the key the certificate itself names. The two keys have to
+// share an algorithm for this to be the defect rather than an algorithm mismatch: a different algorithm
+// is caught when the scheme is resolved, and the vector would then pass without reaching the gate.
+async function testAltKeyPairMismatchRefused(ctx) {
+  var ca = signing.makeSigner("ec-p256", { cn: "Mismatch CA", serial: 0x70 });
+  var altA = crypto.generateKeyPairSync("ml-dsa-65");
+  var altB = crypto.generateKeyPairSync("ml-dsa-65");
+  var aPkcs8 = altA.privateKey.export({ format: "der", type: "pkcs8" });
+  var aSpki = altA.publicKey.export({ format: "der", type: "spki" });
+  var bSpki = altB.publicKey.export({ format: "der", type: "spki" });
+  var subject = signing.makeSigner("ec-p256");
+  var subjAltSpki = crypto.generateKeyPairSync("ml-dsa-65").publicKey.export({ format: "der", type: "spki" });
+
+  // CONTROL: the matching pair signs, so a refusal below is about the mismatch and not about the setup.
+  var okDer = await pki.x509.sign({
+    subject: "Mismatch CA", subjectPublicKey: ca.spki, serialNumber: 0x70n, notBefore: NB, notAfter: NA,
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "cRLSign"],
+      subjectAltPublicKeyInfo: aSpki },
+  }, { key: ca.key, altKey: aPkcs8, altPublicKey: aSpki });
+  check("M0: CONTROL an altKey matching its altPublicKey signs and verifies",
+    (await pki.altSig.verify(okDer, aSpki)) === true);
+
+  check("M1: a certificate whose altKey is not the altPublicKey's private half is refused",
+    (await codeAsync(pki.x509.sign({
+      subject: "leaf.example", subjectPublicKey: subject.spki, serialNumber: 0x71n,
+      notBefore: NB, notAfter: NA,
+      extensions: { subjectAltPublicKeyInfo: subjAltSpki },
+    }, { cert: okDer, key: ca.key, altKey: aPkcs8, altPublicKey: bSpki }))) === "x509/bad-input");
+
+  check("M2: and a CRL under the same mismatched pair is refused, the rule reaching both signers",
+    (await codeAsync(pki.crl.sign({
+      thisUpdate: NB, nextUpdate: NA, crlNumber: 2n,
+      revoked: [{ serialNumber: 7n, revocationDate: NB }],
+    }, { cert: okDer, key: ca.key, altKey: aPkcs8, altPublicKey: bSpki }))) === "crl/bad-input");
+
+  // CONTROL for M2: the matching pair produces a CRL whose alternative signature verifies, so M2's
+  // refusal is the gate firing rather than the CRL path being broken for this issuer.
+  var okCrl = await pki.crl.sign({
+    thisUpdate: NB, nextUpdate: NA, crlNumber: 3n,
+    revoked: [{ serialNumber: 7n, revocationDate: NB }],
+  }, { cert: okDer, key: ca.key, altKey: aPkcs8, altPublicKey: aSpki });
+  check("M3: CONTROL the matching pair emits a CRL that verifies under that key",
+    (await pki.altSig.verify(okCrl, aSpki)) === true);
+
+  // A self-consistent alt pair is not enough: it also has to be the pair the ISSUER CERTIFICATE
+  // publishes. The native signature is bound that way already, its key being read out of issuer.cert,
+  // while the alternative key is supplied beside the certificate and was never compared to it. A CA that
+  // signs with a second alt pair emits a certificate that verifies under no key any relying party can
+  // find: clause 9.8.4 checks an alternative signature with the issuer's alternative public key, and the
+  // issuer's certificate names A while the signature was made with B.
+  var otherAlt = crypto.generateKeyPairSync("ml-dsa-65");
+  var otherPkcs8 = otherAlt.privateKey.export({ format: "der", type: "pkcs8" });
+  var otherSpki = otherAlt.publicKey.export({ format: "der", type: "spki" });
+  check("M4: a certificate signed with an alt pair the issuer certificate does not publish is refused",
+    (await codeAsync(pki.x509.sign({
+      subject: "leaf.example", subjectPublicKey: subject.spki, serialNumber: 0x72n,
+      notBefore: NB, notAfter: NA,
+      extensions: { subjectAltPublicKeyInfo: subjAltSpki },
+    }, { cert: okDer, key: ca.key, altKey: otherPkcs8, altPublicKey: otherSpki }))) === "x509/bad-input");
+  check("M5: and a CRL under that same second pair is refused, the rule reaching both signers",
+    (await codeAsync(pki.crl.sign({
+      thisUpdate: NB, nextUpdate: NA, crlNumber: 4n,
+      revoked: [{ serialNumber: 8n, revocationDate: NB }],
+    }, { cert: okDer, key: ca.key, altKey: otherPkcs8, altPublicKey: otherSpki }))) === "crl/bad-input");
+
+  // An issuer certificate that publishes NO alternative key cannot have signed with one either: a
+  // relying party has nothing to check the alternative signature against.
+  var plainCa = await pki.x509.sign({
+    subject: "Plain CA", subjectPublicKey: ca.spki, serialNumber: 0x73n, notBefore: NB, notAfter: NA,
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "cRLSign"] },
+  }, { key: ca.key });
+  check("M6: an issuer certificate publishing no alternative key cannot sign an alternative signature",
+    (await codeAsync(pki.x509.sign({
+      subject: "leaf.example", subjectPublicKey: subject.spki, serialNumber: 0x74n,
+      notBefore: NB, notAfter: NA,
+      extensions: { subjectAltPublicKeyInfo: subjAltSpki },
+    }, { cert: plainCa, key: ca.key, altKey: aPkcs8, altPublicKey: aSpki }))) === "x509/bad-input");
+
+  // CONTROL: signing under the pair the issuer certificate DOES publish still works, and what comes out
+  // verifies under the key read off that certificate, which is the whole point of the binding.
+  var bound = await pki.x509.sign({
+    subject: "leaf.example", subjectPublicKey: subject.spki, serialNumber: 0x75n,
+    notBefore: NB, notAfter: NA,
+    extensions: { subjectAltPublicKeyInfo: subjAltSpki },
+  }, { cert: okDer, key: ca.key, altKey: aPkcs8, altPublicKey: aSpki });
+  check("M7: CONTROL a certificate signed with the published pair verifies under the issuer's own alt key",
+    (await pki.altSig.verify(bound, pki.altSig.subjectAltPublicKey(okDer))) === true);
+
+  // A root is self-signed whether the caller says so by omitting the issuer entirely or by naming an
+  // issuer whose name and key are the subject's. Both produce a certificate that publishes its own
+  // alternative key, so both are held to signing with it; a rule that reads only the omitted form leaves
+  // the explicit one emitting a root that does not verify under the key it publishes.
+  var rootName = [{ commonName: "Explicit Self Signed" }];
+  check("M8: an explicit self-issued root signing with an alt key it does not publish is refused",
+    (await codeAsync(pki.x509.sign({
+      subject: rootName, subjectPublicKey: ca.spki, serialNumber: 0x76n, notBefore: NB, notAfter: NA,
+      extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "cRLSign"],
+        subjectAltPublicKeyInfo: aSpki },
+    }, { name: rootName, publicKey: ca.spki, key: ca.key,
+      altKey: otherPkcs8, altPublicKey: otherSpki }))) === "x509/bad-input");
+  var explicitRoot = await pki.x509.sign({
+    subject: rootName, subjectPublicKey: ca.spki, serialNumber: 0x77n, notBefore: NB, notAfter: NA,
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "cRLSign"],
+      subjectAltPublicKeyInfo: aSpki },
+  }, { name: rootName, publicKey: ca.spki, key: ca.key, altKey: aPkcs8, altPublicKey: aSpki });
+  check("M9: CONTROL the same explicit root signing with the key it publishes verifies under it",
+    (await pki.altSig.verify(explicitRoot, pki.altSig.subjectAltPublicKey(explicitRoot))) === true);
+  return ctx;
 }
 
 // ---- lint ------------------------------------------------------------------
@@ -573,6 +699,7 @@ async function run() {
   await testDecodeRefusals(dctx);
   var bctx = await testBuilder();
   await testCrl(bctx);
+  await testAltKeyPairMismatchRefused(bctx);
   await testLint(bctx);
   testInspect();
   await testOuterAltFieldsRefused();

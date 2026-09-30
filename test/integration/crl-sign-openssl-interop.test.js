@@ -106,10 +106,14 @@ async function runCatalystCrl() {
   var altKp = crypto.generateKeyPairSync("ml-dsa-65");
   var altSpki = altKp.publicKey.export({ format: "der", type: "spki" });
   var altPkcs8 = altKp.privateKey.export({ format: "der", type: "pkcs8" });
+  /** The CA publishes the alternative key it signs with. A relying party checks a CRL's alternative
+   *  signature with the alternative key in the CRL issuer's own certificate (clause 9.8.4), so a CA that
+   *  publishes none cannot sign one, and the signer refuses that combination. */
   var caPem = await pki.x509.sign({
     subject: [{ commonName: "Catalyst CRL CA" }], subjectPublicKey: s.spki, notBefore: NB, notAfter: NA,
-    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "cRLSign"] },
-  }, { key: s.key }, { pem: true });
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "cRLSign"],
+      subjectAltPublicKeyInfo: altSpki },
+  }, { key: s.key, altKey: altPkcs8, altPublicKey: altSpki }, { pem: true });
   var crlDer = await pki.crl.sign({
     thisUpdate: NB, nextUpdate: NA, crlNumber: 7n,
     revoked: [{ serialNumber: 3n, revocationDate: NB }],

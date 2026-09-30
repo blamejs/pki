@@ -1441,6 +1441,66 @@ async function runRekorV2() {
   check("V9: an entry omitting keyDetails still verifies, since it states nothing to hold",
     (await pki.sigstore.verifyBundle(noDetails.bundle, noDetails.trust)).verified === true);
 
+  /* A keyDetails name states more than a key FAMILY: it names the curve for an ECDSA key and the
+     modulus size for an RSA one. Comparing only the SubjectPublicKeyInfo algorithm OID holds none of
+     that, because every NIST curve shares the ecPublicKey OID and every RSA size shares rsaEncryption.
+     So an entry could claim P-384 with SHA-384 over a P-256 key signing with SHA-256 and the statement
+     the entry makes about the key would go unchecked. */
+  var curveLie = await buildV2Bundle({ keyDetails: "PKIX_ECDSA_P384_SHA_384" });
+  check("V9a: an entry naming P-384 over a P-256 leaf key is refused",
+    await codeOf(pki.sigstore.verifyBundle(curveLie.bundle, curveLie.trust)) === "sigstore/entry-mismatch");
+  var curveLie2 = await buildV2Bundle({ keyDetails: "PKIX_ECDSA_P521_SHA_512" });
+  check("V9b: and so is one naming P-521 over the same key",
+    await codeOf(pki.sigstore.verifyBundle(curveLie2.bundle, curveLie2.trust)) === "sigstore/entry-mismatch");
+  var rsaSizeLie = await buildV2Bundle({ keyDetails: "PKIX_RSA_PKCS1V15_4096_SHA256" });
+  check("V9c: an entry naming a 4096-bit RSA key over a key that is not RSA at all is refused",
+    await codeOf(pki.sigstore.verifyBundle(rsaSizeLie.bundle, rsaSizeLie.trust)) === "sigstore/entry-mismatch");
+  /* CONTROL: the name that DOES describe this leaf key still verifies, so the refusals above are about
+     the mismatch rather than about the check rejecting every name. */
+  var trueDetails = await buildV2Bundle({ keyDetails: "PKIX_ECDSA_P256_SHA_256" });
+  check("V9d: CONTROL the entry naming the leaf key's actual curve verifies",
+    (await pki.sigstore.verifyBundle(trueDetails.bundle, trueDetails.trust)).verified === true);
+
+  /* A keyDetails name also states a SIGNATURE SCHEME, and a name whose scheme this build does not verify
+     under must be refused rather than checked under a different one. RSA-PSS and Ed25519ph are the two:
+     signatures here are verified with RSA PKCS#1 v1.5 and ordinary Ed25519, so an entry declaring either
+     would have had its signature checked under the wrong scheme, accepting a PKCS#1 v1.5 signature for a
+     declared PSS one and an ordinary Ed25519 signature for a declared Ed25519ph one. They are refused as
+     a declaration this build does not read, which is a different verdict from a name whose key family
+     merely does not match the leaf, and it is reached before that comparison. */
+  var pssDecl = await buildV2Bundle({ keyDetails: "PKIX_RSA_PSS_2048_SHA256" });
+  check("V9e: an entry declaring RSA-PSS is refused as a scheme this build does not verify under",
+    await codeOf(pki.sigstore.verifyBundle(pssDecl.bundle, pssDecl.trust)) === "sigstore/bad-tlog-entry");
+  var phDecl = await buildV2Bundle({ keyDetails: "PKIX_ED25519_PH" });
+  check("V9f: and so is one declaring Ed25519ph",
+    await codeOf(pki.sigstore.verifyBundle(phDecl.bundle, phDecl.trust)) === "sigstore/bad-tlog-entry");
+  /* CONTROL: the RSA PKCS#1 v1.5 and plain Ed25519 names are read, so the refusals above are about the
+     scheme and not about every RSA or Ed25519 name. Over this EC leaf they report a family mismatch,
+     which is the verdict for a name the build reads but the key is not. */
+  var rsaPkcs1 = await buildV2Bundle({ keyDetails: "PKIX_RSA_PKCS1V15_2048_SHA256" });
+  check("V9g: CONTROL an RSA PKCS#1 v1.5 name is read, and mismatches this EC leaf",
+    await codeOf(pki.sigstore.verifyBundle(rsaPkcs1.bundle, rsaPkcs1.trust)) === "sigstore/entry-mismatch");
+  var edPlain = await buildV2Bundle({ keyDetails: "PKIX_ED25519" });
+  check("V9h: CONTROL a plain Ed25519 name is read, and mismatches this EC leaf",
+    await codeOf(pki.sigstore.verifyBundle(edPlain.bundle, edPlain.trust)) === "sigstore/entry-mismatch");
+
+  /* A keyDetails that is PRESENT but not a string skipped every check above, because the block was entered
+     only for a string: the entry then stated an algorithm and nothing held it to the key. Protobuf JSON
+     permits an enum as its numeric value, so a number is a shape a real producer can emit, and an object
+     is simply malformed. Either way a present declaration has to be read or refused, never passed over:
+     an unknown STRING is already refused, so passing over a number is the looser of the two readings of
+     the same field. */
+  var numericDetails = await buildV2Bundle({ keyDetails: 999 });
+  check("V9i: a numeric keyDetails is not passed over as though absent",
+    await codeOf(pki.sigstore.verifyBundle(numericDetails.bundle, numericDetails.trust)) === "sigstore/bad-tlog-entry");
+  var objectDetails = await buildV2Bundle({ keyDetails: {} });
+  check("V9j: and neither is an object",
+    await codeOf(pki.sigstore.verifyBundle(objectDetails.bundle, objectDetails.trust)) === "sigstore/bad-tlog-entry");
+  /* CONTROL: an ABSENT keyDetails still verifies, since a declaration that was never made states nothing
+     to hold. That is the case the two above must stay distinct from. */
+  check("V9k: CONTROL an omitted keyDetails still verifies, stating nothing to hold",
+    (await pki.sigstore.verifyBundle(noDetails.bundle, noDetails.trust)).verified === true);
+
   /* The time leg. */
   var noTsa = await buildV2Bundle({});
   check("V10: with no timestamp anchor pinned there is no attested instant",

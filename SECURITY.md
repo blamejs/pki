@@ -134,6 +134,21 @@ security-only patches after the next major releases.
   named option once, at entry, before any of it is examined, as do the `pki.smime`
   verbs and the `pki.hpke` setup verbs (whose `mode` was read at the default and
   again at the use, so an accessor answering auth then base got a base setup).
+
+  The same rule now covers what a verify verb is given as well as how it is
+  configured, because a verification that awaits gives a caller a window in which to
+  change what it still holds. `pki.tlog.verifyNote`, `pki.tlog.verifyCheckpoint`,
+  `pki.tuf.verifySignatures`, `pki.tuf.updateRoot`, `pki.ct.verifySct`,
+  `pki.ct.getSth`, `pki.ct.addChain`, `pki.ct.getProofByHash`,
+  `pki.ct.getSthConsistency`, `pki.ct.fetchLogList` and `pki.jose.verify` each take
+  the document, the keys, the pinned trust inputs and the validation instant ONCE, at
+  entry, and every check and every verification below reads those copies. Held as
+  views across a key import or a network fetch, the bytes verified need not have been
+  the bytes reported: a TUF role's threshold could be met by key material nobody
+  authorized, a note's signature line attributed to a signer whose key never signed
+  it, a tree head checked under a log that was not the one pinned, and an expired
+  root accepted by moving the `Date` supplied to it. None of that requires the
+  caller to be hostile, only to reuse a buffer while a verification is pending.
   `pki.webauthn.verify` and `pki.webauthn.verifyAssertion` already copied their
   inputs.
 - **Decompression bombs (CWE-409).** Every decompression in the toolkit runs
@@ -453,6 +468,24 @@ security-only patches after the next major releases.
   sec. 7.2 check at import (length and modulus), an encapsulated key to the
   sec. 7.3 length check before decapsulation, and the auth modes, which the ML-KEM
   KEMs do not define, are refused with `hpke/auth-unsupported` at both ends.
+- **A PQ/T hybrid KEM binds both components into one secret.** The MLKEM768-P256,
+  MLKEM1024-P384 and MLKEM768-X25519 suites derive the HPKE shared secret from the
+  ML-KEM secret and the nominal-group secret together, through the CFRG C2PRI
+  combiner, so neither component alone determines it and a break of one does not
+  yield the secret. A hybrid private key is the 32-byte seed both component keys
+  expand from, and a public key or encapsulated key is the two components
+  concatenated at the exact component widths, which differ between the two
+  directions: ML-KEM-768 has a 1184-byte encapsulation key and a 1088-byte
+  ciphertext. A seed of any other length, a concatenation of any other total
+  length, a `pkm` that is not the derivation of the supplied seed, and on
+  MLKEM768-P256 and MLKEM1024-P384 a traditional half that is not a point on the
+  curve, are each refused with `hpke/bad-key` before any decapsulation runs. On
+  MLKEM768-X25519 every 32-byte string is a valid X25519 public key (RFC 7748
+  sec. 5), so there is no point check to make; a half that drives the agreement to
+  the all-zero output is refused with `hpke/bad-key`. The auth modes are refused
+  with `hpke/auth-unsupported` at both ends for the same reason they are for
+  ML-KEM. There is no negotiation to a single component and no path that returns a
+  secret derived from one of the two.
 - **WebCrypto import algorithm confusion and raw cipher faults.**
   `pki.webcrypto` derives an imported asymmetric key's type from the key material
   rather than the caller's claim, so an RSA key imported under an Ed25519,

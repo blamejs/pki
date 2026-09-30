@@ -581,6 +581,31 @@ async function testPlacementAndAlgorithms(ctx) {
         { digestAlgorithm: pd === "sha256" ? "sha512" : "sha256" })) === false);
   }
 
+  // An RSASSA-PSS key whose SPKI RESTRICTS its hash. The verb decides whether naming a digest would
+  // change the identifier by resolving the scheme at two digests and comparing, and one of those probes
+  // asked for SHA-512 — which a key pinned to SHA-256 refuses outright. So the probe threw before the
+  // digest the caller actually asked for was resolved, and a valid proof under the key's own pinned hash
+  // was rejected as an unsupported algorithm. A restricted key does not admit a choice of digest, which
+  // is the answer the probe was trying to compute.
+  var pinned = signing.makeSigner("rsa-pss", { cn: "PSS Pinned", serial: 0x62, pssHash: "sha256" });
+  var pinnedParsed = pki.schema.x509.parse(pinned.cert);
+  var pinnedId = { issuer: pinnedParsed.issuer.bytes, serialNumber: pinnedParsed.serialNumber };
+  var pinnedPre = pki.relatedCert.requestSignedData({ certID: pinnedId, requestTime: CERT_TIME });
+  var pinnedSig = crypto.sign("sha256", pinnedPre, { key: pinned.keyObject,
+    padding: crypto.constants.RSA_PKCS1_PSS_PADDING, saltLength: crypto.constants.RSA_PSS_SALTLEN_DIGEST });
+  var pinnedRc = { certID: pinnedId, requestTime: BigInt(CERT_TIME), locationInfo: ["https://a.example/"],
+    signature: { unusedBits: 0, bytes: pinnedSig } };
+  var pinnedCode = "NO-THROW", pinnedOk = null;
+  try { pinnedOk = await pki.relatedCert.verifyRequest(pinnedRc, pinned.cert, { digestAlgorithm: "sha256" }); }
+  catch (e) { pinnedCode = e.code || e.message; }
+  check("V19: a proof under a hash-restricted RSASSA-PSS key verifies at the digest the key pins" +
+    (pinnedCode === "NO-THROW" ? "" : " (refused with " + pinnedCode + ")"), pinnedOk === true);
+  check("V19a: and it verifies with no digest named at all, the key having only one",
+    (await pki.relatedCert.verifyRequest(pinnedRc, pinned.cert)) === true);
+  check("V19b: CONTROL the same key's SPKI does pin a hash, so this is the restricted case",
+    pinnedParsed.subjectPublicKeyInfo.algorithm.name === "rsassaPss" &&
+    pinnedParsed.subjectPublicKeyInfo.algorithm.parameters != null);
+
   // A key that cannot sign at all. An encryption-only key makes no proof, so the refusal names the way
   // out instead of an algorithm being guessed for it.
   var kems = ["x25519", "x448", "ml-kem-512", "ml-kem-768"];

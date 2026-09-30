@@ -133,10 +133,21 @@ function testRobustness() {
   var o384 = pki.hpke.seal(sha384, kp.publicKey, {}, Buffer.from("aad"), Buffer.from("sha384"));
   check("HKDF-SHA384 KDF 0x0002 round-trips on a DHKEM suite", S.KDF.HKDF_SHA384 === 0x0002 &&
     pki.hpke.open(sha384, o384.enc, kp.privateKey, {}, Buffer.from("aad"), o384.ct).toString() === "sha384");
-  // The PQ/T hybrid KEMs of draft-ietf-hpke-pq-05 sec. 4 are defined by moving CFRG
-  // drafts; their code points must fail closed rather than run an unproven combiner.
+  // The PQ/T hybrid KEMs of draft-ietf-hpke-pq-05 sec. 4 are now registered and proven against the
+  // Appendix B known answers of draft-irtf-cfrg-concrete-hybrid-kems-04; hpke-hybrid.test.js holds those
+  // vectors. What this asserts here is that they are reached as KEMs rather than refused, and that a
+  // DHKEM public key is not accepted for one: the sizes differ by more than a kilobyte, so a caller
+  // passing the wrong key gets a typed refusal rather than a combiner running over the wrong halves.
   [0x0050, 0x0051, 0x647a].forEach(function (id) {
-    check("hybrid KEM 0x" + id.toString(16) + " -> hpke/unknown-suite", codeOf(function () { pki.hpke.setupS({ kem: id, kdf: S.KDF.HKDF_SHA256, aead: S.AEAD.AES_128_GCM }, kp.publicKey, {}); }) === "hpke/unknown-suite");
+    check("hybrid KEM 0x" + id.toString(16) + " is registered", codeOf(function () { pki.hpke.generateKeyPair(id); }) === "NO-THROW");
+    check("hybrid KEM 0x" + id.toString(16) + " refuses a DHKEM public key",
+      codeOf(function () { pki.hpke.setupS({ kem: id, kdf: S.KDF.HKDF_SHA256, aead: S.AEAD.AES_128_GCM }, kp.publicKey, {}); }) === "hpke/bad-key");
+  });
+  // The single-stage KDFs of the same section are NOT implemented: HPKE's key schedule is two-stage, so
+  // their code points must fail closed rather than be key-scheduled as if they were HKDF.
+  [0x0010, 0x0011, 0x0012, 0x0013].forEach(function (id) {
+    check("single-stage KDF 0x" + id.toString(16) + " -> hpke/unknown-suite",
+      codeOf(function () { pki.hpke.setupS({ kem: IDS.kem, kdf: id, aead: S.AEAD.AES_128_GCM }, kp.publicKey, {}); }) === "hpke/unknown-suite");
   });
   // An unknown mode must be rejected, not silently key-scheduled with a bad mode
   // byte (RFC 9180 sec. 5.1 defines exactly base / psk / auth / auth-psk).
@@ -439,6 +450,93 @@ function testExpandFailurePathWipes() {
   check("a KDF block produced before an expand failure is wiped", threw && wiped);
 }
 
+// The four standalone KEM verbs, asked of EVERY KEM the module registers rather than of a list written
+// here. The set comes from pki.hpke.suites.KEM, so a KEM added later is covered by this vector on the
+// commit that adds it, and a verb that answers for one family and not another is named here.
+//
+// The property is a closed loop through the shipped surface: generateKeyPair draws a key pair,
+// deriveKeyPair must map that private key back to the same public key, and encap/decap must agree on a
+// secret under it. A verb that returns the wrong bytes for the private key passes an "it returned a
+// Buffer" check and fails this one.
+function testStandaloneKemVerbsEveryKem() {
+  var K = pki.hpke.suites.KEM;
+  var names = Object.keys(K);
+  check("the KEM registry exposes every family the module claims", names.length >= 10);
+  names.forEach(function (n) {
+    var id = K[n];
+    var kp = pki.hpke.generateKeyPair(id);
+    check("KV " + n + ": generateKeyPair returns raw public and private keys",
+      Buffer.isBuffer(kp.publicKey) && Buffer.isBuffer(kp.privateKey) && kp.privateKey.length > 0);
+    var again = pki.hpke.generateKeyPair(id);
+    check("KV " + n + ": generateKeyPair draws a fresh key each call",
+      !kp.publicKey.equals(again.publicKey));
+
+    // deriveKeyPair takes an IKM, not a private key. It is the DeriveKeyPair of the KEM's own
+    // specification: RFC 9180 sec. 7.1.3 for a DHKEM, draft-ietf-hpke-pq sec. 3 and 4 for the
+    // post-quantum ones, each running the ikm through a KDF first. So the property here is that it is
+    // deterministic in the ikm and that the pair it returns works as a key pair; the conformance of the
+    // derivation itself is pinned against published ikm-to-key vectors in testDeriveKeyPairVectors,
+    // which is the only check that can tell this function from any other.
+    var ikm = Buffer.alloc(40);
+    for (var z = 0; z < ikm.length; z++) ikm[z] = (z * 13 + 5) & 0xff;
+    var derived = pki.hpke.deriveKeyPair(id, ikm);
+    check("KV " + n + ": deriveKeyPair returns raw keys of the registered widths",
+      derived.publicKey.length === kp.publicKey.length &&
+      derived.privateKey.length === kp.privateKey.length);
+    check("KV " + n + ": deriveKeyPair is deterministic in the ikm",
+      pki.hpke.deriveKeyPair(id, ikm).publicKey.equals(derived.publicKey) &&
+      pki.hpke.deriveKeyPair(id, ikm).privateKey.equals(derived.privateKey));
+    var otherIkm = Buffer.from(ikm); otherIkm[0] ^= 0x01;
+    check("KV " + n + ": a different ikm gives a different key pair",
+      !pki.hpke.deriveKeyPair(id, otherIkm).publicKey.equals(derived.publicKey));
+    check("KV " + n + ": and the derived pair is a working key pair",
+      pki.hpke.decap(id, pki.hpke.encap(id, derived.publicKey).enc,
+        { skm: derived.privateKey }).length > 0);
+
+    var enc = pki.hpke.encap(id, kp.publicKey);
+    check("KV " + n + ": encap and decap agree on the shared secret for a generated pair",
+      pki.hpke.decap(id, enc.enc, { skm: kp.privateKey }).equals(enc.sharedSecret));
+  });
+}
+
+// DeriveKeyPair, against the published ikm-to-key vectors. This is the check that distinguishes the
+// specified function from any other function of the ikm: RFC 9180's vectors carry (ikmE, skEm, pkEm) and
+// (ikmS, skSm, pkSm) for all four DHKEM suites, and draft-ietf-hpke-pq's carry (ikmR, skRm, pkRm) for the
+// ML-KEM suites. A round trip through this module would pass for a verb that simply imported its input.
+function testDeriveKeyPairVectors() {
+  var seen = {};
+  var checked = 0;
+  function one(kemId, ikmHex, skHex, pkHex, label) {
+    var got = pki.hpke.deriveKeyPair(kemId, Buffer.from(ikmHex, "hex"));
+    var ok = got.privateKey.equals(Buffer.from(skHex, "hex")) &&
+      got.publicKey.equals(Buffer.from(pkHex, "hex"));
+    if (!ok) check("DKP 0x" + kemId.toString(16) + " " + label + " matches the published key pair", false);
+    checked += 1;
+    seen[kemId] = (seen[kemId] || 0) + 1;
+  }
+  vectors.forEach(function (v) {
+    if (v.ikmE && v.skEm && v.pkEm) one(v.kem_id, v.ikmE, v.skEm, v.pkEm, "ikmE");
+    if (v.ikmS && v.skSm && v.pkSm) one(v.kem_id, v.ikmS, v.skSm, v.pkSm, "ikmS");
+  });
+  pqVectors.forEach(function (v) {
+    if (v.ikmR && v.skRm && v.pkRm) one(v.kem_id, v.ikmR, v.skRm, v.pkRm, "ikmR");
+  });
+  // Every KEM family the fixtures cover must have contributed, or "the vectors pass" would be a
+  // statement about an empty set for a suite whose rows were filtered out.
+  [0x0010, 0x0012, 0x0020, 0x0021, 0x0040, 0x0041, 0x0042].forEach(function (id) {
+    check("DKP 0x" + id.toString(16) + " is covered by at least one published ikm vector",
+      (seen[id] || 0) >= 1);
+  });
+  check("DKP every published ikm vector reproduces its key pair (" + checked + " vectors)", checked >= 190);
+
+  // The P-521 bitmask is 0x01 rather than 0xFF (RFC 9180 sec. 7.1.3), which makes a candidate a 521-bit
+  // value. The vectors above are what prove it; this pins the consequence so a change to 0xFF is named
+  // here rather than only as a wall of vector mismatches.
+  var p521 = pki.hpke.deriveKeyPair(0x0012, Buffer.from("00", "hex"));
+  check("DKP a P-521 derived scalar has at most 521 bits, the top byte being masked to 0x01",
+    p521.privateKey.length === 66 && p521.privateKey[0] <= 0x01);
+}
+
 function run() {
   testKat();
   testRobustness();
@@ -448,6 +546,8 @@ function run() {
   testSerializedPrivateKeyDoor();
   testOptionsReadOnce();
   testExpandFailurePathWipes();
+  testStandaloneKemVerbsEveryKem();
+  testDeriveKeyPairVectors();
 }
 
 module.exports = { run: run };

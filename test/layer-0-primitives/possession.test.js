@@ -130,6 +130,223 @@ async function testDecode(w) {
   return { isn: isn, withCert: withCert, withoutCert: withoutCert };
 }
 
+// A CertificationRequest assembled here rather than by `pki.csr.sign`, because the builder reads every
+// statement back through `possession.parse` with the certificate present and so cannot emit a
+// non-conforming one. The request is properly signed by the signature certificate's key, so the
+// signature MUST is satisfied and the only thing wrong with it is the statement's binding: its signer
+// names a serial the carried certificate does not have.
+async function mismatchedRequest(w, serialOffset) {
+  var badIsn = b.sequence([b.raw(w.sigParsed.issuer.bytes), b.integer(w.sigParsed.serialNumber + serialOffset)]);
+  var statement = b.sequence([badIsn, b.raw(w.sigCertDer)]);
+  var attr = b.sequence([b.oid(O("statementOfPossession")), b.set([b.raw(statement)])]);
+  var cri = b.sequence([
+    b.integer(0n),
+    b.raw(w.sigParsed.subject.bytes),
+    b.raw(w.kemSpki),
+    b.contextConstructed(0, b.raw(attr)),
+  ]);
+  var sigAlg = b.sequence([b.oid(O("ecdsaWithSHA256"))]);
+  var sig = crypto.sign("sha256", cri, w.sigKp.keyObject);
+  return b.sequence([b.raw(cri), b.raw(sigAlg), b.bitString(sig)]);
+}
+
+// The statement reached through a PARSED request, which is a second door onto the same rule. The
+// recognized-attribute reader decodes the statement in place while parsing the request, so a consumer
+// that takes the decoded record gets one that never passed the binding check `possession.parse` runs.
+// A statement naming one certificate while carrying another describes two different keys, and only one
+// of them signed the request, so the door that skips the check accepts a request whose signer field
+// does not identify the key that signed.
+async function testStatementBindingThroughParsedRequest(w) {
+  var der = await mismatchedRequest(w, 977n);
+  var parsed = pki.schema.csr.parse(der);
+
+  // CONTROL: the request itself is well formed and properly signed, so a refusal below is about the
+  // binding and not about a broken fixture.
+  check("B0: the hand-built request parses and carries the statement attribute",
+    parsed.attributes.length === 1 && parsed.attributes[0].type === O("statementOfPossession"));
+  // The signature is not asserted separately here: B3 requires the EXACT code
+  // `possession/signer-mismatch`, and a request whose signature did not verify would report a signature
+  // fault instead, so a broken fixture cannot be mistaken for the binding refusal.
+  check("B2: statementOf applies the binding check to an in-place decoded attribute",
+    code(function () { return pki.possession.statementOf(parsed); }) === "possession/signer-mismatch");
+  // verifyRequest takes the request as DER, so it re-parses and reaches the statement through the same
+  // in-place decoded attribute. It is the shipped consumer path for the whole rule.
+  check("B3: verifyRequest does not accept a request whose statement names another certificate",
+    (await codeAsync(pki.possession.verifyRequest(der,
+      { trustAnchors: [w.caDer], time: AT }))) === "possession/signer-mismatch");
+
+  // The same request with the binding intact must go through, or B2 and B3 would pass for a request
+  // that fails for some unrelated reason.
+  var good = await mismatchedRequest(w, 0n);
+  var goodParsed = pki.schema.csr.parse(good);
+  var st = pki.possession.statementOf(goodParsed);
+  check("B4: CONTROL the same request with a matching signer is accepted",
+    st !== null && st.signer.serialNumber === w.sigParsed.serialNumber);
+}
+
+// RFC 9883 sec. 4 makes certification path validation of the signature certificate a MUST, and a real
+// PKI issues end-entity certificates from an intermediate rather than from the root. The validator is
+// handed an ordered path and does not build one, so validating the signature certificate alone against
+// a root anchor cannot succeed whenever an intermediate sits between them: the request is refused for a
+// path that is in fact valid, and a caller had no way to supply the rest of it. The chain is an option,
+// ordered the way the validator takes a path: from the certificate nearest the anchor DOWN to the one
+// that issued the signature certificate, which is then appended last. P0 and P0a prove that order
+// rather than assuming it, one of them being a chain the validator accepts and the other the same
+// certificates with the intermediate left out.
+async function testPathThroughAnIntermediate() {
+  var rootKp = signing.makeSigner("ec-p256");
+  var rootDer = await pki.x509.sign({
+    subject: "Possession Root", subjectPublicKey: rootKp.spki, serialNumber: 0x31n,
+    notBefore: NB, notAfter: NA,
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "cRLSign"] },
+  }, { key: rootKp.key });
+  var interKp = signing.makeSigner("ec-p256");
+  var interDer = await pki.x509.sign({
+    subject: "Possession Issuing CA", subjectPublicKey: interKp.spki, serialNumber: 0x32n,
+    notBefore: NB, notAfter: NA,
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "cRLSign"] },
+  }, { cert: rootDer, key: rootKp.key });
+  var sigKp = signing.makeSigner("ec-p256");
+  var sigCertDer = await pki.x509.sign({
+    subject: "kem.example", subjectPublicKey: sigKp.spki, serialNumber: 0x33n,
+    notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"] },
+  }, { cert: interDer, key: interKp.key });
+  var sigParsed = pki.schema.x509.parse(sigCertDer);
+  var kem = crypto.generateKeyPairSync("ml-kem-768");
+
+  // CONTROL: the chain itself is valid when the validator is handed the whole of it, so a refusal below
+  // is about what verifyRequest passes on and not about a chain that does not validate.
+  check("P0: CONTROL the leaf validates against the root when the intermediate is in the path",
+    (await pki.path.validate([interDer, sigCertDer], { trustAnchors: [rootDer], time: AT })).valid === true);
+  check("P0a: CONTROL and does NOT validate with the intermediate left out, which is the whole point",
+    (await pki.path.validate([sigCertDer], { trustAnchors: [rootDer], time: AT })).valid === false);
+
+  var der = await pki.csr.sign({
+    subject: "kem.example", subjectPublicKey: kem.publicKey.export({ format: "der", type: "spki" }),
+    privateKeyPossessionStatement: {
+      signer: { issuer: sigParsed.issuer.bytes, serialNumber: sigParsed.serialNumber },
+      certificate: sigCertDer,
+    },
+  }, { key: sigKp.key });
+
+  var withChain = await pki.possession.verifyRequest(der,
+    { trustAnchors: [rootDer], time: AT, intermediates: [interDer] });
+  check("P1: the request is accepted when the intermediate is supplied",
+    withChain.valid === true && withChain.pathValidated === true);
+
+  var withoutChain = await pki.possession.verifyRequest(der,
+    { trustAnchors: [rootDer], time: AT });
+  check("P2: and reports the path as not validated when it is not, rather than claiming it was",
+    withoutChain.pathValidated === false && withoutChain.valid === false);
+  check("P3: the signature still verifies in that case, so the two verdicts stay separate",
+    withoutChain.verified === true);
+
+  check("P4: intermediates must be an array of certificates",
+    (await codeAsync(pki.possession.verifyRequest(der,
+      { trustAnchors: [rootDer], time: AT, intermediates: sigCertDer }))) === "possession/bad-input");
+}
+
+// A requested extension that will not decode is not an absent one. The two policy comparisons RFC 9883
+// states, the subject name and the subject alternative names, read the extensions a request ASKS FOR, and
+// an unreadable one was caught and reported as absent: the comparison then had nothing to compare and the
+// verdict said so, while a correctly signed request carrying a malformed extension came back `valid:
+// true`. Reading a field the policy depends on has to either produce the field or refuse the request; it
+// cannot quietly decide the policy does not apply. The CSR parser holds the extension WRAPPER to its
+// shape and not its decoded value, so it does not catch this on the way in.
+async function testUndecodableRequestedExtension(w) {
+  var kem = crypto.generateKeyPairSync("ml-kem-768");
+  var kemSpki = kem.publicKey.export({ format: "der", type: "spki" });
+  var signer = { issuer: w.sigParsed.issuer.bytes, serialNumber: w.sigParsed.serialNumber };
+
+  // A CONTROL first: the same request with a well-formed subjectAltName reports a real comparison.
+  var good = await pki.csr.sign({
+    subject: "kem.example", subjectPublicKey: kemSpki,
+    extensionRequest: { subjectAltName: [{ dNSName: "kem.example" }] },
+    privateKeyPossessionStatement: { signer: signer, certificate: w.sigCertDer },
+  }, { key: w.sigKp.key });
+  var goodV = await pki.possession.verifyRequest(good, { trustAnchors: [w.caDer], time: AT });
+  check("X1: CONTROL a well-formed requested subjectAltName is compared, not reported absent",
+    goodV.subjectAltNamesMatch !== null);
+
+  // The same request, with the subjectAltName extension's value replaced by DER NULL. Hand-built,
+  // because the builder encodes the extension from a spec and so cannot emit an undecodable one.
+  var sanOid = O("subjectAltName");
+  var badExt = b.sequence([b.oid(sanOid), b.octetString(b.nullValue())]);
+  var extReqAttr = b.sequence([b.oid(O("extensionRequest")), b.set([b.sequence([b.raw(badExt)])])]);
+  var sopAttr = b.sequence([b.oid(O("statementOfPossession")),
+    b.set([b.sequence([b.sequence([b.raw(w.sigParsed.issuer.bytes), b.integer(w.sigParsed.serialNumber)]),
+      b.raw(w.sigCertDer)])])]);
+  var cri = b.sequence([
+    b.integer(0n), b.raw(w.sigParsed.subject.bytes), b.raw(kemSpki),
+    b.contextConstructed(0, Buffer.concat([extReqAttr, sopAttr].slice().sort(Buffer.compare))),
+  ]);
+  var badDer = b.sequence([b.raw(cri), b.raw(b.sequence([b.oid(O("ecdsaWithSHA256"))])),
+    b.bitString(crypto.sign("sha256", cri, w.sigKp.keyObject))]);
+
+  var verdict = null, verdictCode = null;
+  try { verdict = await pki.possession.verifyRequest(badDer, { trustAnchors: [w.caDer], time: AT }); }
+  catch (e) { verdictCode = e.code || e.message; }
+  check("X2: a request whose requested subjectAltName does not decode is not accepted" +
+    (verdictCode ? " (refused with " + verdictCode + ")" : ""),
+    verdict === null || verdict.valid !== true);
+  check("X3: and it does not report the comparison as inapplicable while accepting the request",
+    verdict === null || verdict.subjectAltNamesMatch !== null || verdict.valid !== true);
+}
+
+// RFC 9883 sec. 4: "The privateKeyPossessionStatement attribute MUST NOT be used to obtain a signature
+// certificate." That was read only off the key usages a request ASKS FOR, so omitting keyUsage entirely
+// reported the prohibition as not engaged. The mechanism exists because a key-establishment key cannot
+// sign and so cannot prove possession the PKCS#10 way; a subject key that can ONLY sign has no such
+// problem, and a request for one is the misuse whether or not it names a usage. The discriminator is the
+// key, not the extension: EdDSA, ML-DSA and SLH-DSA cannot establish a key at all, while RSA and EC can
+// do either and so say nothing on their own.
+async function testSignatureOnlySubjectKey(w) {
+  var signer = { issuer: w.sigParsed.issuer.bytes, serialNumber: w.sigParsed.serialNumber };
+  // Every signature-only family the toolkit supports, not one example of one. An RSASSA-PSS SPKI is the
+  // one that reads like an exception and is not: unlike a bare rsaEncryption key, which can do key
+  // transport, an id-RSASSA-PSS key is restricted to signing and so cannot establish a key either.
+  var SIGN_ONLY = ["ed25519", "ed448", "ml-dsa-65", "rsa-pss", "slh-dsa-sha2-128f"];
+  for (var i = 0; i < SIGN_ONLY.length; i++) {
+    var alg = SIGN_ONLY[i];
+    var kp = alg === "rsa-pss"
+      ? crypto.generateKeyPairSync("rsa-pss", { modulusLength: 2048 })
+      : crypto.generateKeyPairSync(alg);
+    var spki = kp.publicKey.export({ format: "der", type: "spki" });
+    // No extensionRequest at all, so nothing names a usage.
+    var req = await pki.csr.sign({
+      subject: "kem.example", subjectPublicKey: spki,
+      privateKeyPossessionStatement: { signer: signer, certificate: w.sigCertDer },
+    }, { key: w.sigKp.key });
+    var v = null, code = null;
+    try { v = await pki.possession.verifyRequest(req, { trustAnchors: [w.caDer], time: AT }); }
+    catch (e) { code = e.code || e.message; }
+    check("Y" + (i + 1) + ": a request for a signature-only " + alg + " key is not accepted, " +
+      "even with no keyUsage named" + (code ? " (refused with " + code + ")" : ""),
+      v === null || v.valid !== true);
+    check("Y" + (i + 1) + "a: and the prohibition is reported rather than silently passed",
+      v === null || v.requestsSignatureCertificate === true);
+  }
+
+  // CONTROL: a key-establishment key with no keyUsage named is the case the mechanism exists for, and it
+  // still goes through. Without this the checks above would pass for a verb that refused everything.
+  var kem = crypto.generateKeyPairSync("ml-kem-768");
+  var kemReq = await pki.csr.sign({
+    subject: "kem.example", subjectPublicKey: kem.publicKey.export({ format: "der", type: "spki" }),
+    privateKeyPossessionStatement: { signer: signer, certificate: w.sigCertDer },
+  }, { key: w.sigKp.key });
+  var kemV = await pki.possession.verifyRequest(kemReq, { trustAnchors: [w.caDer], time: AT });
+  check("Y3: CONTROL an ML-KEM subject key with no keyUsage named is accepted, which is the mechanism",
+    kemV.valid === true && kemV.requestsSignatureCertificate === false);
+  // And an X25519 key, the other kind that cannot sign.
+  var x = crypto.generateKeyPairSync("x25519");
+  var xReq = await pki.csr.sign({
+    subject: "kem.example", subjectPublicKey: x.publicKey.export({ format: "der", type: "spki" }),
+    privateKeyPossessionStatement: { signer: signer, certificate: w.sigCertDer },
+  }, { key: w.sigKp.key });
+  check("Y4: CONTROL and so is an X25519 subject key",
+    (await pki.possession.verifyRequest(xReq, { trustAnchors: [w.caDer], time: AT })).valid === true);
+}
+
 // ---- building the request -------------------------------------------------
 
 async function testBuild(w) {
@@ -449,6 +666,10 @@ async function run() {
   await testNameComparison(w);
   await testMustNot(w);
   await testCrmf(w);
+  await testStatementBindingThroughParsedRequest(w);
+  await testPathThroughAnIntermediate();
+  await testUndecodableRequestedExtension(w);
+  await testSignatureOnlySubjectKey(w);
   await testMatrix();
   console.log("CHECKS " + helpers.getChecks());
 }

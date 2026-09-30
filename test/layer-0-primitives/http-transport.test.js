@@ -302,6 +302,58 @@ async function testConnectStallTimeout() {
   } finally { raw.close(); }
 }
 
+// ---- the peerChain handshake is bounded by a WALL-CLOCK deadline -----------
+// `socket.setTimeout` bounds INACTIVITY, not elapsed time: every byte that arrives resets it. An endpoint
+// that trickles handshake bytes below that interval keeps the socket "active" forever and the advertised
+// timeout never fires, so `pki.transport.peerChain` (and the verbs built on it) hang past their budget.
+// The server here accepts the connection and writes one byte every 40ms without ever speaking TLS, which
+// is inactivity-timeout-proof, so only an absolute timer can end it.
+async function testPeerChainTrickleDeadline() {
+  var net = require("node:net");
+  var sockets = [];
+  var raw = net.createServer(function (s) {
+    sockets.push(s);
+    // A well-formed TLS record HEADER announcing a 16384-byte handshake body, then the body one byte at a
+    // time. The client cannot act on a partial record, so it waits; every byte resets an inactivity
+    // timeout while the record never completes. Writing garbage instead makes TLS fail fast, which tests
+    // the error path rather than the stall.
+    var iv = null;
+    // The socket's own state decides whether to write, rather than a try/catch around the write: a
+    // destroyed socket is the only reason it would fail here, and asking is clearer than swallowing.
+    s.on("data", function () {
+      if (iv !== null || s.destroyed) return;
+      s.write(Buffer.from([0x16, 0x03, 0x03, 0x40, 0x00]));
+      iv = setInterval(function () {
+        if (s.destroyed) { clearInterval(iv); return; }
+        s.write(Buffer.from([0x00]));
+      }, 40);
+    });
+    // The client destroys the connection when its deadline fires, which surfaces here as an error or a
+    // close; either ends the trickle.
+    s.on("error", function () { if (iv !== null) clearInterval(iv); });
+    s.on("close", function () { if (iv !== null) clearInterval(iv); });
+  });
+  var port = await new Promise(function (res) { raw.listen(0, "127.0.0.1", function () { res(raw.address().port); }); });
+  try {
+    var started = Date.now();
+    var code = await codeOf(pki.transport.peerChain({
+      url: "https://127.0.0.1:" + port + "/",
+      tls: { anchors: [Buffer.from("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----")] },
+      timeout: 400,
+    }));
+    var elapsed = Date.now() - started;
+    check("14h a trickling handshake is ended by the wall-clock deadline (" + code + ")",
+      code === "transport/timeout");
+    // The budget is 400ms. A generous ceiling, since the point is that it ends at all rather than the
+    // precision of when: an inactivity timeout would never have fired while bytes kept arriving.
+    check("14i and it ends within a bounded wall-clock, not when the peer stops writing (" + elapsed + "ms)",
+      elapsed < 8000);
+  } finally {
+    sockets.forEach(function (s) { s.destroy(); });   // destroy() is idempotent and does not throw
+    raw.close();
+  }
+}
+
 // ---- useSystemStore loads a real CA store ----------------------------------
 async function testSystemStoreLoaded() {
   var tls = await selfSigned("Loopback A");
@@ -1021,6 +1073,7 @@ async function main() {
   await testBlockPrivateAddresses();
   await testChunkedBodyAccumulation();
   await testConnectStallTimeout();
+  await testPeerChainTrickleDeadline();
   await testSystemStoreLoaded();
   await testSocketNotReusedAcrossIdentityPolicy();
   await testHappy();

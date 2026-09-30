@@ -129,6 +129,52 @@ async function runGetSth() {
   check("S7: an STH whose timestamp was altered after signing is refused",
     await code(function () { return pki.ct.getSth(retimed.o); }) === "ct/sth-untrusted");
 
+  /* The key the STH is verified under is the key PINNED AT THE CALL, not whatever `opts.logKey` holds
+     when the fetch returns. The key was read after the await, so a caller that reuses that buffer during
+     the request has the tree head checked against the replacement: the log it pinned is not the log that
+     answered. The route function below is the mutation point, which is exactly where a real caller's
+     buffer reuse would land. */
+  var pinned = makeLog(), substitute = makeLog();
+  var liveKey = Buffer.from(pinned.spki);
+  check("S7a: the two log keys are the same length, so one can overwrite the other in place",
+    pinned.spki.length === substitute.spki.length);
+  var swapRoutes = {};
+  swapRoutes[u("get-sth")] = function () {
+    substitute.spki.copy(liveKey);                  // the pinned key becomes the other log's key
+    return { status: 200, headers: { "content-type": "application/json" },
+      body: sthBody(substitute, 3, t.root) };       // and the STH is signed by that other log
+  };
+  var swapT = routeByUrl(swapRoutes);
+  var swapCode = await code(function () {
+    return pki.ct.getSth({ url: BASE, logKey: liveKey, transport: swapT });
+  });
+  check("S7b: an STH signed by a log substituted into the key buffer mid-fetch is refused (" + swapCode + ")",
+    swapCode === "ct/sth-untrusted");
+  /* CONTROLS: the other log's STH verifies when that log is the one actually pinned, and the pinned
+     log's own STH verifies. So S7b is about the substitution and not about either key being unusable. */
+  var c1 = opts(substitute, { [u("get-sth")]: resp(200, sthBody(substitute, 3, t.root), "application/json") });
+  check("S7c: CONTROL the substitute log's STH verifies when that log is the one pinned",
+    (await pki.ct.getSth(c1.o)).treeSize === 3n);
+  var c2 = opts(pinned, { [u("get-sth")]: resp(200, sthBody(pinned, 3, t.root), "application/json") });
+  check("S7d: CONTROL the pinned log's own STH verifies",
+    (await pki.ct.getSth(c2.o)).treeSize === 3n);
+
+  /* What getSth RETURNS is what sthSignedData TAKES. A client that fetches a tree head and then wants the
+     50 bytes the log signed, to fold a proof against or to re-verify, has to be able to hand one verb's
+     result to the other. The returned record carries a `raw` field that the preimage builder's allowlist
+     refused, so the obvious next call threw instead of producing the preimage. */
+  var c3 = opts(log, { [u("get-sth")]: resp(200, sthBody(log, 3, t.root), "application/json") });
+  var fetched = await pki.ct.getSth(c3.o);
+  var preimageCode = "NO-THROW";
+  var preimage = null;
+  try { preimage = pki.ct.sthSignedData(fetched); } catch (e) { preimageCode = e.code || e.message; }
+  check("S8: the record getSth returns is one sthSignedData accepts (" + preimageCode + ")",
+    preimage !== null && preimage.length === 50);
+  check("S8a: and it is the same preimage the log signed over those values",
+    preimage !== null && Buffer.compare(preimage,
+      pki.ct.sthSignedData({ timestamp: fetched.timestamp, treeSize: fetched.treeSize,
+        rootHash: fetched.rootHash })) === 0);
+
   /* Shape refusals: each field is required and each is held to its type. */
   // Each shape names the code it must report, so a refusal for the wrong reason
   // is a failure rather than a pass.
@@ -206,6 +252,40 @@ async function runGetProof() {
   check("P5: opts.sth is required, since a proof is verified against a tree head",
     await code(function () { return pki.ct.getProofByHash(Object.assign(noSth.o, { leafHash: t.leaves[1] })); }) === "ct/bad-input");
   check("P6: and the gate runs before the wire", noSth.transport.calls.length === 0);
+
+  /* The proof is folded against the tree head supplied at ENTRY, even when the caller's buffers change
+     while the fetch is in flight. The STH root hash and the leaf hash are held across a network await, so
+     a caller that reuses either buffer would otherwise have the fold run against the replacement: an
+     empty proof folds a one-leaf tree to its own leaf hash, so overwriting the root with a leaf hash makes
+     an empty proof for that leaf "verify" against a tree head nobody supplied. */
+  var one = tree(1);
+  var otherLeaf = Buffer.alloc(32, 0x5b);
+  var liveRoot = Buffer.from(one.root);
+  var liveLeaf = Buffer.from(otherLeaf);
+  var emptyProof = JSON.stringify({ leaf_index: 0, audit_path: [] });
+  var raceRoutes = {};
+  raceRoutes[u("get-proof-by-hash") + "?hash=" + encodeURIComponent(otherLeaf.toString("base64")) + "&tree_size=1"] =
+    resp(200, emptyProof, "application/json");
+  raceRoutes[u("get-proof-by-hash") + "?hash=" + encodeURIComponent(one.root.toString("base64")) + "&tree_size=1"] =
+    resp(200, emptyProof, "application/json");
+  var r = opts(log, raceRoutes);
+  var pending = pki.ct.getProofByHash(Object.assign(r.o, {
+    leafHash: liveLeaf, sth: { treeSize: 1n, timestamp: BigInt(TS), rootHash: liveRoot },
+  }));
+  otherLeaf.copy(liveRoot);              // the trusted root becomes the leaf hash, mid-fetch
+  var racedProof = null, racedCode = null;
+  try { racedProof = await pending; } catch (e) { racedCode = e.code || e.message; }
+  check("P7: a trusted root overwritten during the fetch cannot make an empty proof verify" +
+    (racedCode ? " (refused with " + racedCode + ")" : ""),
+    racedProof === null || racedProof.verified !== true);
+
+  /* CONTROL: the same empty proof DOES verify when the root legitimately is that leaf hash, so P7's
+     refusal is about the swap and not about empty proofs or one-leaf trees. */
+  var c1 = opts(log, raceRoutes);
+  var legit = await pki.ct.getProofByHash(Object.assign(c1.o, {
+    leafHash: otherLeaf, sth: { treeSize: 1n, timestamp: BigInt(TS), rootHash: otherLeaf },
+  }));
+  check("P8: CONTROL an empty proof folds a one-leaf tree to its own leaf hash", legit.verified === true);
 }
 
 // ---------------------------------------------------------------------------
@@ -285,6 +365,23 @@ async function runAddChain() {
   check("A2: the request crossed the seam as a POST of a base64 chain to the sec. 4.1 path",
     f.transport.calls[0].method === "POST" && f.transport.calls[0].url === u("add-chain") &&
     JSON.parse(f.transport.calls[0].body).chain[0] === leaf.toString("base64"));
+
+  /* The receipt is in the SCT shape the rest of the module reads. A receipt is only useful if it can be
+     embedded and re-verified, and both of those go through verbs that take the parsed shape `parseSctList`
+     and `signSct` produce: the algorithm bytes decoded into `signatureAlgorithm`, and `signature` the raw
+     signature rather than the whole TLS digitally-signed structure. Returning the wire structure instead
+     made the receipt unusable by every verb that consumes one. */
+  check("A2a: the receipt carries its decoded signature algorithm",
+    got.sct.signatureAlgorithm != null && got.sct.signatureAlgorithm.hashName === "sha256" &&
+    got.sct.signatureAlgorithm.signatureName === "ecdsa");
+  check("A2b: and `signature` is the raw signature, not the digitally-signed wrapper",
+    Buffer.compare(got.sct.signature, der) === 0);
+  check("A2c: so the receipt re-verifies through pki.ct.verifySct",
+    (await pki.ct.verifySct({ entryType: 0, leafCert: leaf }, got.sct, log.spki)) === true);
+  check("A2d: and encodes into an SCT list for embedding",
+    Buffer.isBuffer(pki.ct.encodeSctList([got.sct])));
+  check("A2e: which parses back to the same receipt",
+    pki.ct.parseSctList(pki.ct.encodeSctList([got.sct])).scts[0].timestamp === BigInt(TS));
 
   /* An SCT the log returns that does not verify is not a receipt. */
   var badDer = Buffer.from(der); badDer[badDer.length - 1] ^= 1;

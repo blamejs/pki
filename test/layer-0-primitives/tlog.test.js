@@ -222,6 +222,99 @@ async function runCheckpoint() {
   check("C4: a checkpoint verifies through the same rules a note does",
     verified.verified === true && verified.checkpoint.treeSize === 5n);
 
+  /* The bytes verified are the bytes reported, even when the caller's buffer changes while the
+     verification is pending. Both verbs read the input more than once (the checkpoint is decoded, then
+     the note beneath it is verified) and the verification awaits a key import, so a caller that reuses
+     or overwrites its buffer in that window could be handed a verdict about one document and a decoded
+     root from another. The signed document here is the size-1 one; the buffer starts out holding an
+     UNSIGNED size-2 body carrying the size-1 signature, and is overwritten with the signed text as soon
+     as the call is made. Nothing may come back that says a size-2 root was signed. */
+  var signedBody = "example.com/log\n1\n" + root.toString("base64") + "\n";
+  var signedNote = await makeNote(signedBody, [signer]);
+  var forgedNote = signedNote.replace("example.com/log\n1\n", "example.com/log\n2\n");
+  check("C4a: the two notes are the same length, so one can overwrite the other in place",
+    Buffer.byteLength(signedNote, "utf8") === Buffer.byteLength(forgedNote, "utf8"));
+
+  var live = Buffer.from(forgedNote, "utf8");
+  var pending = pki.tlog.verifyCheckpoint(live, [{ name: signer.name, publicKey: signer.raw }]);
+  Buffer.from(signedNote, "utf8").copy(live);          // swap the bytes while the verify is in flight
+  var raced = null, racedCode = null;
+  try { raced = await pending; } catch (e) { racedCode = e.code || e.message; }
+  var attestedUnsigned = raced !== null && raced.verified === true && raced.checkpoint.treeSize === 2n;
+  check("C4b: a buffer swapped during verification cannot yield a verified size-2 root" +
+    (racedCode ? " (refused with " + racedCode + ")" : ""), attestedUnsigned === false);
+  check("C4c: and whatever it reports, the size it reports is one the signature covers",
+    raced === null || raced.verified !== true || raced.checkpoint.treeSize === 1n);
+
+  /* The KEYS are caller-owned too, not just the note. A note carrying several signature lines verifies
+     them one at a time, awaiting a key import for each, while the candidate list holds the key material
+     the caller passed. A later candidate's buffer can therefore be replaced after its key ID was computed
+     from the original, so the ID that decides WHICH key a line is checked against comes from one key and
+     the verification from another: a line labeled with B's name and ID gets verified with whatever
+     bytes B's buffer holds by the time its turn comes. Here the second line is signed by C, labeled as
+     B, and B's buffer becomes C's key while the first line is still being checked. B must not be
+     reported as a verified signer. */
+  var kA = await makeSigner("log/a");
+  var kB = await makeSigner("log/b");
+  var kC = await makeSigner("log/c");
+  var multiBody = "log/multi\n1\n" + root.toString("base64") + "\n";
+  var sigA = Buffer.from(await pki.webcrypto.subtle.sign({ name: "Ed25519" }, kA.pair.privateKey,
+    Buffer.from(multiBody, "utf8")));
+  var sigC = Buffer.from(await pki.webcrypto.subtle.sign({ name: "Ed25519" }, kC.pair.privateKey,
+    Buffer.from(multiBody, "utf8")));
+  // The second line names B and carries B's key ID, but the signature is C's.
+  var multiNote = multiBody + "\n" +
+    EM_DASH + " " + kA.name + " " + Buffer.concat([pki.tlog.keyId(kA.name, kA.raw), sigA]).toString("base64") + "\n" +
+    EM_DASH + " " + kB.name + " " + Buffer.concat([pki.tlog.keyId(kB.name, kB.raw), sigC]).toString("base64") + "\n";
+  var liveB = Buffer.from(kB.raw);
+  var multiPending = pki.tlog.verifyNote(multiNote, [
+    { name: kA.name, publicKey: kA.raw },
+    { name: kB.name, publicKey: liveB },
+  ]);
+  kC.raw.copy(liveB);                     // B's key material becomes C's, mid-verification
+  var multi;
+  try { multi = await multiPending; } catch (_e) { multi = null; }
+  var namedB = multi === null ? [] : multi.signers.filter(function (s) { return s.keyName === kB.name; });
+  check("C4g: a key buffer replaced during verification cannot make its line a verified signer",
+    namedB.length === 0);
+  /* CONTROLS: A alone verifies, and the same note verifies for B when B's key really is C's key from the
+     start, so C4g is about the replacement rather than about the note or the keys. */
+  var aOnly = await pki.tlog.verifyNote(multiBody + "\n" +
+    EM_DASH + " " + kA.name + " " + Buffer.concat([pki.tlog.keyId(kA.name, kA.raw), sigA]).toString("base64") + "\n",
+    [{ name: kA.name, publicKey: kA.raw }]);
+  check("C4h: CONTROL the first line verifies on its own", aOnly.verified === true && aOnly.signers.length === 1);
+  var asC = multiBody + "\n" +
+    EM_DASH + " " + kC.name + " " + Buffer.concat([pki.tlog.keyId(kC.name, kC.raw), sigC]).toString("base64") + "\n";
+  var cOnly = await pki.tlog.verifyNote(asC, [{ name: kC.name, publicKey: kC.raw }]);
+  check("C4i: CONTROL C's signature verifies under C's own name and key",
+    cOnly.verified === true && cOnly.signers.length === 1);
+
+  /* The same for verifyNote on its own, which is the verb verifyCheckpoint is built on. */
+  var live2 = Buffer.from(forgedNote, "utf8");
+  var pending2 = pki.tlog.verifyNote(live2, [{ name: signer.name, publicKey: signer.raw }]);
+  Buffer.from(signedNote, "utf8").copy(live2);
+  var raced2;
+  try { raced2 = await pending2; } catch (_e) { raced2 = null; }
+  check("C4d: verifyNote does not report a signature over bytes it did not verify",
+    raced2 === null || raced2.verified === false ||
+    Buffer.compare(raced2.note.signedBytes, Buffer.from(forgedNote.slice(0, signedBody.length), "utf8")) !== 0);
+
+  /* CONTROL: the untouched signed note verifies, so the refusals above are about the swap. */
+  var cleanV = await pki.tlog.verifyCheckpoint(Buffer.from(signedNote, "utf8"),
+    [{ name: signer.name, publicKey: signer.raw }]);
+  check("C4e: CONTROL the signed size-1 checkpoint verifies on its own",
+    cleanV.verified === true && cleanV.checkpoint.treeSize === 1n);
+  /* And the forged one is refused on its own. A line naming a key the caller supplied, by name AND id,
+     that the key does not verify rejects the whole note rather than reporting false, so the refusal is a
+     throw. That is the same verdict the swapped buffer now reaches. */
+  var cleanFCode = "NO-THROW";
+  try {
+    await pki.tlog.verifyCheckpoint(Buffer.from(forgedNote, "utf8"),
+      [{ name: signer.name, publicKey: signer.raw }]);
+  } catch (e) { cleanFCode = e.code || e.message; }
+  check("C4f: CONTROL the unsigned size-2 checkpoint is refused on its own (" + cleanFCode + ")",
+    cleanFCode === "tlog/bad-signature" || cleanFCode.indexOf("tlog/") === 0);
+
   /* "with no leading zeroes (unless the tree is empty, in which case the tree size is 0)" */
   check("C5: a tree size with a leading zero is refused",
     codeOf(function () {
@@ -357,6 +450,44 @@ function runTilePaths() {
     codeOf(function () { pki.tlog.parseTilePath("tile/0/x001/x067"); }) === "tlog/bad-tile");
   check("T13: the checkpoint path is fixed",
     pki.tlog.checkpointPath() === "checkpoint");
+
+  /* The reader is held to the same index range as the writer. `tilePath` bounds an index to uint64, so a
+     path it can produce has a fixed maximum number of index segments; the reader accepted any number of
+     them and multiplied an ever-growing BigInt for each, which both accepts indices no writer can emit
+     and turns a long untrusted path into superlinear synchronous work. */
+  var MAX_U64 = 18446744073709551615n;
+  var maxPath = pki.tlog.tilePath(0, MAX_U64);
+  var maxSegments = maxPath.split("/").length - 2;
+  check("T14: the largest index a writer emits round-trips through the reader",
+    pki.tlog.parseTilePath(maxPath).index === MAX_U64);
+  check("T14a: and it takes " + maxSegments + " index segments, which is the reader's bound",
+    maxSegments >= 1 && maxSegments <= 16);
+
+  /* One segment past what a uint64 index can occupy. */
+  var tooManyText = "tile/0";
+  for (var s = 0; s < maxSegments; s++) tooManyText += "/x000";
+  tooManyText += "/001";
+  check("T15: a path carrying more index segments than a uint64 index can occupy is refused",
+    codeOf(function () { pki.tlog.parseTilePath(tooManyText); }) === "tlog/bad-tile");
+
+  /* In-count but out-of-range: the right number of segments naming a value above 2^64-1. */
+  var overText = "tile/0";
+  for (var t = 0; t < maxSegments - 1; t++) overText += "/x999";
+  overText += "/999";
+  var over = codeOf(function () { return pki.tlog.parseTilePath(overText); });
+  check("T16: an index within the segment count but above uint64 is refused (" + over + ")",
+    over === "tlog/bad-tile");
+
+  /* And a long hostile path is refused rather than walked. Asserted as a refusal on ONE large input
+     rather than as a timing ratio, which would be a measurement of the machine. */
+  var longText = "tile/0";
+  for (var u = 0; u < 50000; u++) longText += "/x000";
+  longText += "/001";
+  check("T17: a 50001-segment path is refused",
+    codeOf(function () { pki.tlog.parseTilePath(longText); }) === "tlog/bad-tile");
+  check("T18: the same bound applies to an entry bundle path, which shares the segmented index",
+    codeOf(function () { pki.tlog.parseEntryBundlePath(longText.replace("tile/0", "tile/entries")); }) === "tlog/bad-tile" ||
+    typeof pki.tlog.parseEntryBundlePath !== "function");
 }
 
 function runTileData() {
@@ -877,6 +1008,37 @@ async function runKeyTypes() {
     codeOf(function () {
       pki.tlog.parseVkey("a+b+530d903a+AekyeRrm56hApGFkyQR4ZCbV54Id2LKaANYcrnKv3U2k");
     }) === "tlog/bad-input");
+
+  /* The KEY MATERIAL is base64, and standard base64's alphabet includes `+`. The name is everything
+     before the FIRST separator and the key ID everything to the SECOND, so only those two pluses are
+     separators; a plus after them belongs to the blob. Refusing them rejects roughly half of all real
+     Ed25519 verifier keys, since a 44-character base64 field carries a plus more often than not. Built
+     by generating keys until one's blob carries a plus, with the search asserted so the vector cannot
+     pass by never finding one. */
+  var plusVkey = null, searched = 0;
+  for (var attempt = 0; attempt < 200 && plusVkey === null; attempt++) {
+    searched += 1;
+    var plusKp = nodeCrypto.generateKeyPairSync("ed25519");
+    var spkiBytes = plusKp.publicKey.export({ format: "der", type: "spki" });
+    var rawKey = pki.asn1.decode(spkiBytes).children[1].content.subarray(1);
+    var blobB64 = Buffer.concat([Buffer.from([1]), rawKey]).toString("base64");
+    if (blobB64.indexOf("+") === -1) continue;
+    plusVkey = { name: "example.com/plus", raw: rawKey, b64: blobB64 };
+  }
+  check("K7g: a key whose base64 material carries a plus was found to test with (after " + searched + ")",
+    plusVkey !== null);
+  if (plusVkey !== null) {
+    var vk = plusVkey.name + "+" + pki.tlog.keyId(plusVkey.name, plusVkey.raw).toString("hex") +
+      "+" + plusVkey.b64;
+    var parsedPlus = null, plusCode = null;
+    try { parsedPlus = pki.tlog.parseVkey(vk); } catch (e) { plusCode = e.code || e.message; }
+    check("K7h: and it parses, the plus belonging to the base64 rather than being a third separator" +
+      (plusCode ? " (refused with " + plusCode + ")" : ""),
+      parsedPlus !== null && Buffer.compare(parsedPlus.publicKey, plusVkey.raw) === 0);
+    check("K7i: a note signed under that key verifies, so the parsed key is the usable one",
+      parsedPlus !== null && parsedPlus.name === plusVkey.name &&
+      parsedPlus.keyId.length === 4);
+  }
 
   /* A note signed under each algorithm verifies, which is what says the key ID
      derivation and the signature check agree about which key is which. */

@@ -412,6 +412,36 @@ async function testVerifySct() {
   check("68. verifySct rejects a corrupted signature (false, not throw)", (await vres(function () { return pki.ct.verifySct(entry, Object.assign({}, ecSct, { signature: corrupt }), ecSpki); })) === false);
   var ec2 = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   check("69. verifySct rejects the wrong log key", (await vres(function () { return pki.ct.verifySct(entry, ecSct, ec2.publicKey.export({ format: "der", type: "spki" })); })) === false);
+
+  // The key whose SHA-256 is matched against sct.logId must be the key the signature is verified under.
+  // The logId check awaits a digest, and the key was held as a view of the caller's buffer across it, so a
+  // caller reusing that buffer could pass the logId check with key A and have the signature verified with
+  // key B. Here B is the key that actually signed and A is a different key whose logId the SCT names, so
+  // accepting is the observable failure: the SCT would verify while naming a log that did not sign it.
+  var signer2 = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var spkiSigner = signer2.publicKey.export({ format: "der", type: "spki" });
+  var spkiNamed = ec2.publicKey.export({ format: "der", type: "spki" });
+  check("69a. the two keys are the same length, so one can overwrite the other in place",
+    spkiSigner.length === spkiNamed.length);
+  var sct2 = sctFor("sha256", 4, "ecdsa", null, 3);
+  sct2.logId = Buffer.from(crypto.createHash("sha256").update(spkiNamed).digest());
+  sct2.signature = crypto.sign("sha256", pki.ct.reconstructSignedData(entry, sct2), signer2.privateKey);
+  var liveSpki = Buffer.from(spkiNamed);
+  var pendingSct = pki.ct.verifySct(entry, sct2, liveSpki);
+  spkiSigner.copy(liveSpki);            // swap to the signing key while the logId digest is pending
+  var sctRaced = null, sctCode = null;
+  try { sctRaced = await pendingSct; } catch (e) { sctCode = e.code || e.message; }
+  check("69b. a log key overwritten during the logId digest cannot verify the signature" +
+    (sctCode ? " (refused with " + sctCode + ")" : ""), sctRaced !== true);
+  // CONTROLS: with the logId naming the SIGNING key the SCT verifies, and with the named key supplied
+  // untouched it is a logId match whose signature fails. Neither is what 69b asserts.
+  var sct3 = sctFor("sha256", 4, "ecdsa", null, 3);
+  sct3.logId = Buffer.from(crypto.createHash("sha256").update(spkiSigner).digest());
+  sct3.signature = crypto.sign("sha256", pki.ct.reconstructSignedData(entry, sct3), signer2.privateKey);
+  check("69c. CONTROL the same SCT verifies when its logId names the key that signed it",
+    (await vres(function () { return pki.ct.verifySct(entry, sct3, spkiSigner); })) === true);
+  check("69d. CONTROL and the mismatched pair, untouched, is a logId mismatch",
+    (await vres(function () { return pki.ct.verifySct(entry, sct2, spkiSigner); })) === "ct/log-id-mismatch");
   // A different entry than the one signed reconstructs a different preimage -> reject.
   check("70. verifySct rejects an SCT bound to a different entry", (await vres(function () { return pki.ct.verifySct({ entryType: 1, tbsCertificate: certDer, issuerKeyHash: Buffer.alloc(32, 7) }, ecSct, ecSpki); })) === false);
 

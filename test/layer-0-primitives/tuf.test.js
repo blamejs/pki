@@ -93,6 +93,33 @@ function runCanonical() {
   check("J: undefined is refused, since it has no encoding",
     code(function () { pki.tuf.canonicalJson({ a: undefined }); }) === "tuf/bad-input");
   check("J: a function is refused", code(function () { pki.tuf.canonicalJson({ a: function () {} }); }) === "tuf/bad-input");
+
+  /* An unpaired surrogate has no UTF-8 encoding, and the conversion to bytes replaces it with U+FFFD
+     rather than failing. Two documents that differ only in that code unit would then have IDENTICAL
+     signing bytes, so a signature made over one verifies over the other while the parsed document a
+     caller reads back is the other one. Both halves of the range are refused, and in keys as well as
+     values, because a targets map is keyed by path and the key is what a client looks a target up by.
+     A WELL-FORMED pair built from the same two halves must still encode, or the check would be
+     refusing every non-BMP character rather than the malformed ones. */
+  var HI = String.fromCharCode(0xd800), LO = String.fromCharCode(0xdc00);
+  check("J: a lone high surrogate is refused as a value",
+    code(function () { pki.tuf.canonicalJson({ a: HI }); }) === "tuf/bad-input");
+  check("J: a lone low surrogate is refused as a value",
+    code(function () { pki.tuf.canonicalJson({ a: LO }); }) === "tuf/bad-input");
+  check("J: a lone high surrogate is refused as a KEY",
+    code(function () { var o = {}; o[HI] = 1; return pki.tuf.canonicalJson(o); }) === "tuf/bad-input");
+  check("J: a lone low surrogate is refused as a KEY",
+    code(function () { var o = {}; o[LO] = 1; return pki.tuf.canonicalJson(o); }) === "tuf/bad-input");
+  check("J: a reversed pair is refused, the low half coming first",
+    code(function () { pki.tuf.canonicalJson({ a: LO + HI }); }) === "tuf/bad-input");
+  check("J: a high surrogate at the end of a string is refused",
+    code(function () { pki.tuf.canonicalJson({ a: "ok" + HI }); }) === "tuf/bad-input");
+  /* CONTROL: the well-formed pair encodes to the four UTF-8 bytes of U+10000, and U+FFFD itself
+     encodes, so the refusals above are about malformed sequences and not about these characters. */
+  check("J: CONTROL a well-formed surrogate pair encodes to the code point's UTF-8",
+    pki.tuf.canonicalJson(HI + LO).equals(Buffer.from("22f0908080" + "22", "hex")));
+  check("J: CONTROL U+FFFD itself still encodes",
+    pki.tuf.canonicalJson(String.fromCharCode(0xfffd)).equals(Buffer.from("22efbfbd22", "hex")));
   /* Depth is bounded, so a nested document cannot drive the recursion. */
   var deep = {}, cur = deep;
   for (var i = 0; i < 200; i++) { cur.a = {}; cur = cur.a; }
@@ -316,10 +343,43 @@ async function runRootChain() {
   check("T8: with no candidate the trusted root stands and reports no update",
     none.version === 1 && none.updated === false);
 
-  /* An expired root is refused even when the signatures are good. */
+  /* Expiry is checked on the root the walk ENDS on, which is step 5.3.10 of the specification: the
+     freeze-attack check follows the chain walk of steps 5.3.2 to 5.3.9 rather than preceding it, and
+     no step checks an intermediate root's expiry. Checking the trusted root first is what a client
+     that has been offline runs into: its pinned root has lapsed, a correctly signed unexpired
+     successor is sitting in front of it, and it cannot adopt it without replacing the anchor by
+     some other means. With no candidates the root the walk ends on IS the trusted root, so an
+     expired root with nothing to move to is still refused. */
   var expiredRoot = metadataFor(rootSigned({ signers: [k1], version: 1, expires: "2026-01-01T00:00:00Z" }), [k1]);
-  check("T9: an expired trusted root is refused",
+  check("T9: an expired trusted root with nothing to move to is refused",
     await codeAsync(pki.tuf.updateRoot({ trustedRoot: expiredRoot, candidates: [], now: NOW })) === "tuf/expired");
+
+  var expiredV1 = rootSigned({ signers: [k1], version: 1, expires: "2026-01-01T00:00:00Z" });
+  var freshV2 = rootSigned({ signers: [k1], version: 2 });
+  var recovered = await pki.tuf.updateRoot({
+    trustedRoot: metadataFor(expiredV1, [k1]),
+    candidates: [metadataFor(freshV2, [k1])], now: NOW,
+  });
+  check("T9a: an expired trusted root is superseded by an unexpired successor rather than blocking it",
+    recovered.version === 2 && recovered.updated === true);
+
+  /* And a lapsed root in the MIDDLE of the chain does not stop the catch-up either. */
+  var midV2 = rootSigned({ signers: [k1], version: 2, expires: "2026-06-01T00:00:00Z" });
+  var freshV3 = rootSigned({ signers: [k1], version: 3 });
+  var acrossGap = await pki.tuf.updateRoot({
+    trustedRoot: metadataFor(expiredV1, [k1]),
+    candidates: [metadataFor(midV2, [k1]), metadataFor(freshV3, [k1])], now: NOW,
+  });
+  check("T9b: an expired intermediate root is walked through, no step checking its expiry",
+    acrossGap.version === 3 && acrossGap.walked.length === 2);
+
+  /* The check still bites where the specification puts it: on the root the chain ends on. */
+  var expiredV2 = rootSigned({ signers: [k1], version: 2, expires: "2026-01-01T00:00:00Z" });
+  check("T9c: a chain ending on an expired root is refused",
+    await codeAsync(pki.tuf.updateRoot({
+      trustedRoot: metadataFor(rootSigned({ signers: [k1], version: 1 }), [k1]),
+      candidates: [metadataFor(expiredV2, [k1])], now: NOW,
+    })) === "tuf/expired");
 
   /* A root whose own role threshold it does not meet is refused, which is the
      both-thresholds rule applied to the very first root a caller pins. */
@@ -468,6 +528,279 @@ async function runGuards() {
     cj({ a: 1 }) === '{"a":1}');
 }
 
+// ---------------------------------------------------------------------------
+// The declared algorithm binds the key that verifies
+// ---------------------------------------------------------------------------
+// A key names its own algorithm in `keytype` and `scheme`, and the identifier is the hash of the whole
+// key object, so those two fields are as authenticated as the key material. What must not happen is the
+// verification running under an algorithm the key material happens to support while the document says
+// another: a key declared `ecdsa` whose PEM holds an RSA public key would otherwise verify an RSA
+// signature, because importing a PEM and then verifying lets the key material pick the algorithm. The
+// keytype/scheme pair the specification lists (section 4.2.2) is checked, and the imported key must
+// actually be of that type.
+// A key's identifier is checked against the key, and then the SAME key material must be what verifies.
+// The signature loop awaits a verification per signature while the authorized map holds the caller's key
+// objects, so a caller that replaces a later key's `keyval.public` in that window has the identifier
+// checked against one key and the signature verified under another. A threshold can then be met by
+// material nobody authorized: the identifier says B, the bytes say C, and C's signature counts as B's.
+async function runKeyMaterialAcrossAwaits() {
+  var a = makeEd25519Key(), b = makeEd25519Key(), c = makeEd25519Key();
+  // B's key object is the one the caller may mutate; its identifier is computed from the ORIGINAL.
+  var liveB = { keytype: "ed25519", scheme: "ed25519", keyval: { public: b.key.keyval.public } };
+  var liveBId = pki.tuf.keyId(liveB);
+  var signedObj = {
+    _type: "root", spec_version: "1.0.31", version: 1, expires: EXPIRES,
+    consistent_snapshot: true,
+    keys: (function () { var k = {}; k[a.keyId] = a.key; k[liveBId] = liveB; return k; })(),
+    roles: { root: { keyids: [a.keyId, liveBId], threshold: 2 } },
+  };
+  var preimage = pki.tuf.canonicalJson(signedObj);
+  var sigA = crypto.sign(null, preimage, a.kp.privateKey).toString("hex");
+  var sigC = crypto.sign(null, preimage, c.kp.privateKey).toString("hex");   // C is NOT authorized
+  var bytes = Buffer.from(JSON.stringify({
+    signatures: [{ keyid: a.keyId, sig: sigA }, { keyid: liveBId, sig: sigC }],
+    signed: signedObj,
+  }));
+  var meta = pki.tuf.parseMetadata(bytes);
+
+  var pending = pki.tuf.verifySignatures({ metadata: meta, keys: signedObj.keys, role: signedObj.roles.root });
+  liveB.keyval.public = c.key.keyval.public;      // B's material becomes C's, mid-verification
+  var got;
+  try { got = await pending; } catch (_e) { got = null; }
+  check("A10: a key whose material is replaced during verification does not count toward the threshold",
+    got === null || got.keyIds.indexOf(liveBId) === -1);
+  check("A11: so a two-key threshold is not met by one authorized signature and one unauthorized key",
+    got === null || got.verified === false);
+
+  /* CONTROLS. Two genuinely authorized signatures meet the threshold, and the same document with C
+     properly listed and named verifies, so A10 and A11 are about the replacement. */
+  var okSigned = {
+    _type: "root", spec_version: "1.0.31", version: 1, expires: EXPIRES, consistent_snapshot: true,
+    keys: (function () { var k = {}; k[a.keyId] = a.key; k[b.keyId] = b.key; return k; })(),
+    roles: { root: { keyids: [a.keyId, b.keyId], threshold: 2 } },
+  };
+  var okPre = pki.tuf.canonicalJson(okSigned);
+  var okBytes = Buffer.from(JSON.stringify({
+    signatures: [
+      { keyid: a.keyId, sig: crypto.sign(null, okPre, a.kp.privateKey).toString("hex") },
+      { keyid: b.keyId, sig: crypto.sign(null, okPre, b.kp.privateKey).toString("hex") },
+    ],
+    signed: okSigned,
+  }));
+  var okV = await pki.tuf.verifySignatures({
+    metadata: pki.tuf.parseMetadata(okBytes), keys: okSigned.keys, role: okSigned.roles.root,
+  });
+  check("A12: CONTROL two authorized signatures meet a threshold of two",
+    okV.verified === true && okV.keyIds.length === 2);
+
+  /* The THRESHOLD is caller-owned too, and it is compared against the count at the very end, after a
+     verification has been awaited per signature. Lowered during that window it would be the number the
+     verdict is measured against, so a one-of-two document would report verified. */
+  var oneOfTwo = {
+    _type: "root", spec_version: "1.0.31", version: 1, expires: EXPIRES, consistent_snapshot: true,
+    keys: (function () { var k = {}; k[a.keyId] = a.key; k[b.keyId] = b.key; return k; })(),
+    roles: { root: { keyids: [a.keyId, b.keyId], threshold: 2 } },
+  };
+  var onePre = pki.tuf.canonicalJson(oneOfTwo);
+  var oneBytes = Buffer.from(JSON.stringify({
+    signatures: [{ keyid: a.keyId, sig: crypto.sign(null, onePre, a.kp.privateKey).toString("hex") }],
+    signed: oneOfTwo,
+  }));
+  var liveRole = { keyids: [a.keyId, b.keyId], threshold: 2 };
+  var rolePending = pki.tuf.verifySignatures({
+    metadata: pki.tuf.parseMetadata(oneBytes), keys: oneOfTwo.keys, role: liveRole,
+  });
+  liveRole.threshold = 1;                        // lowered while the verification is in flight
+  var roleGot;
+  try { roleGot = await rolePending; } catch (_e) { roleGot = null; }
+  check("A13: a threshold lowered during verification is not the threshold the verdict uses",
+    roleGot === null || (roleGot.verified === false && roleGot.threshold === 2));
+  /* CONTROL: the same single signature DOES meet a threshold of one when that is the threshold from the
+     start, so A13 is about the mutation and not about the document. */
+  var realOne = await pki.tuf.verifySignatures({
+    metadata: pki.tuf.parseMetadata(oneBytes), keys: oneOfTwo.keys,
+    role: { keyids: [a.keyId, b.keyId], threshold: 1 },
+  });
+  check("A14: CONTROL one authorized signature meets a threshold of one",
+    realOne.verified === true && realOne.threshold === 1);
+
+  /* The METADATA is the third caller-owned input to this verb, alongside the keys and the role, and the
+     loop re-reads `signedBytes` for every signature with an await between. Two signatures over DIFFERENT
+     documents can then each verify against the bytes that were present on their own turn, and together
+     satisfy a threshold that no single document ever met. A carries version 1 and B carries version 2;
+     the buffer is swapped to B's document immediately after the call. */
+  var docV1 = {
+    _type: "root", spec_version: "1.0.31", version: 1, expires: EXPIRES, consistent_snapshot: true,
+    keys: (function () { var k = {}; k[a.keyId] = a.key; k[b.keyId] = b.key; return k; })(),
+    roles: { root: { keyids: [a.keyId, b.keyId], threshold: 2 } },
+  };
+  var docV2 = JSON.parse(JSON.stringify(docV1));
+  docV2.version = 2;
+  var preV1 = pki.tuf.canonicalJson(docV1), preV2 = pki.tuf.canonicalJson(docV2);
+  check("A15: the two documents' canonical forms are the same length, so one overwrites the other",
+    preV1.length === preV2.length);
+  var mixed = {
+    type: "root", version: 1,
+    signedBytes: Buffer.from(preV1),
+    signatures: [
+      { keyid: a.keyId, sig: crypto.sign(null, preV1, a.kp.privateKey).toString("hex") },
+      { keyid: b.keyId, sig: crypto.sign(null, preV2, b.kp.privateKey).toString("hex") },
+    ],
+  };
+  var mixedPending = pki.tuf.verifySignatures({
+    metadata: mixed, keys: docV1.keys, role: { keyids: [a.keyId, b.keyId], threshold: 2 },
+  });
+  preV2.copy(mixed.signedBytes);                 // the signed bytes become the other document's
+  var mixedGot;
+  try { mixedGot = await mixedPending; } catch (_e) { mixedGot = null; }
+  check("A16: signatures over two different documents cannot together meet one threshold",
+    mixedGot === null || mixedGot.verified === false);
+  /* CONTROL: each signature does verify against its OWN document, so A16 is about the swap rather than
+     either signature being bad. */
+  var justA = await pki.tuf.verifySignatures({
+    metadata: { type: "root", version: 1, signedBytes: Buffer.from(preV1),
+      signatures: [{ keyid: a.keyId, sig: crypto.sign(null, preV1, a.kp.privateKey).toString("hex") }] },
+    keys: docV1.keys, role: { keyids: [a.keyId, b.keyId], threshold: 1 },
+  });
+  var justB = await pki.tuf.verifySignatures({
+    metadata: { type: "root", version: 2, signedBytes: Buffer.from(preV2),
+      signatures: [{ keyid: b.keyId, sig: crypto.sign(null, preV2, b.kp.privateKey).toString("hex") }] },
+    keys: docV1.keys, role: { keyids: [a.keyId, b.keyId], threshold: 1 },
+  });
+  check("A17: CONTROL each signature verifies against its own document",
+    justA.verified === true && justB.verified === true);
+
+  /* The instant is a caller-owned Date, and `updateRoot` read it twice: once to validate its type and once
+     for the freeze-attack check at the end, with a signature verification awaited between. A Date is
+     mutable, so the instant the expiry is judged at need not be the instant validation began at: a root
+     that has expired by the supplied time passes if that Date is moved back while the chain is walked. */
+  var expiredByThen = rootSigned({ signers: [a], version: 1, expires: "2030-01-01T00:00:00Z" });
+  var lateBytes = metadataFor(expiredByThen, [a]);
+  var movable = new Date("2040-01-01T00:00:00Z");     // the root has expired by this instant
+  var latePending = pki.tuf.updateRoot({ trustedRoot: lateBytes, candidates: [], now: movable });
+  movable.setTime(new Date("2027-01-01T00:00:00Z").getTime());   // moved back, mid-validation
+  var lateCode = "NO-THROW";
+  try { await latePending; } catch (e) { lateCode = e.code || e.message; }
+  check("A18: expiry is judged at the instant supplied when validation began, not a later mutation of it",
+    lateCode === "tuf/expired");
+  /* CONTROLS: the same root passes at an instant before it expires and fails at one after, so A18 is
+     about the mutation rather than about the root or either date. */
+  check("A19: CONTROL the root is valid at an instant before it expires",
+    (await pki.tuf.updateRoot({ trustedRoot: lateBytes, candidates: [],
+      now: new Date("2027-01-01T00:00:00Z") })).version === 1);
+  check("A20: CONTROL and expired at one after",
+    (await codeAsync(pki.tuf.updateRoot({ trustedRoot: lateBytes, candidates: [],
+      now: new Date("2040-01-01T00:00:00Z") }))) === "tuf/expired");
+}
+
+async function runAlgorithmBinding() {
+  var ed = makeEd25519Key();
+
+  function rootWith(key, keyid, sigHex) {
+    var signedObj = {
+      _type: "root", spec_version: "1.0.31", version: 1, expires: EXPIRES,
+      consistent_snapshot: true,
+      keys: (function () { var k = {}; k[keyid] = key; return k; })(),
+      roles: { root: { keyids: [keyid], threshold: 1 } },
+    };
+    var sig = sigHex === undefined ? null : sigHex;
+    var bytes = Buffer.from(JSON.stringify({
+      signatures: [{ keyid: keyid, sig: sig === null ? "00" : sig }], signed: signedObj,
+    }));
+    return { signedObj: signedObj, meta: pki.tuf.parseMetadata(bytes) };
+  }
+
+  // An RSA key wearing the ecdsa label, with a real RSA signature over the real preimage.
+  var rsaKp = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  var rsaPem = rsaKp.publicKey.export({ format: "pem", type: "spki" });
+  var mislabeled = { keytype: "ecdsa", scheme: "ecdsa-sha2-nistp256", keyval: { public: rsaPem } };
+  var mislabeledId = pki.tuf.keyId(mislabeled);
+  var shell = rootWith(mislabeled, mislabeledId, "00");
+  var rsaSig = crypto.sign("sha256", pki.tuf.canonicalJson(shell.signedObj), rsaKp.privateKey).toString("hex");
+  var forged = rootWith(mislabeled, mislabeledId, rsaSig);
+  var fCode = await codeAsync(pki.tuf.verifySignatures({
+    metadata: forged.meta, keys: forged.signedObj.keys, role: forged.signedObj.roles.root,
+  }));
+  var fVerified = false;
+  if (fCode === "NO-THROW") {
+    var r = await pki.tuf.verifySignatures({
+      metadata: forged.meta, keys: forged.signedObj.keys, role: forged.signedObj.roles.root,
+    });
+    fVerified = r.verified === true;
+  }
+  check("A1: an RSA key declared as ecdsa does not verify an RSA signature", fVerified === false);
+  check("A2: and it is refused as a malformed key rather than counted as a failed signature",
+    fCode === "tuf/bad-key");
+
+  // The mirror: an EC key wearing the rsa label.
+  var ecKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var ecAsRsa = { keytype: "rsa", scheme: "rsassa-pss-sha256",
+    keyval: { public: ecKp.publicKey.export({ format: "pem", type: "spki" }) } };
+  var ecAsRsaId = pki.tuf.keyId(ecAsRsa);
+  var m2 = rootWith(ecAsRsa, ecAsRsaId, "00");
+  check("A3: an EC key declared as rsa is refused",
+    (await codeAsync(pki.tuf.verifySignatures({
+      metadata: m2.meta, keys: m2.signedObj.keys, role: m2.signedObj.roles.root,
+    }))) === "tuf/bad-key");
+
+  // A scheme the keytype does not pair with, the key material being the right type.
+  var wrongScheme = { keytype: "ecdsa", scheme: "ed25519",
+    keyval: { public: ecKp.publicKey.export({ format: "pem", type: "spki" }) } };
+  var wsId = pki.tuf.keyId(wrongScheme);
+  var m3 = rootWith(wrongScheme, wsId, "00");
+  check("A4: a scheme the keytype does not pair with is refused",
+    (await codeAsync(pki.tuf.verifySignatures({
+      metadata: m3.meta, keys: m3.signedObj.keys, role: m3.signedObj.roles.root,
+    }))) === "tuf/bad-key");
+
+  // A curve other than P-256 under the ecdsa-sha2-nistp256 scheme, which names its curve.
+  var p384 = crypto.generateKeyPairSync("ec", { namedCurve: "secp384r1" });
+  var wrongCurve = { keytype: "ecdsa", scheme: "ecdsa-sha2-nistp256",
+    keyval: { public: p384.publicKey.export({ format: "pem", type: "spki" }) } };
+  var wcId = pki.tuf.keyId(wrongCurve);
+  var m4 = rootWith(wrongCurve, wcId, "00");
+  check("A5: a P-384 key under the nistp256 scheme is refused, the scheme naming its curve",
+    (await codeAsync(pki.tuf.verifySignatures({
+      metadata: m4.meta, keys: m4.signedObj.keys, role: m4.signedObj.roles.root,
+    }))) === "tuf/bad-key");
+
+  // The specification's own floor: "All RSA keys MUST be at least 2048 bits."
+  var rsa1024 = crypto.generateKeyPairSync("rsa", { modulusLength: 1024 });
+  var weak = { keytype: "rsa", scheme: "rsassa-pss-sha256",
+    keyval: { public: rsa1024.publicKey.export({ format: "pem", type: "spki" }) } };
+  var weakId = pki.tuf.keyId(weak);
+  var m5 = rootWith(weak, weakId, "00");
+  check("A6: an RSA key under 2048 bits is refused",
+    (await codeAsync(pki.tuf.verifySignatures({
+      metadata: m5.meta, keys: m5.signedObj.keys, role: m5.signedObj.roles.root,
+    }))) === "tuf/bad-key");
+
+  // CONTROLS. Each legitimate pair still verifies, or the refusals above would be a blanket reject.
+  var okEd = rootSigned({ signers: [ed] });
+  var okEdMeta = pki.tuf.parseMetadata(metadataFor(okEd, [ed]));
+  check("A7: CONTROL an ed25519 key with the ed25519 scheme still verifies",
+    (await pki.tuf.verifySignatures({ metadata: okEdMeta, keys: okEd.keys, role: okEd.roles.root })).verified === true);
+  var ec = makeEcdsaKey();
+  var okEc = rootSigned({ signers: [ec] });
+  var okEcMeta = pki.tuf.parseMetadata(metadataFor(okEc, [ec]));
+  check("A8: CONTROL a P-256 key with the nistp256 scheme still verifies",
+    (await pki.tuf.verifySignatures({ metadata: okEcMeta, keys: okEc.keys, role: okEc.roles.root })).verified === true);
+
+  // And a real RSA key under its own declared pair verifies, so the rsa arm is not simply unreachable.
+  var rsaKey = { keytype: "rsa", scheme: "rsassa-pss-sha256", keyval: { public: rsaPem } };
+  var rsaId = pki.tuf.keyId(rsaKey);
+  var rshell = rootWith(rsaKey, rsaId, "00");
+  var pssSig = crypto.sign("sha256", pki.tuf.canonicalJson(rshell.signedObj), {
+    key: rsaKp.privateKey, padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
+    saltLength: crypto.constants.RSA_PSS_SALTLEN_DIGEST,
+  }).toString("hex");
+  var rok = rootWith(rsaKey, rsaId, pssSig);
+  check("A9: CONTROL a 2048-bit RSA key with the rsassa-pss-sha256 scheme verifies its own PSS signature",
+    (await pki.tuf.verifySignatures({
+      metadata: rok.meta, keys: rok.signedObj.keys, role: rok.signedObj.roles.root,
+    })).verified === true);
+}
+
 function testSurface() {
   ["canonicalJson", "keyId", "parseMetadata", "verifySignatures", "checkExpiry", "updateRoot"].forEach(function (n) {
     check("pki.tuf." + n + " is exposed", typeof pki.tuf[n] === "function");
@@ -481,6 +814,8 @@ async function run() {
   await runVerify();
   await runRootChain();
   await runGuards();
+  await runAlgorithmBinding();
+  await runKeyMaterialAcrossAwaits();
   console.log("CHECKS " + helpers.getChecks());
 }
 
