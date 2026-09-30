@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.8.42",
+  "packageVersion": "0.8.43",
   "surface": {
     "C": {
       "kind": "object",
@@ -970,6 +970,36 @@
         "verifyTlsAlpn01": {
           "kind": "function",
           "arity": 4
+        }
+      }
+    },
+    "altSig": {
+      "kind": "object",
+      "members": {
+        "OID_ALT_ALG": {
+          "kind": "string"
+        },
+        "OID_ALT_VAL": {
+          "kind": "string"
+        },
+        "OID_SAPKI": {
+          "kind": "string"
+        },
+        "setEngine": {
+          "kind": "function",
+          "arity": 1
+        },
+        "signedData": {
+          "kind": "function",
+          "arity": 1
+        },
+        "subjectAltPublicKey": {
+          "kind": "function",
+          "arity": 1
+        },
+        "verify": {
+          "kind": "function",
+          "arity": 3
         }
       }
     },
@@ -2500,6 +2530,10 @@
           "kind": "function",
           "arity": 3
         },
+        "AltSigError": {
+          "kind": "function",
+          "arity": 3
+        },
         "Asn1Error": {
           "kind": "function",
           "arity": 3
@@ -2949,7 +2983,7 @@
         },
         "renderedExtensions": {
           "kind": "array",
-          "length": 32
+          "length": 35
         },
         "trustanchor": {
           "kind": "function",
@@ -4328,6 +4362,9 @@
     "pki.acme.parseAriCertId": "0.1.25",
     "pki.acme.validateRenewalInfo": "0.1.25",
     "pki.acme.client": "0.3.18",
+    "pki.altSig.signedData": "0.8.43",
+    "pki.altSig.subjectAltPublicKey": "0.8.43",
+    "pki.altSig.verify": "0.8.43",
     "pki.asn1.decode": "0.1.0",
     "pki.asn1.read.oid": "0.1.15",
     "pki.asn1.encode": "0.1.0",

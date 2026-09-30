@@ -1522,6 +1522,31 @@ security-only patches after the next major releases.
   need a fetch and a freshness policy, so they remain the caller's, and
   `pki.path.validate` is the route for the first.
 
+- **An alternative signature is rebuilt from original bytes, not re-serialized
+  (CWE-347).** ITU-T X.509 (2019) clause 7.2.2 requires a verifier to reconstruct
+  an encoding that never appears on the wire: the certificate with its outer
+  signature component and its `altSignatureValue` extension removed, "re-DER-encoded"
+  after those modifications. Everywhere else this toolkit surfaces a raw byte range
+  rather than rebuilding what it parsed, because rebuilding is how a verifier comes
+  to accept something altered in a byte it did not reproduce. Here the specification
+  leaves no choice, so `pki.altSig.signedData` keeps the bytes of every component it
+  retains and recomputes only the three SEQUENCE headers whose lengths change.
+  Nothing is written out of a decoded model: a model that normalized any byte would
+  either fail every verification, or accept an encoding the issuer never signed. The
+  vectors compare the result against bytes built independently of the implementation,
+  field by field, and assert that the extensions block loses that one extension and
+  no other.
+- **Two signatures, and the native one still covers both (CWE-347).** Clause 7.2.2
+  fixes an order: the alternative signature is generated over the certificate without
+  it, and the native signature is then generated over the certificate with it.
+  Reversing that leaves a native signature that does not cover the alternative
+  signature or the alternative key, so a party reading only the native signature
+  would accept a certificate whose alternative half had been substituted.
+  `pki.x509.sign` and `pki.crl.sign` perform both passes, so the order is not the
+  caller's to arrange, and `altSignatureValue` is computed rather than accepted as an
+  option. `pki.altSig.verify` answers one question, whether the issuer's alternative
+  key signed the structure; it does not validate a path or read the native signature,
+  which `pki.path.validate` does.
 - **A certificate identity is not bound with SHA-1 (CWE-328).** The
   `relatedCertificate` extension names a certificate by a digest of the whole
   certificate, which makes that digest an identity to compare against. `sha1` is

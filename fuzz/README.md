@@ -48,6 +48,7 @@ wrapper, which does not support JavaScript targets.
 | `smime-parse.fuzz.js`      | `pki.schema.smime` (RFC 5035 ESS + RFC 8551 SMIMECapabilities) |
 | `pkix-ext-parse.fuzz.js`   | the RFC 5280 §4.2.1 extension-value decoders          |
 | `related-cert.fuzz.js`     | RFC 9763: the `relatedCertificate` extension value, the `relatedCertRequest` attribute value, and the `pki.relatedCert` verbs over both |
+| `alt-sig.fuzz.js`          | ITU-T X.509 (2019) clause 9.8: the three alternative-signature extension values, and `pki.altSig.signedData` / `verify` / `subjectAltPublicKey` over a certificate and a CRL. `signedData` rebuilds a structure from original byte ranges, so the harness hands it whole structures as well as extension values |
 
 ### Verifiers
 

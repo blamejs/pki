@@ -412,6 +412,7 @@ async function run() {
       { ref: "SemVer 2.0.0", linked: false }, { ref: "internal (design: infra)", linked: false },
       { ref: "C2SP tlog-checkpoint", linked: true },
       { ref: "TUF", linked: true },
+      { ref: "ITU-T X.509 (2019) clause 9.8", linked: true },
     ];
     SPEC_SAMPLES.forEach(function (s) {
       check("@spec '" + s.ref + "' is recognized by the validator", engine.isValidSpecRef(s.ref) === true);

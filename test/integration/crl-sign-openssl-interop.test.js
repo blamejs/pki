@@ -91,6 +91,55 @@ async function run() {
       try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
     }
   }
+  await runCatalystCrl();
+}
+
+// ITU-T X.509 (2019) clause 7.10.3: a CRL carrying an alternative signature. The certificate form is
+// checked in the x509 interop suite; this is the CRL form, which is a separate claim because the
+// extensions sit under a different tag and the reconstruction walks a different toBeSigned. What the
+// independent implementation has to confirm is that the CRL still parses and still verifies natively
+// with the two extensions present, and that its bytes survive a re-encode: the alternative signature is
+// checked over a reconstruction, so a CRL openssl would re-encode differently is one nobody can verify.
+async function runCatalystCrl() {
+  var crypto = require("node:crypto");
+  var s = signing.makeSigner("ec-p256");
+  var altKp = crypto.generateKeyPairSync("ml-dsa-65");
+  var altSpki = altKp.publicKey.export({ format: "der", type: "spki" });
+  var altPkcs8 = altKp.privateKey.export({ format: "der", type: "pkcs8" });
+  var caPem = await pki.x509.sign({
+    subject: [{ commonName: "Catalyst CRL CA" }], subjectPublicKey: s.spki, notBefore: NB, notAfter: NA,
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "cRLSign"] },
+  }, { key: s.key }, { pem: true });
+  var crlDer = await pki.crl.sign({
+    thisUpdate: NB, nextUpdate: NA, crlNumber: 7n,
+    revoked: [{ serialNumber: 3n, revocationDate: NB }],
+  }, { cert: pki.schema.x509.pemDecode(caPem, "CERTIFICATE"), key: s.key, altKey: altPkcs8, altPublicKey: altSpki });
+  check("the alternative signature on the emitted CRL verifies here",
+    (await pki.altSig.verify(crlDer, altSpki)) === true);
+
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "pkijs-catalyst-crl-"));
+  try {
+    var caFile = path.join(dir, "ca.pem"); fs.writeFileSync(caFile, caPem);
+    var crlFile = path.join(dir, "c.der"); fs.writeFileSync(crlFile, crlDer);
+    var t = ctx.runOpenssl(["crl", "-inform", "DER", "-in", crlFile, "-noout", "-text"], { allowNonZero: true });
+    check("openssl crl -text parses a CRL carrying the alternative extensions", t.code === 0);
+    [["Alternative Signature Algorithm", "2.5.29.73"], ["Alternative Signature Value", "2.5.29.74"]]
+      .forEach(function (r) {
+        check("openssl recognizes the " + r[1] + " CRL extension (as \"" + r[0] + "\" or by OID)",
+          t.stdout.indexOf(r[0]) >= 0 || t.stdout.indexOf(r[1]) >= 0);
+      });
+    check("openssl does not report a subjectAltPublicKeyInfo on the CRL, the extension being certificate-only",
+      t.stdout.indexOf("2.5.29.72") === -1 && t.stdout.indexOf("Subject Alternative Public Key Info") === -1);
+    var v = ctx.runOpenssl(["crl", "-inform", "DER", "-in", crlFile, "-CAfile", caFile, "-noout"], { allowNonZero: true });
+    check("openssl crl -CAfile still verifies the native signature with the alternative extensions present",
+      /verify\s*OK/i.test(v.stdout + v.stderr));
+    var reFile = path.join(dir, "re.der");
+    var re = ctx.runOpenssl(["crl", "-inform", "DER", "-in", crlFile, "-outform", "DER", "-out", reFile], { allowNonZero: true });
+    check("openssl re-encodes the CRL to the same bytes",
+      re.code === 0 && Buffer.compare(fs.readFileSync(reFile), crlDer) === 0);
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+  }
 }
 
 Promise.resolve().then(run).then(
