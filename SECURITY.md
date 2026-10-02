@@ -1605,21 +1605,24 @@ security-only patches after the next major releases.
   question would be inventing a policy the operator owns.
 - **An alternative signature is rebuilt from original bytes, not re-serialized
   (CWE-347).** ITU-T X.509 (2019) clause 7.2.2 requires a verifier to reconstruct
-  an encoding that never appears on the wire: the certificate with its outer
-  signature component and its `altSignatureValue` extension removed, "re-DER-encoded"
-  after those modifications. Everywhere else this toolkit surfaces a raw byte range
+  an encoding that never appears on the wire, "re-DER-encoded" after the signature
+  component and the `altSignatureValue` extension are removed. The structure it
+  names is the `PreTBSCertificate` of
+  `draft-truskovsky-lamps-pq-hybrid-x509` section 4, the `tbsCertificate` without
+  its `signature` field, and the `PreTBSCertList` of section 5 for a CRL.
+  Everywhere else this toolkit surfaces a raw byte range
   rather than rebuilding what it parsed, because rebuilding is how a verifier comes
   to accept something altered in a byte it did not reproduce. Here the specification
   leaves no choice, so `pki.altSig.signedData` keeps the bytes of every component it
-  retains and recomputes only the three SEQUENCE headers whose lengths change.
+  retains and recomputes only the two SEQUENCE headers whose lengths change.
   Nothing is written out of a decoded model: a model that normalized any byte would
   either fail every verification, or accept an encoding the issuer never signed. The
   vectors compare the result against bytes built independently of the implementation,
   field by field, and assert that the extensions block loses that one extension and
   no other.
 - **Two signatures, and the native one still covers both (CWE-347).** Clause 7.2.2
-  fixes an order: the alternative signature is generated over the certificate without
-  it, and the native signature is then generated over the certificate with it.
+  fixes an order: the alternative signature is generated over the structure without
+  it, and the native signature is then generated over the structure with it.
   Reversing that leaves a native signature that does not cover the alternative
   signature or the alternative key, so a party reading only the native signature
   would accept a certificate whose alternative half had been substituted.

@@ -27,12 +27,15 @@
 // "when generating the value in the altSignatureValue extension, exclude the signature component and
 // the altSignatureValue extension from the public-key certificate, and generate the digital signature
 // over the remaining DER encoded public-key certificate using the algorithm specified in the
-// altSignatureAlgorithm extension". The `signature` component is the outer BIT STRING, which the
-// sibling bullet identifies by saying the native signature is the value generated INTO it.
+// altSignatureAlgorithm extension". Two members are named `signature`, the outer BIT STRING and the
+// toBeSigned's own AlgorithmIdentifier, and the clause names neither.
 //
-// So the preimage is the Certificate SEQUENCE carrying its tbsCertificate and its outer
-// algorithmIdentifier, with the altSignatureValue extension removed from the tbsCertificate and the
-// outer signature BIT STRING absent. Clause 7.2.2 is explicit that a verifier has to rebuild it:
+// draft-truskovsky-lamps-pq-hybrid-x509 gives the excluded one a type: the PreTBSCertificate of section
+// 4 is the tbsCertificate without "the signature field (the third element in the TBSCertificate
+// sequence)", and the PreTBSCertList of section 5 is the tbsCertList without its second element. So the
+// preimage is the toBeSigned alone, carrying one member fewer, with the altSignatureValue extension
+// removed and the order of the remaining extensions unchanged. Clause 7.2.2 is explicit that a verifier
+// has to rebuild it:
 // "the relying party shall decode the public-key certificate and then re-DER-encode the same
 // public-key certificate after the above modifications have been made, otherwise the validation of the
 // alternative signature will fail." That re-encode is the one this toolkit otherwise refuses, so the
@@ -110,20 +113,25 @@ function makeCatalyst(opts) {
   var altAlgId = b.sequence([b.oid(O(opts.altOidName || "id-ml-dsa-65"))]);
   var name = dn(opts.cn || "Catalyst Signer");
 
-  function tbs(withAltValue) {
+  // `withSignatureAlg` of false omits the `signature` AlgorithmIdentifier, which is what separates the
+  // PreTBSCertificate from the TBSCertificate.
+  function fieldsOf(withAltValue, withSignatureAlg) {
     var exts = (opts.extraExts || []).slice();
     if (!opts.omitSapki) exts.push(ext(SAPKI_OID, opts.criticalSapki === true, altSpki));
     if (!opts.omitAltAlg) exts.push(ext(ALT_ALG_OID, false, altAlgId));
     if (withAltValue && !opts.omitAltValue) exts.push(ext(ALT_VAL_OID, false, b.bitString(withAltValue, 0)));
-    var fields = [b.explicit(0, b.integer(2n)), b.integer(BigInt(opts.serial || 0x11)), nativeAlgId,
-      name, VALIDITY, name, b.raw(nativeSpki)];
+    var fields = [b.explicit(0, b.integer(2n)), b.integer(BigInt(opts.serial || 0x11))];
+    if (withSignatureAlg) fields.push(nativeAlgId);
+    fields.push(name, VALIDITY, name, b.raw(nativeSpki));
     if (exts.length) fields.push(b.explicit(3, b.sequence(exts)));
     return b.sequence(fields);
   }
+  function tbs(withAltValue) { return fieldsOf(withAltValue, true); }
 
-  // Clause 7.2.2: the alternative signature covers the certificate with the outer signature absent and
-  // the altSignatureValue extension removed.
-  var preimage = b.sequence([tbs(null), nativeAlgId]);
+  // draft-truskovsky-lamps-pq-hybrid-x509 sec. 4: the alternative signature covers the
+  // PreTBSCertificate, the TBSCertificate without its `signature` AlgorithmIdentifier and without the
+  // altSignatureValue extension.
+  var preimage = fieldsOf(null, false);
   var altSig = opts.forgeAltSig
     ? Buffer.from(opts.forgeAltSig)
     : crypto.sign(null, preimage, altKp.privateKey);
@@ -153,21 +161,23 @@ function testSurface() {
 function testPreimage() {
   var c = makeCatalyst({ serial: 0x21 });
   var got = pki.altSig.signedData(c.der);
-  check("P1: the preimage is the certificate with the outer signature and altSignatureValue removed",
+  check("P1: the preimage is the PreTBSCertificate, the toBeSigned without its signature field and without altSignatureValue",
     Buffer.compare(got, c.preimage) === 0);
-  check("P2: it is a SEQUENCE of exactly two members, the tbsCertificate and the outer algorithm",
-    pki.asn1.decode(got).children.length === 2);
 
-  // Every byte of a kept component is the byte that was there. Removing a member changes three
-  // SEQUENCE headers and nothing else, so the tbsCertificate's own fields must be byte-identical.
+  // Every byte of a kept component is the byte that was there. Removing a member changes two SEQUENCE
+  // headers and nothing else, so the retained fields must be byte-identical.
   var origTbs = pki.asn1.decode(c.der).children[0];
-  var newTbs = pki.asn1.decode(got).children[0];
-  check("P3: the outer algorithmIdentifier is carried unchanged",
-    Buffer.compare(pki.asn1.decode(got).children[1].bytes, pki.asn1.decode(c.der).children[1].bytes) === 0);
-  check("P4: every tbsCertificate field before the extensions is carried byte-identically",
-    origTbs.children.slice(0, 7).every(function (n, i) { return Buffer.compare(n.bytes, newTbs.children[i].bytes) === 0; }));
+  var newTbs = pki.asn1.decode(got);
+  check("P2: it is the toBeSigned alone, carrying one member fewer than the tbsCertificate",
+    origTbs.children.length === 8 && newTbs.children.length === 7);
+  check("P3: the member it loses is the signature AlgorithmIdentifier, so no AlgorithmIdentifier sits at the third element",
+    Buffer.compare(origTbs.children[2].bytes, c.nativeAlgId) === 0 &&
+    newTbs.children.every(function (n) { return Buffer.compare(n.bytes, c.nativeAlgId) !== 0; }));
+  check("P4: every other field is carried byte-identically, in order",
+    [0, 1].every(function (i) { return Buffer.compare(origTbs.children[i].bytes, newTbs.children[i].bytes) === 0; }) &&
+    [3, 4, 5, 6].every(function (i) { return Buffer.compare(origTbs.children[i].bytes, newTbs.children[i - 1].bytes) === 0; }));
   var origExts = origTbs.children[7].children[0].children;
-  var newExts = newTbs.children[7].children[0].children;
+  var newExts = newTbs.children[6].children[0].children;
   check("P5: the extensions block loses exactly the altSignatureValue extension",
     origExts.length === 3 && newExts.length === 2 &&
     origExts.slice(0, 2).every(function (n, i) { return Buffer.compare(n.bytes, newExts[i].bytes) === 0; }));
@@ -482,8 +492,16 @@ async function testCrl(ctx) {
     (await pki.altSig.verify(crlDer, ctx.altSpki)) === true);
   check("C4: and does not verify under another key",
     (await pki.altSig.verify(crlDer, crypto.generateKeyPairSync("ml-dsa-65").publicKey.export({ format: "der", type: "spki" }))) === false);
-  check("C5: the preimage is the CRL with its outer signature and altSignatureValue removed",
-    pki.asn1.decode(pki.altSig.signedData(crlDer)).children.length === 2);
+  // A CRL's version is a bare INTEGER rather than a tagged field, so its `signature` AlgorithmIdentifier
+  // is the SECOND element and not the third. The preimage drops that one.
+  var crlTbs = pki.asn1.decode(crlDer).children[0];
+  var crlPre = pki.asn1.decode(pki.altSig.signedData(crlDer));
+  var crlAlgId = pki.asn1.decode(crlDer).children[1].bytes;
+  check("C5: the preimage is the PreTBSCertList, carrying one member fewer than the tbsCertList",
+    crlPre.children.length === crlTbs.children.length - 1);
+  check("C5a: and the member it loses is the signature AlgorithmIdentifier at the second element",
+    Buffer.compare(crlTbs.children[1].bytes, crlAlgId) === 0 &&
+    crlPre.children.every(function (n) { return Buffer.compare(n.bytes, crlAlgId) !== 0; }));
   check("C6: subjectAltPublicKey refuses a CRL, the extension being certificate-only",
     code(function () { pki.altSig.subjectAltPublicKey(crlDer); }) === "altsig/absent");
 }
@@ -731,6 +749,165 @@ async function testOuterAltFieldsRefused() {
   });
 }
 
+// ---- the preimage another implementation computes --------------------------
+//
+// draft-truskovsky-lamps-pq-hybrid-x509 states the preimage as a type of its own rather than as prose
+// about which component to drop, and the definition is element-by-element:
+//
+//   PreTBSCertificate  ::=  SEQUENCE  {
+//        version              [0]  EXPLICIT Version DEFAULT v1,
+//        serialNumber              CertificateSerialNumber,
+//        issuer                    Name,
+//        validity                  Validity,
+//        subject                   Name,
+//        subjectPublicKeyInfo      SubjectPublicKeyInfo,
+//        issuerUniqueID       [1]  IMPLICIT UniqueIdentifier OPTIONAL,
+//        subjectUniqueID      [2]  IMPLICIT UniqueIdentifier OPTIONAL,
+//        extensions           [3]  EXPLICIT Extensions OPTIONAL  }
+//
+// "The PreTBSCertificate type is similar to the TBSCertificate type, except that the PreTBSCertificate
+// does not include the signature field (the third element in the TBSCertificate sequence). In a
+// TBSCertificate the signature field contains the AlgorithmIdentifier of the algorithm which will be
+// used to sign the final certificate, and this value might not be known at the time that the
+// alternative signature is calculated." Section 5 defines PreTBSCertList the same way for a CRL, where
+// the signature field is the SECOND element.
+//
+// Both procedures add the signature field in a step AFTER the alternative signature is computed, so at
+// the time it is computed the toBeSigned does not carry one.
+//
+// The vectors here rebuild the preimage from a structure's own bytes, following section 4.2 steps (a)
+// to (d): decode the toBeSigned, remove altSignatureValue, remove the signature field, DER encode. The
+// reconstruction is independent of the implementation, and `crypto.verify` checks the carried signature
+// against it directly, so a pass means the bytes this toolkit emits are the bytes an implementation
+// following that definition rebuilds. Bouncy Castle is that implementation: its generator signs
+// `generatePreTBSCertificate()` after `tbsGen.setSignature(null)`, and
+// `X509CertificateHolder.isAlternativeSignatureValid` rebuilds every toBeSigned element except index 2
+// with altSignatureValue trimmed.
+
+// `sigIndex` of -1 keeps the signature field, which builds the other reading of the clause for the
+// refusal vectors. A `replaceAltValue` of null drops the extension, as both readings do.
+function _rebuildTbs(der, sigIndex, extTag, replaceAltValue) {
+  var tbs = pki.asn1.decode(der).children[0];
+  var out = [];
+  tbs.children.forEach(function (k, i) {
+    if (i === sigIndex) return;
+    if (!(k.tagClass === "context" && k.tagNumber === extTag)) { out.push(k.bytes); return; }
+    var kept = [];
+    k.children[0].children.forEach(function (e) {
+      if (pki.asn1.read.oid(e.children[0]) !== ALT_VAL_OID) { kept.push(e.bytes); return; }
+      if (replaceAltValue !== null) kept.push(ext(ALT_VAL_OID, false, b.bitString(replaceAltValue, 0)));
+    });
+    out.push(b.explicit(extTag, b.sequence([b.raw(Buffer.concat(kept))])));
+  });
+  return b.sequence([b.raw(Buffer.concat(out))]);
+}
+
+// The signature field is located where its type places it, which differs between the two structures:
+// a certificate's version is `[0] EXPLICIT` so the field is the third element, while a CRL's version is
+// a bare INTEGER so it is the second.
+function _signatureIndex(der, kind) {
+  var kids = pki.asn1.decode(der).children[0].children;
+  if (kind === "certificate") {
+    return (kids[0].tagClass === "context" && kids[0].tagNumber === 0) ? 2 : 1;
+  }
+  return (kids[0].tagClass === "universal" && kids[0].tagNumber === pki.asn1.TAGS.INTEGER) ? 1 : 0;
+}
+
+function _preTbsOf(der, kind, extTag) {
+  return _rebuildTbs(der, _signatureIndex(der, kind), extTag, null);
+}
+
+// The whole structure minus its outer signature BIT STRING, with the signature field retained: the
+// reading in which `signature` names the outer component rather than the toBeSigned's own field.
+function _wholeStructureForm(der, extTag) {
+  return b.sequence([
+    b.raw(_rebuildTbs(der, -1, extTag, null)),
+    b.raw(pki.asn1.decode(der).children[1].bytes),
+  ]);
+}
+
+// The alternative signature a structure carries, read out of its extension.
+function _carriedAltSignature(der, extTag) {
+  var kids = pki.asn1.decode(der).children[0].children;
+  for (var i = kids.length - 1; i >= 0; i--) {
+    var k = kids[i];
+    if (!(k.tagClass === "context" && k.tagNumber === extTag)) continue;
+    var list = k.children[0].children;
+    for (var e = 0; e < list.length; e++) {
+      if (pki.asn1.read.oid(list[e].children[0]) !== ALT_VAL_OID) continue;
+      var value = pki.asn1.read.octetString(list[e].children[list[e].children.length - 1]);
+      return pki.asn1.read.bitString(pki.asn1.decode(value)).bytes;
+    }
+  }
+  return null;
+}
+
+// A copy of a structure whose altSignatureValue carries `sig`, everything else byte-identical. The
+// native signature no longer covers it, which does not matter: these vectors drive the alternative
+// signature alone, and the structural parser the verb runs first does not check the native one.
+function _withAltSignature(der, extTag, sig) {
+  var root = pki.asn1.decode(der);
+  return b.sequence([
+    b.raw(_rebuildTbs(der, -1, extTag, sig)),
+    b.raw(root.children[1].bytes), b.raw(root.children[2].bytes),
+  ]);
+}
+
+async function testPreTbsPreimage(ctx) {
+  var spkiKey = { key: ctx.altSpki, format: "der", type: "spki" };
+  var rows = [
+    ["certificate", await pki.x509.sign({
+      subject: "pretbs-leaf.example", subjectPublicKey: ctx.ca.spki, serialNumber: 0xa1n,
+      notBefore: NB, notAfter: NA,
+      extensions: { keyUsage: ["digitalSignature"], subjectAltPublicKeyInfo: ctx.altSpki },
+    }, { cert: ctx.caDer, key: ctx.ca.key, altKey: ctx.altPkcs8, altPublicKey: ctx.altSpki }), 3],
+    ["CRL", await pki.crl.sign({
+      thisUpdate: NB, nextUpdate: NA, crlNumber: 0xa2n,
+      revoked: [{ serialNumber: 0xa3n, revocationDate: NB }],
+    }, { cert: ctx.caDer, key: ctx.ca.key, altKey: ctx.altPkcs8, altPublicKey: ctx.altSpki }), 0],
+  ];
+
+  for (var i = 0; i < rows.length; i++) {
+    var kind = rows[i][0], der = rows[i][1], extTag = rows[i][2];
+    var n = "T" + (i + 1);
+    var pre = _preTbsOf(der, kind, extTag);
+    var whole = _wholeStructureForm(der, extTag);
+    var carried = _carriedAltSignature(der, extTag);
+
+    check(n + ".0: CONTROL the " + kind + " carries an alternative signature to check at all",
+      carried !== null && carried.length > 0);
+    check(n + ".1: CONTROL the two readings of the clause are different bytes, so the rest distinguishes them",
+      Buffer.compare(pre, whole) !== 0);
+
+    // The toolkit's own answer for the bytes, and the independently rebuilt one.
+    check(n + ".2: signedData returns the " + (kind === "CRL" ? "PreTBSCertList" : "PreTBSCertificate"),
+      Buffer.compare(pki.altSig.signedData(der), pre) === 0);
+    check(n + ".3: which drops the signature field, so the toBeSigned carries no AlgorithmIdentifier there",
+      pki.asn1.decode(pre).children.length ===
+        pki.asn1.decode(der).children[0].children.length - 1);
+    check(n + ".4: and is the toBeSigned alone, not a SEQUENCE wrapping it and the outer algorithm",
+      Buffer.compare(pki.altSig.signedData(der), whole) !== 0);
+
+    // The interop fact, computed without this toolkit's verify path: the signature the structure
+    // carries checks out against the independently rebuilt preimage.
+    check(n + ".5: the carried signature verifies against the independently rebuilt preimage",
+      crypto.verify(null, pre, crypto.createPublicKey(spkiKey), carried) === true);
+    check(n + ".6: and does NOT verify against the other reading, the two being different bytes",
+      crypto.verify(null, whole, crypto.createPublicKey(spkiKey), carried) === false);
+
+    // The verb's own verdict on each form. A structure signed the other way is a signature that does
+    // not cover these bytes, so it is refused rather than accepted under a second scope.
+    check(n + ".7: the verb verifies a " + kind + " signed over the preimage it computes",
+      (await pki.altSig.verify(_withAltSignature(der, extTag,
+        crypto.sign(null, pre, crypto.createPrivateKey({ key: ctx.altPkcs8, format: "der", type: "pkcs8" })))
+      , ctx.altSpki)) === true);
+    check(n + ".8: and refuses one signed over the whole structure instead",
+      (await pki.altSig.verify(_withAltSignature(der, extTag,
+        crypto.sign(null, whole, crypto.createPrivateKey({ key: ctx.altPkcs8, format: "der", type: "pkcs8" })))
+      , ctx.altSpki)) === false);
+  }
+}
+
 async function run() {
   testSurface();
   testPreimage();
@@ -739,6 +916,7 @@ async function run() {
   await testDecodeRefusals(dctx);
   var bctx = await testBuilder();
   await testCrl(bctx);
+  await testPreTbsPreimage(bctx);
   await testAltKeyPairMismatchRefused(bctx);
   await testLint(bctx);
   testInspect();
