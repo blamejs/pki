@@ -644,6 +644,72 @@ async function testOptionsReadOnce() {
   check("jose: opts.key is read exactly once", reads === 1);
 }
 
+// `pki.jose.sign` takes its payload and its key off ONE caller object, and it reads them in that order:
+// the payload first, then `opts.key`. Reading the key is caller code when it is an accessor, so over a
+// view of the payload it runs between the payload being looked at and being encoded, and replaces what
+// gets signed after the verb has accepted the payload it was handed. The JWS stays self-consistent, its
+// signature covering the payload it carries, which is why the check is against the ORIGINAL bytes and
+// not against the signature.
+//
+// The accessor is defined rather than written as a literal, because an object literal's getter would be
+// invoked by any copy the test itself made, firing before the verb was called and proving nothing.
+async function testPayloadIsTakenBeforeTheOptionsAreRead() {
+  var kp = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  var jwk = await subtle.exportKey("jwk", kp.publicKey);
+  var header = outerHeader({ jwk: jwk });
+  var original = Buffer.from("{\"a\":\"the original jose payload value\"}");
+
+  // CONTROL: a plain options object emits the payload it was given.
+  var plain = await pki.jose.sign({ protected: header, payload: Buffer.from(original), key: kp.privateKey });
+  check("PS1 CONTROL a plain options object emits the payload it was given",
+    Buffer.from(plain.payload, "base64url").equals(original));
+
+  var live = Buffer.from(original);
+  var reads = 0;
+  var hostile = { protected: header, payload: live };
+  Object.defineProperty(hostile, "key", {
+    get: function () { reads += 1; live.fill(0x42); return kp.privateKey; },
+    enumerable: true, configurable: true,
+  });
+  var jws = await pki.jose.sign(hostile);
+  check("PS2 CONTROL the key accessor ran during the call", reads > 0);
+  check("PS3 the signed payload is the one handed over, not what the key accessor substituted",
+    Buffer.from(jws.payload, "base64url").equals(original));
+
+  // `opts.protected` is read and serialized BEFORE the payload, so it is the EARLIER route, and closing
+  // the key route alone leaves it open. Serializing the header touches every field of it, so a getter on
+  // the header object, on one of its fields, or a `toJSON` on it, all run before the payload is taken.
+  var liveH = Buffer.from(original);
+  var headerReads = 0;
+  var hostileHeader = { protected: null, payload: liveH, key: kp.privateKey };
+  Object.defineProperty(hostileHeader, "protected", {
+    get: function () { headerReads += 1; liveH.fill(0x43); return header; },
+    enumerable: true, configurable: true,
+  });
+  var jws2 = await pki.jose.sign(hostileHeader);
+  check("PS5 CONTROL the protected-header accessor ran during the call", headerReads > 0);
+  check("PS6 the payload survives an accessor on opts.protected, which is read before it",
+    Buffer.from(jws2.payload, "base64url").equals(original));
+
+  // The same through a field of the header, which JSON serialization reaches.
+  var liveF = Buffer.from(original);
+  var fieldReads = 0;
+  var hdrWithGetter = { alg: header.alg, nonce: header.nonce, url: header.url };
+  Object.defineProperty(hdrWithGetter, "jwk", {
+    get: function () { fieldReads += 1; liveF.fill(0x44); return jwk; },
+    enumerable: true, configurable: true,
+  });
+  var jws3 = await pki.jose.sign({ protected: hdrWithGetter, payload: liveF, key: kp.privateKey });
+  check("PS7 CONTROL the header-field accessor ran during the call", fieldReads > 0);
+  check("PS8 and the payload survives an accessor on a header field",
+    Buffer.from(jws3.payload, "base64url").equals(original));
+  // The JWS must still verify, so the fix did not simply desynchronize the signature from the payload.
+  // The header embeds the JWK, so the verifier reads the key from the message itself, and `verify`
+  // throws rather than reporting a boolean, so reaching the payload at all is the verdict.
+  check("PS4 and the emitted JWS verifies, over the original payload",
+    Buffer.from((await pki.jose.verify(jws, OUTER)).payload).equals(original));
+}
+
 async function run() {
   testBase64url();
   testJsonReader();
@@ -654,6 +720,7 @@ async function run() {
   await testProfileAndErrorBranches();
   await testInnerProfilesAndRsaVariants();
   await testForeignCryptoKeys();
+  await testPayloadIsTakenBeforeTheOptionsAreRead();
   console.log("CHECKS " + helpers.getChecks());
 }
 

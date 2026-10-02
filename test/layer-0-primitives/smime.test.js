@@ -1182,6 +1182,50 @@ async function run() {
   check("122. an unprotected message reports fromMismatch null, never a passed comparison",
     v.headerProtection.present === false && v.headerProtection.fromMismatch === null);
 
+  // Every verb that builds an entity views the caller's content and only then reads the options that
+  // describe it, `opts.contentType` among them. An accessor there is caller code that runs after the
+  // content has been looked at and before it has been used, so over a view it replaces what gets
+  // signed, encrypted or compressed, after the verb has accepted the content it was handed. One shared
+  // builder feeds all of them, so all of them had it.
+  var cs = signing.makeSigner("ec-p256");
+  var cr = makeRecipient("ec-p384");
+  var payload = Buffer.from("the original smime payload, forty-eight bytes ok");
+  // Defined rather than written as a literal that is then spread or assigned: `Object.assign` and the
+  // spread both INVOKE a getter to copy its value, which would fire the accessor in this test before the
+  // verb was even called and prove nothing about the verb.
+  function hostileCt(live, extra) {
+    var o = {};
+    Object.keys(extra || {}).forEach(function (k) { o[k] = extra[k]; });
+    Object.defineProperty(o, "contentType", {
+      get: function () { live.fill(0x42); return "text/plain; charset=utf-8"; },
+      enumerable: true, configurable: true,
+    });
+    return o;
+  }
+  var entityArms = [
+    ["signs", function (c, o) { return pki.smime.sign(c, { key: cs.key, cert: cs.cert }, o); },
+      async function (m) { return (await pki.smime.verify(m, { certs: [cs.cert] })).content; }],
+    ["encrypts", function (c, o) { return pki.smime.encrypt(c, [{ cert: cr.cert }], o); },
+      async function (m) { return (await pki.smime.decrypt(m, { key: cr.key, cert: cr.cert })).content; }],
+    ["compresses", function (c, o) { return pki.smime.compress(c, o); },
+      async function (m) { return (await pki.smime.decompress(m)).content; }],
+    ["signs with protected headers", function (c, o) {
+      return pki.smime.sign(c, { key: cs.key, cert: cs.cert }, o);
+    }, async function (m) { return (await pki.smime.verify(m, { certs: [cs.cert] })).content; },
+    { protectHeaders: true, headers: [{ name: "Subject", value: "s" }] }],
+  ];
+  for (var ei = 0; ei < entityArms.length; ei++) {
+    var arm = entityArms[ei], n = "144." + (ei + 1);
+    var plainOpts = { contentType: "text/plain; charset=utf-8" };
+    Object.keys(arm[3] || {}).forEach(function (k) { plainOpts[k] = arm[3][k]; });
+    // CONTROL: the plain options carry the payload through, so a difference is the accessor.
+    check(n + ".0 CONTROL pki.smime " + arm[0] + " the payload with plain options",
+      (await arm[2](await arm[1](Buffer.from(payload), plainOpts))).indexOf(payload) !== -1);
+    var live = Buffer.from(payload);
+    check(n + ".1 pki.smime " + arm[0] + " the content handed over, not what an option accessor substituted",
+      (await arm[2](await arm[1](live, hostileCt(live, arm[3])))).indexOf(payload) !== -1);
+  }
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
