@@ -21,12 +21,160 @@
  */
 
 var helpers = require("../helpers");
+var signing = require("../helpers/signing");
+var crypto = require("crypto");
 var check = helpers.check;
 var pki = helpers.pki;
 var b = pki.asn1.build;
 
 function ids(report) { return report.findings.map(function (f) { return f.id; }); }
 function has(report, id) { return ids(report).indexOf(id) !== -1; }
+
+var SOP_ROW = "lint/rfc9883/signature-certificate-requested";
+
+// A second copy of a named attribute spliced into a signed request. The builder emits one, so a request
+// carrying two exists only on the wire, and the shape has to be made rather than built.
+function duplicateAttribute(csrDer, attrOidDotted) {
+  var root = pki.asn1.decode(csrDer);
+  var cri = root.children[0];
+  var attrs = cri.children[cri.children.length - 1];
+  if (!attrs || !attrs.children || !attrs.children.length) return null;
+  var parts = [], found = false;
+  for (var a = 0; a < attrs.children.length; a++) {
+    var attr = attrs.children[a];
+    parts.push(attr.bytes);
+    if (pki.asn1.read.oid(attr.children[0]) === attrOidDotted) { parts.push(attr.bytes); found = true; }
+  }
+  if (!found) return null;
+  var newAttrs = b.contextConstructed(0, Buffer.concat(parts));
+  var keptCri = [];
+  for (var i = 0; i < cri.children.length - 1; i++) keptCri.push(cri.children[i].bytes);
+  var newCri = b.sequence([b.raw(Buffer.concat(keptCri)), b.raw(newAttrs)]);
+  return b.sequence([b.raw(newCri), b.raw(root.children[1].bytes), b.raw(root.children[2].bytes)]);
+}
+
+// ---- R1-R11: the RFC 9883 request profile --------------------------------------------------
+// Sec. 6 states "The privateKeyPossessionStatement attribute MUST NOT be used to obtain a signature
+// certificate", and sec. 4 states the same requirement as a property of the request: "the subjectPKInfo
+// MUST contain the public key for the key establishment algorithm." The row read that off the keyUsage
+// extension the request ASKS FOR, so a request that
+// named no usage at all reported the prohibition as not engaged while asking to certify a key that can
+// only ever sign. `pki.possession.verifyRequest` reads the subject key as well and rejects that request,
+// so the linter graded conforming what the verifier refuses, and `pki.csr.sign` under this profile
+// emitted it. The two doors answer from one table of the signature-only families.
+async function testRfc9883Profile() {
+  var caKp = signing.makeSigner("ec-p256");
+  var NB = new Date("2026-01-01T00:00:00Z");
+  var NA = new Date("2030-01-01T00:00:00Z");
+  var caDer = await pki.x509.sign({
+    subject: "Possession CA", subjectPublicKey: caKp.spki, serialNumber: 1n,
+    notBefore: NB, notAfter: NA,
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "cRLSign"] },
+  }, { key: caKp.key });
+  var sigKp = signing.makeSigner("ec-p256");
+  var sigCertDer = await pki.x509.sign({
+    subject: "kem.example", subjectPublicKey: sigKp.spki, serialNumber: 0x22n,
+    notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"] },
+  }, { cert: caDer, key: caKp.key });
+  var sigParsed = pki.schema.x509.parse(sigCertDer);
+  var signer = { issuer: sigParsed.issuer.bytes, serialNumber: sigParsed.serialNumber };
+
+  function spec(spki, extensionRequest) {
+    var s = {
+      subject: "kem.example", subjectPublicKey: spki,
+      privateKeyPossessionStatement: { signer: signer, certificate: sigCertDer },
+    };
+    if (extensionRequest) s.extensionRequest = extensionRequest;
+    return s;
+  }
+  function spkiOf(alg, opts) {
+    return crypto.generateKeyPairSync(alg, opts).publicKey.export({ format: "der", type: "spki" });
+  }
+  // Built under "none" so the fixture exists whatever the build gate does with it; the gate is the
+  // separate subject of R8-R10.
+  async function request(spki, extensionRequest) {
+    return pki.csr.sign(spec(spki, extensionRequest), { key: sigKp.key }, { profile: "none" });
+  }
+  function lint(der) { return pki.lint.csr(der, { profile: "rfc9883" }); }
+
+  // R1-R4: a subject key that can ONLY sign, with nothing naming a usage. Four families rather than
+  // one example of one, since a table that misses a family is how the prohibition goes unenforced for it.
+  var SIGN_ONLY = [
+    ["Ed25519", "ed25519", undefined],
+    ["Ed448", "ed448", undefined],
+    ["ML-DSA-65", "ml-dsa-65", undefined],
+    ["DSA", "dsa", { modulusLength: 2048, divisorLength: 256 }],
+  ];
+  for (var i = 0; i < SIGN_ONLY.length; i++) {
+    var der = await request(spkiOf(SIGN_ONLY[i][1], SIGN_ONLY[i][2]), null);
+    var rep = lint(der);
+    check("R" + (i + 1) + ". a request to certify a signature-only " + SIGN_ONLY[i][0] +
+      " key is flagged even though it names no keyUsage (" + (ids(rep).join(",") || "no findings") + ")",
+      has(rep, SOP_ROW));
+    // The linter's verdict and the verifier's are the same question, so they answer alike.
+    var refused;
+    try {
+      var v = await pki.possession.verifyRequest(der, { trustAnchors: [caDer], time: NB });
+      refused = v.valid !== true;
+    } catch (e) { void e; refused = true; }
+    check("R" + (i + 1) + "a. ...and pki.possession.verifyRequest refuses the same request, the two agreeing",
+      refused === true);
+  }
+
+  // R5-R7: CONTROLS. The attribute exists so a key that CANNOT sign can be certified, and a key that can
+  // do either says nothing on its own. Without these the rows above would pass for a rule that flagged
+  // every request carrying the attribute.
+  var kemDer = await request(spkiOf("ml-kem-768"), null);
+  check("R5. CONTROL an ML-KEM subject key naming no usage is not flagged, which is the mechanism",
+    !has(lint(kemDer), SOP_ROW));
+  var x25519Der = await request(spkiOf("x25519"), null);
+  check("R6. CONTROL nor is an X25519 subject key, the other kind that cannot sign",
+    !has(lint(x25519Der), SOP_ROW));
+  var rsaDer = await request(spkiOf("rsa", { modulusLength: 2048 }), null);
+  check("R7. CONTROL nor is an RSA key, which can do either and so says nothing on its own",
+    !has(lint(rsaDer), SOP_ROW));
+
+  // R8: the route that already worked. A request naming a signature usage outright is still flagged, so
+  // reading the subject key ADDED a reason rather than replacing one.
+  var namedDer = await request(spkiOf("rsa", { modulusLength: 2048 }), { keyUsage: ["digitalSignature"] });
+  check("R8. a request naming digitalSignature outright is still flagged",
+    has(lint(namedDer), SOP_ROW));
+
+  // R9-R11: the build gate advertises this profile, so it enforces what the profile states.
+  var gateCode = "NO-THROW";
+  try {
+    await pki.csr.sign(spec(spkiOf("ed25519"), null), { key: sigKp.key }, { profile: "rfc9883" });
+  } catch (e) { gateCode = (e && e.code) || "NO-CODE"; }
+  check("R9. pki.csr.sign under profile rfc9883 refuses to emit the request the profile forbids (" +
+    gateCode + ")", gateCode === "csr/profile-violation");
+  var kemGate;
+  try {
+    kemGate = await pki.csr.sign(spec(spkiOf("ml-kem-768"), null), { key: sigKp.key }, { profile: "rfc9883" });
+  } catch (e) { void e; kemGate = null; }
+  check("R10. CONTROL ...and still emits the key-establishment request the attribute exists for",
+    kemGate !== null && kemGate.length > 0);
+  var rows = pki.lint.rules("rfc9883", "csr").map(function (r) { return r.id; });
+  check("R11. rules('rfc9883', 'csr') lists the row whose reach this covers",
+    rows.indexOf(SOP_ROW) !== -1);
+
+  // R12-R13: the other half of the same divergence. Nothing in RFC 9883 says which of several statements a
+  // CA should honor, so `pki.possession.verifyRequest` refuses a request carrying more than one; the linter
+  // reported nothing about it, so the build gate under this profile would have emitted one.
+  var oneStatement = await request(spkiOf("ml-kem-768"), null);
+  var twoStatements = duplicateAttribute(oneStatement, pki.oid.byName("statementOfPossession"));
+  check("R12. a request carrying two statementOfPossession attributes is flagged (" +
+    (ids(lint(twoStatements)).join(",") || "no findings") + ")",
+    has(lint(twoStatements), "lint/rfc9883/statement-attribute-repeated"));
+  var twoRefused;
+  try {
+    var tv = await pki.possession.verifyRequest(twoStatements, { trustAnchors: [caDer], time: NB });
+    twoRefused = tv.valid !== true;
+  } catch (e) { void e; twoRefused = true; }
+  check("R12a. ...and pki.possession.verifyRequest refuses it, the two agreeing",
+    twoRefused === true);
+  check("R13. CONTROL the same request carrying one statement is not flagged",
+    !has(lint(oneStatement), "lint/rfc9883/statement-attribute-repeated"));
+}
 
 async function run() {
   var kp = await pki.key.generate("Ed25519");
@@ -272,6 +420,8 @@ async function run() {
     posed.threw === "lint/bad-input" ||
     (Array.isArray(posed.findings) && posed.findings.length === 1 &&
       posed.findings[0].id === "lint/unparseable"));
+
+  await testRfc9883Profile();
 
   // ---- C19-C21: the surface ----------------------------------------------------------------
   check("C19. the CSR profiles are enumerated",

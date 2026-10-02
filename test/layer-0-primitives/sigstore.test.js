@@ -385,9 +385,29 @@ async function buildSctChainBundle(o) {
     inclusionPromise: { signedEntryTimestamp: setSig.toString("base64") },
     inclusionProof: { logIndex: 0, treeSize: 1, hashes: [], rootHash: rootHash.toString("base64"), checkpoint: { envelope: cpEnvelope } },
     canonicalizedBody: canonBuf.toString("base64") };
+  // `decoyInter` prepends an intermediate carrying the SAME subject and the SAME issuer as the real one but
+  // a different key, so it did not sign the leaf. It is what a CA key rotation leaves in a bundle, and it
+  // assembles by NAME while failing validation: the real sibling behind it must still be reached.
+  var chainCerts = [{ rawBytes: leafDer.toString("base64") }];
+  // `cyclicDecoys` prepends N intermediates whose subject AND issuer are both the real one's subject, so
+  // every one of them is a candidate at every depth of the walk. They are what exhausts a step budget, and
+  // they sit BEFORE the real intermediate so the search must still reach it.
+  for (var cd = 0; cd < (o.cyclicDecoys || 0); cd += 1) {
+    var cycKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+    chainCerts.push({ rawBytes: synCert({ serial: BigInt(200 + cd), issuer: "syn-inter", subject: "syn-inter",
+      notBefore: NB, notAfter: NA, subjectKey: cycKp.publicKey, signerKey: cycKp.privateKey,
+      extensions: caExts }).toString("base64") });
+  }
+  if (o.decoyInter === true) {
+    var decoyKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+    var decoyDer = synCert({ serial: 22n, issuer: "syn-root", subject: "syn-inter", notBefore: NB, notAfter: NA,
+      subjectKey: decoyKp.publicKey, signerKey: rootKp.privateKey, extensions: caExts });
+    chainCerts.push({ rawBytes: decoyDer.toString("base64") });
+  }
+  chainCerts.push({ rawBytes: interDer.toString("base64") });
   var bundle = { mediaType: "application/vnd.dev.sigstore.bundle.v0.3+json",
     verificationMaterial: { tlogEntries: [te],
-      x509CertificateChain: { certificates: [{ rawBytes: leafDer.toString("base64") }, { rawBytes: interDer.toString("base64") }] } },
+      x509CertificateChain: { certificates: chainCerts } },
     dsseEnvelope: env };
   return {
     bundle: bundle,
@@ -430,6 +450,37 @@ async function run() {
   var v = await pki.sigstore.verifyBundle(BUNDLE, TM);
   check("verifyBundle: the real bundle verifies (all legs)", v && v.verified === true);
   check("#78 valid aliases verified on the sigstore verdict", v.valid === true && v.valid === v.verified);
+
+  // The pinned trust lists are byte options, and the set the door admits has to be the set it handles.
+  // `guard.bytes.isByteSource` admits a DataView and an ArrayBuffer; the snapshot that copies these keys
+  // took neither, so a caller holding a key as the ArrayBuffer `Response.arrayBuffer()` returned had the
+  // bundle refused for its container rather than its content. This runs on the REAL bundle, so the
+  // narrow operation is actually reached: a probe on a malformed bundle never gets this far and its
+  // silence says nothing.
+  async function verifyWithKeyAs(convert) {
+    var tm = trustMaterial();
+    tm.rekorKeys = tm.rekorKeys.map(function (k) {
+      return { keyId: convert(k.keyId), spki: convert(k.spki), validFor: k.validFor };
+    });
+    try {
+      var r = await pki.sigstore.verifyBundle(BUNDLE, tm);
+      return r && r.verified === true ? "verified" : "unverified";
+    } catch (e) { return (e && e.isPkiError === true) ? "throw:" + e.code : "UNTYPED:" + ((e && e.message) || e); }
+  }
+  function asBuffer(b) { return Buffer.from(b); }
+  function asUint8(b) { return new Uint8Array(Buffer.from(b)); }
+  function asDataView(b) { var u = new Uint8Array(Buffer.from(b)); return new DataView(u.buffer); }
+  function asArrayBuffer(b) { return new Uint8Array(Buffer.from(b)).buffer; }
+  var repOutcomes = [];
+  repOutcomes.push(["Buffer", await verifyWithKeyAs(asBuffer)]);
+  repOutcomes.push(["Uint8Array", await verifyWithKeyAs(asUint8)]);
+  repOutcomes.push(["DataView", await verifyWithKeyAs(asDataView)]);
+  repOutcomes.push(["ArrayBuffer", await verifyWithKeyAs(asArrayBuffer)]);
+  var repBase = repOutcomes[0][1];
+  var repBad = repOutcomes.slice(1).filter(function (r) { return r[1] !== repBase; });
+  check("BS1: a pinned rekor key verifies the same whichever byte representation holds it (" +
+    repBase + (repBad.length ? "; diverged: " + repBad.map(function (r) { return r[0] + " -> " + r[1]; }).join(" | ") : "") + ")",
+    repBase === "verified" && repBad.length === 0);
 
   // An entry is tried until one passes every entry-dependent check, and those include a path
   // validation. The count is bounded so a bundle that fits the byte budget cannot multiply that
@@ -495,6 +546,26 @@ async function run() {
     vChain.verified === true && vChain.sctChecked === true && vChain.validScts === 1);
   check("SCT-4c the same bundle without ctLogs verifies and reports the receipt unchecked",
     (await pki.sigstore.verifyBundle(sctChain.bundle, sctChain.trust)).sctChecked === false);
+
+  // A path that assembles by NAME can still fail validation, and the sibling that would have validated must
+  // not be lost because a same-named one was tried first. The decoy here carries the real intermediate's
+  // subject AND issuer with a different key, so it did not sign the leaf: assembling stops at it, validation
+  // rejects it, and the search has to resume rather than move on to the next anchor.
+  var decoyChain = await buildSctChainBundle({ decoyInter: true });
+  var vDecoy = await pki.sigstore.verifyBundle(decoyChain.bundle,
+    Object.assign({}, decoyChain.trust, { ctLogs: decoyChain.ctLogs }));
+  check("SCT-4d an intermediate that assembles by name but fails validation does not hide the one that validates",
+    vDecoy.verified === true && vDecoy.sctChecked === true && vDecoy.validScts === 1);
+
+  // And the search's own bound must not become the denial. Eight intermediates sharing the real one's
+  // subject AND issuer are candidates at every depth, which is what exhausts a step budget, and they sit
+  // ahead of the real one. A bundle a rotated CA produced is not required to list its certificates in any
+  // helpful order, so the verdict must not depend on it.
+  var cyc = await buildSctChainBundle({ cyclicDecoys: 8 });
+  var tCyc = Date.now();
+  var vCyc = await pki.sigstore.verifyBundle(cyc.bundle, Object.assign({}, cyc.trust, { ctLogs: cyc.ctLogs }));
+  check("SCT-4e eight same-subject intermediates ahead of the real one do not exhaust the search (" +
+    (Date.now() - tCyc) + "ms)", vCyc.verified === true && vCyc.validScts === 1);
 
   check("SCT-5 an empty ctLogs array is refused rather than read as no policy",
     (await codeOf(pki.sigstore.verifyBundle(BUNDLE, Object.assign({}, TM, { ctLogs: [] })))) === "sigstore/bad-input");
@@ -1266,6 +1337,45 @@ async function run() {
   var synDeep = buildSynBundle({ leafIssuer: "depth-1", extraChain: deep });
   check("synthetic over-deep DN chain -> sigstore/chain-incomplete",
     await codeOf(pki.sigstore.verifyBundle(synDeep.bundle, synDeep.trust)) === "sigstore/chain-incomplete");
+
+  // Two intermediates can share a subject DN, which is what a rotated CA looks like, and only one of them
+  // leads to the anchor. Taking the first match by name and stopping loses a path that exists, so the walk
+  // BACKTRACKS. The observable is which failure comes back: `chain-incomplete` means no path was assembled
+  // at all, `chain-invalid` means one was and then did not validate. These synthetic intermediates are
+  // self-signed, so no assembled path can validate; the point is that one is FOUND.
+  var decoyFirst = buildSynBundle({ leafIssuer: "mid-ca", extraChain: [
+    synChainCert("mid-ca", "nowhere-root"),   // same subject, issuer leads nowhere: tried first
+    synChainCert("mid-ca", "syn-root"),       // same subject, issuer IS the anchor: the real one
+  ] });
+  var decoyCode = await codeOf(pki.sigstore.verifyBundle(decoyFirst.bundle, decoyFirst.trust));
+  check("PATH-BACKTRACK a decoy intermediate sharing the real one's subject does not hide the path (" +
+    decoyCode + ")", decoyCode === "sigstore/chain-invalid");
+  // The control: with ONLY the real intermediate the verdict is the same, so the decoy case now behaves as
+  // though the decoy were not there, which is the property. Without this the check above would also pass
+  // for a walk that assembled some other wrong path.
+  var realOnly = buildSynBundle({ leafIssuer: "mid-ca", extraChain: [synChainCert("mid-ca", "syn-root")] });
+  check("PATH-BACKTRACK control: the same bundle without the decoy reaches the same verdict",
+    (await codeOf(pki.sigstore.verifyBundle(realOnly.bundle, realOnly.trust))) === decoyCode);
+  // And the decoy alone still finds nothing, so `chain-invalid` above came from the real intermediate.
+  var decoyOnly = buildSynBundle({ leafIssuer: "mid-ca", extraChain: [synChainCert("mid-ca", "nowhere-root")] });
+  check("PATH-BACKTRACK control: the decoy alone assembles no path",
+    (await codeOf(pki.sigstore.verifyBundle(decoyOnly.bundle, decoyOnly.trust))) === "sigstore/chain-incomplete");
+
+  // Backtracking needs a STEP bound or a bundle of same-subject decoys makes the search combinatorial,
+  // which is a parser-DoS rather than a longer search. One large input, timed: a chain of decoys that
+  // reaches no anchor must be abandoned promptly rather than explored.
+  // Each decoy carries the SAME subject AND issuer, so every one of them is a candidate at every depth and
+  // the branch factor stays at 40 all the way down. The visited check does not help: they are 40 distinct
+  // certificates, not one revisited. Decoys that merely dead-end would be a linear walk and would prove
+  // nothing, which is what a first version of this vector did.
+  var manyDecoys = [];
+  for (var dd = 0; dd < 40; dd += 1) manyDecoys.push(synChainCert("fan-ca", "fan-ca"));
+  var fanOut = buildSynBundle({ leafIssuer: "fan-ca", extraChain: manyDecoys });
+  var t0 = Date.now();
+  var fanCode = await codeOf(pki.sigstore.verifyBundle(fanOut.bundle, fanOut.trust));
+  var elapsed = Date.now() - t0;
+  check("PATH-BACKTRACK 40 same-subject decoys are abandoned, not explored (" + fanCode + ", " +
+    elapsed + "ms)", fanCode === "sigstore/chain-incomplete" && elapsed < 5000);
 
   await runMessageSignature(TM);
   await runRekorV2();

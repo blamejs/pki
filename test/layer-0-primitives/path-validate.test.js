@@ -2121,6 +2121,47 @@ async function testRevocation() {
   var res14 = await run([leaf], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlRevoking]) });
   check("revoked serial rejected via CRL checker", res14.valid === false && failCodes(res14).indexOf("path/revoked") !== -1);
 
+  // Both checker factories take a LIST. Handed one CRL or one response directly, which is the natural
+  // slip, they mapped over whatever arrived: an ArrayBuffer or a plain object fell through to `.map` and
+  // raised a bare TypeError naming an internal expression, with no code for a caller to branch on, and a
+  // Buffer mapped over its BYTES and reported the first byte as a malformed CRL. The refusal now names
+  // the argument under this module's own code, like every other entry point here.
+  function ctorCode(fn) {
+    try { fn(); return "NO-THROW"; } catch (e) { return (e && e.isPkiError === true) ? e.code : "UNTYPED"; }
+  }
+  var NOT_LISTS = [
+    ["an ArrayBuffer", new ArrayBuffer(32)],
+    ["a DataView", new DataView(new ArrayBuffer(32))],
+    ["a plain object", { length: 1 }],
+    ["a number", 7],
+    ["a bare CRL Buffer", crlRevoking],
+  ];
+  var crlBad = 0, ocspBad = 0;
+  for (var ni = 0; ni < NOT_LISTS.length; ni++) {
+    var val = NOT_LISTS[ni][1];
+    if (ctorCode(function () { return pki.path.crlChecker(val); }) === "path/bad-input") crlBad++;
+    if (ctorCode(function () { return pki.path.ocspChecker(val); }) === "path/bad-input") ocspBad++;
+  }
+  check("crlChecker refuses every non-list with path/bad-input (" + crlBad + "/" + NOT_LISTS.length + ")",
+    crlBad === NOT_LISTS.length);
+  check("ocspChecker refuses every non-list with path/bad-input (" + ocspBad + "/" + NOT_LISTS.length + ")",
+    ocspBad === NOT_LISTS.length);
+  // CONTROL: an omitted list and an empty list are both "nothing to check" and stay accepted, so the
+  // refusal above did not turn an absent argument into a fault.
+  /* An omitted list, an explicit null and an empty list are all "nothing to check", which is deliberate
+     and not an oversight of the refusal above: a checker holding no material reports every certificate as
+     revocation-undetermined, and `pki.path.validate` treats that as a failure to establish status rather
+     than as a pass. So the permissive case is fail-closed downstream, and `crlChecker(maybeCrls)` with
+     nothing to pass is a caller saying so rather than a caller making a mistake. */
+  check("crlChecker still accepts an omitted list, an explicit null and an empty list",
+    ctorCode(function () { return pki.path.crlChecker(); }) === "NO-THROW" &&
+    ctorCode(function () { return pki.path.crlChecker(null); }) === "NO-THROW" &&
+    ctorCode(function () { return pki.path.crlChecker([]); }) === "NO-THROW");
+  check("ocspChecker still accepts an omitted list, an explicit null and an empty list",
+    ctorCode(function () { return pki.path.ocspChecker(); }) === "NO-THROW" &&
+    ctorCode(function () { return pki.path.ocspChecker(null); }) === "NO-THROW" &&
+    ctorCode(function () { return pki.path.ocspChecker([]); }) === "NO-THROW");
+
   // ...and the same CRL without the serial passes.
   var crlClean = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 1234n }] });
   var res14b = await run([leaf], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlClean]) });

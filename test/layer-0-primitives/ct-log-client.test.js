@@ -112,6 +112,32 @@ async function runGetSth() {
     f.transport.calls.length === 1 && f.transport.calls[0].method === "GET" &&
     f.transport.calls[0].url === u("get-sth"));
 
+  /* `opts.logKey` is documented "BufferSource, // the log's SubjectPublicKeyInfo, pinned by the caller",
+     and the copy that takes it accepted a Buffer and a Uint8Array only. So the ArrayBuffer that
+     `crypto.subtle.exportKey("spki", ...)` returns, which is how a caller holding a WebCrypto key has it,
+     was refused with `ct/bad-input` before the transport ran, while a Buffer of the identical bytes
+     fetched and verified. The property is that the pinned key verifies the same whichever container holds
+     it, run on a fetch that SUCCEEDS so the copy is actually reached. */
+  async function sthWithKeyAs(convert) {
+    var h = opts(log, { [u("get-sth")]: resp(200, sthBody(log, 3, t.root), "application/json") });
+    h.o.logKey = convert(h.o.logKey);
+    try {
+      var s = await pki.ct.getSth(h.o);
+      return s.treeSize === 3n ? "fetched" : "wrong-tree";
+    } catch (e) { return (e && e.isPkiError === true) ? "throw:" + e.code : "UNTYPED:" + ((e && e.message) || e); }
+  }
+  var keyReps = [
+    ["Buffer", await sthWithKeyAs(function (k) { return Buffer.from(k); })],
+    ["Uint8Array", await sthWithKeyAs(function (k) { return new Uint8Array(Buffer.from(k)); })],
+    ["DataView", await sthWithKeyAs(function (k) { var x = new Uint8Array(Buffer.from(k)); return new DataView(x.buffer); })],
+    ["ArrayBuffer", await sthWithKeyAs(function (k) { return new Uint8Array(Buffer.from(k)).buffer; })],
+  ];
+  var keyBase = keyReps[0][1];
+  var keyBad = keyReps.slice(1).filter(function (r) { return r[1] !== keyBase; });
+  check("S1c: the pinned log key verifies the same whichever byte container holds it (" + keyBase +
+    (keyBad.length ? "; diverged: " + keyBad.map(function (r) { return r[0] + " -> " + r[1]; }).join(" | ") : "") + ")",
+    keyBase === "fetched" && keyBad.length === 0);
+
   /* The signature is the whole point: an STH nobody vouched for is not returned. */
   var other = makeLog();
   var g = opts(other, { [u("get-sth")]: resp(200, sthBody(log, 3, t.root), "application/json") });

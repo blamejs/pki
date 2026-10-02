@@ -513,6 +513,107 @@ function runTilePaths() {
     typeof pki.tlog.parseEntryBundlePath !== "function");
 }
 
+// Every binary door here admits what `guard.bytes.isByteSource` admits, and says so: "must be a byte
+// source". That set is Buffer, TypedArray, DataView and ArrayBuffer. The doors then measured the input with
+// `lengthOf` and copied it with `snapshot`, neither of which takes the whole admitted set: an ArrayBuffer
+// reached `lengthOf` and threw a bare TypeError carrying no code, and a DataView over valid bytes reached
+// `snapshot` and was refused as though its content were wrong. A buffer from `Response.arrayBuffer()` is
+// the ordinary way these bytes arrive, so the admitted set has to be the handled set.
+//
+// The property is OUTCOME EQUIVALENCE, which needs no new fixture and holds for valid and invalid bytes
+// alike: the four representations of one byte string reach one verdict. A vector built only from valid
+// bytes would miss a door that accepts the representations and then misreads their length.
+async function runByteSourceRepresentations() {
+  // Four views of ONE backing store, so any divergence is the door's reading and not the data.
+  function reps(bytes) {
+    var ab = new ArrayBuffer(bytes.length);
+    var u8 = new Uint8Array(ab);
+    u8.set(bytes);
+    return [
+      ["Buffer", Buffer.from(bytes)],
+      ["Uint8Array", u8],
+      ["DataView", new DataView(ab)],
+      ["ArrayBuffer", ab],
+    ];
+  }
+  // The outcome as a comparable string, so a value and a refusal compare the same way.
+  function outcome(fn, value) {
+    try {
+      var r = fn(value);
+      if (Buffer.isBuffer(r)) return "bytes:" + r.toString("hex");
+      if (Array.isArray(r)) return "list:" + r.length + ":" + r.map(function (h) {
+        return Buffer.isBuffer(h) ? h.toString("hex") : String(h);
+      }).join(",");
+      if (r && typeof r === "object") return "object:" + Object.keys(r).sort().join(",");
+      return "value:" + String(r);
+    } catch (e) {
+      if (!e || e.isPkiError !== true) {
+        return "UNTYPED:" + ((e && e.name) || typeof e) + ":" + ((e && e.message) || String(e));
+      }
+      return "throw:" + e.code;
+    }
+  }
+  function agree(label, fn, bytes) {
+    var rs = reps(bytes);
+    var base = outcome(fn, rs[0][1]);
+    var diverged = [];
+    for (var i = 1; i < rs.length; i++) {
+      var got = outcome(fn, rs[i][1]);
+      if (got !== base) diverged.push(rs[i][0] + " -> " + got);
+    }
+    check("B-" + label + ": every representation of the same bytes reaches the Buffer's verdict (" +
+      base.slice(0, 48) + (diverged.length ? "; diverged: " + diverged.join(" | ") : "") + ")",
+      diverged.length === 0 && base.indexOf("UNTYPED") !== 0);
+  }
+
+  var twoHashes = Buffer.concat([Buffer.alloc(32, 1), Buffer.alloc(32, 2)]);
+
+  // A tile, valid and invalid: a whole number of hashes, and one byte short of it.
+  agree("tile-valid", function (v) { return pki.tlog.parseTile(v); }, twoHashes);
+  agree("tile-ragged", function (v) { return pki.tlog.parseTile(v); }, Buffer.alloc(33));
+  // An entry bundle, which slices its entries out of the input.
+  agree("bundle", function (v) { return pki.tlog.parseEntryBundle(v); }, Buffer.alloc(8, 0));
+  // A key, whose ID is derived from the bytes: the same key under four representations is one key with
+  // one ID, or the identifier a log states would depend on how a caller happened to hold its key.
+  var edKp = nodeCrypto.generateKeyPairSync("ed25519");
+  var edRaw = edKp.publicKey.export({ format: "der", type: "spki" }).subarray(12);
+  agree("keyid-ed25519", function (v) { return pki.tlog.keyId("example.com/log", v); }, edRaw);
+  var ecSpki = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" })
+    .publicKey.export({ format: "der", type: "spki" });
+  agree("keyid-ecdsa", function (v) { return pki.tlog.keyId("example.com/log", v); }, ecSpki);
+
+  // A note and a checkpoint are TEXT doors, so they take a string as well; the byte representations of
+  // that same UTF-8 must still agree with each other.
+  var noteText = "example.com/log\n5\n" + Buffer.alloc(32, 0x11).toString("base64") + "\n\n";
+  agree("note", function (v) { return pki.tlog.parseNote(v); }, Buffer.from(noteText, "utf8"));
+  agree("checkpoint", function (v) { return pki.tlog.parseCheckpoint(v); }, Buffer.from(noteText, "utf8"));
+
+  // The cap still runs BEFORE the copy, for the normalized representations too. Normalizing through
+  // `guard.bytes.source` shares the caller's backing store rather than copying it, so moving the
+  // normalization ahead of the measurement did not move the allocation ahead of the limit.
+  var huge = new ArrayBuffer(16 * 1024 * 1024);
+  if (typeof global.gc === "function") global.gc();
+  var before = process.memoryUsage().arrayBuffers;
+  var capCode = "NO-THROW";
+  try { pki.tlog.parseTile(huge); } catch (e) { capCode = (e && e.code) || "NO-CODE"; }
+  var after = process.memoryUsage().arrayBuffers;
+  check("B-cap: an oversized ArrayBuffer is refused with the tile's own code (" + capCode + ")",
+    capCode === "tlog/bad-tile");
+  check("B-cap2: ...and refused before it is copied (arrayBuffers grew " +
+    Math.round((after - before) / 1048576) + " MiB, the input being 16)",
+    (after - before) < 8 * 1024 * 1024);
+
+  // A shared backing store is NOT in the admitted set, and stays refused: another thread can rewrite it
+  // between the check and the use. The refusal is typed, not a bare TypeError.
+  if (typeof SharedArrayBuffer === "function") {
+    var sab = new SharedArrayBuffer(64);
+    var sabCode = "NO-THROW";
+    try { pki.tlog.parseTile(sab); } catch (e) { sabCode = (e && e.isPkiError === true) ? e.code : "UNTYPED"; }
+    check("B-shared: a SharedArrayBuffer is refused with a typed error, not admitted (" + sabCode + ")",
+      sabCode === "tlog/bad-input");
+  }
+}
+
 function runTileData() {
   var hashes = [];
   for (var i = 0; i < 256; i++) hashes.push(Buffer.alloc(32, i));
@@ -833,6 +934,23 @@ async function runTileProofs() {
       return w === "null" || (Number(w) >= 1 && Number(w) <= 255);
     }));
 
+  /* `read` is the CALLBACK that fetches tiles, and it is the caller's property. It was read twice: once
+     for the type check and once to build the reader. An accessor answers each read separately, so the
+     function held to being a function need not be the function that served the tiles, and the proof
+     returned would be assembled from a source the check never saw. One read is the only order in which
+     the callback checked is the callback called. */
+  var fnReads = 0;
+  var honest = tiledLog(70000);
+  var swap = { index: 0n, size: 70000n };
+  Object.defineProperty(swap, "read", {
+    enumerable: true,
+    get: function () { fnReads += 1; return honest.read; },
+  });
+  var swapProof = await pki.tlog.inclusionProof(swap);
+  check("X4a: the tile-reading callback is read once, so the function checked is the function called (" +
+    fnReads + " read(s))",
+    fnReads === 1 && Array.isArray(swapProof));
+
   /* A `read` callback is the caller's, and a real one may hand back a SCRATCH buffer it reuses between
      fetches. The hashes a tile is parsed into must be copies, not views into what arrived, or a later fetch
      overwrites proof nodes already collected and the proof folded is not the proof that was served. The
@@ -1130,31 +1248,46 @@ async function runKeyTypes() {
   check("K8: a note signed by an ECDSA P-256 log key verifies", ecV.verified === true);
 
   /* All three curves the specification names, not just the one Rekor happens to
-     use: the hash follows the curve, so a P-384 key checked with SHA-256 would
-     fail and a claim of three curves tested on one says nothing about the other
-     two. */
-  var CURVES = [["prime256v1", "sha256"], ["secp384r1", "sha384"], ["secp521r1", "sha512"]];
+     use, and each signed with SHA-256. Signature type 0x02 is ECDSA "as
+     implemented by github.com/transparency-dev/witness", whose constant for the
+     byte is named algECDSAWithSHA256 and whose verifier computes
+     sha256.Sum256(msg) whatever the curve. The digest belongs to the signature
+     TYPE, not to the key: reading it off the curve rejected every conforming
+     P-384 and P-521 note. */
+  var CURVES = ["prime256v1", "secp384r1", "secp521r1"];
   var curveOk = 0;
   for (var ci = 0; ci < CURVES.length; ci++) {
-    var kp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: CURVES[ci][0] });
+    var kp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: CURVES[ci] });
     var spki = kp.publicKey.export({ format: "der", type: "spki" });
-    var sg = nodeCrypto.sign(CURVES[ci][1], msg, { key: kp.privateKey, dsaEncoding: "der" });
+    var sg = nodeCrypto.sign("sha256", msg, { key: kp.privateKey, dsaEncoding: "der" });
     var nt = text + "\n" + EM_DASH + " example.com/log " +
       Buffer.concat([pki.tlog.keyId("example.com/log", spki), sg]).toString("base64") + "\n";
     var vv = await pki.tlog.verifyNote(nt, [{ name: "example.com/log", publicKey: spki }]);
     if (vv.verified === true) curveOk++;
   }
-  check("K8b: every ECDSA curve the specification names verifies (" + curveOk + "/3)", curveOk === 3);
-  /* And the hash is not fixed: a P-384 key whose signature was made with SHA-256
-     does not verify, which is what says the curve chose the hash. */
+  check("K8b: every ECDSA curve the specification names verifies under SHA-256 (" + curveOk + "/3)",
+    curveOk === 3);
+  /* The other direction, so the check above cannot pass for a verifier that tries
+     several digests: a P-384 key whose signature was made with SHA-384, which is
+     the digest the curve would suggest, does NOT verify. */
   var p384 = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "secp384r1" });
   var p384Spki = p384.publicKey.export({ format: "der", type: "spki" });
-  var wrongHashSig = nodeCrypto.sign("sha256", msg, { key: p384.privateKey, dsaEncoding: "der" });
+  var wrongHashSig = nodeCrypto.sign("sha384", msg, { key: p384.privateKey, dsaEncoding: "der" });
   var wrongHashNote = text + "\n" + EM_DASH + " example.com/log " +
     Buffer.concat([pki.tlog.keyId("example.com/log", p384Spki), wrongHashSig]).toString("base64") + "\n";
-  check("K8c: a P-384 signature made with SHA-256 is rejected, so the curve chose the hash",
+  check("K8c: a P-384 signature made with SHA-384 is rejected, the digest being fixed by the type",
     await codeOfAsync(pki.tlog.verifyNote(wrongHashNote,
       [{ name: "example.com/log", publicKey: p384Spki }])) === "tlog/bad-signature");
+  /* And P-521 the same way, since it is the curve whose suggested digest differs
+     most from SHA-256 and the one a curve-derived table got most wrong. */
+  var p521 = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "secp521r1" });
+  var p521Spki = p521.publicKey.export({ format: "der", type: "spki" });
+  var p521Wrong = nodeCrypto.sign("sha512", msg, { key: p521.privateKey, dsaEncoding: "der" });
+  var p521WrongNote = text + "\n" + EM_DASH + " example.com/log " +
+    Buffer.concat([pki.tlog.keyId("example.com/log", p521Spki), p521Wrong]).toString("base64") + "\n";
+  check("K8d: a P-521 signature made with SHA-512 is rejected for the same reason",
+    await codeOfAsync(pki.tlog.verifyNote(p521WrongNote,
+      [{ name: "example.com/log", publicKey: p521Spki }])) === "tlog/bad-signature");
 
   var rsaSig = nodeCrypto.sign("sha256", msg, rsa.privateKey);
   var rsaNote = text + "\n" + EM_DASH + " example.com/log " +
@@ -1220,6 +1353,34 @@ async function runKeyTypes() {
   check("K15: an unknown verifyCheckpoint option is refused",
     await codeOfAsync(pki.tlog.verifyCheckpoint(ecNote,
       [{ name: "example.com/log", publicKey: ecSpki }], { Origin: "x" })) === "tlog/bad-input");
+
+  /* The pinned origin is the CALLER's object, and an accessor answers every read separately. The option
+     was read four times: once to see whether it was supplied, once for its type, once for its length, and
+     once for the comparison. A getter can therefore pass all three checks as one value and be compared as
+     another, so the origin the caller pinned is never the origin that was enforced, and the verdict says
+     the checkpoint matched a log it does not name. The value is read ONCE and the checks and the
+     comparison both read that. */
+  var reads = 0;
+  var sneaky = {};
+  Object.defineProperty(sneaky, "origin", {
+    enumerable: true,
+    get: function () { reads += 1; return reads <= 3 ? "other.example/log" : "example.com/log"; },
+  });
+  var sneakyCode = await codeOfAsync(pki.tlog.verifyCheckpoint(ecNote,
+    [{ name: "example.com/log", publicKey: ecSpki }], sneaky));
+  check("K16: an accessor-backed origin cannot pass the checks as one value and be compared as another (" +
+    reads + " read(s), " + sneakyCode + ")",
+    sneakyCode === "tlog/origin-mismatch" && reads <= 1);
+  /* And the other direction, so the fix cannot be "read it once and compare the wrong one": a getter that
+     yields the MATCHING origin on every read still verifies. */
+  var okSneaky = {};
+  Object.defineProperty(okSneaky, "origin", {
+    enumerable: true,
+    get: function () { return "example.com/log"; },
+  });
+  check("K16a: CONTROL an accessor yielding the matching origin on every read still verifies",
+    (await pki.tlog.verifyCheckpoint(ecNote, [{ name: "example.com/log", publicKey: ecSpki }],
+      okSneaky)).verified === true);
 }
 
 async function run() {
@@ -1231,6 +1392,7 @@ async function run() {
   await runTileProofs();
   await runKeyTypes();
   await runDoors();
+  await runByteSourceRepresentations();
   await runHostileBytes();
 }
 

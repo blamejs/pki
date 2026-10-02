@@ -52,6 +52,36 @@ function O(n) { return pki.oid.byName(n); }
 function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return (e && e.code) || "NO-CODE"; } }
 async function codeAsync(p) { try { await p; return "NO-THROW"; } catch (e) { return (e && e.code) || "NO-CODE"; } }
 
+// A copy of a certificate carrying one of its extensions TWICE, reassembled around the extension's own raw
+// bytes rather than re-encoded. The signature no longer covers the result, which is the point: the
+// structural refusal has to come before any signature is checked, so the code that comes back names the
+// malformed structure rather than a bad signature.
+function _duplicateExtension(der, extOid) {
+  var root = pki.asn1.decode(der);
+  var tbs = root.children[0];
+  var tagged = null, taggedIndex = -1;
+  for (var i = tbs.children.length - 1; i >= 0; i--) {
+    var k = tbs.children[i];
+    if (k.tagClass === "context" && k.tagNumber === 3) { tagged = k; taggedIndex = i; break; }
+  }
+  if (tagged === null) return null;
+  var exts = tagged.children[0];
+  var parts = [], found = false;
+  for (var e = 0; e < exts.children.length; e++) {
+    var one = exts.children[e];
+    parts.push(one.bytes);
+    if (pki.asn1.read.oid(one.children[0]) === extOid) { parts.push(one.bytes); found = true; }
+  }
+  if (!found) return null;
+  var newTagged = b.explicit(3, b.sequence([b.raw(Buffer.concat(parts))]));
+  var keptTbs = [];
+  for (var t = 0; t < tbs.children.length; t++) {
+    if (t !== taggedIndex) keptTbs.push(tbs.children[t].bytes);
+  }
+  var newTbs = b.sequence([b.raw(Buffer.concat(keptTbs)), b.raw(newTagged)]);
+  return b.sequence([b.raw(newTbs), b.raw(root.children[1].bytes), b.raw(root.children[2].bytes)]);
+}
+
 var SAPKI_OID = "2.5.29.72";
 var ALT_ALG_OID = "2.5.29.73";
 var ALT_VAL_OID = "2.5.29.74";
@@ -482,6 +512,16 @@ async function testAltKeyPairMismatchRefused(ctx) {
   }, { key: ca.key, altKey: aPkcs8, altPublicKey: aSpki });
   check("M0: CONTROL an altKey matching its altPublicKey signs and verifies",
     (await pki.altSig.verify(okDer, aSpki)) === true);
+
+  // Detecting which FORMAT the bytes are is not the same as their being a well-formed one of it. A
+  // certificate carrying the altSignatureValue extension twice passed the detector, the verb read the first
+  // and the preimage builder removed both, so an ambiguous certificate the shared parser refuses received a
+  // successful verdict. The structure is parsed now, so the rules the shared parser enforces hold here.
+  var dupExt = _duplicateExtension(okDer, pki.oid.byName("altSignatureValue"));
+  check("M0a: the spliced certificate really carries the extension twice, and the shared parser refuses it",
+    dupExt !== null && code(function () { return pki.schema.x509.parse(dupExt); }) === "x509/duplicate-extension");
+  check("M0b: a certificate carrying altSignatureValue twice is refused rather than verified",
+    (await codeAsync(pki.altSig.verify(dupExt, aSpki))) === "altsig/bad-input");
 
   check("M1: a certificate whose altKey is not the altPublicKey's private half is refused",
     (await codeAsync(pki.x509.sign({

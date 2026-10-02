@@ -872,6 +872,196 @@ function run() {
   testShadowedLengthAtEveryKeyDoor();
   testNoKemSilentlyIgnoresAFixedEphemeralKey();
   testHybridEncapWipesPqSecretOnAnEphemeralFault();
+  testEveryByteSourceRepresentation();
+}
+
+// Every byte door here admits what `guard.bytes.isByteSource` admits, and `deriveKeyPair` names that set
+// in its own refusal: "ikm must be a byte source (Buffer / TypedArray / DataView / ArrayBuffer)". It then
+// handed the input to `guard.bytes.snapshot`, which takes Buffer and Uint8Array only, so half the set the
+// message promises was refused with the error that message belongs to. An ArrayBuffer is what
+// `Response.arrayBuffer()` and `crypto.subtle.exportKey("raw", ...)` return, so the rejected half is the
+// half a caller is most likely to be holding.
+//
+// The property is that the four representations of ONE byte string reach ONE result. Asserting equality of
+// the DERIVED OUTPUT, not merely that the call succeeds, is what makes this catch a door that accepts the
+// representation and then reads the wrong length or offset from it.
+function testEveryByteSourceRepresentation() {
+  // Four views of one backing store. The DataView and the ArrayBuffer carry a non-zero byteOffset case
+  // too, since a view into the middle of a buffer is where an offset-unaware normalization goes wrong.
+  function reps(bytes) {
+    var ab = new ArrayBuffer(bytes.length);
+    new Uint8Array(ab).set(bytes);
+    // A second store with the same bytes at offset 8, so a view that ignores its offset reads padding.
+    var padded = new ArrayBuffer(bytes.length + 8);
+    new Uint8Array(padded).set(bytes, 8);
+    return [
+      ["Buffer", Buffer.from(bytes)],
+      ["Uint8Array", new Uint8Array(ab)],
+      ["DataView", new DataView(ab)],
+      ["ArrayBuffer", ab],
+      ["offset Uint8Array", new Uint8Array(padded, 8, bytes.length)],
+      ["offset DataView", new DataView(padded, 8, bytes.length)],
+    ];
+  }
+  function outcome(fn, v) {
+    try {
+      var r = fn(v);
+      if (Buffer.isBuffer(r)) return "bytes:" + r.toString("hex");
+      if (r && r.publicKey !== undefined) {
+        return "kp:" + Buffer.from(r.publicKey).toString("hex") + "/" +
+          Buffer.from(r.privateKey).toString("hex");
+      }
+      return "value:" + String(r);
+    } catch (e) {
+      if (!e || e.isPkiError !== true) return "UNTYPED:" + ((e && e.message) || String(e));
+      return "throw:" + e.code;
+    }
+  }
+  function agree(label, fn, bytes) {
+    var rs = reps(bytes);
+    var base = outcome(fn, rs[0][1]);
+    var bad = [];
+    for (var i = 1; i < rs.length; i++) {
+      var got = outcome(fn, rs[i][1]);
+      if (got !== base) bad.push(rs[i][0] + " -> " + got.slice(0, 40));
+    }
+    check("R-" + label + ": all six representations of one byte string agree (" + base.slice(0, 32) +
+      (bad.length ? "; diverged: " + bad.join(" | ") : "") + ")",
+      bad.length === 0 && base.indexOf("UNTYPED") !== 0 && base.indexOf("throw:") !== 0);
+  }
+
+  var s = pki.hpke.suites;
+  var SUITE = s.KEM.DHKEM_X25519_HKDF_SHA256;
+  var ikm = Buffer.alloc(32, 0x42);
+
+  // deriveKeyPair: the verb whose message names the whole set. The derived PAIR must be identical, since
+  // an ikm read at the wrong offset still derives A key, just not the caller's.
+  agree("derive-ikm", function (v) { return pki.hpke.deriveKeyPair(SUITE, v); }, ikm);
+
+  var kp = pki.hpke.deriveKeyPair(SUITE, ikm);
+  var ids = { kem: SUITE, kdf: s.KDF.HKDF_SHA256, aead: s.AEAD.AES_128_GCM };
+  var pt = Buffer.from("payload", "utf8");
+  // A serialized X25519 private key is named as { skm, pkm } rather than as a bare buffer, which is the
+  // door's own contract and not what is under test here.
+  var sk = { skm: kp.privateKey, pkm: kp.publicKey };
+
+  // opts.info: the recipient only opens what was sealed under the same info, so an info read differently
+  // from one representation to the next is a message that cannot be opened. The sealed bytes are
+  // randomized, so the comparison is on what the RECIPIENT reads back.
+  agree("seal-info", function (v) {
+    var out = pki.hpke.seal(ids, kp.publicKey, { info: v }, Buffer.alloc(0), pt);
+    return pki.hpke.open(ids, out.enc, sk, { info: v }, Buffer.alloc(0), out.ct);
+  }, Buffer.from("shared-context", "utf8"));
+
+  // aad, the other caller-supplied byte input on the same path.
+  agree("seal-aad", function (v) {
+    var out = pki.hpke.seal(ids, kp.publicKey, {}, v, pt);
+    return pki.hpke.open(ids, out.enc, sk, {}, v, out.ct);
+  }, Buffer.from("authenticated", "utf8"));
+
+  // The plaintext itself, which is the byte input every caller passes.
+  agree("seal-pt", function (v) {
+    var out = pki.hpke.seal(ids, kp.publicKey, {}, Buffer.alloc(0), v);
+    return pki.hpke.open(ids, out.enc, sk, {}, Buffer.alloc(0), out.ct);
+  }, Buffer.from("the message", "utf8"));
+
+  // The KEY doors are deliberately NARROWER than the byte-input doors above, and this pins that rather
+  // than widening it: a key is a node KeyObject, a Buffer, or the { pkm } / { skm } wrapper. A bare
+  // TypedArray is not among them, because for a key the alternative to a Buffer is a KeyObject, and a
+  // value that is neither has to be told apart from one that is. The refusal names the forms it takes.
+  function keyCode(fn) {
+    try { fn(); return "NO-THROW"; } catch (e) { return (e && e.isPkiError === true) ? e.code : "UNTYPED"; }
+  }
+  var KEY_REPS = [
+    ["a Uint8Array", new Uint8Array(kp.publicKey)],
+    ["a DataView", new DataView(new Uint8Array(kp.publicKey).buffer)],
+    ["an ArrayBuffer", new Uint8Array(kp.publicKey).buffer],
+  ];
+  var keyRefused = 0, keyNamed = 0;
+  for (var ki = 0; ki < KEY_REPS.length; ki++) {
+    var kv = KEY_REPS[ki][1];
+    var got = "NO-THROW", msg = "";
+    try { pki.hpke.seal(ids, kv, {}, Buffer.alloc(0), pt); }
+    catch (e) { got = (e && e.isPkiError === true) ? e.code : "UNTYPED"; msg = (e && e.message) || ""; }
+    if (got === "hpke/bad-key") keyRefused++;
+    if (msg.indexOf("Buffer") !== -1) keyNamed++;
+  }
+  check("R-key-narrow: a public key given as a bare byte view is refused with hpke/bad-key (" +
+    keyRefused + "/" + KEY_REPS.length + ")", keyRefused === KEY_REPS.length);
+  check("R-key-named: ...and the refusal names Buffer among the forms it takes (" +
+    keyNamed + "/" + KEY_REPS.length + ")", keyNamed === KEY_REPS.length);
+  check("R-key-control: a Buffer public key and a KeyObject-free { pkm } wrapper are both accepted",
+    keyCode(function () { return pki.hpke.seal(ids, Buffer.from(kp.publicKey), {}, Buffer.alloc(0), pt); }) === "NO-THROW" &&
+    keyCode(function () { return pki.hpke.seal(ids, { pkm: Buffer.from(kp.publicKey) }, {}, Buffer.alloc(0), pt); }) === "NO-THROW");
+
+  // The export context. `setupS` draws a fresh ephemeral per call, so the context is built ONCE and only
+  // the exporter-context bytes vary: six contexts would each derive a different exporter secret and the
+  // comparison would report a divergence that is the ephemeral's, not the input's.
+  var oneSender = pki.hpke.setupS(ids, kp.publicKey, {});
+  var oneRecip = pki.hpke.setupR(ids, oneSender.enc, sk, {});
+  agree("export-context", function (v) { return oneRecip.export(v, 32); },
+    Buffer.from("exporter", "utf8"));
+
+  // CONTROL: the cap still precedes the copy, and still reports the single-stage limit, for an
+  // ArrayBuffer too. Normalizing cannot have moved the allocation ahead of the check.
+  var oneStage = { kem: SUITE, kdf: s.KDF.SHAKE128, aead: s.AEAD.AES_128_GCM };
+  var over = new ArrayBuffer(70000);
+  var capCode = "NO-THROW";
+  try { pki.hpke.seal(oneStage, kp.publicKey, { info: over }, Buffer.alloc(0), pt); }
+  catch (e) { capCode = (e && e.code) || "NO-CODE"; }
+  check("R-cap: an oversized ArrayBuffer info still reports the single-stage limit (" + capCode + ")",
+    capCode === "hpke/input-length");
+
+  /* The CONTEXT verbs, which the one-shot `seal`/`open` above are built on, read `aad.length` directly to
+     decide whether to bind the AAD at all. A DataView and an ArrayBuffer have no `length`, so the test was
+     falsy and `setAAD` was never called: the additional data was SILENTLY DROPPED and the tag
+     authenticated nothing. It round-trips with itself, because both sides drop it, so a caller testing
+     their own code sees it work while the binding they are relying on is absent.
+     The vector that catches a dropped AAD is not "does it round-trip" but "does a DIFFERENT aad fail":
+     if the AAD is bound, opening under another one must fail. */
+  function bindsAad(convert) {
+    var sender = pki.hpke.setupS(ids, kp.publicKey, {});
+    var recip = pki.hpke.setupR(ids, sender.enc, sk, {});
+    var aadBytes = Buffer.from("authenticated-data", "utf8");
+    var ctx = sender.context.seal(convert(aadBytes), pt);
+    // Opening under the SAME aad must work, and under a DIFFERENT one must not. Both halves are needed:
+    // dropping the AAD passes the first and fails the second.
+    var sameOk, differentRejected = false;
+    try { sameOk = Buffer.compare(recip.open(convert(aadBytes), ctx), pt) === 0; }
+    catch (e) { void e; sameOk = false; }
+    var sender2 = pki.hpke.setupS(ids, kp.publicKey, {});
+    var recip2 = pki.hpke.setupR(ids, sender2.enc, sk, {});
+    var ct2 = sender2.context.seal(convert(aadBytes), pt);
+    try { recip2.open(convert(Buffer.from("different-data!!!!", "utf8")), ct2); }
+    catch (e) { void e; differentRejected = true; }
+    return sameOk && differentRejected;
+  }
+  var aadBound = [
+    ["Buffer", bindsAad(function (b) { return Buffer.from(b); })],
+    ["Uint8Array", bindsAad(function (b) { return new Uint8Array(Buffer.from(b)); })],
+    ["DataView", bindsAad(function (b) { var u = new Uint8Array(Buffer.from(b)); return new DataView(u.buffer); })],
+    ["ArrayBuffer", bindsAad(function (b) { return new Uint8Array(Buffer.from(b)).buffer; })],
+  ];
+  var aadBad = aadBound.filter(function (r) { return r[1] !== true; });
+  check("R-aad-bound: context seal/open bind the AAD whichever container holds it" +
+    (aadBad.length ? " (not bound for: " + aadBad.map(function (r) { return r[0]; }).join(", ") + ")" : ""),
+    aadBad.length === 0);
+  /* CONTROL: an absent and an empty AAD still mean "no additional data", which is what RFC 9180 uses, so
+     binding the AAD did not turn the empty case into a bound one. */
+  var s3 = pki.hpke.setupS(ids, kp.publicKey, {});
+  var r3 = pki.hpke.setupR(ids, s3.enc, sk, {});
+  var ct3 = s3.context.seal(Buffer.alloc(0), pt);
+  check("R-aad-empty: CONTROL an empty AAD opens under an absent one, both meaning no additional data",
+    Buffer.compare(r3.open(undefined, ct3), pt) === 0);
+
+  // CONTROL: shared memory is outside the admitted set and stays refused, typed.
+  if (typeof SharedArrayBuffer === "function") {
+    var sabCode = "NO-THROW";
+    try { pki.hpke.deriveKeyPair(SUITE, new SharedArrayBuffer(32)); }
+    catch (e) { sabCode = (e && e.isPkiError === true) ? e.code : "UNTYPED"; }
+    check("R-shared: a SharedArrayBuffer ikm is refused with a typed error (" + sabCode + ")",
+      sabCode === "hpke/bad-input");
+  }
 }
 
 module.exports = { run: run };

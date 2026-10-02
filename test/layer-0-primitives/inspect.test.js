@@ -377,6 +377,22 @@ function run() {
   // error, not a raw TypeError from the renderer dereferencing a missing field.
   check("inspect({tbsBytes}) -> inspect/bad-input (not a raw TypeError)", codeOf(function () { pki.inspect.certificate({ tbsBytes: Buffer.alloc(0) }); }) === "inspect/bad-input");
 
+  // The byte cap is a cap on the bytes the walk decodes, not on what the input claims. A Buffer accepts an
+  // own `length` property that differs from its real byte count, and indexing and `subarray` use the
+  // authoritative count, so an under-reporting buffer would otherwise be dumped in full past its cap.
+  // `pkix.coerceToDer` normalizes the input at the door, which is what makes the cap sound; this pins that,
+  // because the property holds by where the normalization sits rather than by anything at the cap itself.
+  var honestSmall = Buffer.from([0x05, 0x00]);
+  check("CAP control: a small input under the cap is dumped",
+    pki.inspect.asn1(honestSmall, { maxBytes: 10 }).indexOf("2 bytes") > 0);
+  check("CAP control: an honest input over the cap is refused",
+    codeOf(function () { return pki.inspect.asn1(Buffer.alloc(1004), { maxBytes: 10 }); }) === "inspect/bad-input");
+  var underReporting = Buffer.concat([Buffer.from([0x04, 0x82, 0x03, 0xe8]), Buffer.alloc(1000, 0x41)]);
+  Object.defineProperty(underReporting, "length", { value: 4 });
+  check("CAP an input whose own length under-reports is still refused by the cap",
+    underReporting.length === 4 &&
+    codeOf(function () { return pki.inspect.asn1(underReporting, { maxBytes: 10 }); }) === "inspect/bad-input");
+
   // --- Adversarial / edge extension, key, and input forms: each drives an
   // otherwise-untaken best-effort render branch and asserts the fail-safe result
   // (a hostile or opaque value renders labeled-hex, never a raw byte that could

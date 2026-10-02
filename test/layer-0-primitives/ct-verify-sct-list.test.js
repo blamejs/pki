@@ -167,6 +167,29 @@ async function run() {
     entry11.issuerKeyHash.length === 32 && entry11.issuerKeyHash.equals(issuerKeyHash) &&
     (await pki.ct.verifySct(pki.ct.x509CertEntry(certB, certDer), eSct, logSpki)) === false);
 
+  /* An issuer may be named by an object carrying its SubjectPublicKeyInfo rather than by a certificate,
+     and the bytes in it are the caller's. The read admitted a Buffer and a Uint8Array only, so the same
+     issuer identified by a DataView or by the ArrayBuffer a WebCrypto export returns was refused with
+     ct/bad-cert-entry, which blames the certificate for the container the key arrived in. The issuerKeyHash
+     is what binds the entry to its issuer, so every container of one key has to produce one hash. */
+  var spkiBytes = pki.schema.x509.parse(caCert).subjectPublicKeyInfo.bytes;
+  function issuerAs(convert) { return { subjectPublicKeyInfo: { bytes: convert(spkiBytes) } }; }
+  function hashFor(convert) {
+    try { return pki.ct.x509CertEntry(certB, issuerAs(convert)).issuerKeyHash.toString("hex"); }
+    catch (e) { return (e && e.isPkiError === true) ? "throw:" + e.code : "UNTYPED"; }
+  }
+  var spkiReps = [
+    ["Buffer", hashFor(function (b) { return Buffer.from(b); })],
+    ["Uint8Array", hashFor(function (b) { return new Uint8Array(Buffer.from(b)); })],
+    ["DataView", hashFor(function (b) { var u = new Uint8Array(Buffer.from(b)); return new DataView(u.buffer); })],
+    ["ArrayBuffer", hashFor(function (b) { return new Uint8Array(Buffer.from(b)).buffer; })],
+  ];
+  var spkiBase = spkiReps[0][1];
+  var spkiBad = spkiReps.slice(1).filter(function (r) { return r[1] !== spkiBase; });
+  check("VL13a. an issuer named by its SPKI gives one issuerKeyHash whichever container holds it (" +
+    spkiBase.slice(0, 16) + (spkiBad.length ? "; diverged: " + spkiBad.map(function (r) { return r[0] + " -> " + r[1]; }).join(" | ") : "") + ")",
+    spkiBase === issuerKeyHash.toString("hex") && spkiBad.length === 0);
+
   // Error branches (coverage): no SCT extension, no extensions at all, malformed input.
   check("VL14a. a cert with extensions but no SCT-list extension -> ct/no-sct-extension",
     (await code(function () { return pki.ct.x509CertEntry(certA, caCert); })) === "ct/no-sct-extension");

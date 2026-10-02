@@ -93,6 +93,40 @@ function testOidContent() {
     check("encodeOidContent " + t[0], hex(pki.asn1.encodeOidContent(t[0])) === t[1]);
     check("decodeOidContent " + t[1], pki.asn1.decodeOidContent(Buffer.from(t[1], "hex")) === t[0]);
   });
+
+  // A Buffer accepts an own `length` property that differs from its real byte count, and this verb is
+  // exported, so `buf` can be a caller's object. Indexing and `subarray` use the authoritative count, so a
+  // shadowed length cannot redirect the bytes; what it can do is change the DECISION, and here the decision
+  // IS the value. Read from `.length`, a buffer whose bytes encode 1.2.840.3 decoded as 1.2.840, handing
+  // the caller an OID its own bytes do not encode while an OID selects an algorithm and an extension
+  // decoder. The count is taken through the guard, which reads the prototype getter an own property cannot
+  // shadow.
+  var full = Buffer.from([0x2a, 0x86, 0x48, 0x03]);
+  check("OID-SHADOW control: the honest four bytes decode to 1.2.840.3",
+    pki.asn1.decodeOidContent(full) === "1.2.840.3");
+  check("OID-SHADOW control: the honest three bytes decode to 1.2.840",
+    pki.asn1.decodeOidContent(Buffer.from([0x2a, 0x86, 0x48])) === "1.2.840");
+  var lying = Buffer.from([0x2a, 0x86, 0x48, 0x03]);
+  Object.defineProperty(lying, "length", { value: 3 });
+  check("OID-SHADOW the bytes decide the OID, not an own length property claiming fewer",
+    lying.length === 3 && pki.asn1.decodeOidContent(lying) === "1.2.840.3");
+  // And the other direction: a length claiming MORE must not read past the real bytes.
+  var overclaim = Buffer.from([0x2a, 0x86, 0x48]);
+  Object.defineProperty(overclaim, "length", { value: 8 });
+  check("OID-SHADOW an own length claiming more bytes than exist does not read past them",
+    pki.asn1.decodeOidContent(overclaim) === "1.2.840");
+  // Taking the count authoritatively means taking it from a view whose BYTES are reachable by the same
+  // thing. A DataView has a byteLength but no indexed elements, so measuring one and then indexing it read
+  // undefined at every position, which bitwise coercion turns into zero: `2a 86 48 03` would decode as
+  // 0.0.0.0.0. The input is normalized to a byte view first, which refuses a DataView by name rather than
+  // decoding zeros from it.
+  var full2 = Buffer.from([0x2a, 0x86, 0x48, 0x03]);
+  check("OID-VIEW a DataView is refused by name, never decoded as zeros",
+    code(function () {
+      return pki.asn1.decodeOidContent(new DataView(full2.buffer, full2.byteOffset, full2.length));
+    }) === "oid/bad-input");
+  check("OID-VIEW control: a Uint8Array over the same bytes decodes to the same OID",
+    pki.asn1.decodeOidContent(new Uint8Array([0x2a, 0x86, 0x48, 0x03])) === "1.2.840.3");
 }
 
 function testRejects() {

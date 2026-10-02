@@ -309,12 +309,42 @@ function _scanComments(src) {
 //
 // guard-all deliberately does not re-export the captures, so a DIRECT require is the only way to
 // reach them, and a direct require is exactly what shows up here as a child.
-// The exported object literal of a module, whether or not it is handed to Object.freeze on the way
-// out. The guard family freezes, so a pattern anchored on a bare `{` right after the `=` reads a
-// frozen module as exporting nothing -- and a meta-check that then walks an empty list reports no
-// findings while checking nothing, which is the one failure this file cannot afford. Every walk that
-// reads a module's exported names off its source shares this one definition.
-var EXPORT_LITERAL_RE = /module\.exports\s*=\s*(?:Object\.freeze\s*\(\s*)?\{([\s\S]*?)\}/;
+// The exported object literal of a module, whether or not it is handed to a freeze on the way out. A
+// pattern anchored on a bare `{` right after the `=` reads a frozen module as exporting nothing -- and a
+// meta-check that then walks an empty list reports no findings while checking nothing, which is the one
+// failure this file cannot afford. Naming ONE freeze spelling is the same failure: the guard family
+// freezes through `intrinsic.freeze`, `_intrinsic.freeze`, `_freeze` and `_freezeExports`, not through
+// `Object.freeze`, so a pattern naming only the last read 18 of the 19 guard modules as exporting nothing
+// and testEveryGuardEnforced passed over all of them. The wrapper is matched as any callee, and as any
+// NUMBER of them: one wrapper was the same mistake one spelling was, since `Object.freeze(_freeze({...}))`
+// defeated a pattern allowing exactly one. Every walk that reads a module's exported names off its source
+// shares this one definition.
+var EXPORT_LITERAL_RE = /module\.exports\s*=\s*(?:[\w$.]+\s*\(\s*)*\{([\s\S]*?)\}/;
+
+// This file's own source with its COMMENT LINES removed, for the checks that ask whether a detector class
+// really exists. They look for `_filterMarkers(bad, "<class>")`, and a plain search over the whole file
+// accepted a tag naming a class that appears only in prose: every paragraph here that writes the call out
+// to explain it would vouch for any class a tag named, including a stale or misspelled one. The string
+// LITERALS are kept, since the class name lives inside one, so this removes comment lines rather than
+// using the strip that also blanks literals.
+function _detectorClassSource() {
+  var src = fs.readFileSync(path.join(REPO_ROOT, "test/layer-0-primitives/codebase-patterns.test.js"), "utf8");
+  var lines = src.split(/\r?\n/), out = [], inBlock = false;
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i], trimmed = line.replace(/^\s+/, "");
+    if (inBlock) {
+      if (trimmed.indexOf("*/") !== -1) inBlock = false;
+      continue;
+    }
+    if (trimmed.indexOf("/*") === 0) {
+      if (trimmed.indexOf("*/") === -1) inBlock = true;
+      continue;
+    }
+    if (trimmed.indexOf("//") === 0) continue;
+    out.push(line);
+  }
+  return out.join("\n");
+}
 
 function _takesCaptures(absPath) {
   var entry = require.cache[absPath];
@@ -3436,7 +3466,8 @@ function testEveryGuardEnforced() {
   // must be REAL -- reported by a `_filterMarkers(bad, "<class>")` detector in this
   // file -- so the tag cannot reference a detector that does not exist. This is why
   // adding guard-range / guard-name / ... cannot silently skip its enforcement.
-  var selfSrc = fs.readFileSync(path.join(REPO_ROOT, "test/layer-0-primitives/codebase-patterns.test.js"), "utf8");
+  //
+  var selfSrc = _detectorClassSource();
   var bad = [];
   var guardFiles = _libFiles().filter(function (f) {
     var rel = _relPath(f);
@@ -3590,7 +3621,7 @@ function testEveryValidatorEnforced() {
   // A validator function with NO such tag is DRIFT: a fresh validator could ship whose
   // rule set a boundary re-derives inline with nothing catching it. A NAMED detector-class
   // must be REAL -- reported by a `_filterMarkers(bad, "<class>")` detector in this file.
-  var selfSrc = fs.readFileSync(path.join(REPO_ROOT, "test/layer-0-primitives/codebase-patterns.test.js"), "utf8");
+  var selfSrc = _detectorClassSource();
   var bad = [];
   var validatorFiles = _libFiles().filter(function (f) {
     var rel = _relPath(f);

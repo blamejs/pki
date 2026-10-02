@@ -94,6 +94,76 @@ function runCanonical() {
     code(function () { pki.tuf.canonicalJson({ a: undefined }); }) === "tuf/bad-input");
   check("J: a function is refused", code(function () { pki.tuf.canonicalJson({ a: function () {} }); }) === "tuf/bad-input");
 
+  /* Canonical JSON admits objects, arrays, strings, integers, booleans and null, and this encoder already
+     refuses a float, a function, undefined, a BigInt, NaN and Infinity. A built-in exotic is none of the
+     admitted types either, and it was encoded as a plain object instead of refused: every own enumerable
+     key, and nothing else. So a Date became "{}", a Map became "{}", and a Buffer became an index map of
+     its bytes.
+     This output is the preimage a TUF signature covers, so a field that encodes to "{}" is a field the
+     signature does not cover while it remains in the caller's object: the signed form and the document
+     the caller believes they signed differ, and nothing says so. Refusing is the only verdict that keeps
+     the two the same. `guard.identifier.isPlainRecord` is the existing home for the distinction. */
+  /* Enumerating the exotics to refuse loses: a denylist of the JS built-ins still admitted every HOST
+     object, which have internal state and no enumerable keys, so a Blob, a stream, a CryptoKey, an
+     X509Certificate, a WebAssembly object and a collection iterator each encoded as "{}" after the named
+     built-ins were refused. The line is drawn by PROTOTYPE instead: canonical JSON encodes a plain record,
+     which is an object whose prototype is Object.prototype or null, and nothing else. That admits every
+     document TUF actually carries and refuses every class, named or not, including ones that do not exist
+     yet. */
+  var EXOTIC = [
+    ["a Date", new Date(0)],
+    ["a Map", new Map()],
+    ["a Set", new Set()],
+    ["a Buffer", Buffer.from("ab")],
+    ["a Uint8Array", new Uint8Array(2)],
+    ["a DataView", new DataView(new ArrayBuffer(2))],
+    ["a RegExp", /x/],
+    ["an Error", new Error("x")],
+    ["a Promise", Promise.resolve(1)],
+    ["a boxed String", new String("x")],
+    ["a Map iterator", new Map([[1, 2]]).entries()],
+    ["an array iterator", [1, 2][Symbol.iterator]()],
+    ["a class instance", new (function Thing() { this.a = 1; })()],
+    ["an X509Certificate", new (require("crypto").X509Certificate)(
+      pki.schema.x509.pemDecode(helpers.vectors.CERT_EC_PEM, "CERTIFICATE"))],
+    ["a WeakMap", new WeakMap()],
+  ];
+  if (typeof Blob === "function") EXOTIC.push(["a Blob", new Blob(["x"])]);
+  // A host class reached off the global rather than named, since not every runtime carries it.
+  var wasm = global.WebAssembly;
+  if (wasm && wasm.Module) {
+    EXOTIC.push(["a WebAssembly.Module", new wasm.Module(
+      new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]))]);
+  }
+  var exoticRefused = 0;
+  for (var ei = 0; ei < EXOTIC.length; ei++) {
+    var val = EXOTIC[ei][1];
+    if (code(function () { pki.tuf.canonicalJson({ a: val }); }) === "tuf/bad-input") exoticRefused++;
+  }
+  check("J2: every built-in exotic is refused rather than encoded as a plain object (" +
+    exoticRefused + "/" + EXOTIC.length + ")", exoticRefused === EXOTIC.length);
+  check("J2a: ...including at the TOP level, not only as a member",
+    code(function () { pki.tuf.canonicalJson(new Date(0)); }) === "tuf/bad-input" &&
+    code(function () { pki.tuf.canonicalJson(Buffer.from("ab")); }) === "tuf/bad-input");
+  /* CONTROL: the admitted types still encode, so the refusal above did not narrow the format. A nested
+     plain object and array are the shapes every TUF document is built from. */
+  check("J2b: CONTROL a plain object, an array and a null-prototype record still encode",
+    cj({ b: [1, { a: "x" }], a: null }) === "{\"a\":null,\"b\":[1,{\"a\":\"x\"}]}" &&
+    cj(Object.assign(Object.create(null), { z: 1, a: 2 })) === "{\"a\":2,\"z\":1}");
+  /* A subclassed Array is still an array: the array arm runs before the object arm and reads it by index,
+     which is what canonical JSON asks for, so narrowing the OBJECT arm must not have narrowed that. */
+  var SubArray = function () {};
+  SubArray.prototype = Object.create(Array.prototype);
+  var subbed = new Array(0); subbed.push(1, 2);
+  check("J2c: CONTROL an array still encodes by index, the array arm running first",
+    cj(subbed) === "[1,2]" && cj([]) === "[]");
+  /* A revoked Proxy throws on every operation, including the prototype read the check makes, so the
+     refusal has to be the module's own and not whatever the Proxy raised. */
+  var revocable = Proxy.revocable({ a: 1 }, {});
+  revocable.revoke();
+  check("J2d: a revoked Proxy is refused with a typed error rather than its own TypeError",
+    code(function () { pki.tuf.canonicalJson({ a: revocable.proxy }); }) === "tuf/bad-input");
+
   /* An unpaired surrogate has no UTF-8 encoding, and the conversion to bytes replaces it with U+FFFD
      rather than failing. Two documents that differ only in that code unit would then have IDENTICAL
      signing bytes, so a signature made over one verifies over the other while the parsed document a
@@ -208,6 +278,63 @@ async function runVerify() {
 
   var v = await pki.tuf.verifySignatures({ metadata: meta, keys: signed.keys, role: signed.roles.root });
   check("M3: a single signature meets a threshold of one", v.verified === true && v.keyIds.length === 1);
+
+  /* `metadata.signedBytes` is a byte option, and the set the door admits has to be the set it handles.
+     `guard.bytes.isByteSource` admits a DataView and an ArrayBuffer and the snapshot that copies these
+     bytes took neither, so a caller who held the canonical bytes as the ArrayBuffer a fetch returned was
+     refused for the container rather than for the content. Run on the VERIFYING metadata above, so the
+     narrow operation is reached: the Buffer arm is the control that says so. */
+  async function verifyWithSignedBytesAs(convert) {
+    var m = { type: meta.type, version: meta.version, expires: meta.expires, signed: meta.signed,
+      signatures: meta.signatures, signedBytes: convert(meta.signedBytes) };
+    try {
+      var r = await pki.tuf.verifySignatures({ metadata: m, keys: signed.keys, role: signed.roles.root });
+      return r.verified === true ? "verified" : "unverified";
+    } catch (e) { return (e && e.isPkiError === true) ? "throw:" + e.code : "UNTYPED:" + ((e && e.message) || e); }
+  }
+  var tufReps = [
+    ["Buffer", await verifyWithSignedBytesAs(function (b) { return Buffer.from(b); })],
+    ["Uint8Array", await verifyWithSignedBytesAs(function (b) { return new Uint8Array(Buffer.from(b)); })],
+    ["DataView", await verifyWithSignedBytesAs(function (b) { var u = new Uint8Array(Buffer.from(b)); return new DataView(u.buffer); })],
+    ["ArrayBuffer", await verifyWithSignedBytesAs(function (b) { return new Uint8Array(Buffer.from(b)).buffer; })],
+  ];
+  var tufBase = tufReps[0][1];
+  var tufBad = tufReps.slice(1).filter(function (r) { return r[1] !== tufBase; });
+  check("M3a: signedBytes verifies the same whichever byte representation holds it (" + tufBase +
+    (tufBad.length ? "; diverged: " + tufBad.map(function (r) { return r[0] + " -> " + r[1]; }).join(" | ") : "") + ")",
+    tufBase === "verified" && tufBad.length === 0);
+
+  /* `opts.role` carries the authorization: which key ids may sign, and how many must. It is the CALLER's
+     object, and an accessor answers every read separately. It was read four times: the presence check,
+     the typeof, then `.keyids` and `.threshold`. A getter can therefore present a strict role to the
+     checks and a lax one to the field reads, combining one role's authorized keys with another's
+     threshold, so the verdict reports a document as meeting a threshold no role ever stated. The role is
+     captured once and every field read comes off the capture. */
+  var roleReads = 0;
+  var strictRole = { keyids: signed.roles.root.keyids, threshold: 2 };
+  var laxRole = { keyids: signed.roles.root.keyids, threshold: 1 };
+  var sneakyOpts = { metadata: meta, keys: signed.keys };
+  Object.defineProperty(sneakyOpts, "role", {
+    enumerable: true,
+    get: function () { roleReads += 1; return roleReads <= 3 ? strictRole : laxRole; },
+  });
+  var sneakyVerdict = null, sneakyCode = null;
+  try { sneakyVerdict = await pki.tuf.verifySignatures(sneakyOpts); }
+  catch (e) { sneakyCode = (e && e.code) || "NO-CODE"; }
+  /* The document carries ONE signature. Read as the strict role it must fail the threshold of two; read
+     as the lax one it meets a threshold of one. Whichever role the verb settles on, it must apply that
+     SAME role's threshold, so a single read is the only outcome that is not a contradiction. */
+  check("M3b: an accessor-backed role cannot pass the checks as one role and be applied as another (" +
+    roleReads + " read(s), " + (sneakyCode || ("verified=" + sneakyVerdict.verified +
+      " threshold=" + sneakyVerdict.threshold)) + ")",
+    roleReads <= 1 && (sneakyCode !== null ||
+      (sneakyVerdict.threshold === 2 && sneakyVerdict.verified === false)));
+  /* CONTROL: a plain role object with a threshold of two still reports unmet rather than throwing, so the
+     check above is reading a real verdict and not an unrelated refusal. */
+  var twoThreshold = await pki.tuf.verifySignatures({ metadata: meta, keys: signed.keys,
+    role: { keyids: signed.roles.root.keyids, threshold: 2 } });
+  check("M3c: CONTROL one signature against a threshold of two is reported unmet",
+    twoThreshold.verified === false && twoThreshold.threshold === 2);
 
   /* TUF's canonical JSON admits no floating point, and every number the format carries is a version, a
      threshold or a length. A fractional token has to be refused while it is still TEXT: 1.0000000000000001
