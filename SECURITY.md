@@ -653,7 +653,16 @@ security-only patches after the next major releases.
   applies the RFC 3218 §2.3.2 implicit-rejection countermeasure: on any v1.5
   fault it substitutes a fresh random content-encryption key and proceeds, so the
   failure surfaces later and uniformly, exactly like every other bad key. v1.5 is
-  never emitted. Integrity is verified before any plaintext is released, and a
+  never emitted. **A candidate the implicit rejection substituted for never
+  becomes the answer.** The substitute exists to make the failure cost the same
+  work and the same time as a success, not to decide the recipient, so the
+  decrypt runs and its result is then discarded. Before this, the content decrypt
+  decided it, and a random substitute key leaves a final CBC block that is valid
+  PKCS#7 padding about one time in 256, so a known-bad recipient won that often
+  and the verb returned the wrong plaintext while naming that recipient as the
+  one it used. Padding is the only check a non-AEAD content offers, which is the
+  argument for the AEAD default: AES-GCM rejects a wrong content key on the tag,
+  at a probability no attacker can ride. Integrity is verified before any plaintext is released, and a
   CBC EnvelopedData (unauthenticated content) surfaces `authenticated: false` in
   the verdict rather than silently, with AES-GCM AuthEnvelopedData the encrypt
   default. The declared content cipher's mode is bound to the container carrying

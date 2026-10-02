@@ -600,10 +600,86 @@ async function run() {
     if (surgery.isAlgId(node, "1.2.840.113549.1.1.7")) { ds8seen++; if (ds8seen === 1) return pki.asn1.build.sequence([pki.asn1.build.oid("1.2.840.113549.1.1.1"), pki.asn1.build.raw(Buffer.from([5, 0]))]); }
     return undefined;
   });
-  var ds8buf = await pki.cms.decrypt(ds8bad, { key: ds8rsa.key, cert: ds8rsa.cert });
-  var ds8str = await _collectChunks((await pki.cms.decrypt(ds8bad, { key: ds8rsa.key, cert: ds8rsa.cert }, { stream: true })).content);
+  var ds8bufRes = await pki.cms.decrypt(ds8bad, { key: ds8rsa.key, cert: ds8rsa.cert });
+  var ds8strRes = await pki.cms.decrypt(ds8bad, { key: ds8rsa.key, cert: ds8rsa.cert }, { stream: true });
+  var ds8buf = ds8bufRes;
+  var ds8str = await _collectChunks(ds8strRes.content);
   check("DS8. a streamed CBC decrypt falls back across ambiguous recipients (a v1.5 garbage-key candidate does not shadow the correct one)",
     Buffer.compare(ds8buf.content, MSG) === 0 && Buffer.compare(ds8str, MSG) === 0);
+  // The recipient REPORTED matters as much as the plaintext, and it is what used to be wrong. A candidate
+  // whose unwrap yields a key of the wrong length has failed, and the decrypt under a random substitute
+  // runs only to keep the work and the timing of a failure indistinguishable from a success. Its result
+  // used to decide the candidate all the same, and a random key leaves a final CBC block that is valid
+  // PKCS#7 padding about one time in 256, so the known-bad recipient won that often: measured 2 in 400
+  // streamed runs, returning wrong plaintext while naming recipient 0 as the one used. Now it cannot win,
+  // measured 400 of 400 on both paths
+  // (`.references/tools/measure-ds8-flake.js` has the before, this the after).
+  check("DS8a. and both paths report the recipient they actually used, never the rejected candidate",
+    ds8buf.recipientIndex === 1 && ds8strRes.recipientIndex === 1);
+
+  // The same rule with a LONE candidate: there is nothing to fall back to, so the verdict is the uniform
+  // failure, every time rather than 255 times in 256. One key, many envelopes, since the substitute is
+  // drawn per decrypt and it is the draw that used to decide this.
+  var ds9rsa = makeRecipient("rsa");
+  var ds9outcomes = {};
+  for (var ds9i = 0; ds9i < 128; ds9i++) {
+    var ds9env = await pki.cms.encrypt(MSG, [{ cert: ds9rsa.cert }], { contentEncryptionAlgorithm: "aes-256-cbc" });
+    var ds9bad = surgery.patch(ds9env, function (node) {
+      if (surgery.isAlgId(node, "1.2.840.113549.1.1.7")) {
+        return pki.asn1.build.sequence([pki.asn1.build.oid("1.2.840.113549.1.1.1"), pki.asn1.build.raw(Buffer.from([5, 0]))]);
+      }
+      return undefined;
+    });
+    var ds9code;
+    try { await pki.cms.decrypt(ds9bad, { key: ds9rsa.key, cert: ds9rsa.cert }); ds9code = "NO-THROW"; }
+    catch (e) { ds9code = e.code || e.constructor.name; }
+    ds9outcomes[ds9code] = (ds9outcomes[ds9code] || 0) + 1;
+  }
+  check("DS9. an implicitly-rejected lone recipient fails closed on every draw, not on 255 of 256",
+    ds9outcomes["cms/decrypt-failed"] === 128 && Object.keys(ds9outcomes).length === 1);
+
+  // And it is indistinguishable from any other wrong key on the lazy stream path in all three of the
+  // ways an attacker can watch: the CODE, the STAGE, and the BYTES DELIVERED before the failure. A key of
+  // the RIGHT length but the wrong value yields its garbage chunks and only then fails the padding check,
+  // so a substituted candidate that refused at the call, or that yielded nothing first, would say whether
+  // the v1.5 padding was valid, which is the one thing the substitute exists to hide. Counting the bytes
+  // is the part a code-and-stage comparison misses.
+  async function ds10stage(run) {
+    var bytes = 0;
+    try {
+      var res = await run();
+      try { for await (var c of res.content) { bytes += c.length; } return "consumption-ok:" + bytes; }
+      catch (e) { return "consumption:" + (e.code || e.constructor.name) + ":" + bytes; }
+    } catch (e) { return "call:" + (e.code || e.constructor.name) + ":" + bytes; }
+  }
+  var ds10env = surgery.patch(await pki.cms.encrypt(MSG, [{ cert: ds9rsa.cert }], { contentEncryptionAlgorithm: "aes-256-cbc" }),
+    function (node) {
+      if (surgery.isAlgId(node, "1.2.840.113549.1.1.7")) {
+        return pki.asn1.build.sequence([pki.asn1.build.oid("1.2.840.113549.1.1.1"), pki.asn1.build.raw(Buffer.from([5, 0]))]);
+      }
+      return undefined;
+    });
+  var ds10substituted = await ds10stage(function () {
+    return pki.cms.decrypt(ds10env, { key: ds9rsa.key, cert: ds9rsa.cert }, { stream: true });
+  });
+  // The stage to match: an explicit cek of the right length and the wrong value, which reaches the same
+  // lazy stream with no substitute involved.
+  var ds10ed = await pki.cms.encrypt(MSG, { cek: Buffer.alloc(32, 0x11) }, { contentEncryptionAlgorithm: "aes-256-cbc" });
+  var ds10wrongKey = await ds10stage(function () {
+    return pki.cms.decrypt(ds10ed, { cek: Buffer.alloc(32, 0x22) }, { stream: true });
+  });
+  // A CBC stream withholds its final block until the padding check, so a failing stream delivers the
+  // padded length minus one block, and a succeeding one delivers the plaintext length.
+  var ds10padded = Math.ceil((MSG.length + 1) / 16) * 16;
+  check("DS10. CONTROL a right-length wrong key on the lazy stream path delivers its chunks, then fails",
+    ds10wrongKey === "consumption:cms/decrypt-failed:" + (ds10padded - 16));
+  check("DS10a. and an implicitly-rejected one is identical in code, stage and bytes delivered",
+    ds10substituted === ds10wrongKey);
+  // CONTROL for both: the right key streams the content through to the end on that same path.
+  check("DS10b. CONTROL the right key streams the whole content",
+    (await ds10stage(function () {
+      return pki.cms.decrypt(ds10ed, { cek: Buffer.alloc(32, 0x11) }, { stream: true });
+    })) === "consumption-ok:" + MSG.length);
 
   console.log("CHECKS " + helpers.getChecks());
 }
