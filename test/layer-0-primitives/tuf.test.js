@@ -1004,6 +1004,36 @@ async function runAlgorithmBinding() {
     (await pki.tuf.verifySignatures({
       metadata: rok.meta, keys: rok.signedObj.keys, role: rok.signedObj.roles.root,
     })).verified === true);
+
+  // The salt length is the signer's to choose and the scheme name does not state it. `rsassa-pss-sha256`
+  // fixes the hash and the padding and says nothing about the salt, and the reference implementation
+  // signs with the longest salt the modulus allows, so metadata in the wild carries one. A verifier that
+  // insists on a digest-length salt rejects it and the root rotation it carries stops.
+  var maxSaltSig = crypto.sign("sha256", pki.tuf.canonicalJson(rshell.signedObj), {
+    key: rsaKp.privateKey, padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
+    saltLength: crypto.constants.RSA_PSS_SALTLEN_MAX_SIGN,
+  }).toString("hex");
+  var rmax = rootWith(rsaKey, rsaId, maxSaltSig);
+  // CONTROL: the two signatures really do differ in salt length, so A9a is not a second A9. A
+  // digest-salt signature verifies under either rule, so only the maximum-salt one distinguishes them.
+  check("A9a: CONTROL the maximum-salt signature is not the digest-salt one",
+    maxSaltSig !== pssSig &&
+    crypto.verify("sha256", pki.tuf.canonicalJson(rshell.signedObj), {
+      key: rsaKp.publicKey, padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
+      saltLength: crypto.constants.RSA_PSS_SALTLEN_DIGEST,
+    }, Buffer.from(maxSaltSig, "hex")) === false);
+  check("A9b: a PSS signature made with the longest salt the key allows verifies",
+    (await pki.tuf.verifySignatures({
+      metadata: rmax.meta, keys: rmax.signedObj.keys, role: rmax.signedObj.roles.root,
+    })).verified === true);
+  // And reading the salt from the signature does not loosen the hash or the padding: a PKCS#1 v1.5
+  // signature under the same key is still refused, which is the thing the scheme name does fix.
+  var v15Sig = crypto.sign("sha256", pki.tuf.canonicalJson(rshell.signedObj), rsaKp.privateKey).toString("hex");
+  var rv15 = rootWith(rsaKey, rsaId, v15Sig);
+  check("A9c: and a PKCS#1 v1.5 signature under that same key is still refused",
+    (await pki.tuf.verifySignatures({
+      metadata: rv15.meta, keys: rv15.signedObj.keys, role: rv15.signedObj.roles.root,
+    })).verified === false);
 }
 
 function testSurface() {

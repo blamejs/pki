@@ -385,7 +385,9 @@ function cmdIssue(args) {
 }
 
 var FETCH_USAGE = "usage: pki fetch <https-url> [--anchor <cert>] [--system] [--out <file>] [--der]\n" +
-  "  Prints the certificate chain the endpoint presented, leaf first, as PEM.\n" +
+  "  Prints the certificate chain the TLS session resolved, leaf first, as PEM. The chain is\n" +
+  "  completed from the anchors in scope, so an entry above the leaf may come from a configured\n" +
+  "  anchor rather than from the endpoint; the leaf is the one the endpoint certainly sent.\n" +
   "  This is NOT a verification. The TLS handshake checked that the endpoint's chain builds to\n" +
   "  a configured anchor and that its name matches the URL; it checked no revocation status, no\n" +
   "  policy, and nothing about what the certificate is authorized to do. pki verify is the verb\n" +
@@ -414,7 +416,8 @@ function cmdFetch(args) {
     // What the handshake established, on stderr so it does not land in a redirected chain file.
     process.stderr.write("pki: " + channel.protocol + " " +
       ((channel.cipher && channel.cipher.name) || "") + "; " + chain.length +
-      " certificate(s) presented; the handshake checked the chain against the configured anchor " +
+      " certificate(s) in the resolved chain, which may include one completed from a configured " +
+      "anchor rather than sent by the endpoint; the handshake checked the chain against the configured anchor " +
       "and the name in the URL, and checked no revocation status or policy -- pki verify validates a path\n");
   }, function (e) { return fail((e.code || "transport/error") + ": " + e.message); });
 }
