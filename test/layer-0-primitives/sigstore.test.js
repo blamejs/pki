@@ -1206,6 +1206,46 @@ async function run() {
   var sv = await pki.sigstore.verifyBundle(synGood.bundle, synGood.trust);
   check("synthetic bundle (self-issued trust) fully verifies", sv && sv.verified === true && sv.identity.san.type === "uri");
 
+  /* An in-toto predicate is ARBITRARY JSON by specification, so a fractional number in it is conforming
+     and a bundle carrying one must verify. Holding every number in the document to denoting an integer
+     refuses such an attestation, which no fixture can reveal, because the predicate's shape is open by
+     specification rather than by convention: the rule is named onto the members that are read as
+     integers, `logIndex`, `integratedTime` and `treeSize`, and nothing else is constrained.
+     Both arms are needed. The accepting one proves the predicate is unconstrained; the refusing one
+     proves the named members still are, so the narrowing did not simply remove the rule. */
+  var fracPredicate = buildSynBundle({
+    payload: { _type: "https://in-toto.io/Statement/v1", predicateType: "https://slsa.dev/provenance/v1",
+      subject: [{ name: "pkg", digest: { sha512: "ab".repeat(64) } }],
+      // Values that survive serialization as written. A precision-losing spelling cannot be expressed as
+      // a source literal, because it collapses before `JSON.stringify` ever sees it, which is the same
+      // reason the refusing arm below injects its token as text.
+      //
+      // `integratedTime` and `logIndex` are here DELIBERATELY. They are the names the bundle reads as
+      // integers, and a predicate field is conforming whatever it is called: a rule that followed the
+      // NAME rather than the document would refuse this attestation for a field that merely shares a
+      // name with log metadata, which is the same failure as a document-wide rule wearing a disguise.
+      predicate: { score: 0.5, confidence: 0.001, integratedTime: 0.5, logIndex: 1.25,
+        nested: { ratio: 2.25, treeSize: 0.75 } } },
+  });
+  var fracVerdict = null, fracCode = null;
+  try { fracVerdict = await pki.sigstore.verifyBundle(fracPredicate.bundle, fracPredicate.trust); }
+  catch (e) { fracCode = (e && e.code) || "NO-CODE"; }
+  check("a bundle whose in-toto predicate carries fractional numbers still verifies" +
+    (fracCode ? " (refused " + fracCode + ")" : ""),
+    fracVerdict !== null && fracVerdict.verified === true);
+  /* And the named members are still held to the rule, on the bundle's own log metadata. The token is
+     injected as TEXT, because the value would collapse to an integer before reaching the parser. */
+  var intBundleText = JSON.stringify(synGood.bundle)
+    .replace(/"logIndex":"?(\d+)"?/, "\"logIndex\":1.0000000000000001");
+  var intCode = "NO-THROW";
+  if (intBundleText.indexOf("1.0000000000000001") !== -1) {
+    try { await pki.sigstore.verifyBundle(intBundleText, synGood.trust); }
+    catch (e) { intCode = (e && e.code) || "NO-CODE"; }
+  }
+  check("a logIndex spelled 1.0000000000000001 is still refused, so naming the members kept the rule (" +
+    intCode + ")",
+    intBundleText.indexOf("1.0000000000000001") !== -1 && intCode !== "NO-THROW");
+
   // A low-order (all-zeroes) Ed25519 Fulcio leaf key verifies a FORGED EdDSA signature; node imports it
   // without complaint, so the shared Edwards-point full-order gate must reject it at key-parse (before the
   // DSSE verify), exactly as the webauthn / path-validation EdDSA paths do. Without the gate the bundle

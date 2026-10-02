@@ -194,6 +194,81 @@ function testObjects() {
   check("47h. February 30 rejected", code(function () { pki.acme.validate("order", Object.assign({}, ORDER, { expires: "2026-02-30T00:00:00Z" })); }) === "acme/bad-order");
   check("47i. hour 25 rejected", code(function () { pki.acme.validate("order", Object.assign({}, ORDER, { expires: "2026-01-01T25:00:00Z" })); }) === "acme/bad-order");
   check("47j. out-of-range zone offset rejected", code(function () { pki.acme.validate("order", Object.assign({}, ORDER, { expires: "2026-01-01T00:00:00+25:00" })); }) === "acme/bad-order");
+
+  /* 47k-47o. A validator's verdict must be about a value it actually read. The shared field walk read
+     `obj[field.name]` THREE times per field: the closed-enum check, the error message, and the type
+     check. An accessor answers each read separately, so a `status` could pass the enum allowlist as
+     "valid" and be anything at all by the time the type check or any later reader looked, while the
+     validator reported the object as conforming. A closed status enum is the whole point of validating an
+     ACME state, so the check passing for a value the object does not carry is the check not happening.
+     Each field's value is read ONCE per field now. The object is still returned as-is, which the
+     documented signature fixes; what changed is that the verdict is about one value. */
+  function reads(obj, member) {
+    var n = 0, answers = arguments[2];
+    var out = {};
+    Object.keys(obj).forEach(function (k) {
+      Object.defineProperty(out, k, {
+        enumerable: true,
+        get: function () {
+          if (k !== member) return obj[k];
+          n += 1;
+          return answers ? answers(n) : obj[k];
+        },
+      });
+    });
+    return { obj: out, count: function () { return n; } };
+  }
+
+  var acctSrc = { status: "valid", orders: "https://ca/acct/1/orders" };
+  var acctProbe = reads(acctSrc, "status", function (n) { return n === 1 ? "valid" : "NOT-A-STATUS"; });
+  var acctCode = code(function () { pki.acme.validate("account", acctProbe.obj); });
+  check("47k. an accessor-backed status cannot pass the enum as one value and be typed as another (" +
+    acctProbe.count() + " read(s), " + acctCode + ")",
+    acctProbe.count() <= 1);
+  /* CONTROL: a plain conforming account still validates and a genuinely bad status is still refused, so
+     reading the field once did not change either verdict. */
+  check("47l. CONTROL a conforming account still validates and a bad status is still refused",
+    pki.acme.validate("account", acctSrc).status === "valid" &&
+    code(function () { pki.acme.validate("account", { status: "NOPE" }); }) === "acme/bad-status");
+
+  /* `validateProblem` read `obj.type` twice in one expression: the string test, then the namespace test.
+     A non-string on the second read reached `.indexOf` and raised a bare TypeError with no code. */
+  var probSrc = { type: "urn:ietf:params:acme:error:malformed", detail: "x" };
+  var probProbe = reads(probSrc, "type", function (n) { return n === 1 ? probSrc.type : 42; });
+  var probCode = code(function () { pki.acme.validateProblem(probProbe.obj); });
+  check("47m. validateProblem reads type once, so a divergent second read cannot reach .indexOf (" +
+    probProbe.count() + " read(s), " + probCode + ")",
+    probProbe.count() <= 1 && probCode.indexOf("RAW:") !== 0);
+  check("47n. CONTROL a conforming problem still validates and one outside the namespace is refused",
+    pki.acme.validateProblem(probSrc).type === probSrc.type &&
+    code(function () { pki.acme.validateProblem({ type: "urn:example:other" }); }) === "acme/bad-problem");
+
+  /* `identify` is a DISPATCHER: what it returns decides which validator a caller reaches for. It read
+     `obj.type` twice, so the kind it names could be chosen from one value and the object carry another. */
+  var idSrc = { type: "urn:ietf:params:acme:error:malformed" };
+  var idProbe = reads(idSrc, "type", function (n) { return n === 1 ? idSrc.type : "dns"; });
+  var idKind = pki.acme.identify(idProbe.obj);
+  check("47o. identify reads type once, so the kind it names comes from one value (" +
+    idProbe.count() + " read(s), named " + idKind + ")",
+    idProbe.count() <= 1);
+  check("47p. CONTROL identify still names each kind it knows",
+    pki.acme.identify(idSrc) === "problem" &&
+    pki.acme.identify({ type: "dns", value: "example.com" }) === "unknown" &&
+    pki.acme.identify({ suggestedWindow: {} }) === "renewalInfo");
+
+  /* `validateRenewalInfo` read `suggestedWindow` twice: the object test, then the binding whose `start`
+     and `end` are parsed. A non-object on the second read reached `.start` and raised a bare TypeError. */
+  var riSrc = { suggestedWindow: { start: "2027-01-01T00:00:00Z", end: "2027-01-02T00:00:00Z" } };
+  var riProbe = reads(riSrc, "suggestedWindow", function (n) { return n === 1 ? riSrc.suggestedWindow : 7; });
+  var riCode = code(function () { pki.acme.validateRenewalInfo(riProbe.obj); });
+  check("47q. validateRenewalInfo reads suggestedWindow once (" + riProbe.count() + " read(s), " +
+    riCode + ")",
+    riProbe.count() <= 1 && riCode.indexOf("RAW:") !== 0);
+  check("47r. CONTROL a conforming renewalInfo still validates and an inverted window is refused",
+    pki.acme.validateRenewalInfo(riSrc).suggestedWindow.start === riSrc.suggestedWindow.start &&
+    code(function () {
+      pki.acme.validateRenewalInfo({ suggestedWindow: { start: "2027-01-02T00:00:00Z", end: "2027-01-01T00:00:00Z" } });
+    }) === "acme/bad-renewal-window");
   check("47k. leap-year February 29 accepted", pki.acme.validate("order", Object.assign({}, ORDER, { expires: "2028-02-29T00:00:00Z" })).status === "pending");
   check("47l. non-leap February 29 rejected", code(function () { pki.acme.validate("order", Object.assign({}, ORDER, { expires: "2026-02-29T00:00:00Z" })); }) === "acme/bad-order");
   // a :60 leap second is rejected -- the toolkit only handles instants it can compare.
@@ -413,6 +488,57 @@ async function testBuilders() {
   var cert = await ecKeyPair();
   var kid = "https://ca/acct/1";
   var base = { key: acct.key, alg: "ES256", nonce: "aGVsbG8", url: "https://ca/o", kid: kid };
+
+  /* The request builders validate a member and then serialize it into the payload they SIGN, and each read
+     of an accessor answers separately: the validator saw one reading and the signed JWS carried another.
+     So every documented payload rule could be satisfied by a value the request does not contain, the
+     sharpest case being `revokeCert`, where the RFC 5280 CRLReason whitelist exists to exclude exactly one
+     value (7, unassigned) and that is what could reach the certification authority.
+     The client methods were never exposed, because they already pass their options through the gate that
+     refuses an accessor-backed field. These module-level builders now do too, which refuses such an object
+     outright rather than reading it once. */
+  function twoFaced(src, member, first, second) {
+    var n = 0;
+    var bag = Object.assign({}, src);
+    delete bag[member];
+    Object.defineProperty(bag, member, {
+      enumerable: true,
+      get: function () { n += 1; return n === 1 ? first : second; },
+    });
+    return bag;
+  }
+  var revokeBase = Object.assign({}, base, { certificate: cert.der || cert.certDer });
+  if (revokeBase.certificate === undefined) {
+    revokeBase.certificate = pki.schema.x509.pemDecode(vectors.CERT_EC_PEM, "CERTIFICATE");
+  }
+  var reasonCode = await acode(function () {
+    return pki.acme.revokeCert(twoFaced(revokeBase, "reason", 1, 7));
+  });
+  check("B-R1. revokeCert cannot pass the CRLReason whitelist as one value and sign another (" +
+    reasonCode + ")",
+    reasonCode !== "NO-THROW");
+  /* CONTROL: an assigned reason still signs, and the unassigned 7 is still refused as a plain value, so
+     the gate did not narrow the reasons the RFC assigns. */
+  check("B-R2. CONTROL an assigned reason still signs and the unassigned 7 is still refused",
+    typeof (await pki.acme.revokeCert(Object.assign({}, revokeBase, { reason: 1 }))).signature === "string" &&
+    (await acode(function () {
+      return pki.acme.revokeCert(Object.assign({}, revokeBase, { reason: 7 }));
+    })) === "acme/bad-revocation-reason");
+  /* The same shape on the contact list, the other documented payload rule: a mailto carrying header
+     fields is refused, and it must not reach the signed payload by answering the validator differently. */
+  var contactCode = await acode(function () {
+    return pki.acme.updateAccount(twoFaced(base, "contact",
+      ["mailto:admin@example.org"], ["mailto:admin@example.org?subject=hijack"]));
+  });
+  check("B-R3. updateAccount cannot validate one contact list and sign another (" + contactCode + ")",
+    contactCode !== "NO-THROW");
+  check("B-R4. CONTROL a clean contact list still signs and a mailto with header fields is still refused",
+    typeof (await pki.acme.updateAccount(Object.assign({}, base, {
+      contact: ["mailto:admin@example.org"] }))).signature === "string" &&
+    (await acode(function () {
+      return pki.acme.updateAccount(Object.assign({}, base, {
+        contact: ["mailto:admin@example.org?subject=x"] }));
+    })) !== "NO-THROW");
 
   // 64. finalize payload csr = strict-b64u DER (not PEM); decodes back to the CSR.
   var goodCsr = buildCsr({ spki: cert.spki, san: ["example.org"] });

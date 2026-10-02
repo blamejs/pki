@@ -436,6 +436,52 @@ async function runVerify() {
   var stale = pki.tuf.parseMetadata(metadataFor(rootSigned({ signers: [a], expires: "2026-01-01T00:00:00Z" }), [a]));
   check("M18: metadata past its expiry is refused, which is the freeze-attack check",
     code(function () { pki.tuf.checkExpiry(stale, NOW); }) === "tuf/expired");
+
+  /* `expires` is read off the CALLER's object, and an accessor answers every read separately. It was read
+     three times: the type check, the value compared, and the error message. A getter could therefore pass
+     the type check with a date string, hand the comparison a FUTURE date, and have `checkExpiry` return
+     true for metadata whose real expiry is in the past. Expiry is the freeze-attack check, so a verdict of
+     true on an expired document is the whole defense answering the wrong question. */
+  var expReads = 0;
+  var sneakyExp = { type: "root", version: 1 };
+  Object.defineProperty(sneakyExp, "expires", {
+    enumerable: true,
+    get: function () {
+      expReads += 1;
+      // A valid date string every time, but the SECOND read, the one that is compared, is in the future.
+      return expReads === 2 ? "2099-01-01T00:00:00Z" : "2026-01-01T00:00:00Z";
+    },
+  });
+  var expiryVerdict = "NO-THROW";
+  try { pki.tuf.checkExpiry(sneakyExp, NOW); } catch (e) { expiryVerdict = (e && e.code) || "NO-CODE"; }
+  check("M18a: an accessor-backed expires cannot pass the type check as one date and be compared as " +
+    "another (" + expReads + " read(s), " + expiryVerdict + ")",
+    expReads <= 1 && expiryVerdict === "tuf/expired");
+  /* CONTROL: a plain object with the same expired date is still refused, and an unexpired one still
+     passes, so reading it once did not change either verdict. */
+  check("M18b: CONTROL a plain expired object is still refused and an unexpired one still passes",
+    code(function () { pki.tuf.checkExpiry({ type: "root", expires: "2026-01-01T00:00:00Z" }, NOW); }) === "tuf/expired" &&
+    pki.tuf.checkExpiry({ type: "root", expires: "2099-01-01T00:00:00Z" }, NOW) === true);
+
+  /* `keyId` validates `keytype`, `scheme` and `keyval`, then hashes the key through `canonicalJson`,
+     which reads every field AGAIN. The identifier is the identity a role's `keyids` list matches against,
+     so an accessor could validate as one key shape and be hashed as another: the returned identifier would
+     name a key that never passed validation. */
+  var ktReads = 0;
+  var sneakyKey = { scheme: "ed25519", keyval: { public: "00" } };
+  Object.defineProperty(sneakyKey, "keytype", {
+    enumerable: true,
+    get: function () { ktReads += 1; return ktReads === 1 ? "ed25519" : 42; },
+  });
+  var idVerdict = "NO-THROW";
+  try { pki.tuf.keyId(sneakyKey); } catch (e) { idVerdict = (e && e.code) || "NO-CODE"; }
+  check("M18c: an accessor-backed keytype cannot validate as one value and be hashed as another (" +
+    ktReads + " read(s), " + idVerdict + ")",
+    ktReads <= 1 || idVerdict === "tuf/bad-key");
+  /* CONTROL: an ordinary key still derives its identifier, and it is the same one as before, so holding
+     the key to a single read did not change the identity any existing document states. */
+  check("M18d: CONTROL an ordinary key still derives its stated identifier",
+    pki.tuf.keyId(a.key) === a.keyId && a.keyId.length === 64);
 }
 
 // ---------------------------------------------------------------------------

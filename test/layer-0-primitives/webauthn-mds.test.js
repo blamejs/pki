@@ -88,6 +88,50 @@ async function run() {
   check("mds: a no that does not exceed previousNo is refused as a rollback",
     (await codeFor({ no: 10 }, { previousNo: 10 })) === "webauthn/metadata-rollback");
   check("mds: a newer no is accepted", (await codeFor({ no: 11 }, { previousNo: 10 })).no === 11);
+  /* `no` is the rollback counter, and a number token written `42.00000000000000001` converts to the
+     Number 42, so it passed the integer check as 42 and compared as 42: a BLOB could carry a `no` it does
+     not state and be accepted against a held value it does not actually exceed. The token is held to
+     denoting exactly the integer it is read as, which is a decision that can only be made while it is
+     still text.
+     The exact spelling matters and is asserted, not assumed: at this magnitude a double resolves about
+     1.8e-15, so `42.000000000000001` stays distinct from 42 while `42.00000000000000001` collapses onto
+     it. A vector built on the first would prove nothing.
+     Built with `payloadRaw`, because `JSON.stringify` would emit `42` and the fixture would test
+     nothing. */
+  async function rawPayloadCode(noToken) {
+    var f = await mint({});
+    // The minted blob is a Buffer of the compact JWS, so the payload segment is read off its text.
+    var segs = f.blob.toString("utf8").split(".");
+    var text = Buffer.from(segs[1], "base64url").toString("utf8")
+      .replace("\"no\":42", "\"no\":" + noToken);
+    var g = await mint({ payloadRaw: text });
+    try {
+      return await pki.webauthn.verifyMetadataBlob(g.blob, { rootCertificates: [g.rootDer], time: T });
+    } catch (e) { return e.code || e.constructor.name; }
+  }
+  check("mds: a no spelled 42.00000000000000001 is refused on the token, not read as 42",
+    Number("42.00000000000000001") === 42 &&
+    (await rawPayloadCode("42.00000000000000001")) === "webauthn/bad-metadata-blob");
+  /* CONTROL: exponent form is legal JSON and still accepted for `no`, since the rule is "the value must
+     be exactly its own integer" and not "no exponents". */
+  var expNo = await rawPayloadCode("42e0");
+  check("mds: CONTROL a no written in exponent form is still accepted and reads as that integer",
+    expNo && expNo.no === 42);
+  /* CONTROL, and the one that matters most: the REAL catalogue carries genuine doubles. A metadata
+     statement's biometric accuracy descriptors state false-reject and false-accept rates as fractions,
+     and the published BLOB has members whose values are not integers, `selfAttestedFRR`,
+     `selfAttestedFAR` and `iAPARThreshold` among them. The rule applies to `no` alone for that reason; a
+     document-wide one would refuse the catalogue outright. */
+  var withRates = await codeFor({
+    statementExtra: {
+      userVerificationDetails: [[{ userVerificationMethod: "fingerprint_internal",
+        baDesc: { selfAttestedFRR: 0.03, selfAttestedFAR: 0.002, iAPARThreshold: 0.0,
+          maxTemplates: 5, maxRetries: 5, blockSlowdown: 0 } }]],
+    },
+  });
+  check("mds: CONTROL a statement carrying fractional biometric rates is still accepted, as the real " +
+    "catalogue carries them",
+    withRates && withRates.no === 42);
   check("mds: a BLOB past its nextUpdate is refused", (await codeFor({ nextUpdate: "2026-01-01" })) === "webauthn/metadata-stale");
   var staleOk = await codeFor({ nextUpdate: "2026-01-01" }, { allowStale: true });
   check("mds: allowStale accepts it and still reports it stale", staleOk.no === 42 && staleOk.stale === true);

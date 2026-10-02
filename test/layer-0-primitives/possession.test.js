@@ -779,6 +779,68 @@ async function testCrmf(w) {
       certTemplate: { subject: "kem.example", publicKey: w.kemSpki },
       controls: { statementOfPossession: { signer: { issuer: w.signer.issuer, serialNumber: w.signer.serialNumber + 1n },
         certificate: w.sigCertDer } } }, { key: w.sigKp.key }))) === "crmf/bad-controls");
+
+  /* R7. The same ambiguity the PKCS#10 side refuses, on the CRMF route. The controls are a sequence, and
+     the verifier took the FIRST statementOfPossession and returned, so every later statement went
+     unchecked: a request whose first statement is sound and whose second names a different certificate
+     verified on the strength of the first. Which control a CA should honor is stated nowhere, so a
+     request carrying more than one is refused rather than judged on one of them.
+     The second control is spliced in, because the builder emits one and a request carrying two exists
+     only on the wire. */
+  var twoCtl = (function () {
+    var root = pki.asn1.decode(msg);
+    var certReqMsg = root.children[0];
+    var certReq = certReqMsg.children[0];
+    // certReq ::= SEQUENCE { certReqId INTEGER, certTemplate, controls SEQUENCE OF ... }
+    var ctlSeq = certReq.children[2];
+    var dup = null;
+    for (var ci = 0; ci < ctlSeq.children.length; ci++) {
+      if (pki.asn1.read.oid(ctlSeq.children[ci].children[0]) === SOP_OID) { dup = ctlSeq.children[ci]; break; }
+    }
+    if (dup === null) return null;
+    var kept = [];
+    for (var k = 0; k < ctlSeq.children.length; k++) kept.push(ctlSeq.children[k].bytes);
+    kept.push(dup.bytes);
+    var newCtl = b.sequence([b.raw(Buffer.concat(kept))]);
+    var reqKids = [];
+    for (var r = 0; r < 2; r++) reqKids.push(certReq.children[r].bytes);
+    var newReq = b.sequence([b.raw(Buffer.concat(reqKids)), b.raw(newCtl)]);
+    var msgKids = [b.raw(newReq)];
+    for (var m = 1; m < certReqMsg.children.length; m++) msgKids.push(b.raw(certReqMsg.children[m].bytes));
+    return b.sequence([b.raw(b.sequence(msgKids))]);
+  })();
+  var twoCode = twoCtl === null ? "COULD-NOT-SPLICE" : await codeAsync(pki.crmf.verifyPop(twoCtl));
+  check("R7: a request carrying two statementOfPossession controls is refused rather than judged on " +
+    "the first (" + twoCode + ")",
+    twoCode === "crmf/bad-controls");
+  /* CONTROL: the single-control request still verifies, so the refusal above did not reject the shape the
+     mechanism exists for. */
+  check("R7a: CONTROL the request carrying one control still verifies",
+    (await pki.crmf.verifyPop(msg)).verified === true);
+
+  /* R8. The PRE-ENCODED control form is the same control by another spelling, and it was invisible to the
+     builder's key resolution: the signing algorithm came from the REQUESTED key instead of from the
+     signature certificate, so an X25519 request carrying a good encoded statement was refused for an
+     algorithm that cannot sign, while the object form of the same request succeeded. */
+  var encodedCtl = b.sequence([
+    b.oid(SOP_OID),
+    b.raw(pki.possession.build
+      ? pki.possession.build({ signer: w.signer, certificate: w.sigCertDer })
+      : ctl.value),
+  ]);
+  var arrayForm = null, arrayCode = null;
+  try {
+    arrayForm = await pki.crmf.build({
+      certReqId: 1n,
+      certTemplate: { subject: "kem.example", publicKey: w.kemSpki },
+      controls: [encodedCtl],
+    }, { key: w.sigKp.key });
+  } catch (e) { arrayCode = (e && e.code) || "NO-CODE"; }
+  check("R8: the pre-encoded control form resolves the signing key the same way the object form does" +
+    (arrayCode ? " (refused " + arrayCode + ")" : ""),
+    arrayForm !== null);
+  check("R8a: and the request it builds verifies under the statement certificate's key",
+    arrayForm !== null && (await pki.crmf.verifyPop(arrayForm)).verified === true);
 }
 
 // ---- the algorithm matrix -------------------------------------------------

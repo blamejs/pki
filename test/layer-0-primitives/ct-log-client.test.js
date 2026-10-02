@@ -204,9 +204,13 @@ async function runGetSth() {
   /* Shape refusals: each field is required and each is held to its type. */
   // Each shape names the code it must report, so a refusal for the wrong reason
   // is a failure rather than a pass.
+  /* Two layers refuse a bad number, and which one speaks says where the fault is. A token that does not
+     DENOTE an integer is a malformed document for a format that reads it as one, and the JSON reader
+     refuses it while it is still text: `ct/bad-json`. A token that denotes an integer the field cannot
+     take is a bad STH: `ct/bad-sth`, which is why `-1` still reports that. The split is deliberate. */
   var SHAPES = [
     ["no tree_size", { tree_size: undefined }, "ct/bad-sth"],
-    ["a non-integer tree_size", { tree_size: 1.5 }, "ct/bad-sth"],
+    ["a non-integer tree_size", { tree_size: 1.5 }, "ct/bad-json"],
     ["a negative tree_size", { tree_size: -1 }, "ct/bad-sth"],
     ["no timestamp", { timestamp: undefined }, "ct/bad-sth"],
     ["no root hash", { sha256_root_hash: undefined }, "ct/bad-sth"],
@@ -228,6 +232,34 @@ async function runGetSth() {
   }
   check("S8: every malformed STH shape is refused with its own reason (" + shapeOk + "/" +
     SHAPES.length + ")", shapeOk === SHAPES.length);
+
+  /* S8a. The spelling that no check made AFTER conversion can see. `1.0000000000000001` converts to the
+     Number 1, so a tree size written that way passed the integer check as 1 and was folded into the
+     reconstructed binary preimage the tree-head signature is verified over: the rounded spelling
+     verified, and the size the caller was handed was not the one the log sent. It has to be refused on
+     the TOKEN, which is where it still differs from 1.
+     The body is built as TEXT, because `JSON.parse` would already have collapsed it to 1 and the fixture
+     would be testing nothing. */
+  var exactBody = JSON.parse(sthBody(log, 3, t.root));
+  var exactText = JSON.stringify(exactBody).replace("\"tree_size\":3", "\"tree_size\":1.0000000000000001");
+  if (exactText.indexOf("1.0000000000000001") === -1) {
+    exactText = JSON.stringify(exactBody).replace(/"tree_size":\s*3/, "\"tree_size\":1.0000000000000001");
+  }
+  var fxExact = opts(log, { [u("get-sth")]: resp(200, exactText, "application/json") });
+  var exactCode = await code(function () { return pki.ct.getSth(fxExact.o); });
+  check("S8a: a tree_size spelled 1.0000000000000001 is refused on the token, not read as 1 (" +
+    exactCode + ")",
+    Number("1.0000000000000001") === 1 && exactCode === "ct/bad-json");
+  /* CONTROL: exponent form is LEGAL in an RFC 6962 response and still accepted, which is why the policy
+     is "the value must be exactly its own integer" and not "no exponents". A tree size of 3 written
+     `3e0` is the same tree size. */
+  var expText = JSON.stringify(exactBody).replace("\"tree_size\":3", "\"tree_size\":3e0");
+  var fxExp = opts(log, { [u("get-sth")]: resp(200, expText, "application/json") });
+  var expSth = null, expCode = null;
+  try { expSth = await pki.ct.getSth(fxExp.o); } catch (e) { expCode = (e && e.code) || "NO-CODE"; }
+  check("S8b: CONTROL a tree_size written in exponent form is still accepted and reads as that integer" +
+    (expCode ? " (refused " + expCode + ")" : ""),
+    expSth !== null && expSth.treeSize === 3n);
 
   /* The log key is required: there is no baked-in key and no unverified mode. */
   var noKey = opts(log, { [u("get-sth")]: resp(200, sthBody(log, 3, t.root), "application/json") });
