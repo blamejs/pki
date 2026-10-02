@@ -533,7 +533,10 @@ async function testTspCoverage() {
   // a collision-weak identity pin (the SHA-2-only binding, round-tripped from the v2 preference).
   var v1OnlyTst = b.sequence([b.integer(1n), b.oid("1.2.3.4.1"), goodImprint, b.integer(54n), b.generalizedTime(GENTIME)]);
   var v1OnlyTok = await pki.cms.sign(v1OnlyTst, { cert: tsa.cert, key: tsa.key }, { eContentType: "tSTInfo", additionalSignedAttributes: [{ type: "signingCertificate", values: [v1scv] }] });
-  check("v1-only SigningCertificate (SHA-1) binding -> tsp/unsupported-algorithm", (await pki.tsp.verify(v1OnlyTok, DATA, {})).code === "tsp/unsupported-algorithm");
+  // The refusal is what this vector always asserted and it is unchanged; the CODE now says what the
+  // comment above it already said. Nothing is unsupported here: a v1 ESSCertID omits the hashAlgorithm
+  // field because the type fixes it at SHA-1, so the algorithm is known and the binding is weak.
+  check("v1-only SigningCertificate (SHA-1) binding -> tsp/weak-digest", (await pki.tsp.verify(v1OnlyTok, DATA, {})).code === "tsp/weak-digest");
   // a genTime fraction that IS representable in milliseconds (.5) is not sub-millisecond, so no ceil
   // is applied and a token well within validity verifies normally.
   var gt5 = Buffer.concat([Buffer.from([0x18, 17]), Buffer.from("20270101000000.5Z", "latin1")]);
@@ -755,7 +758,10 @@ async function testChainAndBindings() {
     var tst = b.sequence([b.integer(1n), b.oid("1.2.3.4.1"), b.sequence([b.sequence([b.oid(pki.oid.byName("sha256")), b.nullValue()]), b.octetString(imprint("sha256").hashedMessage)]), b.integer(95n), b.generalizedTime(GENTIME)]);
     return pki.cms.sign(tst, { cert: essTsa.cert, key: essTsa.key }, { eContentType: "tSTInfo", additionalSignedAttributes: [{ type: "signingCertificateV2", values: [scv] }] });
   }
-  check("ESSCertIDv2 SHA-1 certHash -> tsp/unsupported-algorithm (identity pin must be SHA-2)", (await pki.tsp.verify(await sha1BindTok(), DATA, {})).code === "tsp/unsupported-algorithm");
+  // The policy is unchanged, the identity pin must be SHA-2, and the code now says why rather than
+  // claiming the algorithm is one this build cannot compute. SHA-1 is computable and is refused for
+  // being collision-weak, whether an ESSCertIDv2 names it or a v1 ESSCertID leaves it to the type.
+  check("ESSCertIDv2 SHA-1 certHash -> tsp/weak-digest (identity pin must be SHA-2)", (await pki.tsp.verify(await sha1BindTok(), DATA, {})).code === "tsp/weak-digest");
 
   // RFC 5816 sec. 2.2.2: the tsa hint MAY name a subjectAltName entry (matched byte-exact as a
   // GeneralName), not only the subject DN -- here the hint's DN differs from the subject, so the
@@ -847,6 +853,207 @@ async function run() {
   await testTspCoverage();
   await testBuilderCoverage();
   await testChainAndBindings();
+  await testImprintDigestStrength();
+}
+
+// The imprint is the ONLY thing binding a token to the data it timestamps, so the digest that computes
+// it carries the whole binding. `pki.tsp.sign` refuses SHA-1 and cannot produce the fixture, so the
+// token is minted here: a CMS SignedData over a hand-built TSTInfo, carrying the ESS
+// signingCertificateV2 attribute `pki.tsp.verify` requires and signed by a certificate with the one
+// critical timeStamping purpose RFC 3161 sec. 2.3 asks for. Nothing in the suite built one before.
+//
+// No fetched clause forbids SHA-1 for an imprint: the one quoted algorithm prohibition is
+// EN 319 122-1 clause 6.2.1 on MD5. Refusing it by default is this toolkit's posture, the same one
+// `pki.cms.verify` already takes for a signature digest, and `allowWeakDigests` is the same opt-in.
+async function testImprintDigestStrength() {
+  var tsa = makeTsaSigner("ec-p256", { cn: "Imprint TSA" });
+  var certHash = crypto.createHash("sha256").update(tsa.cert).digest();
+  // ESS SigningCertificateV2 ::= SEQUENCE { certs SEQUENCE OF ESSCertIDv2 }, and ESSCertIDv2's
+  // hashAlgorithm defaults to SHA-256, so an absent algorithm is the default and only certHash is sent.
+  var scv2 = b.sequence([b.sequence([b.sequence([b.octetString(certHash)])])]);
+  function tstFor(alg) {
+    return b.sequence([
+      b.integer(1n), b.oid("1.3.6.1.4.1.11129.2.4.100"),
+      b.sequence([b.sequence([b.oid(pki.oid.byName(alg))]),
+        b.octetString(crypto.createHash(alg).update(DATA).digest())]),
+      b.integer(7n), b.generalizedTime(new Date("2027-01-01T00:00:00Z")),
+    ]);
+  }
+  function mint(alg) {
+    return pki.cms.sign(tstFor(alg), [{ cert: tsa.cert, key: tsa.key }], {
+      eContentType: "tSTInfo",
+      additionalSignedAttributes: [{ type: "signingCertificateV2", values: [scv2] }],
+    });
+  }
+
+  // CONTROL: the same mint under SHA-256 verifies, so a refusal below is the digest and not the fixture.
+  var strong = await pki.tsp.verify(await mint("sha256"), DATA, { certs: [tsa.cert] });
+  check("ID1. CONTROL a minted token with a SHA-256 imprint verifies",
+    strong.valid === true);
+
+  var weak = await mint("sha1");
+  var byDefault = await pki.tsp.verify(weak, DATA, { certs: [tsa.cert] });
+  check("ID2. a SHA-1 imprint is refused by default, the imprint being the whole binding",
+    byDefault.valid === false && byDefault.code === "tsp/weak-digest");
+  var denied = await pki.tsp.verify(weak, DATA, { certs: [tsa.cert], allowWeakDigests: false });
+  check("ID3. and allowWeakDigests false refuses it too, rather than being the absent-means-allow case",
+    denied.valid === false && denied.code === "tsp/weak-digest");
+  var allowed = await pki.tsp.verify(weak, DATA, { certs: [tsa.cert], allowWeakDigests: true });
+  check("ID4. and allowWeakDigests true verifies it, which is the archived-token path",
+    allowed.valid === true);
+  // The option is an opt-in to a weak DIGEST, not to a wrong imprint: the bytes must still match.
+  var otherData = Buffer.from("different data than the token covers");
+  var mismatch = await pki.tsp.verify(weak, otherData, { certs: [tsa.cert], allowWeakDigests: true });
+  check("ID5. and it is no license for a mismatched imprint",
+    mismatch.valid === false && mismatch.code === "tsp/imprint-mismatch");
+
+  // The certificate BINDING is the same question as the imprint and gets the same answer. An ESSCertID
+  // v1 carries no hashAlgorithm field: it is SHA-1 by definition (RFC 2634), and EN 319 122-1 clause
+  // 5.2.2.2 says the v1 attribute "shall be used if the SHA-1 hash algorithm is used", so these tokens
+  // exist. It used to draw tsp/unsupported-algorithm, which named the wrong thing: the algorithm is
+  // known and the binding is deliberately weak, which is a different refusal from one this build cannot
+  // compute. SigningCertificate ::= SEQUENCE { certs SEQUENCE OF ESSCertID, policies OPTIONAL } and
+  // ESSCertID ::= SEQUENCE { certHash OCTET STRING, issuerSerial OPTIONAL }.
+  var v1Hash = crypto.createHash("sha1").update(tsa.cert).digest();
+  var scv1 = b.sequence([b.sequence([b.sequence([b.octetString(v1Hash)])])]);
+  function mintV1(imprintAlg) {
+    return pki.cms.sign(tstFor(imprintAlg), [{ cert: tsa.cert, key: tsa.key }], {
+      eContentType: "tSTInfo",
+      additionalSignedAttributes: [{ type: "signingCertificate", values: [scv1] }],
+    });
+  }
+  var v1Token = await mintV1("sha256");
+  var v1Default = await pki.tsp.verify(v1Token, DATA, { certs: [tsa.cert] });
+  check("ID6. an ESSCertID v1 binding is refused as a weak digest, not as an unsupported algorithm",
+    v1Default.valid === false && v1Default.code === "tsp/weak-digest");
+  // The refusal is unconditional, unlike the imprint's. `allowWeakDigests` exists for an archived
+  // SIGNATURE, and a certificate binding is a different question, so only the code changed here and
+  // the behavior the suite already pinned is untouched.
+  check("ID7. and that refusal does not bend to allowWeakDigests, which is not what a binding is",
+    (await pki.tsp.verify(v1Token, DATA, { certs: [tsa.cert], allowWeakDigests: true })).code === "tsp/weak-digest");
+  // The distinction that matters, and the one the first attempt at this got wrong: a v2 ESSCertIDv2
+  // naming an algorithm this build does not know is genuinely unsupported and keeps that code. Absent
+  // means the type's default; unrecognized means nothing can compute it.
+  var unknownScv2 = b.sequence([b.sequence([b.sequence([
+    b.sequence([b.oid("1.2.3.99")]), b.octetString(Buffer.alloc(32))])])]);
+  var unknownTok = await pki.cms.sign(tstFor("sha256"), [{ cert: tsa.cert, key: tsa.key }], {
+    eContentType: "tSTInfo",
+    additionalSignedAttributes: [{ type: "signingCertificateV2", values: [unknownScv2] }],
+  });
+  check("ID8. an ESSCertIDv2 naming an unknown algorithm is still tsp/unsupported-algorithm",
+    (await pki.tsp.verify(unknownTok, DATA, { certs: [tsa.cert] })).code === "tsp/unsupported-algorithm");
+
+  // A v2 binding supersedes a v1 one, which is right, and it used to mean the v1 was not looked at. A
+  // token carrying BOTH then attributed itself to two different certificates: the v2 pinned the real
+  // signer and the v1 pinned another, both inside signedAttrs so the TSA signed the contradiction, and a
+  // legacy verifier reading only v1 resolves a certificate this one never checked. One structure, two
+  // incompatible claims about one fact, resolved silently in favor of whichever attribute a reader
+  // prefers, which is the ambiguity this toolkit refuses rather than resolves.
+  var otherTsa = makeTsaSigner("ec-p256", { cn: "Other TSA", serial: 0x88 });
+  // `filler` adds further ESSCertID entries to the v1 attribute. They change nothing about which
+  // certificate certs[0] names, and they grow the attribute's encoding, which is what decides where
+  // it lands in the signedAttrs DER SET OF sort. See ID11.
+  function bothBindings(v1CertDer, filler) {
+    var ids = [b.sequence([b.octetString(crypto.createHash("sha1").update(v1CertDer).digest())])];
+    for (var f = 0; f < (filler || 0); f++) {
+      ids.push(b.sequence([b.octetString(crypto.createHash("sha1").update(
+        Buffer.concat([v1CertDer, Buffer.from([f])])).digest())]));
+    }
+    return pki.cms.sign(tstFor("sha256"), [{ cert: tsa.cert, key: tsa.key }], {
+      eContentType: "tSTInfo",
+      additionalSignedAttributes: [
+        { type: "signingCertificateV2", values: [scv2] },
+        { type: "signingCertificate", values: [b.sequence([b.sequence(ids)])] },
+      ],
+    });
+  }
+  // CONTROL: both attributes naming the SAME certificate still verifies, so the refusal below is the
+  // disagreement and not the mere presence of a v1 attribute. A CAdES token may carry both.
+  check("ID9. CONTROL a v1 and a v2 binding naming the same certificate verify",
+    (await pki.tsp.verify(await bothBindings(tsa.cert), DATA, { certs: [tsa.cert] })).valid === true);
+  var disagree = await pki.tsp.verify(await bothBindings(otherTsa.cert), DATA, { certs: [tsa.cert] });
+  check("ID10. a v1 and a v2 binding naming different certificates are refused, not resolved",
+    disagree.valid === false && disagree.code === "tsp/cert-binding-mismatch");
+
+  // signedAttrs is a DER SET OF, sorted by encoded value, and the two binding attributes are the same
+  // length until one of them grows: one filler ESSCertID makes the v1 attribute the longer of the two
+  // and the v2 sorts ahead of it. ID10's token happens to carry the v1 first, and a scan that stopped
+  // at the v2 therefore caught the contradiction in that order and missed it in the other, which is an
+  // ordering-dependent check and so no check at all: the producer of a hostile token chooses the
+  // order. Both attributes are read whatever the order now.
+  function bindingOrder(der) {
+    var kinds = [];
+    pki.schema.cms.parse(der).signerInfos[0].signedAttrs.forEach(function (a) {
+      if (a.type === pki.oid.byName("signingCertificate")) kinds.push("v1");
+      if (a.type === pki.oid.byName("signingCertificateV2")) kinds.push("v2");
+    });
+    return kinds.join(",");
+  }
+  var v1First = await bothBindings(otherTsa.cert, 0);
+  var v2First = await bothBindings(otherTsa.cert, 1);
+  check("ID11. the two orderings of the binding attributes are both reachable, so both are tested",
+    bindingOrder(v1First) === "v1,v2" && bindingOrder(v2First) === "v2,v1");
+  // CONTROL: the v2-first ordering with an AGREEING v1 verifies, so ID13 is the disagreement rather
+  // than the filler entries or the order.
+  check("ID12. CONTROL the v2-first ordering with an agreeing v1 verifies",
+    (await pki.tsp.verify(await bothBindings(tsa.cert, 1), DATA, { certs: [tsa.cert] })).valid === true);
+  var disagreeV2First = await pki.tsp.verify(v2First, DATA, { certs: [tsa.cert] });
+  check("ID13. and the disagreement is refused with the v2 attribute sorted first as well",
+    disagreeV2First.valid === false && disagreeV2First.code === "tsp/cert-binding-mismatch");
+
+  // A superseded attribute that cannot be read is not a disagreement and not an agreement: it is a
+  // binding claim this verifier cannot resolve, so it draws the same refusal a malformed deciding
+  // attribute does rather than being passed over because the v2 beside it is sound.
+  function withBadV1(v1Value) {
+    return pki.cms.sign(tstFor("sha256"), [{ cert: tsa.cert, key: tsa.key }], {
+      eContentType: "tSTInfo",
+      additionalSignedAttributes: [
+        { type: "signingCertificateV2", values: [scv2] },
+        { type: "signingCertificate", values: [v1Value] },
+      ],
+    });
+  }
+  var notAStruct = await pki.tsp.verify(await withBadV1(b.integer(5)), DATA, { certs: [tsa.cert] });
+  check("ID14. a superseded v1 attribute that is not a SigningCertificate is refused, not skipped",
+    notAStruct.valid === false && notAStruct.code === "tsp/bad-signing-certificate");
+  var noCerts = await pki.tsp.verify(await withBadV1(b.sequence([b.sequence([])])), DATA, { certs: [tsa.cert] });
+  check("ID15. and one naming no certificate at all draws the same refusal",
+    noCerts.valid === false && noCerts.code === "tsp/bad-signing-certificate");
+
+  // An ESSCertID states the signer TWICE and independently: the certificate hash, and the optional
+  // issuerSerial. Comparing a superseded attribute's hash and not its issuerSerial leaves the same
+  // contradiction one field along, since a legacy verifier resolves a certificate by issuer and serial
+  // without ever computing the hash. ESSCertID ::= SEQUENCE { certHash, issuerSerial IssuerSerial
+  // OPTIONAL } and IssuerSerial ::= SEQUENCE { issuer GeneralNames, serial CertificateSerialNumber }.
+  var tsaParsed = pki.schema.x509.parse(tsa.cert);
+  var otherIssuerDn = b.sequence([b.set([b.sequence([
+    b.oid(pki.oid.byName("commonName")), b.printable("Not The Issuer")])])]);
+  function v1WithIssuerSerial(serial, issuerDn) {
+    return b.sequence([b.sequence([b.sequence([
+      b.octetString(crypto.createHash("sha1").update(tsa.cert).digest()),
+      b.sequence([
+        b.sequence([b.contextConstructed(4, issuerDn)]),
+        b.integer(serial),
+      ]),
+    ])])]);
+  }
+  // CONTROL: the agreeing issuerSerial on the superseded attribute verifies, so the refusals below are
+  // the disagreement rather than the presence of the field.
+  var isOk = await pki.tsp.verify(
+    await withBadV1(v1WithIssuerSerial(tsaParsed.serialNumber, tsaParsed.issuer.bytes)),
+    DATA, { certs: [tsa.cert] });
+  check("ID16. CONTROL a superseded v1 whose issuer and serial agree verifies",
+    isOk.valid === true);
+  var badSerial = await pki.tsp.verify(
+    await withBadV1(v1WithIssuerSerial(tsaParsed.serialNumber + 1n, tsaParsed.issuer.bytes)),
+    DATA, { certs: [tsa.cert] });
+  check("ID17. a superseded v1 naming another serial is refused, its hash agreeing",
+    badSerial.valid === false && badSerial.code === "tsp/cert-binding-mismatch");
+  var badIssuer = await pki.tsp.verify(
+    await withBadV1(v1WithIssuerSerial(tsaParsed.serialNumber, otherIssuerDn)),
+    DATA, { certs: [tsa.cert] });
+  check("ID18. and one naming another issuer is refused on the same ground",
+    badIssuer.valid === false && badIssuer.code === "tsp/cert-binding-mismatch");
 }
 
 module.exports = { run: run };

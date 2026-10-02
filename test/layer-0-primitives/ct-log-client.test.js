@@ -491,6 +491,15 @@ async function runAddChain() {
     Buffer.isBuffer(pki.ct.encodeSctList([got.sct])));
   check("A2e: which parses back to the same receipt",
     pki.ct.parseSctList(pki.ct.encodeSctList([got.sct])).scts[0].timestamp === BigInt(TS));
+  // The receipt is the shape this module's OTHER consumers read, and the log-list verbs key a log by
+  // `logIdHex` rather than by the raw bytes. Omitting it made a receipt that verified here unusable
+  // there: `verifySctWithLogList` refused it outright and `verifySctList` dropped it and reported a
+  // policy failure, both for a receipt the log had genuinely signed.
+  check("A2f: the receipt carries logIdHex, the field the log-list verbs key a log by",
+    got.sct.logIdHex === log.logId.toString("hex"));
+  // CONTROL: the shape parseSctList produces carries it too, which is the claim the receipt has to meet.
+  check("A2g: CONTROL parseSctList produces that same field",
+    pki.ct.parseSctList(pki.ct.encodeSctList([got.sct])).scts[0].logIdHex === log.logId.toString("hex"));
 
   /* An SCT the log returns that does not verify is not a receipt. */
   var badDer = Buffer.from(der); badDer[badDer.length - 1] ^= 1;

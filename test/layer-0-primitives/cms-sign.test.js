@@ -490,6 +490,28 @@ async function testSignedAttributes() {
   check("an additional signed attribute entry with an unknown field -> cms/bad-input", (await cmsCode(function () { return pki.cms.sign(CONTENT, makeSigner("ec-p256"), { additionalSignedAttributes: [{ type: "1.2.840.113549.1.9.16.2.4", values: [attrVal], critical: true }] }); })) === "cms/bad-input");
   check("an unsigned attribute entry with an unknown field -> cms/bad-input", (await cmsCode(function () { return pki.cms.sign(CONTENT, makeSigner("ec-p256"), { unsignedAttributes: [{ type: "1.2.840.113549.1.9.16.2.4", value: attrVal }] }); })) === "cms/bad-input");
 
+  // An unsigned attribute TYPE may repeat, and RFC 5652 is the authority for that rather than against
+  // it. `UnsignedAttributes ::= SET SIZE (1..MAX) OF Attribute` imposes no per-type uniqueness, clause
+  // 5.3 says of the field only that it "is a collection of attributes that are not signed. The field is
+  // optional", and the rules the RFC does state are per type: "The SignedAttributes in a signerInfo
+  // MUST include only one instance of the message-digest attribute", and clause 11.4's countersignature
+  // type "specifies one or more signatures". A signature re-timestamped by several authorities carries
+  // one timeStampToken attribute per authority, so a blanket refusal denies a conforming message.
+  var tsAttr = { type: "timeStampToken", values: [attrVal] };
+  var twoTs = await pki.cms.sign(CONTENT, makeSigner("ec-p256"), { unsignedAttributes: [tsAttr, tsAttr] });
+  var twoParsed = pki.schema.cms.parse(twoTs).signerInfos[0];
+  var tsRows = (twoParsed.unsignedAttrs || []).filter(function (a) { return a.type === pki.oid.byName("timeStampToken"); });
+  check("UA1. two instances of one unsigned attribute type are emitted, both of them",
+    tsRows.length === 2);
+  check("UA2. and the message still verifies, the signature covering signedAttrs rather than these",
+    (await pki.cms.verify(twoTs)).valid === true);
+  // The per-type rules the RFC DOES state are kept: an attribute that belongs only among the signed
+  // ones is still refused among the unsigned, repeated or not.
+  check("UA3. CONTROL a content-type attribute is still refused among the unsigned attributes",
+    (await cmsCode(function () {
+      return pki.cms.sign(CONTENT, makeSigner("ec-p256"), { unsignedAttributes: [{ type: "contentType", values: [attrVal] }] });
+    })) === "cms/bad-input");
+
   // signing-time omitted on request.
   var noTime = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ec-p256"), { signingTime: false }));
   check("signingTime:false -> two signed attributes", noTime.signerInfos[0].signedAttrs.length === 2);
