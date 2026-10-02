@@ -385,6 +385,44 @@ async function run() {
   check("SE8. a content Symbol.asyncIterator getter that mutates opts at probe time cannot change the output (options copied before the probe)",
     Buffer.isBuffer(sneakOut) && Buffer.compare((await pki.cms.decrypt(sneakOut, { key: sr.key, cert: sr.cert })).content, whole) === 0);
 
+  // The plaintext is the plaintext the verb was handed. `encrypt` binds the caller's content, then
+  // builds a RecipientInfo for each recipient, and only then encrypts. Building one READS the caller's
+  // recipient object, so a property on it is caller code that runs in between; over a view of the
+  // content rather than a copy, that accessor replaces what gets encrypted after the verb has accepted
+  // what it was given. No race is involved: the getter runs at a fixed point in the verb. It matters for
+  // a caller holding content it trusts and a recipient descriptor it does not, a peer's or a stored one.
+  var _kek = Buffer.alloc(32, 0x6b);
+  var _orig = Buffer.alloc(64, 0x41);
+  // CONTROL: a plain recipient over the same buffer round-trips the bytes as given.
+  check("SE9.0 CONTROL a plain kek recipient round-trips the content as handed over",
+    Buffer.compare((await pki.cms.decrypt(
+      await pki.cms.encrypt(Buffer.from(_orig), [{ kek: _kek, kekId: Buffer.from("k") }],
+        { contentEncryptionAlgorithm: "aes-256-cbc" }), { kek: _kek })).content, _orig) === 0);
+  for (var _ai = 0; _ai < 2; _ai++) {
+    var _alg = _ai === 0 ? "aes-256-cbc" : "aes-256-gcm";
+    var _live = Buffer.from(_orig);
+    var _reads = 0;
+    var _hostile = { kek: _kek, get kekId() { _reads += 1; _live.fill(0x42); return Buffer.from("k"); } };
+    var _out = await pki.cms.encrypt(_live, [_hostile], { contentEncryptionAlgorithm: _alg });
+    check("SE9." + (_ai * 2 + 1) + " CONTROL the recipient accessor ran during the " + _alg + " call", _reads > 0);
+    check("SE9." + (_ai * 2 + 2) + " " + _alg + " encrypts the content handed over, not what the accessor substituted",
+      Buffer.compare((await pki.cms.decrypt(_out, { kek: _kek })).content, _orig) === 0);
+  }
+  // The options are the other caller object, and the verb reads them before anything else. One supplied
+  // through an accessor is refused outright rather than read carefully, which is the same answer
+  // pki.cms.authenticate gives: a field whose value can differ between the check and the read is not
+  // something to accept. Both routes are closed, or the rule holds for the argument that was looked at.
+  var _liveOpt = Buffer.from(_orig);
+  var _optReads = 0;
+  check("SE9.5 an option supplied through an accessor is refused",
+    (await codeOf(function () {
+      return pki.cms.encrypt(_liveOpt, [{ kek: _kek, kekId: Buffer.from("k") }], {
+        get contentEncryptionAlgorithm() { _optReads += 1; _liveOpt.fill(0x42); return "aes-256-cbc"; },
+      });
+    })) === "cms/bad-input");
+  check("SE9.6 CONTROL and refused without the accessor ever being called",
+    _optReads === 0 && Buffer.compare(_liveOpt, _orig) === 0);
+
   // Dense caller-array hardening: a sparse/nullish authAttrs array is a typed cms/bad-input, caught before
   // b.setOf reaches the hole as a native concat error.
   var _spAttrs = [b.sequence([b.oid(O("contentType")), b.set([b.oid(O("data"))])])]; _spAttrs[2] = b.sequence([b.oid(O("signingTime")), b.set([b.utcTime(new Date("2026-01-01T00:00:00Z"))])]);   // distinct types, hole at 1

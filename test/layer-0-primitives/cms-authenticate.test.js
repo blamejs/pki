@@ -264,8 +264,86 @@ async function testNonAesMacKey() {
   check("a 64-octet (non-AES-size) HMAC-SHA-512 MAC key wrapped via AES-KW is recovered + authenticated", d.authenticated === true && Buffer.compare(d.content, MSG) === 0);
 }
 
+// ---- the content is the content the verb was handed ------------------------
+//
+// `authenticate` binds the caller's content, then builds a RecipientInfo for each recipient, and only
+// then digests the content and embeds it. Building a recipient READS the caller's recipient object, so
+// a property on it is caller code that runs between the two. Holding the content as a view rather than
+// a copy, every later read is of the caller's live buffer, so that accessor could replace the content
+// the message authenticates and carries after the verb had accepted the content it was given.
+//
+// This is reachable with no race at all: the getter runs at a fixed point in the verb. It matters for a
+// caller that holds content it trusts and a recipient descriptor it does not, a peer's or a stored
+// one, because the descriptor then chooses what gets authenticated under the caller's own MAC key.
+async function testContentIsSnapshotAtEntry() {
+  var kek = Buffer.alloc(32, 0x7a);
+  var original = Buffer.alloc(64, 0x41);
+  var live = Buffer.from(original);
+  var reads = 0;
+  // CONTROL: a plain recipient over the same buffer authenticates the bytes as given, so a difference
+  // below is the accessor and not the fixture.
+  var plain = await pki.cms.authenticate(Buffer.from(original), [{ kek: kek, kekId: Buffer.from("k") }],
+    { authenticatedAttributes: false });
+  check("#C0 CONTROL a plain recipient embeds the content as handed over",
+    Buffer.compare(pki.schema.cms.parse(plain).encapContentInfo.eContent, original) === 0);
+
+  var hostile = { kek: kek, get kekId() { reads += 1; live.fill(0x42); return Buffer.from("k"); } };
+  var out = await pki.cms.authenticate(live, [hostile], { authenticatedAttributes: false });
+  check("#C1 CONTROL the recipient accessor really ran during the call", reads > 0);
+
+  var parsed = pki.schema.cms.parse(out);
+  check("#C2 the message carries the content the verb was handed, not what the accessor substituted",
+    Buffer.compare(parsed.encapContentInfo.eContent, original) === 0);
+
+  // Whatever it carries, the MAC must cover it: the message stays self-consistent either way, which is
+  // why the check above is the one that catches the substitution.
+  var macKey = await recoverMacKey(parsed, kek, "hmac-sha256");
+  var indep = nodeCrypto.createHmac("sha256", macKey).update(preimageOf(parsed)).digest();
+  check("#C3 and the MAC covers what it carries",
+    Buffer.compare(indep, Buffer.from(parsed.mac)) === 0);
+
+  // The recipient is not the only caller object the verb reads. The options are read too, and earlier,
+  // so an accessor there runs before the content would otherwise have been. Both routes have to be
+  // closed, or the rule holds for the argument that was looked at and not for the one that was not.
+  // `authenticatedAttributes` is the FIRST option the verb reads, which is what makes it the one that
+  // could precede the content. An accessor on a later-read option, `macAlgorithm` say, fires after the
+  // content has already been taken and proves nothing about the ordering. The option object is refused
+  // outright rather than tolerated, which is the stronger answer and the one `pki.cms.encrypt` gives:
+  // a field whose value can differ between the check and the read is not something to read twice
+  // carefully, it is something not to accept.
+  var live3 = Buffer.from(original);
+  var optReads = 0;
+  var hostileOpts = {
+    get authenticatedAttributes() { optReads += 1; live3.fill(0x44); return false; },
+  };
+  check("#C6 an option supplied through an accessor is refused",
+    (await codeOf(function () {
+      return pki.cms.authenticate(live3, [{ kek: kek, kekId: Buffer.from("k") }], hostileOpts);
+    })) === "cms/bad-input");
+  check("#C7 CONTROL and it is refused without the accessor ever being called",
+    optReads === 0 && Buffer.compare(live3, original) === 0);
+  // CONTROL for #C6: the same options as plain values are accepted, so the refusal is the accessor.
+  check("#C8 CONTROL the same options as plain values are accepted",
+    Buffer.isBuffer(await pki.cms.authenticate(Buffer.from(original),
+      [{ kek: kek, kekId: Buffer.from("k") }], { authenticatedAttributes: false })));
+
+  // The same question with authenticated attributes, where the messageDigest attribute is what commits
+  // to the content, so a substitution has two places to show up instead of one.
+  var live2 = Buffer.from(original);
+  var hostile2 = { kek: kek, get kekId() { live2.fill(0x43); return Buffer.from("k"); } };
+  var out2 = await pki.cms.authenticate(live2, [hostile2], {});
+  var parsed2 = pki.schema.cms.parse(out2);
+  check("#C4 the attributes arm carries the content it was handed too",
+    Buffer.compare(parsed2.encapContentInfo.eContent, original) === 0);
+  var md = parsed2.authAttrs.filter(function (a) { return a.type === O("messageDigest"); })[0];
+  var mdValue = pki.asn1.read.octetString(pki.asn1.decode(md.values[0]));
+  check("#C5 and its messageDigest attribute commits to those same bytes",
+    Buffer.compare(mdValue, nodeCrypto.createHash("sha256").update(original).digest()) === 0);
+}
+
 async function run() {
   await testNonAesMacKey();
+  await testContentIsSnapshotAtEntry();
   await testRoundTripAndKat();
   await testPreimageNegative();
   await testPerArm();

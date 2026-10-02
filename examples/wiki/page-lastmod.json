@@ -30,7 +30,7 @@
   "lib/cms-compress.js": "2026-09-01",
   "lib/cms-decrypt.js": "2026-09-28",
   "lib/cms-digest.js": "2026-09-19",
-  "lib/cms-encrypt.js": "2026-09-06",
+  "lib/cms-encrypt.js": "2026-10-02",
   "lib/cms-sign.js": "2026-09-28",
   "lib/cms-verify.js": "2026-09-30",
   "lib/composite-kem.js": "2026-09-07",
