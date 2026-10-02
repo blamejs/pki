@@ -346,6 +346,66 @@ async function run() {
   check("VL32. a malformed-timestamp SCT on a retired log is recorded per-row, not a thrown abort; sibling counts",
     v32.results.length === 2 && v32.results[1].valid === false && v32.results[1].code === "ct/bad-input" && v32.validScts >= 1);
 
+  // ---- a cap refuses before the copy it would otherwise follow -----------------
+  //
+  // These verbs take a caller's bytes through one door that normalizes them to a view and then COPIES
+  // them. Every cap in the module used to run after that copy, so refusing a 64 MiB input meant
+  // allocating 64 MiB to refuse it (CWE-770). The door now measures the cap on the VIEW, which shares
+  // the caller's store and allocates nothing, so an over-cap input is refused before the copy.
+  //
+  // What a unit vector can prove here is that each cap FIRES, and for `parseSctList` that it fires
+  // FIRST: an over-cap value that is also not DER used to be copied, then fail DER decoding with
+  // `ct/bad-der`, and now draws `ct/too-large` instead, so the code itself distinguishes the ordering.
+  // The other five caps give the same code whichever side of the copy they run on, so their ordering is
+  // measured by allocation rather than by a code, in
+  // `.references/tools/measure-ct-cap-after-copy.js` (the instrument is
+  // `process.memoryUsage().arrayBuffers`, since a Buffer's bytes are not on the JS heap).
+  var C = require("../../lib/constants.js");
+  function anSct(over) {
+    var s = { version: 0, logId: Buffer.alloc(32, 1), timestamp: 1n, extensions: Buffer.alloc(0),
+      hashAlg: 4, sigAlg: 3, signature: Buffer.alloc(8, 3) };
+    Object.keys(over || {}).forEach(function (k) { s[k] = over[k]; });
+    return s;
+  }
+  // CONTROL: a valid under-cap SCT encodes, so a refusal below is the cap and not the fixture.
+  check("CC0. CONTROL a valid under-cap SCT encodes",
+    Buffer.isBuffer(pki.ct.encodeSctList([anSct()])));
+
+  check("CC1. parseSctList refuses an over-cap extension value with ct/too-large, before the DER decode it used to reach",
+    (await code(function () {
+      return pki.ct.parseSctList(Buffer.alloc(C.LIMITS.SCT_MAX_BYTES + 4096, 0x41));
+    })) === "ct/too-large");
+  // CONTROL for CC1: an UNDER-cap value that is not DER still reports the DER fault, so CC1's code is
+  // the cap firing and not every bad value collapsing to ct/too-large.
+  check("CC2. CONTROL an under-cap non-DER value still reports the DER fault",
+    (await code(function () { return pki.ct.parseSctList(Buffer.alloc(64, 0x41)); })) === "ct/bad-der");
+
+  check("CC3. reconstructSignedData refuses a leafCert over the uint24 length with ct/bad-tbs-length",
+    (await code(function () {
+      return pki.ct.reconstructSignedData({ entryType: 0, leafCert: Buffer.alloc(0x1000000, 0x41) },
+        { version: 0, timestamp: 1n, extensions: Buffer.alloc(0) });
+    })) === "ct/bad-tbs-length");
+  check("CC4. reconstructSignedData refuses sct.extensions over 65535 with ct/bad-extensions",
+    (await code(function () {
+      return pki.ct.reconstructSignedData({ entryType: 0, leafCert: certDer },
+        { version: 0, timestamp: 1n, extensions: Buffer.alloc(0x10000, 0x41) });
+    })) === "ct/bad-extensions");
+  check("CC5. encodeSctList refuses sct.extensions over 65535 with ct/bad-input",
+    (await code(function () {
+      return pki.ct.encodeSctList([anSct({ extensions: Buffer.alloc(0x10000, 0x41) })]);
+    })) === "ct/bad-input");
+  check("CC6. encodeSctList refuses sct.signature over 65535 with ct/bad-input",
+    (await code(function () {
+      return pki.ct.encodeSctList([anSct({ signature: Buffer.alloc(0x10000, 0x41) })]);
+    })) === "ct/bad-input");
+  // The boundary is where the cap says it is, on both sides: a large extensions and signature that the
+  // per-field caps accept still encode. They cannot BOTH reach 65535, because the whole SCT body is
+  // itself a 16-bit vector in the list and the fixed fields take 47 bytes of it, so the pair is sized to
+  // fit that envelope rather than to each field's own maximum.
+  check("CC7. and a large extensions and signature the caps accept still encode",
+    Buffer.isBuffer(pki.ct.encodeSctList([anSct({ extensions: Buffer.alloc(32768, 0x41),
+      signature: Buffer.alloc(32000, 0x42) })])));
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
