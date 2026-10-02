@@ -1904,6 +1904,45 @@ function _isBoilerplate(slice) {
   // prefix is exactly this 3-instantiation window; a format with more sub-schemas
   // has 4+.)
   if (factoryDecls >= 3) return true;
+  // Module-load CAPTURE runs — `var _pop = intrinsic.pop;` — are the sibling of the factory run above
+  // with a property read where that one has a call. Every module that opts into the captured-intrinsic
+  // discipline opens with one, so the run is identical across modules by construction, and the thing it
+  // would factor out is `guard-intrinsic`, which is where the captures already live. Taking one more
+  // capture is the prescribed fix for a live read, so without this the fix for one finding manufactures
+  // another. A run of plain aliases has no logic in it to extract.
+  // A capture has two spellings and a window holds a MIX of them: a plain alias of a module handle's
+  // property, `var _pop = intrinsic.pop;`, and an uncurried prototype method,
+  // `var _charAt = intrinsic.uncurry(String.prototype.charAt);`, which is the factory shape above. The
+  // window that fired held two of each, so neither count reached three on its own. Only an identifier
+  // that is a JS keyword survives normalization, so `uncurry` itself is indistinguishable from any other
+  // name and cannot be counted directly; the two declaration shapes can.
+  //
+  // The test is COVERAGE rather than a count, and that distinction is the whole rule. Counting three
+  // declarations anywhere in the window suppressed 2072 windows, MEASURED, and 53 of them in one module
+  // alone carried `if (!check(x)) throw E(...)` guard clauses with two aliases between them: a repeated
+  // validation shape, exactly what this class exists to find, excused because three `var`s sat near it.
+  // Requiring the declarations to account for most of the window admits the capture run, which is
+  // nothing else, and keeps a window that merely contains some.
+  // The test is what the window CONTAINS, not how much of it a pattern can match. Two attempts at a
+  // coverage ratio both failed on the same thing: a shingle starts and ends wherever its offset lands,
+  // so a window over a pure declaration run loses both edge declarations to clipping and measured 70 of
+  // 50 tokens' worth at best. A count alone is no good either, since three `var`s sitting beside an
+  // `if (!check(x)) throw E(...)` pair excused 2072 windows, 53 of them that exact guard-clause shape.
+  // What separates the two is that a declaration run holds no statement keyword but `var`: no branch, no
+  // call-and-return, no function body. A window that holds one is code, whatever else is in it.
+  // The rule is an ALLOWLIST of the tokens a capture run can be built from, not a blocklist of the ones
+  // it cannot. A blocklist of statement keywords was beaten by arithmetic: five declarations of
+  // `var total = net * rate + fee;` followed by `charge(total);` holds no statement keyword, is exactly
+  // fifty tokens, and is executable pricing logic that would merit extraction. The initializer has to be
+  // constrained, and the honest way is to say what a capture run contains: declarations, member access,
+  // a call, and nothing else. No operator, no literal, no bracket, no object, so no expression.
+  // FOUR declarations, measured against the two clusters that fired: one held two plain aliases and two
+  // uncurried captures, the other five plain aliases, and a shingle starts wherever its offset lands so
+  // the edge declarations are clipped and uncountable.
+  var declStarts = (joined.match(/\bvar\s+_ID\s+=\s+/g) || []).length;
+  var CAPTURE_TOKENS = /^(?:var|_ID|=|\.|\(|\)|;|[A-Z][\w$]*)$/;
+  var captureShaped = declStarts >= 4 && toks.every(function (t) { return CAPTURE_TOKENS.test(t); });
+  if (captureShaped) return true;
   // The module-header TRANSITION: a slice that mixes a top-of-file require with a
   // factory-instantiation run is the header every format module shares (the 5
   // requires flow into `var NS = pkix.makeNS(...)` + `var X = pkix.factory(NS)`).
@@ -3275,7 +3314,15 @@ function testGuardReadsRuntimeLive() {
   // a mailbox separator sits, which substring is the domain, whether a local-part is well-formed,
   // how a URI splits into scheme and authority. Each is one replaceable call, and moving any one of
   // them moves the boundary, so the name the verb ends up comparing is not the one on the wire.
-  var LIVE_METHODS = "(?:forEach|map|filter|every|some|indexOf|sort|push|concat|join|" +
+  // The MUTATORS are here because a list is what a rule is enforced OVER, and one that drops an
+  // element drops the rule applied to it. A replaced `pop` that pops twice removed a note's final
+  // signature line along with the empty tail element the trailing newline leaves, so a forged
+  // signature under a known key was never checked and the note verified. That shipped in a module held
+  // to zero live reads, because this list is an ENUMERATION of names and `pop` was never in it: the
+  // read was never counted, so no budget was ever exceeded. `shift`, `unshift` and `splice` move the
+  // same boundary from the other end and are added with it.
+  var LIVE_METHODS = "(?:forEach|map|filter|every|some|indexOf|sort|push|pop|shift|unshift|splice|" +
+    "reverse|copyWithin|concat|join|" +
     "toLowerCase|toUpperCase|charAt|charCodeAt|fill|getTime|equals|compare|toString|subarray|" +
     "slice|lastIndexOf|search|test|exec|replace|split|trim|substring|substr|startsWith|endsWith|" +
     "includes|hasOwnProperty)";
@@ -3400,19 +3447,19 @@ function testGuardReadsRuntimeLive() {
   // budget nobody tightens is a number that stops meaning anything, and the next reader would take
   // it for the real count. A module reaching zero is deleted from the map and held to zero forever.
   var MIGRATING = {
-    "lib/acme.js": 187,
+    "lib/acme.js": 186,
     "lib/est.js": 159,
     "lib/cmp-build.js": 130,
     "lib/crmf-sign.js": 35,
     "lib/path-validate.js": 95,
-    "lib/webauthn.js": 163,
+    "lib/webauthn.js": 160,
     "lib/asn1-der.js": 105,
     "lib/schema-engine.js": 45,
     "lib/trust.js": 100,
     "lib/cms-sign.js": 57,
-    "lib/webauthn-mds.js": 89,
+    "lib/webauthn-mds.js": 88,
     "lib/attrcert-sign.js": 76,
-    "lib/tsp-sign.js": 43,
+    "lib/tsp-sign.js": 42,
     "lib/http-digest.js": 73,
     "lib/pkcs12-build.js": 63,
     "lib/ct.js": 71,

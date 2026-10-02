@@ -392,6 +392,24 @@ async function testBuilder() {
       subject: "x", subjectPublicKey: subject.spki, serialNumber: 0x64n, notBefore: NB, notAfter: NA,
       extensions: { subjectAltPublicKeyInfo: subjAltSpki },
     }, { cert: nativeS.cert, key: nativeS.key, altKey: altPkcs8 }))) === "x509/bad-input");
+  // The other half of B9b, and the one that failed SILENTLY: an issuer alternative PUBLIC key with no
+  // altKey beside it, and a subject that asks for no alternative key either. Nothing was signed with the
+  // option, and nothing said so, so a configuration assembled a field at a time emitted an ordinary
+  // certificate while reporting success. `pki.crl.sign` already refused the same pair, which is what
+  // settles that refusing is the rule rather than a new one.
+  check("B9d: an issuer altPublicKey with no altKey is refused rather than ignored",
+    (await codeAsync(pki.x509.sign({
+      subject: "x", subjectPublicKey: subject.spki, serialNumber: 0x64n, notBefore: NB, notAfter: NA,
+    }, { cert: nativeS.cert, key: nativeS.key, altPublicKey: altSpki }))) === "x509/bad-input");
+  check("B9e: and the same pair is refused when the subject does ask for an alternative key",
+    (await codeAsync(pki.x509.sign({
+      subject: "x", subjectPublicKey: subject.spki, serialNumber: 0x64n, notBefore: NB, notAfter: NA,
+      extensions: { subjectAltPublicKeyInfo: subjAltSpki },
+    }, { cert: nativeS.cert, key: nativeS.key, altPublicKey: altSpki }))) === "x509/bad-input");
+  check("B9f: CONTROL the same spec with neither alternative field emits an ordinary certificate",
+    Buffer.isBuffer(await pki.x509.sign({
+      subject: "x", subjectPublicKey: subject.spki, serialNumber: 0x64n, notBefore: NB, notAfter: NA,
+    }, { cert: nativeS.cert, key: nativeS.key })));
   check("B9c: naming altSignatureAlgorithm by hand is refused, it being resolved from the key",
     (await codeAsync(pki.x509.sign({
       subject: "x", subjectPublicKey: subject.spki, serialNumber: 0x64n, notBefore: NB, notAfter: NA,

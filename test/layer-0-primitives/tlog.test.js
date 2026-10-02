@@ -178,6 +178,40 @@ async function runNoteFormat() {
   check("N11c: a key id is derived from the name and the key, so two names never share one",
     Buffer.compare(pki.tlog.keyId("a", alice.raw), pki.tlog.keyId("b", alice.raw)) !== 0);
 
+  /* The signature lines are the list every rule above is enforced over, and the parser drops the empty
+   * tail element the final newline leaves. It dropped it by dispatching through `Array.prototype.pop`,
+   * which is an ordinary writable property: a replacement that pops TWICE removes the tail element and
+   * the last signature line with it, so the line never reaches the loop that checks it. That is the
+   * failing-open direction, because a note whose last line is a forged signature under a known key is
+   * refused only by checking it. The note itself is unchanged, which is what makes it a fixture rather
+   * than a modified input. */
+  var forgedTail = Buffer.concat([pki.tlog.keyId(alice.name, alice.raw), Buffer.alloc(64, 0x5a)]);
+  var withForged = (await makeNote(text, [alice])) +
+    EM_DASH + " " + alice.name + " " + forgedTail.toString("base64") + "\n";
+  var aliceKey = [{ name: alice.name, publicKey: alice.raw }];
+  check("N11d: CONTROL a note whose last line is a forged signature under a known key is refused",
+    await codeOfAsync(pki.tlog.verifyNote(withForged, aliceKey)) === "tlog/bad-signature");
+  var realPop = Array.prototype.pop;
+  var underReplacedPop, replacementLive;
+  try {
+    Object.defineProperty(Array.prototype, "pop", {
+      value: function () { realPop.call(this); return realPop.call(this); },
+      writable: true, configurable: true,
+    });
+    // CONTROL, inside the window: the replacement really is installed, so N11e below is the parser
+    // holding its own capture rather than a probe that never took effect. A double pop leaves one
+    // element of three.
+    var probe = [1, 2, 3];
+    probe.pop();
+    replacementLive = probe.length === 1;
+    underReplacedPop = await codeOfAsync(pki.tlog.verifyNote(withForged, aliceKey));
+  } finally {
+    Object.defineProperty(Array.prototype, "pop", { value: realPop, writable: true, configurable: true });
+  }
+  check("N11e: CONTROL the replaced pop is live, so N11f exercises it", replacementLive === true);
+  check("N11f: and a replaced array pop cannot drop that line past the check (" + underReplacedPop + ")",
+    underReplacedPop === "tlog/bad-signature");
+
   /* "Verifiers MUST accept at least up to 16 signatures." */
   var many = [];
   for (var i = 0; i < 16; i++) many.push(await makeSigner("signer" + i + ".example"));
