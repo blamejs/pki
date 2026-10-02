@@ -6,7 +6,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## v0.8.47 — 2026-09-30
 
-Return the right plaintext to a CMS recipient, act on the content you were handed, verify an alternative signature another implementation made, and refuse the key-possession requests the linter let through.
+Return the plaintext the recipient's own key unwraps, sign the content a caller passed rather than one substituted after it, verify an alternative signature another implementation made, and refuse the key-possession requests the linter let through.
 
 ### Fixed
 
