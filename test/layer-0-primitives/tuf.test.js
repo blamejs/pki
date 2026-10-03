@@ -911,6 +911,103 @@ async function runVerify() {
   check("M19ag: signedBytes encoding another document is refused by the expiry check too (" +
     code(function () { pki.tuf.checkExpiry(mismatched, NOW); }) + ")",
     code(function () { pki.tuf.checkExpiry(mismatched, NOW); }) === "tuf/bad-input");
+  /* A THRESHOLD COUNTS KEYS, and the verdict counted identifiers. A key identifier is a hash of the
+     key's canonical form, so adding a member the hash covers and the cryptography ignores -- a
+     `comment` here -- yields a SECOND identifier for the SAME public key. A role naming both with a
+     threshold of two was then met by one key: the same signature bytes verify under both entries, and
+     each counted once. What a threshold of two is for is two keys, so the count is over the key
+     MATERIAL now and the aliases collapse to one. */
+    var aliasKey = { keytype: a.key.keytype, scheme: a.key.scheme, keyval: a.key.keyval,
+      comment: "alias" };
+  var aliasId = pki.tuf.keyId(aliasKey);
+  var aliasKeys = {};
+  aliasKeys[a.keyId] = a.key;
+  aliasKeys[aliasId] = aliasKey;
+  var aliasBody = { _type: "targets", spec_version: SPEC, version: 1, expires: EXPIRES };
+  var aliasBytes = pki.tuf.canonicalJson(aliasBody);
+  var aliasSig = crypto.sign(null, aliasBytes, a.kp.privateKey).toString("hex");
+  var aliasMeta = { type: "targets", specVersion: SPEC, version: 1, expires: EXPIRES,
+    signed: aliasBody, signedBytes: aliasBytes,
+    signatures: [{ keyid: a.keyId, sig: aliasSig }, { keyid: aliasId, sig: aliasSig }] };
+  var aliasVerdict = await pki.tuf.verifySignatures({ metadata: aliasMeta, keys: aliasKeys,
+    role: { keyids: [a.keyId, aliasId], threshold: 2 } });
+  check("M19ai: CONTROL the two identifiers differ while the key material is the same",
+    aliasId !== a.keyId && aliasKey.keyval.public === a.key.keyval.public);
+  check("M19aj: one key under two identifiers does not meet a threshold of two (" +
+    aliasVerdict.keyIds.length + " counted)",
+    aliasVerdict.verified === false && aliasVerdict.keyIds.length === 1);
+  /* CONTROL: two genuinely different keys still meet it, so the count collapses aliases rather than
+     refusing a second signer. */
+  var twoReal = {};
+  twoReal[a.keyId] = a.key;
+  twoReal[c.keyId] = c.key;
+  var twoBody = { _type: "targets", spec_version: SPEC, version: 1, expires: EXPIRES };
+  var twoBytes = pki.tuf.canonicalJson(twoBody);
+  var twoMeta = { type: "targets", specVersion: SPEC, version: 1, expires: EXPIRES,
+    signed: twoBody, signedBytes: twoBytes,
+    signatures: [{ keyid: a.keyId, sig: crypto.sign(null, twoBytes, a.kp.privateKey).toString("hex") },
+      { keyid: c.keyId, sig: signWith(c, twoBody) }] };
+  var twoVerdict = await pki.tuf.verifySignatures({ metadata: twoMeta, keys: twoReal,
+    role: { keyids: [a.keyId, c.keyId], threshold: 2 } });
+  check("M19ak: CONTROL two different keys still meet a threshold of two",
+    twoVerdict.verified === true && twoVerdict.keyIds.length === 2);
+  /* The `comment` above is one spelling of five. A key identifier covers the whole key object, so a
+     PEM with CRLF line endings, a space before each newline, an EC point written compressed rather
+     than uncompressed, and the `ecdsa-sha2-nistp256` keytype where another entry says `ecdsa` each
+     yield a different identifier for the same point. MEASURED, the exported SPKI does NOT collapse
+     them: Node preserves a compressed point on export, 59 bytes against 91. The JWK coordinates do,
+     which is why the fingerprint comes from there. Each row asserts the two entries really are one
+     key, so a count of one cannot come from a broken fixture. */
+  var ecPem = c.kp.publicKey.export({ type: "spki", format: "pem" });
+  function ecEntry(pem, keytype) {
+    return { keytype: keytype || "ecdsa", scheme: "ecdsa-sha2-nistp256", keyval: { public: pem } };
+  }
+  function ecCompressedPem() {
+    var spki = c.kp.publicKey.export({ type: "spki", format: "der" });
+    var jwk = c.kp.publicKey.export({ format: "jwk" });
+    var xb = Buffer.from(jwk.x, "base64url"), yb = Buffer.from(jwk.y, "base64url");
+    var point = Buffer.concat([Buffer.from([(yb[yb.length - 1] & 1) ? 3 : 2]), xb]);
+    var build = pki.asn1.build;
+    var der = build.sequence([build.raw(pki.asn1.decode(spki).children[0].bytes),
+      build.bitString(point, 0)]);
+    return crypto.createPublicKey({ key: der, format: "der", type: "spki" })
+      .export({ type: "spki", format: "pem" });
+  }
+  function jwkOf(pem) { return crypto.createPublicKey(pem).export({ format: "jwk" }); }
+  var ecBase = ecEntry(ecPem);
+  var ecBaseId = pki.tuf.keyId(ecBase);
+  var ecBody = { _type: "targets", spec_version: SPEC, version: 1, expires: EXPIRES };
+  var ecBytes = pki.tuf.canonicalJson(ecBody);
+  var ecSig = crypto.sign("sha256", ecBytes, { key: c.kp.privateKey, dsaEncoding: "der" })
+    .toString("hex");
+  var SPELLINGS = [
+    ["CRLF line endings", ecEntry(ecPem.replace(/\n/g, "\r\n"))],
+    ["a space before each newline", ecEntry(ecPem.replace(/\n/g, " \n"))],
+    ["a compressed EC point", ecEntry(ecCompressedPem())],
+    ["the ecdsa-sha2-nistp256 keytype alias", ecEntry(ecPem, "ecdsa-sha2-nistp256")],
+  ];
+  var spelled = [];
+  for (var si = 0; si < SPELLINGS.length; si++) {
+    var alias2 = SPELLINGS[si][1];
+    var aliasId2 = pki.tuf.keyId(alias2);
+    var ks2 = {};
+    ks2[ecBaseId] = ecBase;
+    ks2[aliasId2] = alias2;
+    var jb = jwkOf(ecBase.keyval.public), ja = jwkOf(alias2.keyval.public);
+    var v3 = await pki.tuf.verifySignatures({
+      metadata: { type: "targets", specVersion: SPEC, version: 1, expires: EXPIRES, signed: ecBody,
+        signedBytes: ecBytes,
+        signatures: [{ keyid: ecBaseId, sig: ecSig }, { keyid: aliasId2, sig: ecSig }] },
+      keys: ks2, role: { keyids: [ecBaseId, aliasId2], threshold: 2 } });
+    var onePoint = jb.x === ja.x && jb.y === ja.y;
+    if (!onePoint || aliasId2 === ecBaseId || v3.verified !== false || v3.keyIds.length !== 1) {
+      spelled.push(SPELLINGS[si][0] + " -> samePoint " + onePoint + ", counted " + v3.keyIds.length +
+        ", verified " + v3.verified);
+    }
+  }
+  check("M19al: every spelling of one key collapses to one against a threshold of two (" +
+    (spelled.length ? spelled.join(" | ") : SPELLINGS.length + " spellings") + ")",
+    spelled.length === 0);
   check("M19ah: CONTROL an object carrying no signedBytes at all still answers about its expiry",
     pki.tuf.checkExpiry({ signed: { _type: "root", spec_version: SPEC, version: 1,
       expires: "2099-01-01T00:00:00Z" } }, NOW) === true);
@@ -1105,6 +1202,76 @@ async function runRootChain() {
   check("T3l: a role present but naming no usable signer is refused (" +
     (unusable.length ? unusable.join(" | ") : UNUSABLE.length + " forms refused") + ")",
     unusable.length === 0);
+  /* EXISTENCE IS NOT IDENTITY. A role can name a 64-character identifier the keys map does carry while
+     the key filed there hashes to a different one, which is the same "a key listed under an identifier
+     that is not its own" M9 refuses where a role is VERIFIED. Only the root role is verified during a
+     rotation, so a targets, snapshot or timestamp role naming a mis-filed key was adopted and failed
+     later, when the client tried to use the root it had already trusted. Every identifier a mandatory
+     role names is recomputed from the key filed under it, at adoption. */
+  var misfiled = {};
+  misfiled[k1.keyId] = k1.key;
+  misfiled[k2.keyId] = k1.key;             // k1's key filed under k2's identifier
+  var misfiledRoot = {
+    _type: "root", spec_version: SPEC, version: 1, expires: EXPIRES, consistent_snapshot: true,
+    keys: misfiled,
+    roles: {
+      root: { keyids: [k1.keyId], threshold: 1 },
+      targets: { keyids: [k2.keyId], threshold: 1 },
+      snapshot: { keyids: [k1.keyId], threshold: 1 },
+      timestamp: { keyids: [k1.keyId], threshold: 1 },
+    },
+  };
+  var misfiledCode = await codeAsync(pki.tuf.updateRoot({
+    trustedRoot: metadataFor(misfiledRoot, [k1]), candidates: [], now: NOW }));
+  check("T3n: a role naming a key filed under an identifier that is not its own is refused (" +
+    misfiledCode + ")", misfiledCode === "tuf/bad-key");
+  /* A key can be filed under its own identifier and still verify nothing, because the identifier is a
+     hash of the key's canonical form and says nothing about whether the material imports. Only the
+     root role is verified during a rotation, so a targets role naming such a key was adopted and the
+     client found out at first use. Every key a mandatory role names is held to the same checks the
+     verify applies before it looks at a signature: the material imports, the declared type matches
+     what imported, and an ed25519 point is on the curve. */
+  function roleKeyIs(badKey) {
+    var ks = {};
+    ks[k1.keyId] = k1.key;
+    var badId = pki.tuf.keyId(badKey);
+    ks[badId] = badKey;
+    var body = {
+      _type: "root", spec_version: SPEC, version: 1, expires: EXPIRES, consistent_snapshot: true,
+      keys: ks,
+      roles: {
+        root: { keyids: [k1.keyId], threshold: 1 },
+        targets: { keyids: [badId], threshold: 1 },
+        snapshot: { keyids: [k1.keyId], threshold: 1 },
+        timestamp: { keyids: [k1.keyId], threshold: 1 },
+      },
+    };
+    return codeAsync(pki.tuf.updateRoot({ trustedRoot: metadataFor(body, [k1]), candidates: [],
+      now: NOW }));
+  }
+  check("T3p: a role naming a key whose material does not import is refused at adoption",
+    await roleKeyIs({ keytype: "rsa", scheme: "rsassa-pss-sha256",
+      keyval: { public: "not a PEM" } }) === "tuf/bad-key");
+  check("T3q: and an ed25519 key that is the wrong length, or not a full-order point, likewise",
+    await roleKeyIs({ keytype: "ed25519", scheme: "ed25519",
+      keyval: { public: "00".repeat(31) } }) === "tuf/bad-key" &&
+    await roleKeyIs({ keytype: "ed25519", scheme: "ed25519",
+      keyval: { public: "00".repeat(32) } }) === "tuf/bad-key");
+  check("T3r: and a keytype this build does not read is refused rather than carried",
+    await roleKeyIs({ keytype: "dilithium", scheme: "dilithium",
+      keyval: { public: "00" } }) === "tuf/unsupported-key");
+
+  /* CONTROL: the same root with the key filed under its own identifier is read, so the refusal is
+     about the identity rather than about anything else this fixture carries. */
+  var filedRight = {};
+  filedRight[k1.keyId] = k1.key;
+  filedRight[k2.keyId] = k2.key;
+  var rightRoot = JSON.parse(JSON.stringify(misfiledRoot));
+  rightRoot.keys = filedRight;
+  check("T3o: CONTROL the same root with each key under its own identifier is read",
+    await codeAsync(pki.tuf.updateRoot({ trustedRoot: metadataFor(rightRoot, [k1]), candidates: [],
+      now: NOW })) === "NO-THROW");
+
   /* The CANDIDATE route as well as the anchor route, since a rotation is where an unusable role would
      arrive from a repository rather than from the caller's own pin. */
   var candRoles = {
