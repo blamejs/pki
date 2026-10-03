@@ -662,7 +662,26 @@ security-only patches after the next major releases.
   and the verb returned the wrong plaintext while naming that recipient as the
   one it used. Padding is the only check a non-AEAD content offers, which is the
   argument for the AEAD default: AES-GCM rejects a wrong content key on the tag,
-  at a probability no attacker can ride. Integrity is verified before any plaintext is released, and a
+  at a probability no attacker can ride.
+
+  **RSAES-PKCS1-v1_5 over a content with no integrity tag is refused, and the
+  refusal is why the two paragraphs above do not contradict each other.** Those
+  two requirements cannot both hold for that combination: discarding a
+  substituted candidate's result keeps the plaintext correct and makes acceptance
+  depend on whether the unwrap conformed, while letting it stand keeps the arms
+  indistinguishable and can return the wrong plaintext. Measured against an
+  `openssl cms -encrypt -aes-256-cbc` message, 256 chosen ciphertexts per arm,
+  the first gives one acceptance where the unwrap conformed and none where it did
+  not. So `pki.cms.decrypt` and `pki.smime.decrypt` refuse the combination with
+  `cms/unauthenticated-rsa-v15` **before the unwrap**, which leaves no decision
+  for it to influence: zero acceptances on both arms. `allowUnauthenticatedRsa15`
+  accepts it knowingly, and reading an `openssl cms -encrypt` or
+  `openssl smime -encrypt` message needs that option, since OpenSSL emits exactly
+  this combination when no algorithm is named and reports
+  `ossl_cipher_unpadblock: bad decrypt` on a wrong key, leaking the same signal
+  more loudly. An AEAD content or an RSAES-OAEP recipient needs no option, each
+  carrying its own integrity check. Re-encrypting to `aes-256-gcm` removes the
+  question. Integrity is verified before any plaintext is released, and a
   CBC EnvelopedData (unauthenticated content) surfaces `authenticated: false` in
   the verdict rather than silently, with AES-GCM AuthEnvelopedData the encrypt
   default. The declared content cipher's mode is bound to the container carrying

@@ -485,9 +485,13 @@ async function run() {
     // The substitute key is random and the content is unauthenticated CBC, so this does not reliably
     // throw -- the deterministic property is that it never yields plaintext. Either way the
     // substitute must be cleared. The ciphertext above is chosen so the substitute is always taken.
+    // The opt-in is needed to reach the implicit rejection at all: v1.5 over a CBC content is refused by
+    // default now, and what this vector is about is whether the substitute key is cleared once the path
+    // IS taken.
     var leakedV15 = false;
     try {
-      var v15Out = await pki.cms.decrypt(v15Env, { key: rsaA.key, cert: rsaA.cert }, { recipientIndex: 0 });
+      var v15Out = await pki.cms.decrypt(v15Env, { key: rsaA.key, cert: rsaA.cert },
+        { recipientIndex: 0, allowUnauthenticatedRsa15: true });
       leakedV15 = Buffer.isBuffer(v15Out.content) && Buffer.compare(v15Out.content, MSG) === 0;
     } catch (e) {
       if (e.code !== "cms/decrypt-failed") throw e;

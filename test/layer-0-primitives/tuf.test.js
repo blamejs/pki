@@ -213,6 +213,17 @@ function runCanonical() {
     code(function () { pki.tuf.canonicalJson(dag(24)); }) === "tuf/too-large");
   check("J: and the budget is on the OUTPUT, so a wide document under it still encodes",
     cj(dag(10)).length === 4093);
+  /* The budget is in UTF-8 BYTES, which is the unit the returned buffer is measured in. Charging
+     `text.length` counted UTF-16 code units instead, so a string outside the Basic Latin range
+     undercharged by its encoded width: 1,048,574 CJK code points produced 3,145,724 bytes against a
+     1,048,576-byte budget, each costing three bytes and charged as one. */
+  var CJK = String.fromCharCode(0x4e00);
+  check("J: CONTROL a CJK string inside the budget encodes, three bytes to the code point",
+    pki.tuf.canonicalJson(CJK.repeat(1000)).length === 3002);
+  check("J: a CJK string whose UTF-8 form exceeds the budget is refused, not undercharged",
+    code(function () { pki.tuf.canonicalJson(CJK.repeat(1048574)); }) === "tuf/too-large");
+  check("J: CONTROL and the same budget still refuses an oversized ASCII string",
+    code(function () { pki.tuf.canonicalJson("a".repeat(1048600)); }) === "tuf/too-large");
 }
 
 // ---------------------------------------------------------------------------
@@ -442,6 +453,36 @@ async function runVerify() {
     code(function () { pki.tuf.parseMetadata(metadataFor(rootSigned({ signers: [a], version: 0 }), [a])); }) === "tuf/bad-metadata");
   check("M14: an expires that is not a date-time is refused",
     code(function () { pki.tuf.parseMetadata(metadataFor(rootSigned({ signers: [a], expires: "soon" }), [a])); }) === "tuf/bad-metadata");
+  /* The TUF specification sec. 4.2.3 fixes the format: "Metadata date-time follows the ISO 8601 standard.
+     The expected format of the combined date and time string is "YYYY-MM-DDTHH:MM:SSZ". Time is always in
+     UTC". `Date.parse` is far looser than that. It ROLLS an impossible date forward rather than refusing
+     it, so a root whose expires reads 2026-02-30 was treated as usable until March 2, two days of trust
+     the metadata does not state; and it accepts a date with no time and a time with no zone, where the
+     instant then depends on the reader's own timezone. Each is refused on the format now, through the
+     shared RFC 3339 scanner that already enforces calendar validity including leap years. */
+  function expiresIs(v) {
+    return code(function () {
+      pki.tuf.parseMetadata(metadataFor(rootSigned({ signers: [a], expires: v }), [a]));
+    });
+  }
+  check("M14a: CONTROL the format the specification states is accepted",
+    expiresIs("2026-01-01T00:00:00Z") === "NO-THROW");
+  check("M14b: an impossible calendar date is refused rather than rolled forward",
+    expiresIs("2026-02-30T00:00:00Z") === "tuf/bad-metadata");
+  check("M14c: and February 29 is accepted in a leap year and refused outside one",
+    expiresIs("2028-02-29T00:00:00Z") === "NO-THROW" &&
+    expiresIs("2027-02-29T00:00:00Z") === "tuf/bad-metadata");
+  check("M14d: a date with no time is refused, the format being a combined date and time",
+    expiresIs("2026-01-01") === "tuf/bad-metadata");
+  check("M14e: a time with no zone is refused, since the instant would depend on the reader",
+    expiresIs("2026-01-01T00:00:00") === "tuf/bad-metadata");
+  check("M14f: and a locale spelling is refused",
+    expiresIs("Jan 1 2026") === "tuf/bad-metadata");
+  /* A zero offset is the same instant as Z and RFC 3339 admits both spellings, so it is accepted: the
+     clause states the expected format rather than forbidding an equivalent one, and refusing it would
+     promote a statement of form into a conformance rule the document does not make. */
+  check("M14g: a zero numeric offset is accepted, denoting the same instant as Z",
+    expiresIs("2026-01-01T00:00:00+00:00") === "NO-THROW");
   check("M15: a duplicate JSON member is refused before anything is read",
     code(function () { pki.tuf.parseMetadata(Buffer.from('{"signed":{},"signed":{}}')); }) === "tuf/duplicate-member");
   check("M16: a threshold that is not a positive integer is refused",

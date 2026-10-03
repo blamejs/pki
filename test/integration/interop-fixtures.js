@@ -415,8 +415,14 @@ module.exports = {
         var osslPath = ctx.tmpFile(Buffer.alloc(0), "ossl.eml");
         var r = ctx.runOpenssl(["cms", "-encrypt", "-aes-256-cbc", "-in", contentPath, "-out", osslPath, "-recip", crt], { allowNonZero: true });
         ctx.check("openssl cms -encrypt succeeds", r.code === 0);
-        var dec = await pki.smime.decrypt(ctx.fs.readFileSync(osslPath), { key: rsa.key, cert: rsa.cert });
+        // `-aes-256-cbc` over an RSAES-PKCS1-v1_5 recipient is not authenticated, so reading it needs the
+        // opt-in; see the note in the pki.cms.decrypt fixture for why that combination has one.
+        var dec = await pki.smime.decrypt(ctx.fs.readFileSync(osslPath), { key: rsa.key, cert: rsa.cert }, { allowUnauthenticatedRsa15: true });
         ctx.check("pki.smime.decrypt recovers an openssl cms -encrypt message", dec.content.indexOf(content) >= 0 && dec.smimeType === "enveloped-data" && dec.authenticated === false);
+        var smimeDefault = "NO-THROW";
+        try { await pki.smime.decrypt(ctx.fs.readFileSync(osslPath), { key: rsa.key, cert: rsa.cert }); }
+        catch (e) { smimeDefault = e.code || e.name; }
+        ctx.check("and refuses it under the default (" + smimeDefault + ")", smimeDefault === "cms/unauthenticated-rsa-v15");
       },
     },
   ],
@@ -731,18 +737,35 @@ module.exports = {
         function T(bytes, ext) { var p = ctx.tmpFile(bytes, ext); tmps.push(p); return p; }
         try {
           var msgP = T(msg, "m.bin");
-          async function osslToUs(label, recip, extraEncArgs, optional) {
+          // `-aes-256-cbc` is not AEAD, so an RSAES-PKCS1-v1_5 recipient needs `allowUnauthenticatedRsa15`:
+          // that combination's only integrity check is the content padding, and decrypting it either
+          // returns the plaintext of a substituted key or tells an attacker submitting chosen ciphertexts
+          // that theirs decoded. OpenSSL emits it by default, which is why the option exists and why this
+          // gate passes it: what is being proved here is that the bytes are readable, not that the default
+          // reads them. OAEP and ML-KEM carry their own integrity check and need no option, so passing it
+          // for every arm would hide whether they do.
+          async function osslToUs(label, recip, extraEncArgs, optional, decryptOpts) {
             var crt = T(pki.schema.x509.pemEncode(recip.cert, "CERTIFICATE"), "r.crt");
             var outP = T(Buffer.alloc(0), "oe.der");
             var enc = ctx.runOpenssl(["cms", "-encrypt", "-aes-256-cbc", "-in", msgP, "-outform", "DER", "-out", outP, "-recip", crt].concat(extraEncArgs || []), optional ? { allowNonZero: true } : {});
             if (optional && enc.code !== 0) { ctx.skip("this openssl build lacks ML-KEM KEMRecipientInfo cms support (needs OpenSSL 4.x) -- " + label + " cross-check skipped"); return; }
-            var v = await pki.cms.decrypt(ctx.fs.readFileSync(outP), { key: recip.key, cert: recip.cert });
+            var v = await pki.cms.decrypt(ctx.fs.readFileSync(outP), { key: recip.key, cert: recip.cert }, decryptOpts);
             ctx.check("pki.cms.decrypt accepts openssl's " + label, Buffer.compare(v.content, msg) === 0);
           }
           var rsa = makeRecipient("rsa");
-          await osslToUs("PKCS#1 v1.5 ktri", rsa, []);
+          await osslToUs("PKCS#1 v1.5 ktri", rsa, [], false, { allowUnauthenticatedRsa15: true });
           await osslToUs("RSAES-OAEP ktri", rsa, ["-keyopt", "rsa_padding_mode:oaep"]);
           await osslToUs("ML-KEM-768 KEMRecipientInfo", makeRecipient("ml-kem-768"), [], true);
+          // And the DEFAULT refuses that first one, so the gate records the behavior an operator meets
+          // rather than only the one the option unlocks.
+          var crtD = T(pki.schema.x509.pemEncode(rsa.cert, "CERTIFICATE"), "rd.crt");
+          var outD = T(Buffer.alloc(0), "od.der");
+          ctx.runOpenssl(["cms", "-encrypt", "-aes-256-cbc", "-in", msgP, "-outform", "DER", "-out", outD, "-recip", crtD], {});
+          var defCode = "NO-THROW";
+          try { await pki.cms.decrypt(ctx.fs.readFileSync(outD), { key: rsa.key, cert: rsa.cert }); }
+          catch (e) { defCode = e.code || e.name; }
+          ctx.check("and refuses it under the default, the combination being unauthenticated (" + defCode + ")",
+            defCode === "cms/unauthenticated-rsa-v15");
         } finally { tmps.forEach(function (p) { try { ctx.fs.unlinkSync(p); } catch (_e) { /* best-effort */ } }); }
       },
     },
