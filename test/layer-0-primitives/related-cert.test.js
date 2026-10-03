@@ -166,6 +166,35 @@ async function testCsrAttribute() {
   check("C10: a certificate whose issuer and serial are not the ones certID names is refused",
     (await codeAsync(pki.relatedCert.verifyRequest(rc, other.cert))) === "relatedcert/cert-mismatch");
 
+  // RFC 9763 sec. 3.2 says the CA "extracts the IssuerAndSerialNumber from the indicated certificate and
+  // compares this VALUE against the IssuerAndSerialNumber provided in the certID field". `issuer` is a
+  // Name, so RFC 5280 sec. 7.1 governs the comparison, and two encodings of one name are one name. A byte
+  // comparison refused a conforming request: the held certificate encodes its issuer CN as a
+  // PrintableString, and a request naming the same CN as a UTF8String identifies the same certificate.
+  // The PREIMAGE stays the request's own bytes, which is what sec. 3.1 says the signature covers, so the
+  // request is signed over the encoding it carries and only the identity check is by name.
+  var utf8Issuer = b.sequence([b.set([b.sequence([
+    b.oid(pki.oid.byName("commonName")), b.utf8("Held Cert")])])]);
+  check("C10a: CONTROL the two issuer encodings are different bytes for the same name",
+    Buffer.compare(utf8Issuer, heldParsed.issuer.bytes) !== 0);
+  var utf8CertId = { issuer: utf8Issuer, serialNumber: heldParsed.serialNumber };
+  var utf8Preimage = pki.relatedCert.requestSignedData({ certID: utf8CertId, requestTime: CERT_TIME });
+  var utf8Proof = crypto.sign("sha256", utf8Preimage, { key: held.keyObject, dsaEncoding: "der" });
+  var utf8Req = { certID: utf8CertId, requestTime: BigInt(CERT_TIME), locationInfo: locationInfo,
+    signature: { unusedBits: 0, bytes: utf8Proof } };
+  check("C10b: a request naming the same issuer in another string encoding verifies",
+    (await pki.relatedCert.verifyRequest(utf8Req, held.cert)) === true);
+  // And the comparison is still a comparison: a different name in the same encoding is still refused.
+  var wrongName = b.sequence([b.set([b.sequence([
+    b.oid(pki.oid.byName("commonName")), b.utf8("Not The Held Cert")])])]);
+  var wrongCertId = { issuer: wrongName, serialNumber: heldParsed.serialNumber };
+  var wrongProof = crypto.sign("sha256",
+    pki.relatedCert.requestSignedData({ certID: wrongCertId, requestTime: CERT_TIME }),
+    { key: held.keyObject, dsaEncoding: "der" });
+  check("C10c: and a different issuer name is still refused, the rule folding encodings and not names",
+    (await codeAsync(pki.relatedCert.verifyRequest({ certID: wrongCertId, requestTime: BigInt(CERT_TIME),
+      locationInfo: locationInfo, signature: { unusedBits: 0, bytes: wrongProof } }, held.cert))) === "relatedcert/cert-mismatch");
+
   // The identifier is ENCODED ONCE and those bytes are both hashed into the preimage and compared with
   // the certificate. Two encodings would read the caller's record twice, so an accessor could answer the
   // preimage with one identifier and the binding check with another, and a proof made for one certificate

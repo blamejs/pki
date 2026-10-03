@@ -522,6 +522,21 @@ async function testCrl(ctx) {
     crlPre.children.every(function (n) { return Buffer.compare(n.bytes, crlAlgId) !== 0; }));
   check("C6: subjectAltPublicKey refuses a CRL, the extension being certificate-only",
     code(function () { pki.altSig.subjectAltPublicKey(crlDer); }) === "altsig/absent");
+  // C6 passes for the wrong reason on its own: `pki.crl.sign` does not EMIT the extension on a CRL, so
+  // the refusal there is the absence rather than the kind. A CRL that carries one is reachable through
+  // the pre-encoded extensions array under `profile: "none"`, and the verb read it with the certificate
+  // decoder and handed back the key, against its own documented refusal. The structure's kind decides
+  // now, before any extension is read.
+  var plantedAlt = crypto.generateKeyPairSync("ml-dsa-65").publicKey.export({ format: "der", type: "spki" });
+  var crlWithSapki = await pki.crl.sign({
+    thisUpdate: NB, nextUpdate: NA, crlNumber: 2n, revoked: [],
+    extensions: [b.sequence([b.oid(O("subjectAltPublicKeyInfo")), b.octetString(plantedAlt)])],
+  }, { cert: ctx.nativeS.cert, key: ctx.nativeS.key }, { profile: "none" });
+  check("C6a: CONTROL the CRL really carries the certificate-only extension",
+    (pki.schema.crl.parse(crlWithSapki).crlExtensions || [])
+      .map(function (e) { return e.oid; }).indexOf(SAPKI_OID) !== -1);
+  check("C6b: and subjectAltPublicKey refuses it on the kind, not on the extension being absent",
+    code(function () { pki.altSig.subjectAltPublicKey(crlWithSapki); }) === "altsig/absent");
 }
 
 // The alternative signature is checked against the alternative public key BEFORE it is emitted, which is

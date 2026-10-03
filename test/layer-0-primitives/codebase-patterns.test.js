@@ -1939,8 +1939,13 @@ function _isBoilerplate(slice) {
   // FOUR declarations, measured against the two clusters that fired: one held two plain aliases and two
   // uncurried captures, the other five plain aliases, and a shingle starts wherever its offset lands so
   // the edge declarations are clipped and uncountable.
+  // `require` and the string it takes are in the allowlist because a module header interleaves the two:
+  // a window at the boundary holds one or two `var X = require("./y");` lines among the captures, and
+  // without them the run the recognizer exists for goes unrecognized at exactly that offset. They add no
+  // room for logic: with no operator, no bracket, no comma and no statement keyword, a window of four or
+  // more declarations over member accesses, calls and strings has nothing in it to extract.
   var declStarts = (joined.match(/\bvar\s+_ID\s+=\s+/g) || []).length;
-  var CAPTURE_TOKENS = /^(?:var|_ID|=|\.|\(|\)|;|[A-Z][\w$]*)$/;
+  var CAPTURE_TOKENS = /^(?:var|_ID|_STR|require|=|\.|\(|\)|;|[A-Z][\w$]*)$/;
   var captureShaped = declStarts >= 4 && toks.every(function (t) { return CAPTURE_TOKENS.test(t); });
   if (captureShaped) return true;
   // The module-header TRANSITION: a slice that mixes a top-of-file require with a

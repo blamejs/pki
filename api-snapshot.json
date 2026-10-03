@@ -77,6 +77,9 @@
             "CT_MAX_ENTRIES_PER_REQUEST": {
               "kind": "number"
             },
+            "DEEP_COPY_MAX_NODES": {
+              "kind": "number"
+            },
             "DER_MAX_BYTES": {
               "kind": "number"
             },
@@ -1596,6 +1599,9 @@
               "kind": "number"
             },
             "CT_MAX_ENTRIES_PER_REQUEST": {
+              "kind": "number"
+            },
+            "DEEP_COPY_MAX_NODES": {
               "kind": "number"
             },
             "DER_MAX_BYTES": {

@@ -422,6 +422,29 @@ function testProducerSnapshotsItsInput() {
     m.root(varyingLength(FOUR, [0, 1])).toString("hex") === emptyRoot);
   check("a length answering 1 then 4 yields the tree for 1, on the same ground",
     m.root(varyingLength(FOUR, [1, 4])).toString("hex") === oneRoot);
+
+  // Reading each slot once is not enough if what is read is a VIEW of the caller's store. A getter that
+  // hands out one scratch buffer per leaf satisfies the read-once rule and still leaves every collected
+  // leaf pointing at the same bytes, so collecting the second leaf overwrote the first: the root of
+  // [A, B] came out as the root of [B, B], with nothing reporting it. Each leaf is copied as it is
+  // collected now.
+  var A = H(L0), B = H(L1);
+  var rootAB = m.root([A, B]).toString("hex");
+  var rootBB = m.root([B, B]).toString("hex");
+  check("CONTROL the roots of [A,B] and [B,B] are different values", rootAB !== rootBB);
+  function sharedScratch() {
+    var scratch = Buffer.alloc(32);
+    A.copy(scratch);
+    var a = [];
+    Object.defineProperty(a, "0", { configurable: true, enumerable: true,
+      get: function () { return scratch; } });
+    Object.defineProperty(a, "1", { configurable: true, enumerable: true,
+      get: function () { B.copy(scratch); return scratch; } });
+    a.length = 2;
+    return a;
+  }
+  check("leaves handed out through one reused buffer still fold as the leaves they were",
+    m.root(sharedScratch()).toString("hex") === rootAB);
 }
 
 // Advertised-surface exercise: every primitive reachable by its full path.

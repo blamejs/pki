@@ -195,6 +195,24 @@ function runCanonical() {
   for (var i = 0; i < 200; i++) { cur.a = {}; cur = cur.a; }
   check("J: a document deeper than the cap is refused",
     code(function () { pki.tuf.canonicalJson(deep); }) === "tuf/too-deep");
+
+  /* Depth bounds the recursion and says nothing about the OUTPUT. A value that shares one subarray with
+     itself is a graph rather than a tree, and the walk expands every reference independently: `v = [v, v]`
+     repeated n times is n levels deep and 2 to the n leaves wide. Measured on the unbudgeted encoder, 24
+     levels produced 67,108,861 bytes in 1.8 seconds and 25 killed a 2 GiB heap with a fatal
+     out-of-memory, from an input of 25 arrays. A shared output budget refuses before accumulating, so the
+     cost is bounded by the budget rather than by the shape of the input. */
+  function dag(levels) {
+    var v = 0;
+    for (var i = 0; i < levels; i++) v = [v, v];
+    return v;
+  }
+  check("J: CONTROL a small shared-subarray graph still encodes, every reference expanded",
+    cj(dag(3)) === "[[[0,0],[0,0]],[[0,0],[0,0]]]");
+  check("J: a graph whose expansion exceeds the output budget is refused, not accumulated",
+    code(function () { pki.tuf.canonicalJson(dag(24)); }) === "tuf/too-large");
+  check("J: and the budget is on the OUTPUT, so a wide document under it still encodes",
+    cj(dag(10)).length === 4093);
 }
 
 // ---------------------------------------------------------------------------
