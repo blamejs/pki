@@ -81,6 +81,7 @@ jobs:
           - shbs-verify
           - hpke-open
           - sigstore-verify
+          - tuf-parse
           - composite-verify
           - inspect-cert
           - inspect-asn1

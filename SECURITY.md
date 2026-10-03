@@ -102,7 +102,13 @@ security-only patches after the next major releases.
   conformance corpus carries exactly one. `pki.sigstore.verifyBundle` caps the
   count at `C.LIMITS.TLOG_MAX_COUNT` (32) and refuses before reading any entry.
   The ceiling is a local resource bound, not a rule the bundle specification
-  states.
+  states. Within that ceiling the artifact is read once per digest algorithm. The
+  comparison against the digest an entry records runs per attempt, and an attempt
+  that failed it sent the next one over the same bytes again, so a 100 MB artifact
+  was hashed 32 times; the same bytes under the same algorithm are the same digest.
+  The comparison against the `messageDigest` the bundle itself carries reads
+  through the same answer, that claim naming its own algorithm and an attempt
+  having already hashed the artifact under it.
 - **Repeated-identifier work amplification in TUF metadata (CWE-834).** A root
   states a key list per role and a document carries a signature list, and both
   were walked per occurrence rather than per distinct member. Each repetition of
@@ -119,26 +125,31 @@ security-only patches after the next major releases.
   imports, 1000 signature checks and 1.6 seconds, and 7500 repetitions of one
   identifier in a role beside a 500 KB key spent 10.2 seconds resolving it, all
   inside the metadata size cap and all before anything had authenticated the
-  document. What is left is the cost of the questions a document actually asks:
-  S DISTINCT signatures over a body of B bytes need S verifications and each
-  hashes the body, so the work is B times S while the document is B plus S.
-  Measured at the cap, the worst split is a 512 KB body with 2297 distinct P-256
-  signatures at 551 ms, and each verification is awaited separately, so no single
-  block exceeds one signature check. The one-megabyte cap is what bounds that
-  count; no tighter bound is imposed, since the specification states none and a
-  conforming root carries a handful. `pki.tuf.updateRoot` decides each identifier once per walk, and
-  `pki.tuf.verifySignatures` resolves each identifier once and asks each
-  identifier-and-signature pair once, so the work follows the number of distinct
-  keys and distinct signatures a document names. The same documents answer in 11,
-  36, 5 and 6 milliseconds. A key is
+  document. Memos alone left the document choosing how much work it asked for.
+  Distinct signatures for one authorized key share no memo, and each hashes the
+  whole signed body, so a 500 KB body under 2400 signatures made with a key
+  nobody authorized bought 2400 checks and about a second, synchronously, in a
+  1,013,726-byte document. `pki.tuf.verifySignatures` reads the keys the ROLE
+  names and looks up the one signature each is listed with, so the signature list
+  decides which signature each key offers and no longer how many checks run: 1000
+  distinct signatures under one key cost one check, and 40 keys the role names cost
+  40. The work follows the document's own size rather than the product of its body
+  and its signature list. The role is the caller's argument, and a root rotation
+  verifies a candidate against the root role it states itself as well as against
+  the trusted one, that being the check the specification requires of a new root,
+  so the count of that one call is the candidate's to state.
+  `pki.tuf.updateRoot` decides each identifier once per walk.
+  The same documents answer in 11, 36, 5 and 6 milliseconds. A key is
   also imported once per identifier rather than once for the identity a threshold
   counts it under and again for the signature check, which both halves the work
-  and makes the key counted and the key verified with the same key. The pair a
-  verify is remembered under is named by the decoded signature, not by its text:
-  hexadecimal is read in either case, so one 64-byte value has up to 2^128
-  spellings, and named by the text 1000 spellings of one value bought 1000
-  signature checks over the same body. A thousand genuinely different values are
-  still a thousand checks.
+  and makes the key counted and the key verified with the same key.
+  A key identifier listed more than once is where the two authorities differ, and
+  the first signature it carries is the one asked. The specification caps the
+  count at one verified signature from a key identifier and leaves the document
+  readable; the reference implementation refuses the document. A second entry
+  cannot raise a count already capped at one, so what it could do is cost another
+  pass over the body. A document listing a wrong signature for a key ahead of a
+  right one therefore reads as that key not having signed.
 - **A DSSE envelope signature the verdict never covered.** The Sigstore bundle
   specification states that an envelope in a bundle carries exactly one
   signature, and that a verifier rejects an envelope whose signature count is
@@ -500,6 +511,23 @@ security-only patches after the next major releases.
   timestamp match the original cannot be told from it, and the path is removed by
   name, so a replacement arriving between the comparison and the unlink is
   removed. Node offers no unlink by descriptor to close that.
+- **A certificate issued carrying less, or more, than the request asked for.** A
+  certification request asks for extensions through the RFC 2985 section 5.4.2
+  extensionRequest attribute, and that clause leaves to the issuing CA which of
+  them to honor. Both answers are unsafe taken by default. Copying what a request
+  asks for lets the requester write its own names, and its own basic constraints,
+  into the certificate. Dropping them issues a certificate that does not carry
+  what was asked for while reporting success: `pki issue --csr` built its
+  extensions from `--san` alone, so a request carrying a subjectAltName produced a
+  leaf with none, which matches no host name. `pki issue` now refuses a request
+  that asks for extensions until the operator says what to do with them, naming
+  what was asked. `--copy-requested-san` writes the requested subjectAltName,
+  converting each name through the same builder that validates one given on the
+  command line, so a name the builder refuses stops the issuance. A requested name
+  of a form that copy does not write is named and refuses the issuance rather than
+  being left out of it. `--ignore-requested-extensions` issues without what the
+  request asked for. Nothing else a request asks for is copied, so a request
+  asking to be certified as a CA is refused rather than honored.
 - **Untyped faults escaping the key boundary.** A `CryptoKey` is opaque, and one
   created by a different WebCrypto implementation is indistinguishable from one
   of this engine's by type, algorithm, and usages while holding its material

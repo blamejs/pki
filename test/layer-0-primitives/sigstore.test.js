@@ -172,7 +172,12 @@ function buildSynBundle(opts) {
   var entries = [te];
   if (opts.decoyArtifact !== undefined) {
     var decoyBody = JSON.parse(JSON.stringify(body));
-    decoyBody.spec.data.hash.value = crypto.createHash(hashAlg).update(opts.decoyArtifact).digest("hex");
+    // `decoyHashAlgorithm` lets the decoy record its artifact under a DIFFERENT algorithm from the
+    // entry that is selected, which is the only way a vector can put one algorithm in a failing
+    // attempt and the same one in the messageDigest claim the verdict checks last.
+    var decoyAlg = opts.decoyHashAlgorithm || hashAlg;
+    decoyBody.spec.data.hash.algorithm = decoyAlg;
+    decoyBody.spec.data.hash.value = crypto.createHash(decoyAlg).update(opts.decoyArtifact).digest("hex");
     entries = [makeEntry(decoyBody), te];
   } else if (opts.decoyIntegratedTime !== undefined) {
     // The same body, authentically logged, attesting an instant the leaf certificate does not cover.
@@ -1969,6 +1974,34 @@ async function runMessageSignature(TM) {
     "payload" in v3 && v3.payload === null && v3.statement === null && v3.subjects === null &&
     v3.predicateType === null && v3.predicate === null && v3.predicateTypeChecked === false);
 
+  /* The artifact is compared per ATTEMPT, and an attempt that fails the comparison sends the next one
+     over the same bytes again, so the caller's whole file was hashed once per entry the bundle listed.
+     The count is capped at TLOG_MAX_COUNT, which bounds the factor rather than removing it: a 100 MB
+     artifact was read 32 times. COUNTED, by the difference between one entry and the ceiling, so the
+     digests every other part of the verification takes are not what the vector measures. */
+  function countHashes(bundleObj, artifactBytes) {
+    var realCreate = crypto.createHash, n = 0;
+    crypto.createHash = function () { n++; return realCreate.apply(crypto, arguments); };
+    return pki.sigstore.verifyBundle(bundleObj,
+      { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: artifactBytes })
+      .then(function () { crypto.createHash = realCreate; return n; },
+        function () { crypto.createHash = realCreate; return n; });
+  }
+  function msWithEntries(n) {
+    var b = clone(msBundle("v0.3"));
+    var one = b.verificationMaterial.tlogEntries[0];
+    var list = [one];
+    for (var i = 1; i < n; i++) list.push(clone(one));
+    b.verificationMaterial.tlogEntries = list;
+    return b;
+  }
+  var C_LIMITS = require("../../lib/constants.js").LIMITS;
+  var otherArtifact = Buffer.alloc(ARTIFACT.length, 0x7a);
+  var hashesOne = await countHashes(msWithEntries(1), otherArtifact);
+  var hashesMany = await countHashes(msWithEntries(C_LIMITS.TLOG_MAX_COUNT), otherArtifact);
+  check("a bundle listing " + C_LIMITS.TLOG_MAX_COUNT + " entries reads the artifact the same number " +
+    "of times as one listing a single entry (" + hashesOne + " vs " + hashesMany + " digests)",
+  hashesMany - hashesOne <= 1);
   var v1 = await pki.sigstore.verifyBundle(msBundle("v0.1"), { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: ARTIFACT });
   check("the v0.1 media type and its x509CertificateChain arm verify on this content arm",
     v1.verified === true && v1.integratedTime === 1689177396);
@@ -2088,6 +2121,35 @@ async function runMessageSignature(TM) {
     decoyErr === null && decoyOut !== null && decoyOut.verified === true);
   check("and the verdict reports the digest the matching entry recorded",
     decoyOut !== null && decoyOut.artifactDigest === crypto.createHash("sha256").update(ARTIFACT).digest("hex"));
+  /* The artifact is read once per digest ALGORITHM across the whole call, not once per place that
+     reads it. The attempt loop was memoized and the messageDigest comparison at the end was not, so an
+     algorithm that a failing attempt had already hashed the artifact under was hashed under again when
+     the bundle's own claim named it: a bundle whose first entry records the wrong artifact under
+     SHA-512, whose selected entry records the right one under SHA-256, and whose messageDigest claims
+     SHA-512 read the artifact three times for two algorithms. COUNTED by algorithm, so the vector says
+     which read was the duplicate rather than only that there was one. */
+  var twoAlgBuilt = buildSynBundle({ messageArtifact: ARTIFACT,
+    decoyArtifact: Buffer.from("a different artifact entirely"), decoyHashAlgorithm: "sha512" });
+  twoAlgBuilt.bundle.messageSignature.messageDigest = { algorithm: "SHA2_512",
+    digest: crypto.createHash("sha512").update(ARTIFACT).digest().toString("base64") };
+  var algCounts = Object.create(null);
+  var realCreateHash = crypto.createHash;
+  crypto.createHash = function (name) {
+    algCounts[String(name)] = (algCounts[String(name)] || 0) + 1;
+    return realCreateHash.apply(crypto, arguments);
+  };
+  var twoAlgOut = null, twoAlgErr = null;
+  try {
+    twoAlgOut = await pki.sigstore.verifyBundle(twoAlgBuilt.bundle, {
+      fulcioRoots: twoAlgBuilt.trust.fulcioRoots, rekorKeys: twoAlgBuilt.trust.rekorKeys,
+      artifact: ARTIFACT });
+  } catch (e2) { twoAlgErr = e2; } finally { crypto.createHash = realCreateHash; }
+  check("the two-algorithm bundle verifies and checks the messageDigest the bundle carries (" +
+    (twoAlgErr && twoAlgErr.code) + ")",
+  twoAlgErr === null && twoAlgOut !== null && twoAlgOut.verified === true &&
+    twoAlgOut.messageDigestChecked === true && twoAlgOut.digestAlgorithm === "sha256");
+  check("and SHA-512 is computed once although a failing attempt and the bundle's own claim both " +
+    "name it (sha512=" + algCounts.sha512 + ")", algCounts.sha512 === 1);
   // The artifact still has to be recorded by SOME entry: with neither naming it, the refusal stands.
   check("with no entry naming the artifact the bundle is still refused",
     await codeOf(pki.sigstore.verifyBundle(decoyBuilt.bundle, {

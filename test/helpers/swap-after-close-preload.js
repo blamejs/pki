@@ -136,10 +136,18 @@ fs.closeSync = function (fd) {
     process.stderr.write("swap-preload: moved " + target + " away at close\n");
     return out;
   }
+  // Built beside the target and RENAMED onto it, never unlinked and rewritten in place. ext4 hands a
+  // freshly created file the inode the unlink just freed, so unlink-then-create produced a replacement
+  // carrying the ORIGINAL's inode and the cleanup could not tell it apart; a rename cannot reuse that
+  // inode, because the new file still holds one of its own when it takes the name. The bytes and the
+  // timestamps are copied so nothing but the identity distinguishes it, and `utimesSync` keeps only
+  // millisecond precision, which is why the identity has to be the distinguishing fact rather than the
+  // timestamp.
   var bytes = fs.readFileSync(target);
-  fs.unlinkSync(target);
-  fs.writeFileSync(target, bytes);
-  fs.utimesSync(target, atPath.atime, atPath.mtime);
+  var staged = target + ".staged";
+  fs.writeFileSync(staged, bytes);
+  fs.utimesSync(staged, atPath.atime, atPath.mtime);
+  fs.renameSync(staged, target);
   process.stderr.write("swap-preload: replaced " + target + " at close\n");
   return out;
 };

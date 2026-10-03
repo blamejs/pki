@@ -91,12 +91,11 @@ function readFileBytes(file) {
   try { return fs.readFileSync(file); } catch (e) { return fail("cannot read " + file + ": " + e.message); }
 }
 
-// A verb taking a bare positional still has to answer --help, which is the first flag anyone
-// tries: without this, `pki oid --help` reports an unknown OID name and `pki parse --help` tries
-// to open a file called --help. Every verb prints its own usage line for --help, -h and a missing
-// argument; the flag-parsing verbs get the same answer from their existing usage checks.
+// A verb taking a bare positional answers a missing argument with its own usage line. An explicit
+// `--help` never reaches here: `main` answers it before the verb runs, so an argument that is absent
+// is the only case left.
 function usageOrArg(arg, usage) {
-  if (!arg || arg === "--help" || arg === "-h") fail(usage);
+  if (!arg) return fail(usage);
   return arg;
 }
 
@@ -150,12 +149,15 @@ function readDer(file) {
   return { der: der, label: m[1] };
 }
 
+var VERSION_USAGE = "usage: pki version\n" +
+  "  Prints the installed @blamejs/pki version. --version and -v are the same verb.";
 function cmdVersion() {
   process.stdout.write("@blamejs/pki v" + pki.version + "\n");
 }
 
+var OID_USAGE = "usage: pki oid <dotted|name>";
 function cmdOid(arg) {
-  usageOrArg(arg, "usage: pki oid <dotted|name>");
+  usageOrArg(arg, OID_USAGE);
   if (/^\d+(\.\d+)+$/.test(arg)) {
     var name = pki.oid.name(arg);
     process.stdout.write((name || "(unregistered)") + "\n");
@@ -166,8 +168,9 @@ function cmdOid(arg) {
   }
 }
 
+var PARSE_USAGE = "usage: pki parse <cert.pem|cert.der>";
 function cmdParse(file) {
-  usageOrArg(file, "usage: pki parse <cert.pem|cert.der>");
+  usageOrArg(file, PARSE_USAGE);
   var cert;
   try { cert = pki.schema.x509.parse(readForLib(file)); } catch (e) { return fail(e.code + ": " + e.message); }
   var view = {
@@ -188,9 +191,10 @@ function cmdParse(file) {
 // through pki.inspect.any, which detects the format and picks the report, so every format the
 // library renders is reachable here. --asn1 asks for the structural TLV dump instead, which reads
 // a file of any shape, including one no format detector recognizes.
+var INSPECT_USAGE = "usage: pki inspect <file.pem|file.der> [--asn1]";
 function cmdInspect(args) {
   var file = args._[0];
-  if (!file) fail("usage: pki inspect <file.pem|file.der> [--asn1]");
+  if (!file) fail(INSPECT_USAGE);
   try { process.stdout.write(args.asn1 ? pki.inspect.asn1(readForLib(file)) + "\n" : pki.inspect.any(readForLib(file))); }
   catch (e) { return fail(e.code + ": " + e.message); }
 }
@@ -549,8 +553,13 @@ var CSR_USAGE = "usage: pki csr --key <key.pkcs8> --subject <dn> [--san name,nam
 var ISSUE_USAGE = "usage: pki issue (--key <key.pkcs8> --subject <dn> | --csr <request>)\n" +
   "                 [--issuer-cert <cert> --issuer-key <key>] [--days N] [--serial HEX]\n" +
   "                 [--ca] [--san name,name] [--out <file>] [--pem]\n" +
+  "                 [--copy-requested-san] [--ignore-requested-extensions]\n" +
   "  With no issuer the certificate is self-signed by --key. An issuer needs both halves: a\n" +
   "  certificate with no key, or a key with no certificate, is refused rather than self-signed.\n" +
+  "  A request asks for extensions, and what a CA issues is its own decision (RFC 2985 sec. 5.4.2),\n" +
+  "  so a request that asks for any is refused until one of these two says what to do with them:\n" +
+  "  --copy-requested-san writes the requested subjectAltName into the certificate, and\n" +
+  "  --ignore-requested-extensions issues without what the request asked for.\n" +
   "  A key path on a command line is visible in the process table to every user on this machine\n" +
   "  for as long as the process runs.";
 var ISSUE_DEFAULT_DAYS = 365;
@@ -565,6 +574,51 @@ function sanList(arg) {
 
 // A DER or PEM file for a library entry point that takes either.
 function _keyArg(file) { return _asPemOrDer(readFileBytes(file)); }
+
+// The GeneralName forms `--copy-requested-san` writes into a certificate, by context tag. A decoded
+// name of one of these carries the value the builder takes for that form: a string for the three
+// text forms, a 4- or 16-octet Buffer for an address. directoryName [4] and otherName [0] are not
+// here, so a request asking for one is named and refused rather than dropped from the copy.
+var SAN_FORM_FOR_TAG = { 1: "rfc822Name", 2: "dNSName", 6: "uniformResourceIdentifier", 7: "iPAddress" };
+// A requested subjectAltName as the names the certificate builder takes. Every name is converted,
+// and a form with no conversion stops the issuance: a certificate carrying SOME of the names a
+// request asked for is a different certificate from the one it asked for, and the operator asked for
+// the copy.
+function requestedSanNames(rows) {
+  var san = rows.filter(function (r) { return r.name === "subjectAltName"; });
+  if (!san.length) return undefined;
+  if (san[0].state !== "decoded") {
+    return fail("issue: the request's subjectAltName cannot be read (" + (san[0].code || san[0].state) +
+      "), so --copy-requested-san has nothing to copy");
+  }
+  // The certificate builder's extensions object writes a non-critical subjectAltName, which is what
+  // RFC 5280 sec. 4.2.1.6 asks for beside a non-empty subject. A request asking for a critical one is
+  // asking for the empty-subject form, and writing it non-critical would answer a different request
+  // than the one that was made.
+  if (san[0].critical === true) {
+    return fail("issue: the request asks for a CRITICAL subjectAltName, which RFC 5280 sec. 4.2.1.6 " +
+      "requires only beside an empty subject, and this verb writes a non-critical one; state the " +
+      "names with --san to issue a non-critical subjectAltName, or build the certificate through " +
+      "pki.x509.sign, whose pre-encoded extensions array writes the criticality it is given");
+  }
+  var names = (san[0].decoded && san[0].decoded.names) || [];
+  var out = [], unconvertible = [];
+  for (var i = 0; i < names.length; i++) {
+    var form = Object.prototype.hasOwnProperty.call(SAN_FORM_FOR_TAG, names[i].tagNumber)
+      ? SAN_FORM_FOR_TAG[names[i].tagNumber] : null;
+    if (form === null) { unconvertible.push("[" + names[i].tagNumber + "]"); continue; }
+    var entry = {};
+    entry[form] = names[i].value;
+    out.push(entry);
+  }
+  if (unconvertible.length) {
+    return fail("issue: the request's subjectAltName holds " + unconvertible.length + " name" +
+      (unconvertible.length === 1 ? "" : "s") + " of a form --copy-requested-san does not write (" +
+      unconvertible.join(", ") + "); state the names with --san instead");
+  }
+  if (!out.length) return fail("issue: the request's subjectAltName holds no names");
+  return out;
+}
 
 // --subject is a distinguished name, parsed as one and handed to the builders as the raw Name DER
 // they accept: they read a bare string as a common name, so `--subject CN=x` would otherwise certify
@@ -612,6 +666,12 @@ function cmdIssue(args) {
   // by a CA would come back signed by its own subject key. Refuse instead.
   if (args["issuer-cert"] && !args["issuer-key"]) return fail("issue: --issuer-cert needs --issuer-key");
   if (args["issuer-key"] && !args["issuer-cert"]) return fail("issue: --issuer-key needs --issuer-cert");
+  // Both flags answer a question only a request asks, so on the --key route neither has anything to
+  // decide, and a flag that silently does nothing reads as one that was honored.
+  if (!haveCsr && (args["copy-requested-san"] || args["ignore-requested-extensions"])) {
+    return fail("issue: --copy-requested-san and --ignore-requested-extensions answer what a request " +
+      "asks for, so they need --csr");
+  }
   var days = args.days === undefined ? ISSUE_DEFAULT_DAYS : Number(args.days);
   if (!isFinite(days) || days <= 0 || Math.floor(days) !== days) return fail("issue: --days must be a positive whole number of days");
 
@@ -629,9 +689,15 @@ function cmdIssue(args) {
     return pki.csr.verify(reqBytes).then(function (v) {
       if (v !== true && !(v && v.valid === true)) return fail("issue: the request's signature does not verify");
       var req = pki.schema.csr.parse(reqBytes);
+      // What the request ASKS FOR is read here and answered below. RFC 2985 sec. 5.4.2 leaves to the
+      // CA which requested extensions to honor, so neither answer is taken by default: a copy would
+      // let the requester write its own names into the certificate, and a drop would issue a
+      // certificate the request did not ask for while reporting success.
+      var rows = pki.schema.csr.decodeExtensions(reqBytes);
       // Both routes hand `subject` over as raw Name DER, which is one of the three forms the
       // builders take. A parse result is not one of them, and neither is a DN string.
-      return { subject: req.subject.bytes, spki: req.subjectPublicKeyInfo.bytes, signerKey: null };
+      return { subject: req.subject.bytes, spki: req.subjectPublicKeyInfo.bytes, signerKey: null,
+        requested: rows };
     }, function (e) { return fail("issue: the request's signature does not verify (" + (e.code || e.message) + ")"); });
   }).then(function (from) {
     if (from === undefined) return undefined;   // fail() already exited
@@ -645,6 +711,25 @@ function cmdIssue(args) {
     if (args.serial) spec.serialNumber = BigInt("0x" + String(args.serial).replace(/^0x/, ""));
     var exts = {};
     var san = sanList(args.san);
+    // Every extension the request asked for has to be answered, and the answer is the operator's.
+    // What neither flag accounts for is named and refused: the certificate otherwise comes back
+    // reporting success while carrying less than was asked for, which is the case an operator finds
+    // when a name it never checked turns out to be missing.
+    var requested = (from.requested || []).map(function (r) { return r.name || r.oid; });
+    var unanswered = requested.filter(function (n) {
+      if (args["ignore-requested-extensions"]) return false;
+      return !(n === "subjectAltName" && args["copy-requested-san"]);
+    });
+    if (unanswered.length) {
+      return fail("issue: the request asks for " + unanswered.join(", ") + ", and what a CA issues " +
+        "is its own decision (RFC 2985 sec. 5.4.2). Pass --copy-requested-san to write the requested " +
+        "subjectAltName, or --ignore-requested-extensions to issue without what the request asked for");
+    }
+    if (args["copy-requested-san"]) {
+      if (san) return fail("issue: --san and --copy-requested-san both name the subjectAltName; pass one");
+      san = requestedSanNames(from.requested || []);
+      if (san === undefined) return fail("issue: --copy-requested-san was passed and the request asks for no subjectAltName");
+    }
     if (san) exts.subjectAltName = san;
     if (args.ca) { exts.basicConstraints = { cA: true }; exts.keyUsage = ["keyCertSign", "cRLSign"]; }
     if (Object.keys(exts).length) spec.extensions = exts;
@@ -707,9 +792,10 @@ function cmdFetch(args) {
 
 // pki convert <file> --to der|pem -- transcode between DER and PEM. The input encoding is
 // auto-detected; the bytes must be well-formed DER (we never wrap/emit garbage).
+var CONVERT_USAGE = "usage: pki convert <file> --to der|pem [--label LABEL]";
 function cmdConvert(args) {
   var file = args._[0], to = args.to;
-  if (!file) fail("usage: pki convert <file> --to der|pem [--label LABEL]");
+  if (!file) fail(CONVERT_USAGE);
   if (to !== "der" && to !== "pem") fail("convert: --to must be 'der' or 'pem'");
   var input = readDer(file);
   try { pki.asn1.decode(input.der); } catch (e) { return fail("input is not well-formed DER: " + (e.code || e.message)); }
@@ -724,9 +810,10 @@ function cmdConvert(args) {
 
 // pki verify <cert>... --anchor <cert> -- validate an ordered certification path
 // (anchor->target) against a trust anchor via pki.path.validate (RFC 5280 sec. 6.1).
+var VERIFY_USAGE = "usage: pki verify <cert>... --anchor <anchor-cert> [--time ISO]";
 function cmdVerify(args) {
   var certFiles = args._, anchorFile = args.anchor;
-  if (!certFiles.length || !anchorFile) fail("usage: pki verify <cert>... --anchor <anchor-cert> [--time ISO]");
+  if (!certFiles.length || !anchorFile) fail(VERIFY_USAGE);
   var certs, anchor;
   try { certs = certFiles.map(function (f) { return pki.schema.x509.parse(readForLib(f)); }); }
   catch (e) { return fail("cannot parse a path certificate: " + (e.code || e.message)); }
@@ -752,11 +839,11 @@ function cmdVerify(args) {
 // pki sign <content-file> --cert <cert> --key <key> -- produce a CMS SignedData over the file
 // via pki.cms.sign. The signer key is a PKCS#8 DER or PEM private key; the certificate is DER or
 // PEM. Output is a DER Buffer (or a PEM block with --pem) to --out or stdout.
+var SIGN_USAGE = "usage: pki sign <content-file> --cert <cert> --key <key.pkcs8> [--detached] [--pss] " +
+  "[--digest sha256|sha384|sha512] [--pem] [--out <file>]";
 function cmdSign(args) {
   var contentFile = args._[0];
-  if (!contentFile || !args.cert || !args.key) {
-    return fail("usage: pki sign <content-file> --cert <cert> --key <key.pkcs8> [--detached] [--pss] [--digest sha256|sha384|sha512] [--pem] [--out <file>]");
-  }
+  if (!contentFile || !args.cert || !args.key) return fail(SIGN_USAGE);
   var content = readFileBytes(contentFile);
   var signer = { cert: _asPemOrDer(readFileBytes(args.cert)), key: _asPemOrDer(readFileBytes(args.key)) };
   if (args.pss) signer.pss = true;
@@ -772,8 +859,38 @@ function _asPemOrDer(buf) { return buf[0] === 0x2d ? buf.toString("latin1") : bu
 
 var USAGE = "usage: pki <version|oid|parse|inspect|keygen|csr|issue|fetch|lint|convert|verify|sign> [args]\n";
 
+// The usage line each verb prints, by verb. `main` answers `pki <verb> --help` from this table, so
+// every verb answers help the way `pki --help` does: on stdout, with a zero exit code. A verb reached
+// help through its own missing-argument check before, which calls `fail`, and a script could not tell
+// `pki csr --help` from a csr that failed to run.
+var VERB_USAGE = {
+  version: VERSION_USAGE, "--version": VERSION_USAGE, "-v": VERSION_USAGE,
+  oid: OID_USAGE, parse: PARSE_USAGE, inspect: INSPECT_USAGE, keygen: KEYGEN_USAGE,
+  csr: CSR_USAGE, issue: ISSUE_USAGE, fetch: FETCH_USAGE, lint: LINT_USAGE,
+  convert: CONVERT_USAGE, verify: VERIFY_USAGE, sign: SIGN_USAGE,
+};
+// Own properties only, so a verb name that happens to be a name on Object.prototype does not read as
+// a verb the table carries.
+function _usageFor(cmd) {
+  return Object.prototype.hasOwnProperty.call(VERB_USAGE, cmd) ? VERB_USAGE[cmd] : null;
+}
+// Asked of the operator's own arguments, not of the parsed flags: `parseArgs` fails on a value flag
+// whose value is missing, so `pki csr --key --help` would exit non-zero before anything looked for
+// help, and `pki oid` never parses its argument at all.
+function _asksHelp(rest) {
+  for (var i = 0; i < rest.length; i++) if (rest[i] === "--help" || rest[i] === "-h") return true;
+  return false;
+}
+
 function main(argv) {
   var cmd = argv[0];
+  var verbUsage = _usageFor(cmd);
+  if (verbUsage !== null && _asksHelp(argv.slice(1))) {
+    // Written, not exited through: `process.exit` can truncate a buffered stdout write to a pipe, and
+    // the exit code is already 0.
+    process.stdout.write(verbUsage.charAt(verbUsage.length - 1) === "\n" ? verbUsage : verbUsage + "\n");
+    return;
+  }
   switch (cmd) {
     case "version": case "--version": case "-v": return cmdVersion();
     case "oid":     return cmdOid(argv[1]);

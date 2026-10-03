@@ -19,9 +19,12 @@
  *
  *   - `repeats`   one signature value, repeated, each occurrence spelled identically.
  *   - `spellings` one signature VALUE, each occurrence spelled differently by the case of its hex.
- *   - `distinct`  genuinely different signature values, which are different questions and must all be
- *                 asked. This is the control: a memo that answered it from a cache would be dropping
- *                 verifications.
+ *   - `distinct`  genuinely different signature values, all naming ONE key. The specification caps the
+ *                 count at one verified signature per key identifier, so none of these after the first
+ *                 can change the verdict, and each would cost a hash of the whole signed body.
+ *   - `keys`      one signature each for `count` DIFFERENT keys, all named by the role. This is the
+ *                 control: the work a document can ask for scales with the keys the TRUSTED side
+ *                 listed, and every one of them is asked.
  */
 
 var crypto = require("node:crypto");
@@ -58,7 +61,23 @@ var count = Number(process.argv[3]);
   }
 
   var sigs = [];
-  for (var i = 0; i < count; i++) {
+  // The role names one key for every shape but `keys`, which names one per record.
+  var roleKeyids = [id];
+  if (shape === "keys") {
+    roleKeyids = [];
+    for (var k = 0; k < count; k++) {
+      var kpk = crypto.generateKeyPairSync("ed25519");
+      var rawk = kpk.publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex");
+      var keyk = { keytype: "ed25519", scheme: "ed25519", keyval: { public: rawk } };
+      var idk = pki.tuf.keyId(keyk);
+      keys[idk] = keyk;
+      roleKeyids.push(idk);
+      // Signed by this key over OTHER bytes, so S stays canonical and the check hashes the whole body.
+      var otherk = Buffer.from(crypto.sign(null, Buffer.from("not the body"), kpk.privateKey));
+      sigs.push({ keyid: idk, sig: otherk.toString("hex") });
+    }
+  }
+  for (var i = 0; i < count && shape !== "keys"; i++) {
     if (shape === "repeats") { sigs.push({ keyid: id, sig: base }); continue; }
     if (shape === "spellings") {
       var out = base.split("");
@@ -81,7 +100,7 @@ var count = Number(process.argv[3]);
   var meta = pki.tuf.parseMetadata(Buffer.from(JSON.stringify({ signed: body, signatures: sigs })));
   imports = 0; checks = 0;
   var v = await pki.tuf.verifySignatures({ metadata: meta, keys: keys,
-    role: { keyids: [id], threshold: 1 } });
+    role: { keyids: roleKeyids, threshold: 1 } });
   process.stdout.write("OPS imports=" + imports + " checks=" + checks +
     " verified=" + v.verified + " records=" + sigs.length + "\n");
 })().catch(function (e) {

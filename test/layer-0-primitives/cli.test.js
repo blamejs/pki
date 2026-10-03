@@ -261,7 +261,10 @@ async function run() {
     var banner = cli([]).stdout;
     var verbs = (/usage: pki <([a-z|-]+)>/.exec(banner) || [])[1];
     check("the usage banner names the verb set this vector derives from", typeof verbs === "string");
-    var verbList = String(verbs).split("|").filter(function (v) { return v !== "version"; });
+    // Every verb answers help; `version` alone requires no argument, so it is out of the vector
+    // below that asks what a missing one does.
+    var verbList = String(verbs).split("|");
+    var argTakingVerbs = verbList.filter(function (v) { return v !== "version"; });
     var helpGaps = [];
     verbList.forEach(function (verb) {
       var h = cli([verb, "--help"]);
@@ -273,12 +276,45 @@ async function run() {
     check("pki <verb> --help prints that verb's usage line, for every verb (" + verbList.length +
       " verbs): " + helpGaps.join("; "), helpGaps.length === 0);
     var missingArgGaps = [];
-    verbList.forEach(function (verb) {
+    argTakingVerbs.forEach(function (verb) {
       var m = cli([verb]);
       if (m.status === 0) missingArgGaps.push(verb + " exited 0 with no arguments");
     });
-    check("pki <verb> with no arguments exits non-zero: " + missingArgGaps.join("; "),
-      missingArgGaps.length === 0);
+    check("pki <verb> with no arguments exits non-zero (" + argTakingVerbs.length + " verbs): " +
+      missingArgGaps.join("; "), missingArgGaps.length === 0);
+
+    /* ---- an answered help is not a failed command ----
+     * Every verb reached its usage line through the check for a missing argument, which exits
+     * non-zero on stderr. So `pki csr --help` answered the question and reported a command that
+     * failed, while `pki --help` answered the same question and exited 0. A script reading the
+     * status cannot tell the help it asked for from a csr that did not run. Both flags are asked
+     * for, and both are asked of a verb whose arguments are otherwise COMPLETE, where the usage
+     * check never fires: help is answered because it was asked for, not because something is
+     * missing. */
+    var helpStatusGaps = [];
+    verbList.forEach(function (verb) {
+      ["--help", "-h"].forEach(function (flag) {
+        var h = cli([verb, flag]);
+        if (h.status !== 0) helpStatusGaps.push(verb + " " + flag + " exited " + h.status);
+        else if (h.stdout.indexOf("usage: pki " + verb) === -1) {
+          helpStatusGaps.push(verb + " " + flag + " wrote its usage somewhere other than stdout");
+        }
+      });
+    });
+    check("pki <verb> --help and -h exit 0 with the usage line on stdout, for every verb (" +
+      verbList.length + " verbs): " + helpStatusGaps.join("; "), helpStatusGaps.length === 0);
+    var completeHelp = cli(["csr", "--key", keyPath, "--subject", "CN=complete", "--help"]);
+    check("pki csr --help answers help even with every required argument supplied (exit " +
+      completeHelp.status + ")",
+    completeHelp.status === 0 && completeHelp.stdout.indexOf("usage: pki csr") === 0);
+    var flagValueHelp = cli(["csr", "--key", "--help"]);
+    check("a help flag standing where a flag's value belongs is still read as help (exit " +
+      flagValueHelp.status + ")",
+    flagValueHelp.status === 0 && flagValueHelp.stdout.indexOf("usage: pki csr") === 0);
+    var missingStays = cli(["csr"]);
+    check("a missing argument still fails, on stderr (exit " + missingStays.status + ")",
+      missingStays.status !== 0 && missingStays.stdout === "" &&
+      missingStays.stderr.indexOf("usage: pki csr") !== -1);
 
     /* ---- inspect reaches every format the library renders ----
      * `pki inspect` called pki.inspect.certificate, so the CLI could not open a CRL, a CSR or a
@@ -680,7 +716,7 @@ async function run() {
     /* The mode claim is checked against what the platform GIVES, not against an assumption: on
      * win32 a mode argument is not applied and the help text says so. */
     var kgMode = fs.statSync(kgOut).mode & 0o777;
-    var kgHelp = cli(["keygen", "--help"]).stderr;
+    var kgHelp = cli(["keygen", "--help"]).stdout;
     check("the keygen help text's permission claim matches what this platform does (mode " +
       kgMode.toString(8) + " on " + process.platform + ")",
     process.platform === "win32"
@@ -769,11 +805,139 @@ async function run() {
      * hold, so the CSR path verifies before it issues. */
     var fromCsr = path.join(tmp, "from-csr.der");
     var issueCsr = cli(["issue", "--csr", reqOut, "--issuer-cert", caCert, "--issuer-key", caKey,
-      "--days", "30", "--out", fromCsr]);
+      "--days", "30", "--copy-requested-san", "--out", fromCsr]);
     check("pki issue --csr certifies the subject and key the request carries",
       issueCsr.status === 0 && (function () {
         var c = pki.schema.x509.parse(fs.readFileSync(fromCsr));
         return c.subject.dn === "CN=req.example" && c.issuer.dn === "CN=ca.example";
+      })());
+
+    /* ---- what a request asks for is answered, never dropped ----
+     * `pki csr --san host.example` then `pki issue --csr` is the documented two-step, and it
+     * issued a certificate with no subjectAltName: the issue path read the request's subject and
+     * public key and built its extensions from --san alone, so the names the request asked for
+     * reached nothing. A leaf with no subjectAltName does not match a host name, so the failure
+     * arrives at whatever presents the certificate rather than at the command that made it.
+     * RFC 2985 sec. 5.4.2 leaves to the CA which requested extensions to honor, so neither answer
+     * is taken by default: the operator says which, and a request that asks for anything neither
+     * flag accounts for is refused. */
+    var sanRows = pki.schema.x509.decodeExtensions(pki.schema.x509.parse(fs.readFileSync(fromCsr)))
+      .filter(function (r) { return r.name === "subjectAltName"; });
+    var copiedNames = sanRows.length
+      ? sanRows[0].decoded.names.map(function (n) { return n.value; }) : [];
+    check("pki issue --copy-requested-san writes every name the request asked for (" +
+      copiedNames.join(", ") + ")",
+    copiedNames.length === 2 && copiedNames.indexOf("req.example") !== -1 &&
+      copiedNames.indexOf("www.req.example") !== -1);
+    var unanswered = cli(["issue", "--csr", reqOut, "--issuer-cert", caCert, "--issuer-key", caKey,
+      "--days", "30", "--out", path.join(tmp, "unanswered.der")]);
+    check("a request that asks for extensions is refused until the operator says what to do " +
+      "with them, naming what was asked (exit " + unanswered.status + ")",
+    unanswered.status !== 0 && /subjectAltName/.test(unanswered.stderr) &&
+      /--copy-requested-san/.test(unanswered.stderr) &&
+      /--ignore-requested-extensions/.test(unanswered.stderr) &&
+      !fs.existsSync(path.join(tmp, "unanswered.der")));
+    var ignored = path.join(tmp, "ignored.der");
+    var ignoreRun = cli(["issue", "--csr", reqOut, "--issuer-cert", caCert, "--issuer-key", caKey,
+      "--days", "30", "--ignore-requested-extensions", "--out", ignored]);
+    check("pki issue --ignore-requested-extensions issues without what the request asked for",
+      ignoreRun.status === 0 &&
+        pki.schema.x509.decodeExtensions(pki.schema.x509.parse(fs.readFileSync(ignored)))
+          .filter(function (r) { return r.name === "subjectAltName"; }).length === 0);
+    check("--san and --copy-requested-san both name the subjectAltName, so passing both is refused",
+      (function () {
+        var r = cli(["issue", "--csr", reqOut, "--issuer-cert", caCert, "--issuer-key", caKey,
+          "--copy-requested-san", "--san", "other.example", "--out", path.join(tmp, "two-san.der")]);
+        return r.status !== 0 && /--copy-requested-san/.test(r.stderr) &&
+          !fs.existsSync(path.join(tmp, "two-san.der"));
+      })());
+    check("both answers need a request to answer, so neither is accepted on the --key route",
+      (function () {
+        var r = cli(["issue", "--key", reqKey, "--subject", "CN=x", "--copy-requested-san",
+          "--out", path.join(tmp, "no-req.der")]);
+        var i = cli(["issue", "--key", reqKey, "--subject", "CN=x", "--ignore-requested-extensions",
+          "--out", path.join(tmp, "no-req2.der")]);
+        return r.status !== 0 && /--csr/.test(r.stderr) && i.status !== 0 && /--csr/.test(i.stderr);
+      })());
+    /* A request asking for an extension the CA assigns itself, or for a name form the copy does not
+     * write, is named rather than dropped from the copy: a certificate carrying SOME of what was
+     * asked for is a different certificate from the one that was asked for. */
+    check("a requested extension other than the subjectAltName is named, not copied and not dropped",
+      await (async function () {
+        var pair = await pki.key.generate("Ed25519");
+        var der = await pki.csr.sign({ subject: "CN=ku.example",
+          subjectPublicKey: await pki.key.export(pair.publicKey),
+          extensionRequest: { keyUsage: ["digitalSignature"] } },
+        { key: await pki.key.export(pair.privateKey) });
+        var p = path.join(tmp, "ku-req.der");
+        fs.writeFileSync(p, der);
+        var r = cli(["issue", "--csr", p, "--issuer-cert", caCert, "--issuer-key", caKey,
+          "--copy-requested-san", "--out", path.join(tmp, "ku.der")]);
+        return r.status !== 0 && /keyUsage/.test(r.stderr) &&
+          !fs.existsSync(path.join(tmp, "ku.der"));
+      })());
+    check("a requested name of a form the copy does not write refuses the issuance, naming the form",
+      await (async function () {
+        var pair = await pki.key.generate("Ed25519");
+        var der = await pki.csr.sign({ subject: "CN=dir.example",
+          subjectPublicKey: await pki.key.export(pair.publicKey),
+          extensionRequest: { subjectAltName: ["ok.example", { directoryName: "CN=dir.example" }] } },
+        { key: await pki.key.export(pair.privateKey) });
+        var p = path.join(tmp, "dir-req.der");
+        fs.writeFileSync(p, der);
+        var r = cli(["issue", "--csr", p, "--issuer-cert", caCert, "--issuer-key", caKey,
+          "--copy-requested-san", "--out", path.join(tmp, "dir.der")]);
+        return r.status !== 0 && /\[4\]/.test(r.stderr) && !fs.existsSync(path.join(tmp, "dir.der"));
+      })());
+    /* Criticality is part of what a request asks for. The certificate builder's extensions object
+     * writes a non-critical subjectAltName, which is the form RFC 5280 sec. 4.2.1.6 asks for beside a
+     * non-empty subject, so a request asking for the critical one is asking for a certificate this
+     * verb does not write. Copying the names and dropping the flag issued a certificate that differs
+     * from the request in the field that decides whether a relying party must understand it. */
+    check("a request asking for a critical subjectAltName is refused rather than copied non-critical",
+      await (async function () {
+        var pair = await pki.key.generate("Ed25519");
+        var crit = pki.asn1.build.sequence([
+          pki.asn1.build.oid(pki.oid.byName("subjectAltName")),
+          pki.asn1.build.boolean(true),
+          pki.asn1.build.octetString(pki.asn1.build.sequence([
+            pki.asn1.build.contextPrimitive(2, Buffer.from("crit.example", "latin1"))])),
+        ]);
+        var der = await pki.csr.sign({ subject: "CN=crit.example",
+          subjectPublicKey: await pki.key.export(pair.publicKey), extensionRequest: [crit] },
+        { key: await pki.key.export(pair.privateKey) });
+        var p = path.join(tmp, "crit-req.der");
+        fs.writeFileSync(p, der);
+        var asked = pki.schema.csr.decodeExtensions(der)[0];
+        var out = path.join(tmp, "crit.der");
+        var r = cli(["issue", "--csr", p, "--issuer-cert", caCert, "--issuer-key", caKey,
+          "--copy-requested-san", "--out", out]);
+        return asked.critical === true && r.status !== 0 && /critical/i.test(r.stderr) &&
+          !fs.existsSync(out);
+      })());
+    /* An address is a 4- or 16-octet value rather than text, so the copy carries the OCTETS the
+     * request held: a copy that re-read the printed form would write a dNSName spelled like an
+     * address, which matches nothing. */
+    check("an address the request asked for is copied as an address",
+      await (async function () {
+        var pair = await pki.key.generate("Ed25519");
+        var der = await pki.csr.sign({ subject: "CN=ip.example",
+          subjectPublicKey: await pki.key.export(pair.publicKey),
+          extensionRequest: { subjectAltName: [{ iPAddress: "10.0.0.7" }, { rfc822Name: "a@b.example" },
+            { uniformResourceIdentifier: "https://ip.example/p" }] } },
+        { key: await pki.key.export(pair.privateKey) });
+        var p = path.join(tmp, "ip-req.der");
+        fs.writeFileSync(p, der);
+        var out = path.join(tmp, "ip.der");
+        var r = cli(["issue", "--csr", p, "--issuer-cert", caCert, "--issuer-key", caKey,
+          "--copy-requested-san", "--out", out]);
+        if (r.status !== 0) return false;
+        var rows = pki.schema.x509.decodeExtensions(pki.schema.x509.parse(fs.readFileSync(out)))
+          .filter(function (x) { return x.name === "subjectAltName"; });
+        var byTag = {};
+        rows[0].decoded.names.forEach(function (n) { byTag[n.tagNumber] = n.value; });
+        return Buffer.isBuffer(byTag[7]) && byTag[7].length === 4 && byTag[7][3] === 7 &&
+          byTag[1] === "a@b.example" && byTag[6] === "https://ip.example/p";
       })());
     var tamperedCsr = path.join(tmp, "tampered.der");
     fs.writeFileSync(tamperedCsr, (function () {
@@ -817,7 +981,7 @@ async function run() {
         return r.status !== 0 && /insecure-url/.test(r.stderr); })());
     /* The verb says what the handshake checked and what it did not. Without that an operator reads
      * a printed chain as a validated one, which is the confusion `pki verify` exists to resolve. */
-    var fetchHelp = cli(["fetch", "--help"]).stderr;
+    var fetchHelp = cli(["fetch", "--help"]).stdout;
     check("pki fetch's help says it is not a verification and names the verb that is",
       /not a verification|does not verify/i.test(fetchHelp) && /pki verify/.test(fetchHelp));
 
