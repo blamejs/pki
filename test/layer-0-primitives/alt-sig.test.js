@@ -941,6 +941,67 @@ async function testPreTbsPreimage(ctx) {
   }
 }
 
+/* The three alternative-signature extensions are this verb's to emit, never a caller's to supply: the
+   value is a signature the verb computes and self-checks, the algorithm is resolved from the issuer's
+   alternative key, and clause 7.2.2 has all three travel together. The OBJECT form of
+   `spec.extensions` refused all three; the PRE-ENCODED ARRAY form was not reached by any of those
+   guards, so a caller could put an arbitrary `altSignatureValue` in it and the verb emitted and
+   natively signed a certificate carrying an alternative signature it never computed. Such a
+   certificate is refused by `pki.altSig.verify`, which is the migrated client the extension exists
+   for. */
+async function testReservedAltExtensionsRefusedInTheArrayForm() {
+  var s = signing.makeSigner("ec-p256");
+  var spec = {
+    subject: "reserved.example", subjectPublicKey: s.spki, serialNumber: 0xb7n, notBefore: NB, notAfter: NA,
+  };
+  var reserved = [
+    ["altSignatureValue", b.sequence([b.oid(O("altSignatureValue")),
+      b.octetString(b.bitString(Buffer.alloc(64, 0xaa), 0))])],
+    ["altSignatureAlgorithm", b.sequence([b.oid(O("altSignatureAlgorithm")),
+      b.octetString(b.sequence([b.oid(O("id-ml-dsa-44"))]))])],
+    ["subjectAltPublicKeyInfo", b.sequence([b.oid(O("subjectAltPublicKeyInfo")),
+      b.octetString(b.raw(s.spki))])],
+  ];
+  var codes = [];
+  for (var i = 0; i < reserved.length; i++) {
+    var one = { subject: spec.subject, subjectPublicKey: spec.subjectPublicKey, serialNumber: spec.serialNumber,
+      notBefore: spec.notBefore, notAfter: spec.notAfter, extensions: [reserved[i][1]] };
+    codes.push(reserved[i][0] + "=" + (await codeAsync(pki.x509.sign(one, { key: s.key }))));
+  }
+  check("A1: every alternative-signature extension is refused in the pre-encoded array form (" +
+    codes.join(" ") + ")",
+  codes.length === 3 && codes.every(function (c) { return c.indexOf("=x509/bad-input") > 0; }));
+  // CONTROL: an ordinary pre-encoded extension still goes through that form, so the refusals above are
+  // about these three OIDs and not about the array form being closed.
+  var control = await pki.x509.sign({
+    subject: spec.subject, subjectPublicKey: spec.subjectPublicKey, serialNumber: 0xb8n,
+    notBefore: NB, notAfter: NA,
+    extensions: [b.sequence([b.oid(O("keyUsage")), b.octetString(b.bitString(Buffer.from([0x80]), 7))])],
+  }, { key: s.key });
+  check("A2: CONTROL an ordinary pre-encoded extension is still accepted in the array form",
+    Buffer.isBuffer(control) && control.length > 0 &&
+    pki.schema.x509.parse(control).extensions.length === 1);
+
+  /* The refusals above live in a callback the walk hands each element to, and the walk reached
+     `Array.prototype.map` THROUGH the caller's own array. An own `map` returning a list the callback
+     never saw bypassed every per-element rule at once, this one included, and the verb emitted and
+     natively signed a certificate carrying extensions nothing had validated. The walk goes through
+     `guard.list.copyMap`, which reads `length` once and takes each element as an own data property. */
+  var hostile = [];
+  hostile.map = function () {
+    return [b.raw(b.sequence([b.oid(O("altSignatureValue")),
+      b.octetString(b.bitString(Buffer.alloc(64, 0xaa), 0))]))];
+  };
+  check("A3: CONTROL the hostile array reports an own map, so the probe exercises it",
+    Object.prototype.hasOwnProperty.call(hostile, "map") && hostile.length === 0);
+  var viaOwnMap = await pki.x509.sign({
+    subject: spec.subject, subjectPublicKey: spec.subjectPublicKey, serialNumber: 0xb9n,
+    notBefore: NB, notAfter: NA, extensions: hostile,
+  }, { key: s.key });
+  check("A4: a caller's own map cannot decide the extensions a certificate is signed with",
+    pki.schema.x509.parse(viaOwnMap).extensions.length === 0);
+}
+
 async function run() {
   testSurface();
   testPreimage();
@@ -954,6 +1015,7 @@ async function run() {
   await testLint(bctx);
   testInspect();
   await testOuterAltFieldsRefused();
+  await testReservedAltExtensionsRefusedInTheArrayForm();
   console.log("CHECKS " + helpers.getChecks());
 }
 

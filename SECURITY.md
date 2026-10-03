@@ -103,6 +103,42 @@ security-only patches after the next major releases.
   count at `C.LIMITS.TLOG_MAX_COUNT` (32) and refuses before reading any entry.
   The ceiling is a local resource bound, not a rule the bundle specification
   states.
+- **Repeated-identifier work amplification in TUF metadata (CWE-834).** A root
+  states a key list per role and a document carries a signature list, and both
+  were walked per occurrence rather than per distinct member. Each repetition of
+  one key identifier canonicalized and hashed the whole key, imported it, and
+  derived its material identity again; in the signature list each repetition of
+  one failing signature re-ran the signature check as well, because an identifier
+  is skipped only once a signature under it has succeeded. A document that meets
+  no threshold is therefore the most expensive case rather than the cheapest.
+  A verify's own role is a third list of the same kind: its identifiers were
+  resolved to keys one occurrence at a time, each resolution deep-copying the key
+  and hashing its canonical form. Measured, a 588 KB candidate repeating one
+  identifier 2000 times per role spent 12.6 seconds inside the role walk, 1000
+  repetitions of a single all-zero signature over a 414 KB body cost 2000 key
+  imports, 1000 signature checks and 1.6 seconds, and 7500 repetitions of one
+  identifier in a role beside a 500 KB key spent 10.2 seconds resolving it, all
+  inside the metadata size cap and all before anything had authenticated the
+  document. What is left is the cost of the questions a document actually asks:
+  S DISTINCT signatures over a body of B bytes need S verifications and each
+  hashes the body, so the work is B times S while the document is B plus S.
+  Measured at the cap, the worst split is a 512 KB body with 2297 distinct P-256
+  signatures at 551 ms, and each verification is awaited separately, so no single
+  block exceeds one signature check. The one-megabyte cap is what bounds that
+  count; no tighter bound is imposed, since the specification states none and a
+  conforming root carries a handful. `pki.tuf.updateRoot` decides each identifier once per walk, and
+  `pki.tuf.verifySignatures` resolves each identifier once and asks each
+  identifier-and-signature pair once, so the work follows the number of distinct
+  keys and distinct signatures a document names. The same documents answer in 11,
+  36, 5 and 6 milliseconds. A key is
+  also imported once per identifier rather than once for the identity a threshold
+  counts it under and again for the signature check, which both halves the work
+  and makes the key counted and the key verified with the same key. The pair a
+  verify is remembered under is named by the decoded signature, not by its text:
+  hexadecimal is read in either case, so one 64-byte value has up to 2^128
+  spellings, and named by the text 1000 spellings of one value bought 1000
+  signature checks over the same body. A thousand genuinely different values are
+  still a thousand checks.
 - **A DSSE envelope signature the verdict never covered.** The Sigstore bundle
   specification states that an envelope in a bundle carries exactly one
   signature, and that a verifier rejects an envelope whose signature count is
@@ -243,7 +279,17 @@ security-only patches after the next major releases.
   of the captured function, so a permission check, a canonical serialization,
   the binding of a transparency-log entry to a bundle's signature, or the split
   between a ciphertext and its authentication tag concludes the same thing
-  whenever it runs. Asking whether a registry carries a
+  whenever it runs. Every SIGNATURE CHECK is held the same way: certification
+  path validation, `pki.ct`'s signed tree heads, log lists and SCTs, all five
+  signature families in `pki.cms.verify`, both key routes in `pki.jose.verify`,
+  WebAuthn assertions and attestations, the FIDO metadata BLOB, each half of a
+  composite signature and the AuthenticatedData MAC take the WebCrypto verify
+  and the key import they use at load. Held as a method on an object instead,
+  one replaced afterwards decides the verdict: reproduced on a signed tree head,
+  where it turned another log's signature from refused into accepted. The
+  comparator that orders a DER SET OF and answers whether two byte strings are
+  equal is captured for the same reason, since it decides emitted bytes at one
+  end and a verdict at the other. Asking whether a registry carries a
   name has the same shape, since written out it reads a membership test and the
   call that applies it, and either answering the wrong way admits a name the
   registry never held: an undefined OCSP response status, a reserved CRL reason
@@ -428,7 +474,32 @@ security-only patches after the next major releases.
   handing over the file that holds the private one. A key path on a command line
   is visible in the process table to every user on the machine while the process
   runs; the help text says that too, since a reader who does not know it cannot
-  work around it.
+  work around it. `--out` and `--pub` naming one file is refused before a key is
+  generated, since the private key would go where the public half was asked for.
+  A run that fails after creating a file removes only the files it created, and it
+  identifies them by what the creating descriptor reported rather than by what the
+  path holds once that descriptor has closed. The identity is recorded before any
+  content, so a run whose write failed can still tell its own file from one that
+  replaced it; recorded only on a completed write, such a record had no identity
+  at all and the path was cleared of whatever occupied it. A file that replaced the
+  one this run created, changed since, or gained a second link to its content, is
+  left where it is and named on stderr, as is one the platform cannot identify
+  after a failed write and one the cleanup could not examine at all. The link test
+  asks what is on disk rather than comparing against a recorded count, a name
+  added before the record was taken and removed afterwards having made the count
+  fall. A report naming a path keeps to one line, a newline in a name having ended
+  the line early and put what followed it where the tool's own output is read.
+  Every file the CLI writes is covered, not only the keys: `csr`, `issue`, `fetch`
+  and `sign` with `--out` create a path that does not exist through an exclusive
+  descriptor and remove it if the write fails, while a path that already exists is
+  overwritten as those verbs have always done and is never one the run removes.
+  That overwrite opens the path without permission to create, so a path that stops
+  existing between the two calls is retried as the exclusive create it has become
+  rather than written by name into a file nothing is tracking.
+  Two residuals: where a filesystem reports no inode, a replacement whose size and
+  timestamp match the original cannot be told from it, and the path is removed by
+  name, so a replacement arriving between the comparison and the unlink is
+  removed. Node offers no unlink by descriptor to close that.
 - **Untyped faults escaping the key boundary.** A `CryptoKey` is opaque, and one
   created by a different WebCrypto implementation is indistinguishable from one
   of this engine's by type, algorithm, and usages while holding its material

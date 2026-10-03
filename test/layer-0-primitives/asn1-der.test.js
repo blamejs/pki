@@ -715,6 +715,56 @@ function testSetSorted() {
   // Known-answer: SET tag 0x31, length 6, members in ascending order.
   check("build.setOf emits a SET (0x31) with ascending members",
     hex(b.setOf([tlvB, tlvA])) === "3106020101020102");
+
+  /* The ordering is what makes a SET canonical, and it was taken through `Array.prototype`'s own
+     `slice` and `sort`: a replacement of either decides the bytes every SET OF in the toolkit emits,
+     after whatever validated the members, on content a caller goes on to sign. Measured on a request's
+     attribute set, replacing either made it encode a member other than the one just validated. The
+     copy and the ordering go through operations captured at load. */
+  var want = hex(b.setOf([tlvA, tlvB]));
+  var realSort = Array.prototype.sort, realSlice = Array.prototype.slice;
+  var tlvC = b.integer(3n);
+  var sortLive, sliceLive, underSort, underSlice;
+  try {
+    Object.defineProperty(Array.prototype, "sort", {
+      value: function () { return [tlvC, tlvC]; }, writable: true, configurable: true,
+    });
+    sortLive = [tlvB, tlvA].sort(Buffer.compare)[0] === tlvC;
+    underSort = hex(b.setOf([tlvB, tlvA]));
+  } finally {
+    Object.defineProperty(Array.prototype, "sort", { value: realSort, writable: true, configurable: true });
+  }
+  check("CONTROL the replaced sort is live, so the next check exercises it", sortLive === true);
+  check("a replaced Array.prototype.sort cannot change the members a SET encodes", underSort === want);
+
+  try {
+    Object.defineProperty(Array.prototype, "slice", {
+      value: function () { return [tlvC, tlvC]; }, writable: true, configurable: true,
+    });
+    sliceLive = [tlvB, tlvA].slice()[0] === tlvC;
+    underSlice = hex(b.setOf([tlvB, tlvA]));
+  } finally {
+    Object.defineProperty(Array.prototype, "slice", { value: realSlice, writable: true, configurable: true });
+  }
+  check("CONTROL the replaced slice is live too", sliceLive === true);
+  check("and a replaced Array.prototype.slice cannot either", underSlice === want);
+
+  /* The COMPARATOR is the third operation in that sentence and the one that answers "before". The copy
+     and the sort were captured while `Buffer.compare` was still read at the call, so a replacement
+     reversing the answer reversed the SET's order. */
+  var realCompare = Buffer.compare;
+  var compareLive, underCompare;
+  try {
+    Object.defineProperty(Buffer, "compare", {
+      value: function (x, y) { return -realCompare(x, y); }, writable: true, configurable: true,
+    });
+    compareLive = Buffer.compare(tlvA, tlvB) > 0;
+    underCompare = hex(b.setOf([tlvB, tlvA]));
+  } finally {
+    Object.defineProperty(Buffer, "compare", { value: realCompare, writable: true, configurable: true });
+  }
+  check("CONTROL the replaced comparator is live and reverses the answer", compareLive === true);
+  check("and a replaced Buffer.compare cannot change the order a SET encodes", underCompare === want);
 }
 
 function testIntegerBufferMinimal() {

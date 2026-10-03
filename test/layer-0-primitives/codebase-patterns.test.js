@@ -1730,6 +1730,28 @@ var KNOWN_ANTIPATTERNS = [
     reason: "Every format's matches() detector re-inlined the root-SEQUENCE guard `!root || root.tagClass !== \"universal\" || root.tagNumber !== TAGS.SEQUENCE` and the per-node `x.tagClass === class && x.tagNumber === TAGS.Y` probe, with one module hand-rolling a local tag predicate twice. Centralized as pkix.rootSequenceChildren + the schema.is{Universal,Context}[OneOf|InRange] predicates so a detector composes them; a new detector re-inlining the root guard (a `.tagClass !== \"universal\"` test that returns false) must route through the shared helper. This replaces the KNOWN_CLUSTERS matches() whitelist — after extraction the seq/probe shingle dissolves.",
   },
   {
+    // A caller's array walked with its OWN `map` / `forEach` / `filter` / `slice` where the `isArray`
+    // test and the walk stand on DIFFERENT lines. The armed `caller-array-copied-live` check matches
+    // only the single-expression form, so this shape reached none of it: `extSpec.map(cb)` on a
+    // caller-supplied array let an own `map` hand the callback a list it had never seen, and every
+    // per-element rule the callback carries was bypassed at once -- the duplicate check, the
+    // criticality rule, the value decoders and the reserved-extension refusal among them. The verb
+    // then emitted and natively signed a certificate carrying extensions nothing had validated.
+    //
+    // Scoped to the modules that SIGN, where the tree is clean and the cost of a bypass is a signed
+    // artifact. The same shape is still being converted elsewhere in `lib/`, which is a budget rather
+    // than a gate: 103 sites measured outside this layer.
+    id: "signer-walks-caller-array-live",
+    primitive: "guard.list.copyMap(list, fn) / guard.list.snapshot(list) -- they read `length` once and write each element as an own data property, so neither an own method nor a prototype replacement is consulted",
+    regex: /\b(?:spec|extSpec|attrSpec|ext|names|targets|locations|list|values)(?:\.[\w$]+)*\.(?:map|forEach|filter|slice)\s*\(/,
+    skipCommentLines: true,
+    onlyFiles: /^lib[\\/](?:x509-sign|crl-sign|attrcert-sign|csr-sign)\.js$/,
+    reportEvery: true,
+    allowClass: "signer-walks-caller-array-live",
+    allowlist: [],
+    reason: "a signing verb that walks a caller's array through that array's own method lets the caller decide which elements the per-element rules ever see, so every check inside the callback is bypassed together and the verb signs content nothing validated",
+  },
+  {
     // A verdict returned as a bare object literal. Resolving a promise reads `then` off the value it
     // settles with, and an object that does not own one hands that lookup to Object.prototype, where
     // an accessor runs with the verdict as its receiver and can hand the caller a different object
@@ -3479,26 +3501,27 @@ function testGuardReadsRuntimeLive() {
     "lib/cmp-build.js": 130,
     "lib/crmf-sign.js": 35,
     "lib/path-validate.js": 89,
-    "lib/webauthn.js": 160,
-    "lib/asn1-der.js": 105,
-    "lib/schema-engine.js": 45,
+    "lib/webauthn.js": 158,
+    "lib/asn1-der.js": 101,
+    "lib/schema-engine.js": 39,
     "lib/trust.js": 100,
-    "lib/cms-sign.js": 57,
+    "lib/cms-sign.js": 56,
     "lib/webauthn-mds.js": 88,
-    "lib/attrcert-sign.js": 76,
+    "lib/attrcert-sign.js": 69,
     "lib/tsp-sign.js": 42,
     "lib/http-digest.js": 73,
     "lib/pkcs12-build.js": 63,
     "lib/ct.js": 71,
-    "lib/cms-verify.js": 16,
+    "lib/cms-verify.js": 14,
     "lib/cms-encrypt.js": 66,
-    "lib/crl-sign.js": 65,
+    "lib/crl-sign.js": 62,
     "lib/cmc-build.js": 57,
     "lib/pki-build.js": 33,
     "lib/hpke.js": 32,
-    "lib/cms-decrypt.js": 49,
+    "lib/cms-decrypt.js": 45,
+    "lib/composite-sig.js": 36,
     "lib/cmc-verify.js": 34,
-    "lib/x509-sign.js": 26,
+    "lib/x509-sign.js": 25,
     "lib/schema-attrcert.js": 26,
     "lib/tls-cert-compress.js": 18,
     "lib/schema-crl.js": 7,
@@ -4428,8 +4451,41 @@ function testNoPartialByteAcceptance() {
   _report("no partial two-form byte-source acceptance outside the key/secret ownership paths (route byte doors through guard.bytes.isByteSource + source/snapshotSource, or tag a key/secret door allow:byte-source-narrow)", matches);
 }
 
+function testNoOptionNamedThen() {
+  // class: option-named-then
+  // No public option may be called `then`. Every value the toolkit hands back carries a non-thenable
+  // mask, a non-enumerable own `then` holding `undefined`, so that resolving a promise with it cannot
+  // reach a replacement installed on `Object.prototype`; and the doors that enumerate option names pass
+  // over a name of that exact shape, because counting it had the toolkit refuse its own parse results as
+  // option bags. An option genuinely NAMED `then` collides with both halves: the copy a verb makes of a
+  // caller's bag would drop it, and a bag carrying it would make the bag itself a thenable, which an
+  // `await` anywhere above would unwrap. The name is reserved, and the place a new option is declared is
+  // its `@opts` block, so that is where the reservation is enforced. Rename-proof: it matches the
+  // declaration SHAPE in the wiki comment block, not any symbol.
+  var files = _libFiles(), matches = [];
+  for (var i = 0; i < files.length; i++) {
+    var rel = _relPath(files[i]);
+    var content;
+    try { content = fs.readFileSync(files[i], "utf8"); }
+    catch (_e) { continue; }
+    var lines = _lines(content), inOpts = false;
+    for (var j = 0; j < lines.length; j++) {
+      var line = lines[j];
+      if (/@opts\b/.test(line)) { inOpts = true; continue; }
+      if (inOpts && /@[a-z]+\b/.test(line)) inOpts = false;
+      if (!inOpts) continue;
+      if (/^\s*\*?\s*then\s*:/.test(line)) {
+        matches.push({ file: rel, line: j + 1, content: line.trim() });
+      }
+    }
+  }
+  _report("no public option is named `then` (it collides with the non-thenable mask every returned " +
+    "value carries and with the name-enumerating doors that pass over it; pick another name)", matches);
+}
+
 function run() {
   _allViolations = [];
+  testNoOptionNamedThen();
   testSourceHeaders();
   testShippedSourceIsAscii();
   testTopOfFileRequires();

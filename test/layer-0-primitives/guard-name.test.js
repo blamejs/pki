@@ -30,6 +30,104 @@ function testDnEqual() {
   check("leading/trailing whitespace trimmed", name.dnEqual([rdn(CN, "  Root  ")], [rdn(CN, "Root")], E, "x/n", "dn") === true);
   check("genuinely different not equal", name.dnEqual([rdn(CN, "Root")], [rdn(CN, "Evil")], E, "x/n", "dn") === false);
   check("different RDN count not equal", name.dnEqual([rdn(CN, "Root")], [rdn(CN, "Root"), rdn(O, "Org")], E, "x/n", "dn") === false);
+
+  /* The COUNT is narrowed where it is taken, and the equality test and the walk ask the same local.
+     `Array.isArray` is true for a Proxy whose target is an array and a `get` trap answers `length`
+     afresh on each read, so a length answering equal to its partner and then SHORTER had the walk stop
+     before the element that differs: measured, two DNs differing in their second RDN compared EQUAL.
+     This comparison is what chains a certificate to its issuer, matches a CRL to its scope and applies
+     a name constraint, so an equal verdict there is a name-chaining bypass. */
+  var differsLate = [rdn(CN, "Root"), rdn(O, "Org")];
+  var otherLate = [rdn(CN, "Root"), rdn(O, "OTHER")];
+  check("CONTROL two DNs differing only in their second RDN are not equal",
+    name.dnEqual(differsLate, otherLate, E, "x/n", "dn") === false);
+  function shrinkingLength(target, values) {
+    var k = 0;
+    return new Proxy(target, {
+      get: function (t, p, r) {
+        if (p === "length") { var v = k < values.length ? values[k] : t.length; k++; return v; }
+        return Reflect.get(t, p, r);
+      },
+    });
+  }
+  check("a length that answers 2 and then 1 does not walk the comparison past the element that differs",
+    name.dnEqual(shrinkingLength(differsLate, [2, 2, 1, 1]), otherLate, E, "x/n", "dn") === false);
+  var objLenOutcome = "NO-THROW";
+  try {
+    name.dnEqual(shrinkingLength(differsLate, [{ valueOf: function () { return 2; } }]), otherLate,
+      E, "x/n", "dn");
+  } catch (e) { objLenOutcome = e.constructor.name; }
+  check("and a length that is an object is refused rather than coerced (" + objLenOutcome + ")",
+    objLenOutcome === "TypeError");
+  /* The same question one level down: an RDN is a SET, compared as a multiset, and its own two counts
+     are narrowed the same way. */
+  var setA = [{ type: CN, value: "Root" }, { type: O, value: "Org" }];
+  var setB = [{ type: CN, value: "Root" }, { type: O, value: "OTHER" }];
+  check("CONTROL two RDNs differing in their second attribute are not equal",
+    name.rdnEqual(setA, setB, E, "x/n", "rdn") === false);
+  check("and a shrinking length does not make them equal either",
+    name.rdnEqual(shrinkingLength(setA, [2, 2, 1, 1]), setB, E, "x/n", "rdn") === false);
+
+  /* The ELEMENT is read once and each of its two fields once. Read twice, the attribute's TYPE came
+     from one read and its VALUE from another, so an RDN answering a different attribute on each index
+     read compared EQUAL to a name matching neither of them. A name that equals a name it does not hold
+     is this comparison's one unacceptable answer. */
+  /* COUNTED, not inferred from one alternation. Which attribute a cycling Proxy hands back depends on
+     how many reads happen, so a behavioral probe can pass because the sequence shifted rather than
+     because the element is read once. The property is the count: one read of the element per side per
+     iteration. */
+  var elementReads = 0;
+  var countingRdn = new Proxy([{ type: CN, value: "good" }], {
+    get: function (t, p, r) {
+      if (p === "0") elementReads++;
+      return Reflect.get(t, p, r);
+    },
+  });
+  var countedVerdict = name.rdnEqual(countingRdn, [{ type: CN, value: "good" }], E, "x/n", "rdn");
+  check("the element is read once per comparison, not once per field (" + elementReads + " read(s))",
+    elementReads === 1 && countedVerdict === true);
+  /* And the behavioral half, driven in BOTH alternation orders so neither can pass on the sequence
+     happening to line up. */
+  function cycling(values) {
+    var k = 0;
+    return new Proxy([values[0]], {
+      get: function (t, p, r) {
+        if (p === "0") { var v = values[k % values.length]; k++; return v; }
+        return Reflect.get(t, p, r);
+      },
+    });
+  }
+  var pairA = [{ type: CN, value: "evil" }, { type: O, value: "good" }];
+  var pairB = [{ type: O, value: "good" }, { type: CN, value: "evil" }];
+  check("an RDN answering a different attribute on each read does not equal one matching neither, " +
+    "in either order",
+  name.rdnEqual(cycling(pairA), [{ type: CN, value: "good" }], E, "x/n", "rdn") === false &&
+    name.rdnEqual(cycling(pairB), [{ type: CN, value: "good" }], E, "x/n", "rdn") === false);
+  /* CONTROL: the two halves it was combining each exist, and neither of them equals the subject, so the
+     check above is about the combination rather than about either attribute. */
+  check("CONTROL neither of the two attributes it alternated equals that subject",
+    name.rdnEqual([{ type: CN, value: "evil" }], [{ type: CN, value: "good" }], E, "x/n", "rdn") === false &&
+    name.rdnEqual([{ type: O, value: "good" }], [{ type: CN, value: "good" }], E, "x/n", "rdn") === false);
+  check("CONTROL and an RDN that really does match still does",
+    name.rdnEqual([{ type: CN, value: "good" }], [{ type: CN, value: "good" }], E, "x/n", "rdn") === true);
+
+  /* Two residuals, both in the direction that refuses, pinned so neither is "fixed" into an acceptance.
+     An attribute value that is not a primitive string skips canonicalization and is compared by
+     identity, so two separately allocated boxed strings of the same text are NOT equal; a parsed name
+     carries primitives. And an attribute whose value answers differently on each read has no value to
+     compare, so it does not even equal itself. A name that cannot be shown equal is not equal. */
+  check("an attribute value that is not a primitive string is compared by identity, so two boxed " +
+    "strings of one text are not equal",
+  name.rdnEqual([{ type: CN, value: new String("same") }],
+    [{ type: CN, value: new String("same") }], E, "x/n", "rdn") === false);
+  var flip = 0;
+  var unstable = [{ type: CN }];
+  Object.defineProperty(unstable[0], "value", {
+    enumerable: true, configurable: true,
+    get: function () { return (flip++ % 2) === 0 ? "first" : "second"; },
+  });
+  check("and an attribute whose value answers differently on each read does not equal itself",
+    name.rdnEqual(unstable, unstable, E, "x/n", "rdn") === false);
   check("different attribute type not equal", name.dnEqual([rdn(CN, "Root")], [rdn(O, "Root")], E, "x/n", "dn") === false);
 
   // A parsed Name carries its RDN sequence in `.rdns`; the Name itself has no `length`. Handed one,
@@ -175,6 +273,7 @@ function run() {
   testUriEqual();
   testDnsNameEqual();
   testGeneralNameEqual();
+  testScannerAndCopyDoors();
 }
 
 // A dNSName is compared case-insensitively (RFC 4343), and only within ASCII: a value carrying a byte
@@ -249,6 +348,98 @@ function testGeneralNameEqual() {
   // compared by its bytes rather than silently by a rendering.
   check("a tag with no rule of its own compares by its bytes",
     eq(gn(5, undefined, b1), gn(5, undefined, Buffer.from(b1))) === "match");
+
+  /* Every member is read ONCE and the tag, the dispatch and each comparison ask the local. Read again
+     per arm, the tag that was MATCHED need not be the tag that was DISPATCHED on, and the form check
+     need not have seen the value the comparison got. This verb decides whether a name matches a name
+     constraint, so a match it reports is a subtree a certificate is allowed to speak for. */
+  function alternating(field, values, rest) {
+    var k = 0, o = {};
+    Object.keys(rest || {}).forEach(function (key) { o[key] = rest[key]; });
+    Object.defineProperty(o, field, {
+      enumerable: true, configurable: true,
+      get: function () { var v = values[k % values.length]; k++; return v; },
+    });
+    return o;
+  }
+  /* A tag reporting 8 to the equality test and 2 to the switch would compare two registeredID values
+     under the case-insensitive dNSName rule, which is looser than the rule their own tag names. */
+  check("a tag read twice cannot dispatch on a form other than the one that matched",
+    eq(alternating("tagNumber", [8, 2], { value: "Host.Example" }),
+      gn(8, "host.example")) === "no-match");
+  /* CONTROL: the two rules really do differ on this pair, so the check above is about the dispatch. */
+  check("CONTROL dNSName folds case and registeredID does not",
+    eq(gn(2, "Host.Example"), gn(2, "host.example")) === "match" &&
+    eq(gn(8, "Host.Example"), gn(8, "host.example")) === "no-match");
+  /* And the value is read ONCE, so the bytes the form check approved are the bytes compared. Counted
+     rather than inferred from a verdict: which of two alternating values a verdict reflects depends on
+     how many reads happen, so the count is the property and the verdict follows from it. */
+  var valueReads = 0;
+  var countedIp = { tagNumber: 7 };
+  Object.defineProperty(countedIp, "value", {
+    enumerable: true, configurable: true,
+    get: function () { valueReads++; return Buffer.from(ip1); },
+  });
+  var ipVerdict = eq(countedIp, gn(7, Buffer.from(ip1)));
+  check("an iPAddress value is read once, so the form check and the comparison see one value (" +
+    valueReads + " read(s), " + ipVerdict + ")",
+  valueReads === 1 && ipVerdict === "match");
+  var alternatingIp = alternating("value", [Buffer.from(ip1), Buffer.from(ip2)], { tagNumber: 7 });
+  check("CONTROL a value alternating between two addresses answers for the first one it gave",
+    eq(alternatingIp, gn(7, Buffer.from(ip1))) === "match");
+}
+
+/* Three doors in this file that a caller could previously reach past. The name-copy door refused a
+   Proxy and never required an ARRAY, so a plain object carrying a `length` getter answered one count
+   to the validation pass and another to the copy, and the copy carried what was never checked. The
+   control-byte scanner is exported and had no type guard of its own, so anything but a primitive
+   string answered a length and a character through hooks that can differ on each of the two reads per
+   position. And the printable-IA5 scanner read each byte twice when the first bound passed, so a high
+   answer and then a low one cleared both bounds although neither is printable. */
+function testScannerAndCopyDoors() {
+  var withLengthGetter = {};
+  var reads = 0;
+  Object.defineProperty(withLengthGetter, "length", {
+    get: function () { reads++; return reads === 1 ? 2 : 1; },
+  });
+  withLengthGetter[0] = [{ type: CN, value: "a" }];
+  withLengthGetter[1] = [{ type: O, value: "b" }];
+  var copyCode = "NO-THROW";
+  try { name.copyDnRdns(withLengthGetter, E, "x/n", "the name"); }
+  catch (e) { copyCode = e.code || e.constructor.name; }
+  check("a name that is not an array is refused before it is validated or copied (" + copyCode + ")",
+    copyCode === "x/n");
+  check("CONTROL a real relative-name array still copies",
+    JSON.stringify(name.copyDnRdns([[{ type: CN, value: "a" }]], E, "x/n", "the name")) ===
+      JSON.stringify([[{ type: CN, value: "a" }]]));
+
+  var scanCode = "NO-THROW";
+  try { name.assertNoControlBytes({ length: 1 }, E, "x/n", "the value"); }
+  catch (e2) { scanCode = e2.code || e2.constructor.name; }
+  check("the control-byte scanner requires a primitive string (" + scanCode + ")", scanCode === "x/n");
+  check("CONTROL it still passes a clean string and still refuses one carrying a control byte",
+    name.assertNoControlBytes("ok", E, "x/n", "the value") === "ok" &&
+    (function () {
+      try { name.assertNoControlBytes("a" + String.fromCharCode(1) + "b", E, "x/n", "the value"); return false; }
+      catch (e3) { return (e3.code || "") === "x/n"; }
+    })());
+
+  /* The printable scanner reads each byte once, which a receiver answering a HIGH byte and then a LOW
+     one would otherwise walk past, clearing both bounds with neither answer printable. That receiver
+     cannot reach the loop: the count comes from `guard.intrinsic.sizeOf`, which refuses anything that
+     is not a string or a real byte view, so a Proxy over a Buffer is turned away at the door. Pinned
+     here because the door is what makes the one-read shape unreachable rather than merely correct. */
+  var ia5Code = "NO-THROW";
+  try {
+    name.assertPrintableIa5(new Proxy(Buffer.from([0x41, 0x42]), {}), E, "x/n", "the value");
+  } catch (e4) { ia5Code = e4.constructor.name; }
+  check("a byte view that is a Proxy never reaches the printable scan (" + ia5Code + ")",
+    ia5Code === "TypeError");
+  check("CONTROL it still refuses a byte outside the printable range",
+    (function () {
+      try { name.assertPrintableIa5(Buffer.from([0x41, 0x01]), E, "x/n", "the value"); return false; }
+      catch (e5) { return (e5.code || "") === "x/n"; }
+    })());
 }
 
 // The host-label readers and the A-label scanner, read here rather than restated by each

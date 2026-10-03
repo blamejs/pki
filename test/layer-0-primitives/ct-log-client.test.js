@@ -277,6 +277,33 @@ async function runGetSth() {
   check("S12: and returns false, not a throw, when it is another log's",
     await pki.ct.verifySth({ treeSize: 3n, timestamp: BigInt(TS), rootHash: t.root,
       signature: Buffer.from(held.tree_head_signature, "base64") }, other.spki) === false);
+  /* The two operations a signature check runs are captured at load. Held as an object whose METHODS are
+     fetched per call, a replacement installed on the SubtleCrypto prototype afterwards decided the
+     verdict: a `verify` answering true accepts a tree head no log signed. The same replacement reaches
+     every signature gate in this module, so this one vector stands for all of them. */
+  var subtleProto = Object.getPrototypeOf(pki.webcrypto.subtle);
+  var realVerify = subtleProto.verify;
+  var wrongLog;
+  try {
+    Object.defineProperty(subtleProto, "verify", {
+      configurable: true, writable: true,
+      value: async function () { return true; },
+    });
+    wrongLog = await pki.ct.verifySth({ treeSize: 3n, timestamp: BigInt(TS), rootHash: t.root,
+      signature: Buffer.from(held.tree_head_signature, "base64") }, other.spki);
+  } finally {
+    Object.defineProperty(subtleProto, "verify", {
+      configurable: true, writable: true, value: realVerify,
+    });
+  }
+  check("S12a: a verify installed on the SubtleCrypto prototype after load does not decide the " +
+    "verdict (" + wrongLog + ")", wrongLog === false);
+  /* CONTROL: the replacement is restored, so the suite below is not running against it, and the
+     genuine signature still verifies. */
+  check("S12b: CONTROL the real operation is back and the log's own STH still verifies",
+    subtleProto.verify === realVerify &&
+    await pki.ct.verifySth({ treeSize: 3n, timestamp: BigInt(TS), rootHash: t.root,
+      signature: Buffer.from(held.tree_head_signature, "base64") }, log.spki) === true);
 
   // The verdict is about the signature supplied at entry. Verification imports the log key with an await,
   // so a signature held as a VIEW onto the caller's buffer could be overwritten in that window and the

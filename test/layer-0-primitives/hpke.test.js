@@ -905,6 +905,86 @@ function run() {
   testNoKemSilentlyIgnoresAFixedEphemeralKey();
   testHybridEncapWipesPqSecretOnAnEphemeralFault();
   testEveryByteSourceRepresentation();
+  testEncapsulationIsTakenBeforeTheKeyRecord();
+}
+
+/* The CIPHERTEXT is the subject, and reading the key record runs caller code: an `skm` accessor fires
+   while the encapsulation is still the caller's buffer. One that copies a DIFFERENT encapsulation over
+   it had the verb return the shared secret for the other ciphertext, which is the whole binding between
+   a ciphertext and the secret it carries. Both routes are driven: the standalone `decap` and the
+   `setupR` the AEAD verbs go through. */
+function testEncapsulationIsTakenBeforeTheKeyRecord() {
+  var kem = S.KEM.DHKEM_X25519_HKDF_SHA256;
+  var kp = pki.hpke.generateKeyPair(kem);
+  var first = pki.hpke.encap(kem, kp.publicKey);
+  var second = pki.hpke.encap(kem, kp.publicKey);
+  check("CONTROL the two encapsulations and their secrets differ",
+    Buffer.compare(first.enc, second.enc) !== 0 &&
+    Buffer.compare(first.sharedSecret, second.sharedSecret) !== 0);
+
+  function swapper(live) {
+    var rec = {};
+    Object.defineProperty(rec, "skm", {
+      enumerable: true, configurable: true,
+      get: function () { second.enc.copy(live); return kp.privateKey; },
+    });
+    return rec;
+  }
+
+  var liveEnc = Buffer.from(first.enc);
+  var got = pki.hpke.decap(kem, liveEnc, swapper(liveEnc));
+  check("the standalone decap answers for the encapsulation it was given, not one an accessor " +
+    "substituted (" + (got.equals(first.sharedSecret) ? "first" : "OTHER") + ")",
+  got.equals(first.sharedSecret) === true);
+
+  /* The same question through the setup the AEAD verbs use: the context derived has to be the one the
+     supplied encapsulation produces, so sealing to `first` and opening it succeeds. */
+  var ids = { kem: kem, kdf: S.KDF.HKDF_SHA256, aead: S.AEAD.AES_256_GCM };
+  var sealed = pki.hpke.seal(ids, kp.publicKey, {}, Buffer.alloc(0), Buffer.from("subject"));
+  var liveSealed = Buffer.from(sealed.enc);
+  var opened = pki.hpke.open(ids, liveSealed, swapper(liveSealed), {}, Buffer.alloc(0), sealed.ct);
+  check("and the recipient setup derives from the encapsulation it was given (" +
+    opened.toString("utf8") + ")", opened.toString("utf8") === "subject");
+
+  /* The PAYLOAD is a subject too. `seal` and `open` ran the whole setup, which reads the identifiers,
+     the options bag and a key record, before copying the plaintext and the additional data, so a getter
+     on any of those could overwrite what the verb went on to encrypt or to authenticate. */
+  var livePt = Buffer.from("intended");
+  var liveAad = Buffer.from("intended-aad");
+  var sealOpts = {};
+  Object.defineProperty(sealOpts, "info", {
+    enumerable: true, configurable: true,
+    get: function () { Buffer.from("SUBSTITUTE").copy(livePt); Buffer.from("SUBSTITUTED!").copy(liveAad); return undefined; },
+  });
+  var sealedPayload = pki.hpke.seal(ids, kp.publicKey, sealOpts, liveAad, livePt);
+  var back = pki.hpke.open(ids, sealedPayload.enc, { skm: kp.privateKey }, {},
+    Buffer.from("intended-aad"), sealedPayload.ct);
+  check("seal encrypts the plaintext and authenticates the data it was given, not ones an options " +
+    "getter substituted (" + back.toString("utf8") + ")", back.toString("utf8") === "intended");
+
+  var openPt = pki.hpke.seal(ids, kp.publicKey, {}, Buffer.from("aad-here"), Buffer.from("payload"));
+  var liveCt = Buffer.from(openPt.ct);
+  var liveOpenAad = Buffer.from("aad-here");
+  var openOpts = {};
+  Object.defineProperty(openOpts, "info", {
+    enumerable: true, configurable: true,
+    get: function () { liveCt.fill(0); liveOpenAad.fill(0x41); return undefined; },
+  });
+  var openedBack = pki.hpke.open(ids, openPt.enc, { skm: kp.privateKey }, openOpts, liveOpenAad, liveCt);
+  check("and open decrypts the ciphertext it was given under the data it was given (" +
+    openedBack.toString("utf8") + ")", openedBack.toString("utf8") === "payload");
+
+  /* And whether a key record carries `skm` is asked ONCE. Written as a presence test and a separate
+     value read, an accessor answering differently chose a branch for one value and ran it on another. */
+  var skmReads = 0;
+  var counted = {};
+  Object.defineProperty(counted, "skm", {
+    enumerable: true, configurable: true,
+    get: function () { skmReads++; return kp.privateKey; },
+  });
+  var withCounted = pki.hpke.decap(kem, Buffer.from(first.enc), counted);
+  check("a private-key record's skm is read exactly once (" + skmReads + " read(s))",
+    skmReads === 1 && withCounted.equals(first.sharedSecret) === true);
 }
 
 // Every byte door here admits what `guard.bytes.isByteSource` admits, and `deriveKeyPair` names that set

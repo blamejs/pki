@@ -28,6 +28,27 @@ var check = helpers.check;
 var pki = helpers.pki;
 var crypto = require("crypto");
 
+var path = require("path");
+var spawnSync = require("child_process").spawnSync;
+
+/** The key imports and signature checks one `verifySignatures` call performs, counted in a child
+ *  process because the toolkit captures those operations when it loads. See the driver for why a count
+ *  rather than a time budget. */
+function countOps(shape, records) {
+  var r = spawnSync(process.execPath,
+    [path.join(__dirname, "..", "helpers", "count-tuf-crypto-ops.js"), shape, String(records)],
+    { encoding: "utf8" });
+  var line = String(r.stdout || "").trim();
+  var out = { line: line, imports: -1, checks: -1, verified: "", records: -1 };
+  line.split(" ").forEach(function (tok) {
+    var at = tok.indexOf("=");
+    if (at === -1) return;
+    var name = tok.slice(0, at), value = tok.slice(at + 1);
+    out[name] = (name === "verified" || name === "error") ? value : Number(value);
+  });
+  return out;
+}
+
 function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return e.code || e.constructor.name; } }
 async function codeAsync(p) { try { await p; return "NO-THROW"; } catch (e) { return e.code || e.constructor.name; } }
 function cj(v) { return pki.tuf.canonicalJson(v).toString("utf8"); }
@@ -433,6 +454,160 @@ async function runVerify() {
     keys: dupSigned.keys, role: dupSigned.roles.root });
   check("M5: one key signing twice counts once, so a threshold of two is not met",
     dv.verified === false && dv.keyIds.length === 1);
+
+  /* An identifier is only skipped once a signature under it has SUCCEEDED, so a document repeating one
+     identical FAILING record used to re-derive the key's material identity and re-run the verify for
+     every repetition. Measured over a 414 KB body, 1000 repetitions of a single all-zero signature cost
+     2000 key imports, 1000 signature checks and 1617 ms, all on metadata nothing has authenticated yet.
+     A whole-input budget is asserted rather than a per-record ratio, which is the form that catches an
+     input made of many cheap-looking records. */
+  var wideBody = rootSigned({ signers: [a] });
+  wideBody.padding = "p".repeat(200000);
+  var repeated = [];
+  for (var rpt = 0; rpt < 1000; rpt++) repeated.push({ keyid: a.keyId, sig: "00".repeat(64) });
+  var repeatedBytes = Buffer.from(JSON.stringify({ signatures: repeated, signed: wideBody }));
+  var t5 = process.hrtime.bigint();
+  var rv5 = await pki.tuf.verifySignatures({ metadata: pki.tuf.parseMetadata(repeatedBytes),
+    keys: wideBody.keys, role: wideBody.roles.root });
+  var ms5 = Number(process.hrtime.bigint() - t5) / 1e6;
+  check("M5a: 1000 repetitions of one failing signature cost a bounded time (" + ms5.toFixed(0) +
+    " ms for " + repeatedBytes.length + " bytes, verified " + rv5.verified + ")",
+    ms5 < 300 && rv5.verified === false && rv5.keyIds.length === 0);
+  /* What names a repetition is the identifier AND the bytes, because a verify is a question about both.
+     Two records sharing an identifier with DIFFERENT bytes are two questions, so a good signature that
+     arrives after a bad one under the same key is still asked and still counts. */
+  var afterBad = Buffer.from(JSON.stringify({
+    signatures: [{ keyid: a.keyId, sig: "00".repeat(64) }, { keyid: a.keyId, sig: signWith(a, dupSigned) }],
+    signed: dupSigned,
+  }));
+  var abv = await pki.tuf.verifySignatures({ metadata: pki.tuf.parseMetadata(afterBad),
+    keys: dupSigned.keys, role: { keyids: [a.keyId, b.keyId], threshold: 1 } });
+  check("M5b: a good signature arriving after a bad one under the same key still counts",
+    abv.verified === true && abv.keyIds.length === 1 && abv.keyIds[0] === a.keyId);
+  /* The keys MAP is a caller record whose members are read inside a loop that awaits, so it gets the
+     same door the metadata and the role already have: a plain object carrying plain values at every
+     identifier the role names. Either a Proxy or an accessor would answer each read separately, and
+     the identifier filed under a key is checked against the copy the first read produced. */
+  var doorSigned = rootSigned({ signers: [a] });
+  var doorMeta = pki.tuf.parseMetadata(metadataFor(doorSigned, [a]));
+  var proxyKeys = new Proxy(JSON.parse(JSON.stringify(doorSigned.keys)), {});
+  check("M5k: a keys map that is a Proxy is refused rather than read through its traps",
+    await codeAsync(pki.tuf.verifySignatures({ metadata: doorMeta, keys: proxyKeys,
+      role: doorSigned.roles.root })) === "tuf/bad-input");
+  var getterKeys = {};
+  Object.defineProperty(getterKeys, a.keyId, {
+    enumerable: true, configurable: true,
+    get: function () { return a.key; },
+  });
+  check("M5l: and one answering an identifier the role names through a getter likewise",
+    await codeAsync(pki.tuf.verifySignatures({ metadata: doorMeta, keys: getterKeys,
+      role: doorSigned.roles.root })) === "tuf/bad-input");
+  /* CONTROL: the same document with a plain keys map verifies, so the two refusals are about how the
+     map answers rather than about the document or the key. */
+  check("M5m: CONTROL the same document with a plain keys map verifies",
+    (await pki.tuf.verifySignatures({ metadata: doorMeta, keys: doorSigned.keys,
+      role: doorSigned.roles.root })).verified === true);
+  /* The THIRD walk in this verb with the same shape. A role's own identifiers are resolved to keys,
+     and each resolution deep-copies the key and hashes its canonical form, so an identifier the role
+     REPEATS asked for that work again although the answer was already filed. Measured, 7500
+     repetitions beside a 500 KB key took 10.2 seconds, synchronously, before the first await and
+     before anything had authenticated a byte. */
+  var fatKey = { keytype: "ed25519", scheme: "ed25519",
+    keyval: { public: a.key.keyval.public }, comment: "c".repeat(500000) };
+  var fatId = pki.tuf.keyId(fatKey);
+  var fatKeys = {}; fatKeys[fatId] = fatKey;
+  var fatBody = { _type: "targets", spec_version: SPEC, version: 1, expires: EXPIRES, targets: {} };
+  var fatMeta = pki.tuf.parseMetadata(Buffer.from(JSON.stringify({
+    signed: fatBody, signatures: [],
+  })));
+  var repeatedIds = [];
+  for (var fat = 0; fat < 2000; fat++) repeatedIds.push(fatId);
+  var t5r = process.hrtime.bigint();
+  var rv5r = await pki.tuf.verifySignatures({ metadata: fatMeta, keys: fatKeys,
+    role: { keyids: repeatedIds, threshold: 1 } });
+  var ms5r = Number(process.hrtime.bigint() - t5r) / 1e6;
+  check("M5r: a role repeating one identifier 2000 times beside a 500 KB key costs a bounded time (" +
+    ms5r.toFixed(0) + " ms, verified " + rv5r.verified + ")",
+  ms5r < 400 && rv5r.verified === false);
+  /* And the question is named by the signature's VALUE rather than by its spelling. Hexadecimal is read
+     in either case, so one 64-byte value has up to 2^128 spellings, and a repeat recognized by the text
+     recognizes none of them: 1000 spellings of one value reopened the walk above in full.
+     COUNTED rather than timed. An ed25519 signature whose S is not canonical is refused before the body
+     is hashed, so the cheapest hostile value measures nothing, and the expensive one costs a couple of
+     hundred milliseconds at the metadata size cap, which is too close to a passing run to assert on.
+     The three shapes are counted against each other instead. */
+  var opsRepeat = countOps("repeats", 1000);
+  check("M5c: 1000 repetitions of one signature ask for one import and one check (" +
+    opsRepeat.line + ")",
+  opsRepeat.records === 1000 && opsRepeat.imports === 1 && opsRepeat.checks === 1 &&
+    opsRepeat.verified === "false");
+  var opsSpell = countOps("spellings", 1000);
+  check("M5c1: and 1000 spellings of one signature ask for the same one check (" +
+    opsSpell.line + ")",
+  opsSpell.records === 1000 && opsSpell.imports === 1 && opsSpell.checks === 1 &&
+    opsSpell.verified === "false");
+  /* CONTROL: 1000 genuinely different signature values are 1000 different questions, and every one is
+     asked. A memo that answered any of them from a cache would be dropping a verification, which is the
+     failure the two checks above must not be bought with. */
+  var opsDistinct = countOps("distinct", 1000);
+  check("M5c2: CONTROL 1000 different signature values are 1000 checks, all of them asked (" +
+    opsDistinct.line + ")",
+  opsDistinct.records === 1000 && opsDistinct.checks === 1000 && opsDistinct.imports === 1 &&
+    opsDistinct.verified === "false");
+  /* CONTROL: reading the value rather than the text does not narrow what verifies. A good signature
+     spelled in upper case is the same signature and still meets the threshold, so M5c1 is about the
+     repeat being recognized and not about upper case being refused. */
+  var upperOk = Buffer.from(JSON.stringify({
+    signatures: [{ keyid: a.keyId, sig: signWith(a, dupSigned).toUpperCase() }], signed: dupSigned,
+  }));
+  var uov = await pki.tuf.verifySignatures({ metadata: pki.tuf.parseMetadata(upperOk),
+    keys: dupSigned.keys, role: { keyids: [a.keyId, b.keyId], threshold: 1 } });
+  check("M5d: CONTROL a good signature spelled in upper case still counts",
+    uov.verified === true && uov.keyIds.length === 1 && uov.keyIds[0] === a.keyId);
+  /* A signature this build cannot read counts for nothing and does not throw, whatever shape it takes,
+     and it does not stand in for a later readable one under the same identifier. The decode happens
+     before the verify is asked, so these records are the ones that ask nothing at all. */
+  var unreadableSigs = ["", "zz", "abc", "0", "00", "00".repeat(500), "0f".repeat(31)];
+  var unreadable = unreadableSigs.map(function (sg) { return { keyid: a.keyId, sig: sg }; });
+  var unreadableBytes = Buffer.from(JSON.stringify({
+    signatures: unreadable.concat([{ keyid: a.keyId, sig: signWith(a, dupSigned) }]),
+    signed: dupSigned,
+  }));
+  var urv = await pki.tuf.verifySignatures({ metadata: pki.tuf.parseMetadata(unreadableBytes),
+    keys: dupSigned.keys, role: { keyids: [a.keyId, b.keyId], threshold: 1 } });
+  check("M5e: " + unreadableSigs.length + " unreadable or wrong-length signatures neither throw nor " +
+    "hide the good one that follows them",
+  urv.verified === true && urv.keyIds.length === 1 && urv.keyIds[0] === a.keyId);
+  /* And on their own they are a verdict rather than a fault: whether a threshold was met is a statement
+     about the metadata, and a signature that cannot be read did not meet it. */
+  var onlyUnreadable = Buffer.from(JSON.stringify({ signatures: unreadable, signed: dupSigned }));
+  var ouv = await pki.tuf.verifySignatures({ metadata: pki.tuf.parseMetadata(onlyUnreadable),
+    keys: dupSigned.keys, role: { keyids: [a.keyId, b.keyId], threshold: 1 } });
+  check("M5f: and on their own they resolve false rather than throwing",
+    ouv.verified === false && ouv.keyIds.length === 0);
+  /* `parseMetadata` holds a record's `sig` to being a string, so a non-string one arrives only on the
+     hand-assembled route, which this verb also accepts. It is the same answer there: the record asks
+     nothing and does not stand in for the readable one beside it. */
+  var dupPre = pki.tuf.canonicalJson(dupSigned);
+  function verifyAssembled(sigs) {
+    return pki.tuf.verifySignatures({
+      metadata: { type: "root", specVersion: SPEC, version: 1, signed: dupSigned,
+        signedBytes: Buffer.from(dupPre), signatures: sigs },
+      keys: dupSigned.keys, role: { keyids: [a.keyId, b.keyId], threshold: 1 },
+    });
+  }
+  var nonString = await verifyAssembled([
+    { keyid: a.keyId, sig: null }, { keyid: a.keyId, sig: 1234 },
+    { keyid: a.keyId, sig: signWith(a, dupSigned) },
+  ]);
+  check("M5g: a signature that is not a string asks nothing on the hand-assembled route either (" +
+    "verified " + nonString.verified + ", " + nonString.keyIds.length + " counted)",
+  nonString.verified === true && nonString.keyIds.length === 1);
+  var onlyNonString = await verifyAssembled([
+    { keyid: a.keyId, sig: null }, { keyid: a.keyId, sig: 1234 },
+  ]);
+  check("M5h: and two of them alone resolve false rather than throwing",
+    onlyNonString.verified === false && onlyNonString.keyIds.length === 0);
 
   /* A signature from a key the role does not list contributes nothing. */
   var outsider = makeEd25519Key();

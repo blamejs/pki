@@ -278,6 +278,60 @@ function run() {
     threw(function () { list.copyMap([], null); }) === "TypeError" &&
     threw(function () { list.copyMap(["a"], "notAFunction"); }) === "TypeError");
 
+  /* The narrow is shared, because the walks in `guard.bytes` and `guard.identifier` take a caller's
+     list too and one of them is a DOOR. A Proxy over `["a", "secret"]` whose length answered 2 and then
+     0 walked `refuseAccessorFields` past the accessor named `secret` and returned as though it had
+     checked it; one answering an OBJECT walked it with a value that was never a number. */
+  var guard = require("../../lib/guard-all.js");
+  function E(c, m) { var e = new Error(m); e.code = c; return e; }
+  var subject = { a: 1 };
+  Object.defineProperty(subject, "secret", {
+    enumerable: true, configurable: true, get: function () { return "leaked"; },
+  });
+  function shrinking(values) {
+    var k = 0;
+    return new Proxy(["a", "secret"], {
+      get: function (t, p, r) {
+        if (p === "length") { var v = k < values.length ? values[k] : t.length; k++; return v; }
+        return Reflect.get(t, p, r);
+      },
+    });
+  }
+  check("51. a names list whose length shrinks mid-walk does not walk the door past a field",
+    threw(function () {
+      guard.identifier.refuseAccessorFields(subject, shrinking([2, 0]), E, "x/bad", "the options");
+    }) === "Error");
+  check("52. and one whose length is an object is refused rather than coerced",
+    threw(function () {
+      guard.identifier.refuseAccessorFields(subject, shrinking([{ valueOf: function () { return 2; } }]),
+        E, "x/bad", "the options");
+    }) === "TypeError");
+  /* CONTROL: a plain names list still reaches the accessor and still refuses it, so the two checks
+     above are about the count rather than about the subject. */
+  check("53. CONTROL a plain names list refuses the accessor it names",
+    threw(function () {
+      guard.identifier.refuseAccessorFields(subject, ["a", "secret"], E, "x/bad", "the options");
+    }) === "Error");
+  /* A Proxy whose TARGET is a function reports `typeof "function"`, so a receiver tested for
+     `typeof !== "object"` was returned on unexamined and hid an own name through its `ownKeys` trap. */
+  var callable = new Proxy(function () {}, {
+    ownKeys: function () { return ["nope"]; },
+    getOwnPropertyDescriptor: function () { return { value: 42, enumerable: true, configurable: true }; },
+  });
+  check("54. a callable Proxy is refused as an options bag, as an object Proxy is",
+    threw(function () {
+      guard.identifier.assertKnownKeys(callable, { nope: 1 }, E, "x/bad", "unknown option ");
+    }) === "Error");
+  /* CONTROL: a plain function is not a Proxy, so it goes through the ordinary name check and is
+     reported for the names it really carries. The refusal above is about the Proxy, not about being
+     callable. */
+  var plainFnMessage = "";
+  try { guard.identifier.assertKnownKeys(function () {}, {}, E, "x/bad", "unknown option "); }
+  catch (e) { plainFnMessage = String(e.message); }
+  check("55. CONTROL a plain function is reported for its own names, not as a Proxy (" +
+    plainFnMessage + ")",
+  plainFnMessage.indexOf("unknown option") === 0 && plainFnMessage.indexOf("Proxy") === -1);
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

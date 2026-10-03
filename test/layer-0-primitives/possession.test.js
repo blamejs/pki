@@ -272,6 +272,31 @@ async function testPathThroughAnIntermediate() {
     (await codeAsync(pki.possession.verifyRequest(der,
       { trustAnchors: [rootDer], time: AT, intermediates: sigCertDer }))) === "possession/bad-input");
 
+  /* `time` is documented as defaulting to now. Omitted, it reached `pki.path.validate` as `undefined`,
+     whose always-on validity check requires a valid Date and refuses `path/bad-input`, so the default
+     never applied and every caller had to supply a clock to get any verdict at all. What the default
+     must produce is the verdict an explicit now produces, which is the assertion below: these fixtures
+     are valid in 2027 and the real instant is outside that window, so neither says `valid: true`, and
+     the point is that the answer is a PATH verdict rather than a refusal of the input. */
+  var defaultTimeCode = await codeAsync(pki.possession.verifyRequest(der,
+    { trustAnchors: [rootDer], intermediates: [interDer] }));
+  check("P4a: an omitted time defaults to now rather than refusing the call (" + defaultTimeCode + ")",
+    defaultTimeCode === "NO-THROW");
+  var defaulted = await pki.possession.verifyRequest(der,
+    { trustAnchors: [rootDer], intermediates: [interDer] });
+  var explicitNow = await pki.possession.verifyRequest(der,
+    { trustAnchors: [rootDer], intermediates: [interDer], time: new Date() });
+  check("P4b: and it reaches the verdict an explicitly supplied now reaches, field for field",
+    defaulted.verified === explicitNow.verified && defaulted.pathValidated === explicitNow.pathValidated &&
+    defaulted.valid === explicitNow.valid && defaulted.verified === true);
+  // CONTROL: the same request at an instant INSIDE the fixtures' window is valid, so the pair above
+  // agree on a real verdict rather than on a check that stopped running.
+  check("P4c: CONTROL the same request inside the validity window is valid",
+    withChain.valid === true && withChain.pathValidated === true);
+  check("P4d: and a time that is not a Date is refused under this verb's own code",
+    (await codeAsync(pki.possession.verifyRequest(der,
+      { trustAnchors: [rootDer], time: "2026-01-01" }))) === "possession/bad-input");
+
   // A certificate whose keyUsage confines its key to keyAgreement does not authorize a signature over a
   // certification request (RFC 5280 sec. 4.2.1.3), so it must not authorize issuance either. The signature
   // itself still verifies, which is why the two verdicts stay separate: an authorization gate is not a

@@ -762,7 +762,44 @@ async function run() {
   await testExtension(ctx);
   await testExtensionParsing(ctx);
   await testPlacementAndAlgorithms(ctx);
+  await testCertificateBindingSurvivesAReplacedHash();
   console.log("CHECKS " + helpers.getChecks());
+}
+
+/* The extension binds a request to ONE certificate by a digest over that certificate's bytes, so what
+   the digest covers is the binding. Capturing `createHash` left `update` and `digest` on the live hash
+   prototype, and a replacement decided it: measured with two certificates differing only in serial
+   number, an `update` that hashed the first turned the second's verdict from false to true. */
+async function testCertificateBindingSurvivesAReplacedHash() {
+  // An EC signer, so the certificate's signature algorithm names the hash the extension derives from.
+  var s = signing.makeSigner("ec-p256");
+  var nb = new Date("2027-01-01T00:00:00Z"), na = new Date("2028-01-01T00:00:00Z");
+  var first = await pki.x509.sign({ serialNumber: 0x101n, subject: "bind.example",
+    subjectPublicKey: s.spki, notBefore: nb, notAfter: na }, { key: s.key });
+  var second = await pki.x509.sign({ serialNumber: 0x102n, subject: "bind.example",
+    subjectPublicKey: s.spki, notBefore: nb, notAfter: na }, { key: s.key });
+  var value = pki.relatedCert.certificateHash(first);
+  check("H1: CONTROL the extension value names the first certificate and not the second",
+    pki.relatedCert.matchesCertificate(value, first) === true &&
+    pki.relatedCert.matchesCertificate(value, second) === false);
+
+  var hashProto = Object.getPrototypeOf(crypto.createHash("sha256"));
+  var realUpdate = hashProto.update;
+  var live, matchedSecond;
+  try {
+    Object.defineProperty(hashProto, "update", {
+      value: function () { return realUpdate.call(this, first); },
+      writable: true, configurable: true,
+    });
+    live = crypto.createHash("sha256").update(second).digest()
+      .equals(crypto.createHash("sha256").update(first).digest());
+    matchedSecond = pki.relatedCert.matchesCertificate(value, second);
+  } finally {
+    Object.defineProperty(hashProto, "update", { value: realUpdate, writable: true, configurable: true });
+  }
+  check("H2: CONTROL the replaced update is live, so H3 exercises it", live === true);
+  check("H3: a replaced hash update cannot make the extension name a different certificate (" +
+    matchedSecond + ")", matchedSecond === false);
 }
 
 module.exports = { run: run };

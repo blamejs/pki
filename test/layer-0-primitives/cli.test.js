@@ -236,6 +236,21 @@ async function run() {
       signedPem.stdout.indexOf("-----BEGIN CMS-----") === 0 &&
       pki.schema.cms.parse(signedPem.stdout).encapContentInfo.eContent == null);
     check("pki sign without --key is a usage error (non-zero exit)", cli(["sign", contentPath, "--cert", certPath]).status !== 0);
+    /* A payload past any single-write boundary, over an output path that already exists, so the
+     * overwrite goes through the descriptor rather than by name. A write that reported a short count
+     * and was believed would leave a file this parse refuses. */
+    var bigContent = path.join(tmp, "big-to-sign.bin");
+    fs.writeFileSync(bigContent, Buffer.alloc(4 * 1024 * 1024, 0x61));
+    var bigOut = path.join(tmp, "big.cms");
+    fs.writeFileSync(bigOut, "stale");
+    var bigRun = cli(["sign", bigContent, "--cert", certPath, "--key", keyPath, "--out", bigOut]);
+    var bigBytes = fs.readFileSync(bigOut);
+    check("pki sign writes a 4 MiB payload over an existing --out in full (" + bigBytes.length +
+      " bytes, exit " + bigRun.status + ")",
+    bigRun.status === 0 && bigBytes.length > 4 * 1024 * 1024 &&
+      pki.schema.cms.parse(bigBytes).encapContentInfo.eContent.length === 4 * 1024 * 1024);
+    fs.unlinkSync(bigOut);
+    fs.unlinkSync(bigContent);
 
     /* ---- --help reaches every verb ----
      * The first flag anyone tries. Four verbs printed a usage line when their arguments were
@@ -436,6 +451,219 @@ async function run() {
         var again = cli(["keygen", "--out", txnOut, "--pub", txnPub]);
         return again.status === 0 && fs.existsSync(txnOut) && fs.existsSync(txnPub);
       })());
+    /* The record that keeps the cleanup to this run's own files has to be of the file this run WROTE.
+     * Taken by path after the descriptor closed, a writer who replaced the path in between had its
+     * replacement measured instead, and the cleanup then deleted that replacement: the comparison
+     * meant to prevent data loss was reading the wrong file. The preload performs the replacement at
+     * the close, where the window is, and gives it the same bytes and the same timestamps, so nothing
+     * but the inode distinguishes it. */
+    var PRELOAD = path.join(__dirname, "..", "helpers", "swap-after-close-preload.js");
+    function keygenUnder(env, args) {
+      var r = spawnSync(process.execPath, ["-r", PRELOAD, BIN, "keygen"].concat(args),
+        { encoding: "utf8", env: Object.assign({}, process.env, env) });
+      return { status: r.status, stderr: String(r.stderr || "") };
+    }
+    var swapOut = path.join(tmp, "swap.key");
+    var swapPub = path.join(tmp, "swap.pub");
+    fs.writeFileSync(swapOut, "already here");
+    var swapRun = keygenUnder({ PKI_SWAP_PATH: swapPub }, ["--out", swapOut, "--pub", swapPub]);
+    if (swapRun.stderr.indexOf("reports no inode") !== -1) {
+      helpers.skip("the filesystem under " + tmp + " reports no inode, so a replacement cannot be " +
+        "told from the original by identity and only its size and timestamp are compared");
+    } else {
+      check("the preload replaced the reserved public file at the close (" +
+        (swapRun.stderr.indexOf("replaced") !== -1 ? "swapped" : "NOT SWAPPED") + ")",
+      swapRun.stderr.indexOf("replaced " + swapPub + " at close") !== -1);
+      check("a file that replaced one this run created is left in place rather than deleted (" +
+        "pub " + (fs.existsSync(swapPub) ? "present" : "DELETED") + ")",
+      swapRun.status !== 0 && fs.existsSync(swapPub) === true &&
+        swapRun.stderr.indexOf(swapPub + " was replaced since this run created it") !== -1);
+      fs.unlinkSync(swapPub);
+      /* The identity has to be on the record from the moment the NAME became ours, not from the moment
+       * the content went in. A write that fails leaves nothing to measure, and a record with nothing
+       * measured was deleted with no comparison at all, so a replacement arriving in that window was
+       * the file removed. An unidentifiable file is exactly the one not to delete. */
+      var failPub = path.join(tmp, "fail.pub");
+      var failRun = keygenUnder({ PKI_SWAP_PATH: failPub, PKI_FAIL_WRITE: failPub },
+        ["--out", path.join(tmp, "fail.key"), "--pub", failPub]);
+      check("the preload failed the public write and replaced the file at the close (" +
+        (failRun.stderr.indexOf("replaced") !== -1 ? "swapped" : "NOT SWAPPED") + ")",
+      failRun.stderr.indexOf("ENOSPC") !== -1 &&
+        failRun.stderr.indexOf("replaced " + failPub + " at close") !== -1);
+      check("and a replacement is left in place even though the write this run attempted failed (" +
+        "pub " + (fs.existsSync(failPub) ? "present" : "DELETED") + ")",
+      failRun.status !== 0 && fs.existsSync(failPub) === true &&
+        failRun.stderr.indexOf(failPub + " was replaced since this run created it") !== -1);
+      fs.unlinkSync(failPub);
+      check("and the private key the run never reached was not created",
+        fs.existsSync(path.join(tmp, "fail.key")) === false);
+      /* Unlinking a name whose content carries another link removes the name and keeps the bytes, so a
+       * half-removal reports success over a key that is still readable through the other name. */
+      var linkOut = path.join(tmp, "link.key");
+      var linkPub = path.join(tmp, "link.pub");
+      fs.writeFileSync(linkOut, "already here");
+      var linkRun = keygenUnder({ PKI_SWAP_PATH: linkPub, PKI_SWAP_MODE: "link" },
+        ["--out", linkOut, "--pub", linkPub]);
+      if (linkRun.stderr.indexOf("linked " + linkPub + " at close") === -1) {
+        helpers.skip("this filesystem did not add a hard link, so a name sharing content with " +
+          "another cannot be driven here");
+      } else {
+        check("a file linked since this run created it is left in place rather than half-removed (" +
+          "pub " + (fs.existsSync(linkPub) ? "present" : "DELETED") + ")",
+        linkRun.status !== 0 && fs.existsSync(linkPub) === true &&
+          linkRun.stderr.indexOf(linkPub + " has more than one link") !== -1);
+        fs.unlinkSync(linkPub + ".link");
+        fs.unlinkSync(linkPub);
+      }
+      fs.unlinkSync(linkOut);
+      /* And the link count is asked of what is on disk NOW rather than compared against the count this
+       * run recorded. Two names added before the record was taken and one removed afterwards make the
+       * count go DOWN, so a comparison looking for growth sees none and clears the path while the other
+       * name still holds the bytes. One name is what an exclusive create gives, so more than one at
+       * cleanup is somebody else's. */
+      var shrinkOut = path.join(tmp, "shrink.key");
+      var shrinkPub = path.join(tmp, "shrink.pub");
+      fs.writeFileSync(shrinkOut, "already here");
+      var shrinkRun = keygenUnder({ PKI_SWAP_PATH: shrinkPub, PKI_SWAP_MODE: "linkshrink" },
+        ["--out", shrinkOut, "--pub", shrinkPub]);
+      if (shrinkRun.stderr.indexOf("link count for " + shrinkPub + " went to 2") === -1) {
+        helpers.skip("this filesystem did not report a link count going from 3 to 2, so a record " +
+          "holding a higher count than the cleanup sees cannot be driven here");
+      } else {
+        check("a file whose link count FELL since this run recorded it is still left in place (" +
+          "pub " + (fs.existsSync(shrinkPub) ? "present" : "DELETED") + ")",
+        shrinkRun.status !== 0 && fs.existsSync(shrinkPub) === true &&
+          shrinkRun.stderr.indexOf(shrinkPub + " has more than one link") !== -1);
+        fs.unlinkSync(shrinkPub + ".one");
+        fs.unlinkSync(shrinkPub);
+      }
+      fs.unlinkSync(shrinkOut);
+      /* A path that cannot be STATTED is not a path whose file is gone, and a file nobody could look at
+       * is a file nobody removed. Passed over in silence, that left an operator with a file the run
+       * created and never mentioned. */
+      var blindOut = path.join(tmp, "blind.key");
+      var blindPub = path.join(tmp, "blind.pub");
+      fs.writeFileSync(blindOut, "already here");
+      var blindRun = keygenUnder({ PKI_SWAP_PATH: blindPub, PKI_SWAP_MODE: "statfail" },
+        ["--out", blindOut, "--pub", blindPub]);
+      check("a file the cleanup could not examine is left in place and named (" +
+        "pub " + (fs.existsSync(blindPub) ? "present" : "DELETED") + ")",
+      blindRun.status !== 0 && fs.existsSync(blindPub) === true &&
+        blindRun.stderr.indexOf(blindPub + " was created by this run and could not be examined") !== -1);
+      fs.unlinkSync(blindPub);
+      fs.unlinkSync(blindOut);
+      /* An empty path is not proof the run's own file ceased to exist: moved to another name, the
+       * bytes this run wrote are somewhere an operator has not been told about, and the path it was
+       * asked to write is bare. Said rather than passed over. */
+      var movedOut = path.join(tmp, "moved.key");
+      var movedPub = path.join(tmp, "moved.pub");
+      fs.writeFileSync(movedOut, "already here");
+      var movedRun = keygenUnder({ PKI_SWAP_PATH: movedPub, PKI_SWAP_MODE: "rename" },
+        ["--out", movedOut, "--pub", movedPub]);
+      check("a created file moved away before the cleanup is reported rather than passed over (" +
+        (fs.existsSync(movedPub + ".moved") ? "moved" : "NOT MOVED") + ")",
+      movedRun.status !== 0 && fs.existsSync(movedPub) === false &&
+        fs.existsSync(movedPub + ".moved") === true &&
+        movedRun.stderr.indexOf(movedPub + " was created by this run and is no longer there") !== -1);
+      fs.unlinkSync(movedPub + ".moved");
+      fs.unlinkSync(movedOut);
+      /* The verbs whose product is not a key write through the same tracked path. The rule arrived with
+       * `keygen` and applied to keygen alone, so a write that failed part way through `csr --out` left
+       * a file this run had just created with nobody tracking it. */
+      var csrKeyT = path.join(tmp, "tracked.key");
+      cli(["keygen", "--alg", "Ed25519", "--out", csrKeyT]);
+      var csrOutT = path.join(tmp, "tracked.csr");
+      var csrFail = spawnSync(process.execPath,
+        ["-r", PRELOAD, BIN, "csr", "--key", csrKeyT, "--subject", "CN=tracked.example",
+          "--out", csrOutT],
+        { encoding: "utf8", env: Object.assign({}, process.env, { PKI_FAIL_WRITE: csrOutT }) });
+      check("a csr write that fails part way leaves no file behind (exit " + csrFail.status + ", " +
+        (fs.existsSync(csrOutT) ? "LEFT" : "absent") + ")",
+      csrFail.status !== 0 && fs.existsSync(csrOutT) === false &&
+        String(csrFail.stderr || "").indexOf("ENOSPC") !== -1);
+      /* "The path is taken" and "the path is free" are answers about the moment they were given. An
+       * overwrite that creates BY NAME after being told the path was taken makes a file this run owns
+       * with nobody tracking it, so a failed write then leaves it behind. The overwrite arm opens the
+       * path without permission to create it, and an answer of "not there" is retried as the exclusive
+       * create it has become. */
+      var raceOut = path.join(tmp, "race.csr");
+      var raceRun = spawnSync(process.execPath,
+        ["-r", PRELOAD, BIN, "csr", "--key", csrKeyT, "--subject", "CN=race.example",
+          "--out", raceOut],
+        { encoding: "utf8", env: Object.assign({}, process.env,
+          { PKI_TOCTOU_PATH: raceOut, PKI_FAIL_WRITE: raceOut }) });
+      check("the preload forced the taken-then-free window (" +
+        (String(raceRun.stderr || "").indexOf("forced EEXIST") !== -1 ? "forced" : "NOT FORCED") + ")",
+      String(raceRun.stderr || "").indexOf("forced EEXIST") !== -1 &&
+        String(raceRun.stderr || "").indexOf("forced ENOENT") !== -1);
+      check("a file created after that window is tracked, so a failed write leaves nothing (" +
+        (fs.existsSync(raceOut) ? "LEFT" : "absent") + ")",
+      raceRun.status !== 0 && fs.existsSync(raceOut) === false &&
+        String(raceRun.stderr || "").indexOf("ENOSPC") !== -1);
+      /* CONTROL: an output path that already exists is still overwritten, which is what these verbs
+       * have always done and what distinguishes them from the key verbs. */
+      fs.writeFileSync(csrOutT, "stale content");
+      var csrOver = cli(["csr", "--key", csrKeyT, "--subject", "CN=tracked.example", "--out", csrOutT]);
+      check("CONTROL an existing output path is still overwritten (exit " + csrOver.status + ")",
+        csrOver.status === 0 &&
+          pki.schema.csr.parse(fs.readFileSync(csrOutT)) !== undefined);
+      /* And the overwrite empties the file first, which is what writing through a descriptor has to do
+       * by hand. A SHORTER request over a longer one is the case that shows it: a write that only put
+       * its own bytes at the front would leave the tail of the previous one behind, and the file would
+       * carry trailing bytes the parser refuses. */
+      var longReq = fs.readFileSync(csrOutT).length;
+      cli(["csr", "--key", csrKeyT, "--subject", "CN=a-much-longer-subject-name.example",
+        "--out", csrOutT]);
+      var longer = fs.readFileSync(csrOutT).length;
+      var shortRun = cli(["csr", "--key", csrKeyT, "--subject", "CN=b", "--out", csrOutT]);
+      var shorter = fs.readFileSync(csrOutT);
+      check("a shorter request over a longer one leaves no tail of the longer (" + longReq + " then " +
+        longer + " then " + shorter.length + " bytes)",
+      shortRun.status === 0 && shorter.length < longer &&
+        pki.schema.csr.parse(shorter) !== undefined);
+      /* A destination that is not a regular file has nothing to truncate, and an operator writes to
+       * `/dev/null` and `/dev/stdout`. Truncating one unconditionally refused it, which is a
+       * regression against the plain write these verbs used before. */
+      if (process.platform === "win32" || !fs.existsSync("/dev/null")) {
+        helpers.skip("this platform (" + process.platform + ") has no /dev/null, so an output " +
+          "destination that is not a regular file cannot be driven here");
+      } else {
+        var nullRun = cli(["csr", "--key", csrKeyT, "--subject", "CN=devnull.example",
+          "--out", "/dev/null"]);
+        check("an output destination that is not a regular file is still written (exit " +
+          nullRun.status + ")", nullRun.status === 0);
+      }
+      fs.unlinkSync(csrOutT);
+      fs.unlinkSync(csrKeyT);
+      /* A path comes from the command line, and a report naming one has to stay one line: a newline in
+       * the name would end the line early and put whatever follows where an operator reads the tool's
+       * own output. Where a filesystem admits the byte at all. */
+      var nlPub = path.join(tmp, "nl\na.pub");
+      var nlAdmitted = true;
+      try { fs.writeFileSync(nlPub, "probe"); fs.unlinkSync(nlPub); }
+      catch (_nl) { nlAdmitted = false; }
+      if (!nlAdmitted) {
+        helpers.skip("this filesystem (" + process.platform + ") does not admit a newline in a file " +
+          "name, so a report naming one cannot be driven here");
+      } else {
+        var nlOut = path.join(tmp, "nl.key");
+        fs.writeFileSync(nlOut, "already here");
+        var nlRun = cli(["keygen", "--out", nlOut, "--pub", nlPub]);
+        var pkiLines = nlRun.stderr.split("\n").filter(function (l) { return l.indexOf("pki: ") === 0; });
+        check("a report naming a path that carries a newline is still one line (" +
+          pkiLines.length + " pki line(s))",
+        nlRun.status !== 0 && pkiLines.length === 1 && nlRun.stderr.indexOf("\\x0a") !== -1);
+        if (fs.existsSync(nlPub)) fs.unlinkSync(nlPub);
+        fs.unlinkSync(nlOut);
+      }
+    }
+    /* Both halves at one name would put the private key where the public one was asked for. The
+     * exclusive create already refuses the second write, so the refusal is about saying why. */
+    var samePath = path.join(tmp, "same.key");
+    var same = cli(["keygen", "--out", samePath, "--pub", samePath]);
+    check("pki keygen refuses --out and --pub naming the same file (exit " + same.status + ")",
+      same.status !== 0 && same.stderr.indexOf("name the same file") !== -1 &&
+        fs.existsSync(samePath) === false);
     /* PQC-first: an ML-DSA key is as reachable as a classical one, and the default is one of the
      * suites the toolkit leads with. The default is read from the file rather than assumed. */
     var kgDefault = pki.schema.pkcs8.parse(fs.readFileSync(kgOut));

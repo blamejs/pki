@@ -3,7 +3,7 @@
 // Copyright (c) blamejs contributors
 "use strict";
 /**
- * pki — command-line front-end for @blamejs/pki.
+ * pki: the command-line front-end for @blamejs/pki.
  *
  *   pki version                          print the package version
  *   pki oid <dotted|name>                resolve an OID <-> name
@@ -28,7 +28,7 @@
  *              [--detached] [--pss] [--digest D] [--pem] [--out F]
  *
  * The CLI is a thin operator convenience over the library surface: it validates its
- * arguments (entry-point tier — bad input exits non-zero with a message) and never does
+ * arguments (the entry-point tier, where bad input exits non-zero with a message) and never does
  * anything the public API cannot. inspect / lint / convert / verify / sign compose pki.inspect,
  * pki.lint, the per-format PEM codecs, pki.path.validate, and pki.cms.sign respectively.
  */
@@ -244,7 +244,7 @@ function cmdLint(args) {
     });
     process.stdout.write("\n" + (report.findings.length || "no") + " finding(s); worst: " + (report.worst || "pass") + "\n");
   }
-  // Set the exit CODE and let Node drain — process.exit() can truncate a buffered stdout
+  // Set the exit CODE and let Node drain: process.exit() can truncate a buffered stdout
   // write to a pipe before it flushes.
   process.exitCode = (report.counts.error || report.counts.fatal) ? 1 : 0;
 }
@@ -278,21 +278,63 @@ var KEYGEN_USAGE = "usage: pki keygen --out <key-file> [--pub <spki-file>] [--al
 // there being no unlink-by-handle to use, but a file whose size or timestamp has changed is left
 // where it is and named.
 var createdFiles = [];
-// Registered with NO identity, at the moment the name becomes ours and before any content goes into
-// it. A record whose size is null is removed without the comparison below, which is what a file we
-// created but never finished writing needs: registering only after the write returned left a created,
-// partially written private key unlisted, so the cleanup walked past it and the corrected retry then
-// refused for that name.
-function _claimCreated(file) {
-  var rec = { path: file, size: null, mtimeMs: null };
+// Two separate questions, recorded at two different moments.
+//
+// IDENTITY (`ino`/`dev`) is taken from the creating descriptor, at the moment the name becomes ours and
+// before any content goes into it, so the record can tell our file from one that replaced it even when
+// the write that followed never finished. Recorded only once the content was in, a write that failed
+// left an identity-free record, and an identity-free record was deleted with no comparison at all: a
+// replacement arriving in that window was removed. An unidentifiable file is exactly the one not to
+// delete blindly.
+//
+// CONTENT (`size`/`mtimeMs`) is recorded only once a write returns, because that is the only point at
+// which what is on disk is what this run meant to put there. A record with no content figure is a file
+// this run created and did not finish, which is removed when its identity still matches: leaving a
+// partially written private key behind is the residue the record exists to clear.
+//
+// `nlink` is the third: unlinking a path whose content has another link removes the name and keeps the
+// content, so a file linked since this run created it is left where it is and named rather than
+// half-removed. Where a platform reports no inode or no link count the figures compare equal and the
+// size and timestamp carry the comparison alone, which cannot distinguish a replacement that matches
+// both.
+function _claimCreated(file, fd) {
+  var rec = { path: file, size: null, mtimeMs: null, ino: null, dev: null, nlink: null };
+  _identify(rec, fd);
   createdFiles.push(rec);
   return rec;
 }
-// Called once the content is in and the handle closed, so the identity compared at exit is the file as
-// this run left it rather than the empty one it started as.
-function _sealCreated(rec) {
-  try { var st = fs.statSync(rec.path); rec.size = st.size; rec.mtimeMs = st.mtimeMs; }
-  catch (_e) { /* allow:swallow-unverified unstattable; the record stays identity-free and is removed */ }
+// Both are called with the descriptor still OPEN, so what they record is of the file this run holds
+// rather than of whatever occupies the path afterwards. Taken by path after the close, a writer that
+// replaced the file in between had its replacement's size and timestamp adopted as this run's own, and
+// cleanup then deleted that replacement: the comparison meant to prevent exactly that was reading the
+// wrong file.
+function _identify(rec, fd) {
+  try {
+    var st = fs.fstatSync(fd);
+    rec.ino = st.ino; rec.dev = st.dev; rec.nlink = st.nlink;
+  } catch (_e) { /* allow:swallow-unverified unstattable; the record carries no identity and is kept */ }
+}
+function _sealCreated(rec, fd) {
+  try {
+    var st = fs.fstatSync(fd);
+    rec.size = st.size; rec.mtimeMs = st.mtimeMs;
+    rec.ino = st.ino; rec.dev = st.dev; rec.nlink = st.nlink;
+  } catch (_e) { /* allow:swallow-unverified unstattable; the claim-time identity stands */ }
+}
+// One line about one file, on the stream that reports them. A stream that cannot be written carries no
+// report, and that is the end of it: the file is intact either way, which is the half that matters, and
+// there is nowhere else to say so from inside an exit handler.
+function _say(message) {
+  // One line stays one line. A path comes from the command line, and a carriage return or newline in
+  // one would end the line early and put whatever follows it where an operator reads a report of its
+  // own, so those two bytes are shown rather than obeyed.
+  var one = "";
+  for (var i = 0; i < message.length; i++) {
+    var c = message.charCodeAt(i);
+    one += (c === 0x0a || c === 0x0d) ? "\\x" + c.toString(16) : message.charAt(i);
+  }
+  try { process.stderr.write("pki: " + one + "\n"); }
+  catch (_e) { /* allow:swallow-unverified nothing can be reported; the file is untouched */ }
 }
 process.on("exit", function (code) {
   // `wroteToDisk` means the product is COMPLETE on disk, and then no exit path may remove it. A
@@ -301,22 +343,50 @@ process.on("exit", function (code) {
   if (code === 0 || wroteToDisk) return;
   for (var i = 0; i < createdFiles.length; i++) {
     var rec = createdFiles[i];
-    var now;
+    var now = null, statErr = null;
     try { now = fs.statSync(rec.path); }
-    catch (_e) { continue; /* allow:swallow-unverified already gone, which is the outcome wanted */ }
-    if (rec.size !== null && (now.size !== rec.size || now.mtimeMs !== rec.mtimeMs)) {
-      try {
-        process.stderr.write("pki: " + rec.path + " changed since this run created it and was left " +
-          "in place\n");
-      } catch (_e2) { /* allow:swallow-unverified nothing can be reported; the file is intact */ }
+    catch (e0) { statErr = e0; }
+    if (statErr !== null) {
+      // Anything but ENOENT means the path could not be looked at, which is not the same as the file
+      // being gone: a file nobody could look at is one nobody removed, and that outcome used to be
+      // passed over in silence. ENOENT means nothing is there NOW, which this run did not necessarily
+      // do: a file it created and something else renamed leaves the same empty path, and the bytes are
+      // then somewhere an operator has not been told about.
+      if (statErr.code !== "ENOENT") {
+        _say(rec.path + " was created by this run and could not be examined, so it was left in " +
+          "place (" + statErr.message + ")");
+      } else if (rec.ino !== null) {
+        _say(rec.path + " was created by this run and is no longer there, so its content is " +
+          "wherever it was moved to");
+      }
       continue;
     }
+    // A different inode under the same name is a different file, whatever its size and timestamp say,
+    // so that comparison runs first where the platform reports one.
+    var known = rec.ino !== null && rec.ino !== 0 && now.ino !== 0;
+    var leave = null;
+    if (known && (now.ino !== rec.ino || now.dev !== rec.dev)) {
+      leave = " was replaced since this run created it and was left in place";
+    } else if (now.nlink > 1) {
+      // An exclusive create gives a file ONE name, so a second one was added by somebody else, and
+      // unlinking this name would remove the name and leave the content. Asked of what is on disk NOW
+      // rather than against the count this run recorded: recorded, a link added before the record was
+      // taken and removed afterwards made the count go DOWN, and a comparison looking for growth let
+      // the unlink through while another name still held the bytes.
+      leave = " has more than one link, so removing this name would leave the content, and it was " +
+        "left in place";
+    } else if (rec.size !== null && (now.size !== rec.size || now.mtimeMs !== rec.mtimeMs)) {
+      leave = " changed since this run created it and was left in place";
+    } else if (!known && rec.size === null) {
+      // No identity from the platform and no completed write: the file at this path cannot be told
+      // from one that replaced it, and deleting on a guess is the one outcome that cannot be undone.
+      leave = " was created by this run and cannot be identified on this filesystem, so it was " +
+        "left in place and is yours to remove";
+    }
+    if (leave !== null) { _say(rec.path + leave); continue; }
     try { fs.unlinkSync(rec.path); }
     catch (e) {
-      try {
-        process.stderr.write("pki: " + rec.path + " was created by this run and could not be " +
-          "removed (" + e.message + ")\n");
-      } catch (_e3) { /* allow:swallow-unverified nothing can be reported; the exit code stands */ }
+      _say(rec.path + " was created by this run and could not be removed (" + e.message + ")");
     }
   }
 });
@@ -331,8 +401,9 @@ process.on("exit", function (code) {
 //   - only the descriptor is written through. Closing the exclusive create and reopening the PATH let
 //     the reservation be replaced in between, and the write would then follow a replacement symlink or
 //     truncate a replacement file, which is the no-overwrite guarantee defeating itself;
-//   - the claim is recorded BEFORE any content, so a write that fails part way through still leaves a
-//     file the cleanup knows to remove, and its identity is sealed only once the content is in;
+//   - the claim is recorded BEFORE any content, and it carries the new file's identity from the
+//     creating descriptor, so a write that fails part way through still leaves a file the cleanup can
+//     recognize as its own and remove;
 //   - the descriptor is closed on every path before the cleanup can run, because Windows will not
 //     unlink a file something still has open.
 function writeNewFile(file, bytes, mode) {
@@ -342,14 +413,84 @@ function writeNewFile(file, bytes, mode) {
     if (e.code === "EEXIST") return fail(file + " already exists, and a key is never written over one");
     return fail("cannot write " + file + ": " + e.message);
   }
-  var rec = _claimCreated(file);
+  return _writeThrough(fd, file, bytes);
+}
+
+// The content, the claim, the seal and the close, for a descriptor the caller has already created.
+function _writeThrough(fd, file, bytes) {
+  var rec = _claimCreated(file, fd);
   var err = null;
   try { fs.writeFileSync(fd, bytes); }
   catch (e2) { err = e2; }
+  // Sealed BEFORE the close, while the descriptor still names the file this run wrote.
+  if (err === null) _sealCreated(rec, fd);
   try { fs.closeSync(fd); }
   catch (e3) { if (err === null) err = e3; }
   if (err !== null) return fail("cannot write " + file + ": " + err.message);
-  _sealCreated(rec);
+}
+
+// An output file for the verbs whose product is not a key: `csr`, `issue`, `fetch` and `sign` with
+// `--out`. Overwriting a path that is already taken is what those verbs have always done, and a
+// certificate or a request is not a secret whose only copy gets destroyed, so that stays. What the
+// plain write did not do is let the cleanup know: a write that failed part way left a file this run
+// had just created with nobody tracking it, which is the residue the record exists to clear. So a
+// path that does NOT exist is created exclusively and written through its descriptor like a key is,
+// and one that DOES is overwritten with no record kept, because a file this run did not create is
+// never one it removes.
+function writeOutputFile(file, bytes) {
+  // Two attempts, because "the path is taken" and "the path is free" are answers about the moment they
+  // were given. The overwrite arm opens the path WITHOUT permission to create it, so a path that stops
+  // existing between the two calls comes back as ENOENT and is retried as the exclusive create it now
+  // is. Written as a plain write, that window created a file this run owned with nobody tracking it.
+  for (var attempt = 0; attempt < 2; attempt++) {
+    var fd;
+    try { fd = fs.openSync(file, "wx"); }
+    catch (e) {
+      if (e.code !== "EEXIST") return fail("cannot write " + file + ": " + e.message);
+      var efd;
+      try { efd = fs.openSync(file, "r+"); }
+      catch (e2) {
+        if (e2.code === "ENOENT") continue;
+        /** A destination that refuses a read-write open is not a regular file: `/dev/stdout` when
+         * stdout is a pipe, a FIFO, a device. Those are written by name, as every one of these verbs
+         * did before, and nothing is tracked for them because this run did not create them and will
+         * never remove them. A regular file always takes the descriptor path above. */
+        try { fs.writeFileSync(file, bytes); }
+        catch (e3) { return fail("cannot write " + file + ": " + e3.message); }
+        return undefined;
+      }
+      return _overwriteThrough(efd, file, bytes);
+    }
+    return _writeThrough(fd, file, bytes);
+  }
+  return fail("cannot write " + file + ": the path kept appearing and disappearing while it was " +
+    "being opened");
+}
+
+// The content of a file that was already there, written through the descriptor the open returned
+// rather than by name, so what is truncated and what is written are the same file. A failure here has
+// destroyed what was there, and the message says so: the caller asked for an overwrite and got a
+// partial one, which is the one outcome a bare "cannot write" would not tell them.
+function _overwriteThrough(fd, file, bytes) {
+  var err = null;
+  try {
+    // Truncated only where there is something to truncate: `ftruncate` refuses a character device or a
+    // FIFO, and an operator writes to `/dev/null`. Those hold no previous content for a short write to
+    // leave behind, so skipping it there costs nothing.
+    if (fs.fstatSync(fd).isFile()) fs.ftruncateSync(fd, 0);
+    // `writeFileSync` on the descriptor, not `writeSync`: a single write can return a SHORT count
+    // without throwing, and a caller that ignores the count closes a half-written file and reports
+    // success. This one owns the loop until every byte is out. The descriptor sits at offset zero and
+    // the truncate does not move it, so the bytes land at the front.
+    fs.writeFileSync(fd, bytes);
+  } catch (e) { err = e; }
+  try { fs.closeSync(fd); }
+  catch (e2) { if (err === null) err = e2; }
+  if (err !== null) {
+    return fail("cannot write " + file + ": " + err.message + "; the file that was at that path has " +
+      "been overwritten and what is there now is incomplete");
+  }
+  return undefined;
 }
 
 // pki keygen --out <file> -- generate a key pair and write the private key to a file. The public
@@ -357,6 +498,13 @@ function writeNewFile(file, bytes, mode) {
 // a file that also holds the private one.
 function cmdKeygen(args) {
   if (!args.out) return fail(KEYGEN_USAGE);
+  // One path for both halves would put the private key at the name the public one was asked for. The
+  // exclusive create refuses the second write, so the run already failed; refusing it here says why,
+  // before a key is generated, rather than reporting the destination as taken by something else.
+  if (args.pub && args.pub === args.out) {
+    return fail("--out and --pub name the same file, and the public half is not written where the " +
+      "private key goes");
+  }
   var alg = args.alg || KEYGEN_DEFAULT_ALG;
   return pki.key.generate(alg).then(function (pair) {
     return Promise.all([pki.key.export(pair.privateKey), pki.key.export(pair.publicKey)]);
@@ -429,7 +577,7 @@ function subjectArg(arg) {
 
 function writeOrPrint(args, bytes) {
   if (!args.out) { process.stdout.write(bytes); return; }
-  try { fs.writeFileSync(args.out, bytes); } catch (e) { return fail("cannot write " + args.out + ": " + e.message); }
+  writeOutputFile(args.out, bytes);
   // The product is the FILE here too, for every verb that routes through this: `csr`, `issue` and
   // `fetch` with `--out`. The rule arrived with `keygen` and applied to keygen alone, so a broken
   // stdout made these exit non-zero over a file that was already written, which is the same
@@ -614,7 +762,7 @@ function cmdSign(args) {
   if (args.pss) signer.pss = true;
   if (args.digest) signer.digestAlgorithm = args.digest;
   return pki.cms.sign(content, signer, { detached: !!args.detached, pem: !!args.pem }).then(function (out) {
-    if (args.out) { try { fs.writeFileSync(args.out, out); } catch (e) { return fail("cannot write " + args.out + ": " + e.message); } }
+    if (args.out) { writeOutputFile(args.out, out); }
     else { process.stdout.write(out); }   // process.exitCode (0) lets Node flush a piped stdout
   }, function (e) { return fail((e.code || "cms/sign-error") + ": " + e.message); });
 }

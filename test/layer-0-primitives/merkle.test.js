@@ -423,6 +423,35 @@ function testProducerSnapshotsItsInput() {
   check("a length answering 1 then 4 yields the tree for 1, on the same ground",
     m.root(varyingLength(FOUR, [1, 4])).toString("hex") === oneRoot);
 
+  // Reading the count ONCE is not enough if what is read is not a NUMBER. A get trap may answer
+  // `length` with an object, and capturing an object captures no value: the cap coerces it, each
+  // comparison in the walk coerces it again, and a `valueOf` answering 0 and then 4 had the cap approve
+  // an empty list while the fold produced four leaves. The same lever cleared the leaf cap. The count
+  // is narrowed to a non-negative integer where it is taken, so a length that is not one is refused
+  // rather than coerced.
+  function objectLength(target, values) {
+    var k = 0;
+    return new Proxy(target, {
+      get: function (t, prop, recv) {
+        if (prop === "length") {
+          return { valueOf: function () { var v = k < values.length ? values[k] : t.length; k++; return v; } };
+        }
+        return Reflect.get(t, prop, recv);
+      },
+    });
+  }
+  var objCode = "NO-THROW", objRoot = null;
+  try { objRoot = m.root(objectLength(FOUR, [0, 4, 4, 4, 4])).toString("hex"); }
+  catch (e5) { objCode = e5.code || e5.constructor.name; }
+  check("a length that is an object whose valueOf answers 0 then 4 is refused rather than coerced (" +
+    objCode + ", root " + objRoot + ")",
+  objCode === "TypeError" && objRoot === null);
+  var capCode = "NO-THROW";
+  try { m.root(objectLength(FOUR, [1e9, 4, 4, 4, 4])); }
+  catch (e6) { capCode = e6.code || e6.constructor.name; }
+  check("and one answering above the leaf cap first does not clear it either (" + capCode + ")",
+    capCode === "TypeError" || capCode === "merkle/too-many-leaves");
+
   // Reading each slot once is not enough if what is read is a VIEW of the caller's store. A getter that
   // hands out one scratch buffer per leaf satisfies the read-once rule and still leaves every collected
   // leaf pointing at the same bytes, so collecting the second leaf overwrote the first: the root of
