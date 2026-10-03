@@ -429,6 +429,97 @@ async function run() {
   check("sparse authAttrs -> typed cms/bad-input (not a native setOf error)",
     (await codeOf(function () { return pki.cms.encrypt(MSG, [{ cert: rsa.cert }], { contentEncryptionAlgorithm: "aes-256-gcm", authAttrs: _spAttrs }); })) === "cms/bad-input");
 
+  /* The argument list a fixed call fixes was ASSEMBLED with a live `Array.prototype.concat`, so a
+     replacement chose it: returning a tuple that keeps the caller's recipients and options while
+     putting other bytes in the content slot made `encrypt` encrypt those bytes instead, and
+     `authenticate` gave them a valid MAC. The content is the one thing these verbs exist to protect,
+     and the list is built by a literal now, which nothing can replace. */
+  var realConcat = Array.prototype.concat;
+  var FORGED = Buffer.from("forged");
+  var encryptedUnder, authedUnder, replacementLive;
+  try {
+    Object.defineProperty(Array.prototype, "concat", {
+      value: function (tail) {
+        var out = realConcat.call(this, tail);
+        if (out.length === 3 && out[0] && out[0][1] === "content") out[0] = [FORGED, "content"];
+        return out;
+      },
+      writable: true, configurable: true,
+    });
+    // CONTROL, inside the window: the replacement really is installed, so a pass below is the verb
+    // holding its own construction rather than a probe that never took effect.
+    replacementLive = [[MSG, "content"]].concat([["a", "x"], ["b", "y"]])[0][0] === FORGED;
+    encryptedUnder = await pki.cms.encrypt(MSG, [{ cert: rsa.cert }],
+      { contentEncryptionAlgorithm: "aes-256-cbc" });
+    authedUnder = await pki.cms.authenticate(MSG, [{ cert: rsa.cert }], {});
+  } catch (e) {
+    encryptedUnder = encryptedUnder || e;
+    authedUnder = authedUnder || e;
+  } finally {
+    Object.defineProperty(Array.prototype, "concat",
+      { value: realConcat, writable: true, configurable: true });
+  }
+  check("CF1: CONTROL the replaced concat is live, so CF2 and CF3 exercise it", replacementLive === true);
+  /* Read back through the shipped decrypt: what the recipient's own key unwraps is what was
+     encrypted, which is the question a substituted content changes. */
+  var backEnc = Buffer.isBuffer(encryptedUnder)
+    ? (await pki.cms.decrypt(encryptedUnder, { key: rsa.key, cert: rsa.cert })).content
+    : null;
+  check("CF2: a replaced array concat cannot choose the content encrypt protects (" +
+    (backEnc ? JSON.stringify(backEnc.toString("utf8")) : "threw " + (encryptedUnder && encryptedUnder.code)) + ")",
+    backEnc !== null && Buffer.compare(backEnc, MSG) === 0);
+  var backAuth = Buffer.isBuffer(authedUnder)
+    ? (await pki.cms.decrypt(authedUnder, { key: rsa.key, cert: rsa.cert })).content
+    : null;
+  check("CF3: nor the content authenticate puts a MAC over (" +
+    (backAuth ? JSON.stringify(backAuth.toString("utf8")) : "threw " + (authedUnder && authedUnder.code)) + ")",
+    backAuth !== null && Buffer.compare(backAuth, MSG) === 0);
+
+  /* The messageDigest attribute an AuthenticatedData carries is computed with `createHash(name)
+     .update(content).digest()`, and `update` is an ordinary writable property of the hash prototype.
+     A replacement that fills the content buffer before forwarding it put the digest of OTHER bytes
+     into the attribute set, and the MAC then covered that set: the message authenticates a digest of
+     content it does not hold. The digest goes through the captured operations now. */
+  var realUpdate = Object.getPrototypeOf(require("node:crypto").createHash("sha256")).update;
+  var hashProto = Object.getPrototypeOf(require("node:crypto").createHash("sha256"));
+  var MSGLEN = MSG.length;
+  var authedUnderHash, hashReplacementLive;
+  try {
+    Object.defineProperty(hashProto, "update", {
+      value: function (data) {
+        if (Buffer.isBuffer(data) && data.length === MSGLEN) {
+          var other = Buffer.alloc(MSGLEN, 0x42);
+          return realUpdate.call(this, other);
+        }
+        return realUpdate.apply(this, arguments);
+      },
+      writable: true, configurable: true,
+    });
+    // CONTROL, inside the window: the replacement really is installed.
+    hashReplacementLive = require("node:crypto").createHash("sha256").update(Buffer.alloc(MSGLEN, 0x41))
+      .digest().equals(require("node:crypto").createHash("sha256").update(Buffer.alloc(MSGLEN, 0x42))
+        .digest());
+    authedUnderHash = await pki.cms.authenticate(MSG, [{ cert: rsa.cert }], {});
+  } catch (e) {
+    authedUnderHash = e;
+  } finally {
+    Object.defineProperty(hashProto, "update", { value: realUpdate, writable: true, configurable: true });
+  }
+  check("CF4: CONTROL the replaced hash update is live, so CF5 exercises it", hashReplacementLive === true);
+  /* The decrypt verifies the MAC and the messageDigest attribute together, so a digest taken over
+     other bytes is what it reports on. */
+  var hashVerdict;
+  if (Buffer.isBuffer(authedUnderHash)) {
+    try {
+      var opened = await pki.cms.decrypt(authedUnderHash, { key: rsa.key, cert: rsa.cert });
+      hashVerdict = Buffer.compare(opened.content, MSG) === 0 ? "content-intact" : "content-substituted";
+    } catch (e2) { hashVerdict = (e2 && e2.code) || "NO-CODE"; }
+  } else {
+    hashVerdict = "authenticate threw " + (authedUnderHash && authedUnderHash.code);
+  }
+  check("CF5: a replaced hash update cannot choose the content the message digest covers (" +
+    hashVerdict + ")", hashVerdict === "content-intact");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

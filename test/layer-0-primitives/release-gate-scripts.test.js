@@ -450,6 +450,58 @@ function testSpellingCanarySweepsARecycledPid() {
   check("a probe bearing a reused pid is swept rather than taken for this run's own", !survived);
   check("and the gate never reports the file as one it will not overwrite",
         !/already exists and does not hold/.test(both));
+
+  runCodexVerdict();
+}
+
+// ---- Codex review verdict (scripts/codex-verdict.js) ----
+
+/* The merge gate asks whether Codex has reviewed the pushed head, and one of its two answers comes
+   from Codex's summary comment. That comment is edited in place and names the commit it is CURRENTLY
+   working on, so the head's sha appearing in it is not a verdict: while a review is in flight the row
+   carrying that sha reads `**Running**`. Accepting the sha alone reported a reviewed head three
+   minutes after a push-fix on PR #372, and the thread gate behind it then read the findings of the
+   PREVIOUS head. The bodies below are the real ones, trimmed: the first is what the gate accepted at
+   08:48:22Z, where the newest actual review predated the head by 79 minutes. */
+function runCodexVerdict() {
+  var verdict = require(path.join(ROOT, "scripts", "codex-verdict.js"));
+  var HEAD = "69e93a81d48057e3d5a53a7fef6bad6c13addb09";
+
+  var running = "<!-- codex-pull-request-review-summary -->\n\n## Codex Review Summary\n\n" +
+    "| Review | Status | Commit | Review trigger |\n| --- | --- | --- | --- |\n" +
+    "| Code Review | **Running** since <relative-time datetime=\"2026-10-03T08:48:22.750230Z\">" +
+    "2026-10-03T08:48:22.750230Z</relative-time> | `69e93a8` | Manual request |\n";
+  check("a summary naming the head while the review is still running is not a verdict",
+        verdict.commentReportsFinishedReview(running, HEAD) === false);
+
+  var finished = "<!-- codex-pull-request-review-summary -->\n\n## Codex Review Summary\n\n" +
+    "| Review | Status | Commit | Review trigger |\n| --- | --- | --- | --- |\n" +
+    "| Code Review | **Completed** | `69e93a8` | Manual request |\n";
+  check("CONTROL the same summary reporting a finished review of that head is a verdict",
+        verdict.commentReportsFinishedReview(finished, HEAD) === true);
+
+  /* The abbreviation length is Codex's: the prose verdict prints ten characters where the table
+     prints seven, so both have to be read as prefixes rather than at a fixed width. */
+  check("a ten-character abbreviation of the head is read as well as a seven-character one",
+        verdict.commentReportsFinishedReview("No findings for 69e93a81d4.", HEAD) === true);
+  check("and a sha that is not this head's prefix is not accepted",
+        verdict.commentReportsFinishedReview("No findings for 2edc47ba909.", HEAD) === false);
+
+  /* The list arm reads only the reviewer's own comments, so a human quoting the head does not stand
+     in for a review of it. Which login counts is the caller's to say, and the gate passes its own, so
+     the vector supplies one of its own rather than naming a service. */
+  var REVIEWER = "the-review-bot";
+  function isReviewer(login) { return login === REVIEWER; }
+  check("a comment from anyone else is not a review, whatever sha it quotes",
+        verdict.anyCommentReportsFinishedReview(
+          [{ author: { login: "dotCooCoo" }, body: "pushed 69e93a81d4, please review" }],
+          HEAD, isReviewer) === false);
+  check("CONTROL the same body from the reviewer is read",
+        verdict.anyCommentReportsFinishedReview(
+          [{ author: { login: REVIEWER }, body: "reviewed 69e93a81d4" }],
+          HEAD, isReviewer) === true);
+  check("an empty head is never satisfied, so a missing sha cannot read as reviewed",
+        verdict.commentReportsFinishedReview("reviewed 69e93a81d4", "") === false);
 }
 
 module.exports = { run: run };

@@ -515,14 +515,14 @@ async function runVerify() {
   check("M18: metadata past its expiry is refused, which is the freeze-attack check",
     code(function () { pki.tuf.checkExpiry(stale, NOW); }) === "tuf/expired");
 
-  /* `expires` is read off the CALLER's object, and an accessor answers every read separately. It was read
-     three times: the type check, the value compared, and the error message. A getter could therefore pass
-     the type check with a date string, hand the comparison a FUTURE date, and have `checkExpiry` return
-     true for metadata whose real expiry is in the past. Expiry is the freeze-attack check, so a verdict of
-     true on an expired document is the whole defense answering the wrong question. */
+  /* The expiry is read off the CALLER's object, and an accessor answers every read separately. A getter
+     could pass the type check with a date string, hand the comparison a FUTURE date, and have
+     `checkExpiry` return true for metadata whose real expiry is in the past. Expiry is the
+     freeze-attack check, so a verdict of true on an expired document is the whole defense answering the
+     wrong question. The value read is the signed body's, so that is where the accessor goes. */
   var expReads = 0;
-  var sneakyExp = { type: "root", specVersion: SPEC, version: 1 };
-  Object.defineProperty(sneakyExp, "expires", {
+  var sneakyBody = { _type: "root", spec_version: SPEC, version: 1 };
+  Object.defineProperty(sneakyBody, "expires", {
     enumerable: true,
     get: function () {
       expReads += 1;
@@ -531,15 +531,35 @@ async function runVerify() {
     },
   });
   var expiryVerdict = "NO-THROW";
-  try { pki.tuf.checkExpiry(sneakyExp, NOW); } catch (e) { expiryVerdict = (e && e.code) || "NO-CODE"; }
-  check("M18a: an accessor-backed expires cannot pass the type check as one date and be compared as " +
-    "another (" + expReads + " read(s), " + expiryVerdict + ")",
-    expReads <= 1 && expiryVerdict === "tuf/expired");
-  /* CONTROL: a plain object with the same expired date is still refused, and an unexpired one still
-     passes, so reading it once did not change either verdict. */
-  check("M18b: CONTROL a plain expired object is still refused and an unexpired one still passes",
-    code(function () { pki.tuf.checkExpiry({ type: "root", specVersion: SPEC, expires: "2026-01-01T00:00:00Z" }, NOW); }) === "tuf/expired" &&
-    pki.tuf.checkExpiry({ type: "root", specVersion: SPEC, expires: "2099-01-01T00:00:00Z" }, NOW) === true);
+  try { pki.tuf.checkExpiry({ signed: sneakyBody }, NOW); }
+  catch (e) { expiryVerdict = (e && e.code) || "NO-CODE"; }
+  check("M18a: an accessor-backed expiry cannot validate as one date and be compared as another (" +
+    expReads + " read(s), " + expiryVerdict + ")",
+    expReads <= 1 && (expiryVerdict === "tuf/expired" || expiryVerdict === "tuf/bad-input"));
+  /* CONTROL: a plain body with the same expired date is still refused, and an unexpired one still
+     passes, so holding the field to one read did not change either verdict. */
+  function bodyExpiring(when) {
+    return { signed: { _type: "root", spec_version: SPEC, version: 1, expires: when } };
+  }
+  check("M18b: CONTROL a plain expired body is still refused and an unexpired one still passes",
+    code(function () { pki.tuf.checkExpiry(bodyExpiring("2026-01-01T00:00:00Z"), NOW); }) === "tuf/expired" &&
+    pki.tuf.checkExpiry(bodyExpiring("2099-01-01T00:00:00Z"), NOW) === true);
+  /* And the copy beside the body may not contradict it, in either direction: the verb answers about
+     the document the signature covers, so a copy that disagrees is a caller describing another one. */
+  check("M18b1: a stated expires that contradicts the body is refused rather than preferred",
+    code(function () {
+      var m = bodyExpiring("2026-01-01T00:00:00Z"); m.expires = "2099-01-01T00:00:00Z";
+      return pki.tuf.checkExpiry(m, NOW);
+    }) === "tuf/bad-input" &&
+    code(function () {
+      var m = bodyExpiring("2099-01-01T00:00:00Z"); m.expires = "2026-01-01T00:00:00Z";
+      return pki.tuf.checkExpiry(m, NOW);
+    }) === "tuf/bad-input");
+  check("M18b2: CONTROL a copy that agrees with the body is read as before",
+    (function () {
+      var m = bodyExpiring("2099-01-01T00:00:00Z"); m.expires = "2099-01-01T00:00:00Z";
+      return pki.tuf.checkExpiry(m, NOW);
+    })() === true);
 
   /* `keyId` validates `keytype`, `scheme` and `keyval`, then hashes the key through `canonicalJson`,
      which reads every field AGAIN. The identifier is the identity a role's `keyids` list matches against,
@@ -582,13 +602,52 @@ async function runVerify() {
     laterMinor = laterMinor && parseRole(ROLES[ri], "1.9.7") === "NO-THROW";
     otherMajor = otherMajor && parseRole(ROLES[ri], "2.0.0") === "tuf/unsupported-spec-version";
     absent = absent && parseRole(ROLES[ri], null) === "tuf/bad-metadata";
-    notSemver = notSemver && parseRole(ROLES[ri], "one point oh") === "tuf/unsupported-spec-version";
+    notSemver = notSemver && parseRole(ROLES[ri], "one point oh") === "tuf/bad-metadata";
   }
   check("M19a: CONTROL every role naming this build's major version parses", controlOk);
   check("M19b: and a later 1.x minor parses too, the match being the major version", laterMinor);
   check("M19c: every role naming another major version is refused, not only root", otherMajor);
   check("M19d: a document naming no spec_version is refused for every role, TAP 6 requiring it", absent);
-  check("M19e: and a spec_version that is not a semantic version is refused for every role", notSemver);
+  check("M19e: and a spec_version that is not a semantic version is malformed for every role", notSemver);
+  /* "A string that contains the version number of the TUF specification. Its format follows the
+     Semantic Versioning 2.0.0 (semver) specification" (specification sec. 4.3). So the WHOLE string is
+     a semver value, and reading the leading major alone accepted a field that is not one: "1.", "1.foo"
+     and "1.0.0oops" each parsed as supported 1.x metadata. A value that is not semver is malformed
+     rather than a version this build does not implement, so it draws the malformed code and only a
+     well-formed version with another major draws the unsupported one. */
+  var MALFORMED = ["1.", "1.0", "1.foo", "1.0.0oops", "1.0.x", "01.0.0", "1.00.0", "1.0.0-", "1.0.0+",
+    "1.0.0-rc..1", "1.0.0-01", "v1.0.0", " 1.0.0", "1.0.0 ", "", "1.0.0.0"];
+  var malformedAll = true, malformedSaw = [];
+  for (var mi = 0; mi < MALFORMED.length; mi++) {
+    var got = parseRole("targets", MALFORMED[mi]);
+    if (got !== "tuf/bad-metadata") { malformedAll = false; malformedSaw.push(MALFORMED[mi] + "->" + got); }
+  }
+  check("M19s: a spec_version that is not a semver 2.0.0 value is malformed, not an unsupported " +
+    "version (" + (malformedSaw.length ? malformedSaw.join(", ") : "all refused") + ")", malformedAll);
+  /* CONTROL: the forms semver DOES admit are still read, so the rule is about well-formedness rather
+     than about rejecting anything unusual. A build identifier may carry leading zeros where a
+     pre-release identifier may not, which is the one asymmetry in the grammar. */
+  var SEMVER_OK = ["1.0.0", "1.0.31", "1.9.7", "1.0.0-rc.1", "1.0.0-alpha", "1.0.0-alpha.1",
+    "1.0.0+build.5", "1.0.0-rc.1+build.007", "1.2.3+0010", "1.0.0-0a"];
+  var okAll = true, okSaw = [];
+  for (var oi = 0; oi < SEMVER_OK.length; oi++) {
+    var g2 = parseRole("targets", SEMVER_OK[oi]);
+    if (g2 !== "NO-THROW") { okAll = false; okSaw.push(SEMVER_OK[oi] + "->" + g2); }
+  }
+  check("M19t: CONTROL every well-formed 1.x semver value is read, pre-release and build included (" +
+    (okSaw.length ? okSaw.join(", ") : "all accepted") + ")", okAll);
+  check("M19u: and a well-formed version with another major is still the unsupported-version refusal",
+    parseRole("targets", "2.0.0") === "tuf/unsupported-spec-version" &&
+    parseRole("targets", "0.9.9") === "tuf/unsupported-spec-version" &&
+    parseRole("targets", "10.0.0") === "tuf/unsupported-spec-version");
+  /* A major version of any width is still a VERSION, so it draws the unsupported code rather than the
+     malformed one. Converting the major to a number needed a digit cap to stay exact, and the cap
+     answered "malformed" for a conforming document: the comparison is made on the digits instead, where
+     a numeric identifier carries no leading zeros and so has one spelling per value. */
+  check("M19v: a major version wider than a Number holds exactly is unsupported, not malformed",
+    parseRole("targets", "1000000.0.0") === "tuf/unsupported-spec-version" &&
+    parseRole("targets", "99999999999999999999.0.0") === "tuf/unsupported-spec-version" &&
+    parseRole("targets", "1.99999999999999999999.0") === "NO-THROW");
   /* The rule is at the door, so no later verb can be handed a document written to another major
      version: there is no parsed object to pass on. */
   var reached;
@@ -716,6 +775,135 @@ async function runVerify() {
   var liveGot = await livePending;
   check("M19q: a mutation after the call cannot change the document the verdict was about",
     liveGot.verified === true);
+  /* The equal-length swap above is the hard case; a mismatch of LENGTH is the ordinary one, and the
+     comparison has to answer it rather than throw an untyped error from a constant-time primitive
+     handed two sizes. */
+  var longer = pki.tuf.parseMetadata(metadataFor(specA, [a]));
+  var longerGot;
+  try {
+    longerGot = await pki.tuf.verifySignatures({
+      metadata: { type: longer.type, specVersion: longer.specVersion, version: longer.version,
+        expires: longer.expires, signed: longer.signed, signatures: longer.signatures,
+        signedBytes: Buffer.concat([longer.signedBytes, Buffer.from("X")]) },
+      keys: specA.keys, role: specA.roles.root });
+    longerGot = "verified=" + longerGot.verified;
+  } catch (e) { longerGot = (e && e.isPkiError === true) ? e.code : "UNTYPED:" + ((e && e.message) || e); }
+  check("M19r: signedBytes of a different length is a typed refusal, not an untyped throw (" +
+    longerGot + ")",
+    longerGot === "tuf/bad-input");
+
+  /* The freeze-attack check and the signature check have to be about ONE document. `expires` sits
+     beside the signed body as a convenience copy, and the signature covers `signed.expires`, so an
+     object carrying one of each had `verifySignatures` answer about the signed document while
+     `checkExpiry` answered about the copy. Measured: metadata correctly signed with an expiry in 2020,
+     with only the top-level `expires` moved to 2099, verified AND passed the expiry check at a 2026
+     instant, which is the whole defense reporting on a date the document does not carry. */
+  var lapsed = rootSigned({ signers: [a], version: 1, expires: "2020-01-01T00:00:00Z" });
+  var lapsedMeta = pki.tuf.parseMetadata(metadataFor(lapsed, [a]));
+  var stillVerifies = await pki.tuf.verifySignatures({ metadata: lapsedMeta, keys: lapsed.keys,
+    role: lapsed.roles.root });
+  check("M19w: CONTROL the lapsed document is correctly signed, so the expiry is the only thing wrong",
+    stillVerifies.verified === true);
+  check("M19x: CONTROL and its expiry is refused as it stands",
+    code(function () { pki.tuf.checkExpiry(lapsedMeta, NOW); }) === "tuf/expired");
+  lapsedMeta.expires = "2099-01-01T00:00:00Z";
+  check("M19y: moving the convenience copy of expires cannot pass the freeze-attack check (" +
+    code(function () { pki.tuf.checkExpiry(lapsedMeta, NOW); }) + ")",
+    code(function () { pki.tuf.checkExpiry(lapsedMeta, NOW) ; }) !== "NO-THROW");
+
+  /* The BODY is the authority, so it is copied before anything else on the object is read. Every other
+     read is a chance for caller code to run: a getter on `signedBytes` fired while the body was still
+     the caller's could set it to a supported version for the duration of the copy, and a getter on
+     `specVersion` could put the unsupported one back, leaving an object that declares 2.0.31 before and
+     after a `verified: true` about a document it never carried. The order is what closes it, which is
+     the same rule the note verifier follows for its subject. */
+  var steered = pki.tuf.parseMetadata(metadataFor(specA, [a]));
+  var heldBytes = steered.signedBytes;
+  steered.signed.spec_version = "2.0.31";
+  Object.defineProperty(steered, "signedBytes", {
+    enumerable: true,
+    get: function () { steered.signed.spec_version = "1.0.31"; return heldBytes; },
+  });
+  Object.defineProperty(steered, "specVersion", {
+    enumerable: true,
+    get: function () { steered.signed.spec_version = "2.0.31"; return "1.0.31"; },
+  });
+  var steeredGot;
+  try {
+    steeredGot = await pki.tuf.verifySignatures({ metadata: steered, keys: specA.keys,
+      role: specA.roles.root });
+    steeredGot = "verified=" + steeredGot.verified;
+  } catch (e) { steeredGot = (e && e.code) || "NO-CODE"; }
+  check("M19z: a getter cannot swap the body's version in for the duration of the copy (" +
+    steeredGot + ", body now " + steered.signed.spec_version + ")",
+    steeredGot === "tuf/bad-input");
+  /* Ordering the reads only moves the lever to whichever field is read first, and the field read
+     first IS the subject: a getter on `signed` that returns a body it has just restored hands over a
+     document the object does not otherwise carry, and no read order defends against that. So no field
+     of the object may be an accessor at all. Every field either verb reads is held to it, on both,
+     and a conforming caller is unaffected because a parsed document carries plain values. */
+  var FIELDS = ["signed", "signedBytes", "specVersion", "expires", "type", "version", "signatures"];
+  var accessorRefused = [], accessorMissed = [];
+  for (var fi = 0; fi < FIELDS.length; fi++) {
+    var field = FIELDS[fi];
+    var victim = pki.tuf.parseMetadata(metadataFor(specA, [a]));
+    var held = victim[field];
+    Object.defineProperty(victim, field, { enumerable: true, configurable: true,
+      get: (function (v) { return function () { return v; }; })(held) });
+    var vGot = await codeAsync(pki.tuf.verifySignatures({ metadata: victim, keys: specA.keys,
+      role: specA.roles.root }));
+    var eGot = code(function () { pki.tuf.checkExpiry(victim, NOW); });
+    if (vGot === "tuf/bad-input" && eGot === "tuf/bad-input") accessorRefused.push(field);
+    else accessorMissed.push(field + " -> verify " + vGot + ", expiry " + eGot);
+  }
+  check("M19aa: an accessor on any field either verb reads is refused, on both (" +
+    (accessorMissed.length ? accessorMissed.join(" | ") : accessorRefused.length + " field(s)") + ")",
+    accessorMissed.length === 0 && accessorRefused.length === FIELDS.length);
+  /* CONTROL: the same objects with plain values still verify and still pass the expiry check, so the
+     refusal is about the accessor rather than about anything else these fixtures carry. */
+  var plain = pki.tuf.parseMetadata(metadataFor(specA, [a]));
+  check("M19ab: CONTROL a plain parsed document is unaffected by the refusal",
+    (await pki.tuf.verifySignatures({ metadata: plain, keys: specA.keys,
+      role: specA.roles.root })).verified === true &&
+    pki.tuf.checkExpiry(plain, NOW) === true);
+  /* A Proxy answers from a trap rather than from a descriptor, so a field check cannot see it: one
+     handing over a supported body when asked, while carrying an unsupported one otherwise, had both
+     verbs answer positively about a document the object never held. The object has to be a plain
+     record, which is the refusal the rest of the toolkit already applies to a caller record. */
+  var badBody = { _type: "root", spec_version: "2.0.31", version: 1, expires: "2020-01-01T00:00:00Z",
+    keys: specA.keys, roles: specA.roles };
+  var target = pki.tuf.parseMetadata(metadataFor(specA, [a]));
+  var goodBody = target.signed;
+  target.signed = badBody;
+  var masked = new Proxy(target, {
+    get: function (t, k, recv) { return k === "signed" ? goodBody : Reflect.get(t, k, recv); },
+  });
+  var proxyVerify = await codeAsync(pki.tuf.verifySignatures({ metadata: masked, keys: specA.keys,
+    role: specA.roles.root }));
+  var proxyExpiry = code(function () { pki.tuf.checkExpiry(masked, NOW); });
+  check("M19ac: a Proxy metadata object is refused rather than answered (" + proxyVerify + ", " +
+    proxyExpiry + ")",
+    proxyVerify === "tuf/bad-input" && proxyExpiry === "tuf/bad-input");
+  /* The signature records are caller objects too, and their fields are read inside the loop that
+     verifies: a getter on `sig` runs there and could change the carried document while verification is
+     still resolving. Each record is held to being a plain object with plain fields. */
+  var sigGetter = pki.tuf.parseMetadata(metadataFor(specA, [a]));
+  var heldSig = sigGetter.signatures[0].sig;
+  Object.defineProperty(sigGetter.signatures[0], "sig", {
+    enumerable: true, configurable: true,
+    get: function () { sigGetter.signed.spec_version = "2.0.31"; return heldSig; },
+  });
+  check("M19ad: an accessor on a signature record's own field is refused",
+    await codeAsync(pki.tuf.verifySignatures({ metadata: sigGetter, keys: specA.keys,
+      role: specA.roles.root })) === "tuf/bad-metadata");
+  check("M19ae: and a signature record that is a Proxy is refused as well",
+    await codeAsync(pki.tuf.verifySignatures({
+      metadata: (function () {
+        var m = pki.tuf.parseMetadata(metadataFor(specA, [a]));
+        m.signatures[0] = new Proxy(m.signatures[0], { get: function (t, k, rc) { return Reflect.get(t, k, rc); } });
+        return m;
+      })(),
+      keys: specA.keys, role: specA.roles.root })) === "tuf/bad-metadata");
 }
 
 // ---------------------------------------------------------------------------
@@ -762,8 +950,13 @@ async function runRootChain() {
     await adopt("2.0.0") === "tuf/unsupported-spec-version");
   check("T3d: a candidate naming no spec_version at all is refused, TAP 6 requiring the field",
     await adopt(null) === "tuf/bad-metadata");
-  check("T3e: and a spec_version that is not a semantic version is refused",
-    await adopt("one point oh") === "tuf/unsupported-spec-version");
+  /* A value that is not a semantic version is MALFORMED rather than a version this build does not
+     implement: the specification sec. 4.3 states the field's format as "the Semantic Versioning 2.0.0
+     (semver) specification", so a field that is not one states no version to match at all. */
+  check("T3e: and a spec_version that is not a semantic version is malformed",
+    await adopt("one point oh") === "tuf/bad-metadata" &&
+    await adopt("1.") === "tuf/bad-metadata" &&
+    await adopt("1.0.0oops") === "tuf/bad-metadata");
   /* The trusted root is a separate route into the same rule: it is the caller's own anchor rather than
      a document fetched from the repository, and a chain anchored in a root this build cannot read is
      walked under rules that root does not state. */
