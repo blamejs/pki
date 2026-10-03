@@ -47,6 +47,9 @@ wrapper, which does not support JavaScript targets.
 | `cmc-parse.fuzz.js`        | `pki.schema.cmc.parse`                                |
 | `smime-parse.fuzz.js`      | `pki.schema.smime` (RFC 5035 ESS + RFC 8551 SMIMECapabilities) |
 | `pkix-ext-parse.fuzz.js`   | the RFC 5280 §4.2.1 extension-value decoders          |
+| `related-cert.fuzz.js`     | RFC 9763: the `relatedCertificate` extension value, the `relatedCertRequest` attribute value, and the `pki.relatedCert` verbs over both |
+| `possession.fuzz.js`       | RFC 9883: `pki.possession.parse` over a statement and each half of one, the PKCS#10 attribute and the CRMF control through their parsers, and `pki.possession.verifyRequest`. The statement carries a whole Certificate and is compared against it, so a malformed certificate inside a well-formed wrapper is the shape that reaches furthest |
+| `alt-sig.fuzz.js`          | ITU-T X.509 (2019) clause 9.8: the three alternative-signature extension values, and `pki.altSig.signedData` / `verify` / `subjectAltPublicKey` over a certificate and a CRL. `signedData` rebuilds a structure from original byte ranges, so the harness hands it whole structures as well as extension values |
 
 ### Verifiers
 

@@ -11,16 +11,27 @@
  * installs such an accessor while the verification is pending, and asserts the caller receives the
  * object the verb built, still reporting what it computed.
  *
- * This states the rule once for the whole closed set. A verb added without the guard fails here,
- * not in the suite of whichever module happens to notice.
+ * This states the rule once for every verb a vector here drives, rather than in the suite of
+ * whichever module happens to notice. Completeness across the tree is a separate mechanism: the
+ * `unshielded-verdict-literal` detector in codebase-patterns reads the construction sites and fires
+ * on a verdict literal returned without the guard anywhere in `lib/`, including in a module that
+ * does not exist yet.
  */
 
+var crypto = require("node:crypto");
 var helpers = require("../helpers");
 var pki = helpers.pki;
 var check = helpers.check;
 var makeSigner = require("../helpers/signing").makeSigner;
 
 var hasOwn = Object.prototype.hasOwnProperty;
+
+// A row inside a verdict is a verdict: a caller that awaits one crosses the same resolution, and
+// the sentinel is what ends the lookup there too.
+function ownsThen(label, value) {
+  check(label + ": owns then, so the prototype's is never reached",
+    value !== null && typeof value === "object" && hasOwn.call(value, "then") && value.then === undefined);
+}
 
 // Install a `then` getter that rewrites the decision, resolve the pending verdict through it, and
 // report whether the caller got the verb's own object back unchanged.
@@ -88,6 +99,43 @@ async function testPath() {
   }, { key: rootKey.key, cert: rootDer });
   await survives("pki.path.validate", pki.path.validate([leaf], { time: at, trustAnchors: anchor }), "valid", true);
   await survives("pki.path.build", pki.path.build(leaf, { time: at, trustAnchors: [anchor] }), "valid", true);
+
+  // The per-certificate results and the per-check rows inside them are appended from some thirty
+  // places, two of them after the result itself is recorded, so the rows are asserted as well as
+  // the verdict that carries them.
+  var v = await pki.path.validate([leaf], { time: at, trustAnchors: anchor });
+  check("pki.path.validate reports a result per certificate with checks on it",
+    v.results.length === 1 && v.results[0].checks.length > 0);
+  for (var r = 0; r < v.results.length; r++) {
+    ownsThen("pki.path.validate results[" + r + "]", v.results[r]);
+    for (var c = 0; c < v.results[r].checks.length; c++) {
+      ownsThen("pki.path.validate results[" + r + "].checks[" + c + "]", v.results[r].checks[c]);
+    }
+  }
+}
+
+async function testTlog() {
+  var s = makeSigner("ed25519");
+  var raw = pki.asn1.read.bitString(pki.asn1.decode(s.spki).children[1]).bytes;
+  var name = "shield.example/log";
+  var text = name + "\n5\n" + Buffer.alloc(32, 0x11).toString("base64") + "\n";
+  var sig = crypto.sign(null, Buffer.from(text, "utf8"), s.keyObject);
+  var note = text + "\n" + String.fromCharCode(0x2014) + " " + name + " " +
+    Buffer.concat([pki.tlog.keyId(name, raw), sig]).toString("base64") + "\n";
+  var keys = [{ name: name, publicKey: raw }];
+  await survives("pki.tlog.verifyNote", pki.tlog.verifyNote(note, keys), "verified", true);
+  await survives("pki.tlog.verifyCheckpoint", pki.tlog.verifyCheckpoint(note, keys), "verified", true);
+}
+
+// A verb that answers synchronously is held to the same rule: a caller awaiting its result crosses
+// the resolution, and which verbs are asynchronous is not something a caller has to track.
+function testSyncResults() {
+  // CONTROL: an object literal of the same shape does NOT own `then`, so the assertions below
+  // discriminate the guard's work from the shape of the value.
+  check("CONTROL a bare object of the same shape owns no then",
+    !hasOwn.call({ status: "valid", contentType: "" }, "then"));
+  ownsThen("pki.est.classifyResponse", pki.est.classifyResponse(200, {}, Buffer.alloc(0)));
+  ownsThen("pki.jose.parseJson", pki.jose.parseJson("{\"status\":\"valid\"}"));
 }
 
 async function testAttrcert() {
@@ -124,6 +172,8 @@ async function run() {
   await testPath();
   await testAttrcert();
   await testCmp();
+  await testTlog();
+  testSyncResults();
   console.log("CHECKS " + helpers.getChecks());
 }
 

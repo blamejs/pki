@@ -173,6 +173,82 @@ function run() {
   testPromotedHostReaders();
   testUriParts();
   testUriEqual();
+  testDnsNameEqual();
+  testGeneralNameEqual();
+}
+
+// A dNSName is compared case-insensitively (RFC 4343), and only within ASCII: a value carrying a byte
+// above 0x7f is not the RFC 5280 sec. 4.2.1.6 preferred name syntax, so it is "not-comparable" rather than
+// compared as written. Folding outside ASCII would collapse separately registrable names into one.
+function testDnsNameEqual() {
+  var eq = name.dnsNameEqual;
+  check("dNSName: identical names match", eq("example.com", "example.com") === "match");
+  check("dNSName: case alone does not make two hosts", eq("EXAMPLE.com", "example.COM") === "match");
+  check("dNSName: a different label is a different host", eq("a.example.com", "b.example.com") === "no-match");
+  // The decoder carries a trailing dot through as written and no lint row reports one, so the two values
+  // do reach a comparison. This one does not fold the dot away: it compares what the two artifacts encode,
+  // and folding would report a match the bytes do not support. Where a caller's policy reads the dot as
+  // insignificant it has the two values and decides, which is what RFC 9883 sec. 3 asks of it.
+  check("dNSName: a trailing dot is a different encoded value and is not folded away",
+    eq("example.com.", "example.com") === "no-match");
+  // U+212A KELVIN SIGN lower-cases onto ASCII "k" under toLowerCase, so a fold reaching outside A-Z
+  // would read two separately registrable names as one.
+  var kelvin = "ban" + String.fromCharCode(0x212a) + ".com";
+  check("dNSName: a Unicode letter folding onto ASCII is not comparable, never a collision",
+    eq(kelvin, "bank.com") === "not-comparable");
+  check("dNSName: a non-string is not comparable, never a throw", eq(null, "example.com") === "not-comparable");
+  check("dNSName: an empty value is not comparable", eq("", "example.com") === "not-comparable");
+}
+
+// One GeneralName compared to another, each form under its own rule. The arms reachable through a built
+// certificate are driven end-to-end in possession.test.js; these pin the ones a builder cannot produce --
+// a form with no rule of its own, a malformed value, and a tag the builder does not emit.
+function testGeneralNameEqual() {
+  function gn(tagNumber, value, bytes) {
+    return { tagClass: "context", tagNumber: tagNumber, value: value, bytes: bytes };
+  }
+  function eq(a, b) { return name.generalNameEqual(a, b, E, "x/n", "a name"); }
+
+  check("two forms never match, whatever they render to",
+    eq(gn(2, "example.com"), gn(6, "example.com")) === "no-match");
+  check("a non-object is not comparable, never a throw", eq(null, gn(2, "a.example")) === "not-comparable");
+
+  // tag 8 registeredID: an OID string, exact. The builder emits no registeredID, so this arm is
+  // reachable only here, and a decoder that gains the form must not fall through to a byte compare.
+  check("registeredID: the same OID matches", eq(gn(8, "2.5.4.3"), gn(8, "2.5.4.3")) === "match");
+  check("registeredID: a different OID does not", eq(gn(8, "2.5.4.3"), gn(8, "2.5.4.10")) === "no-match");
+
+  // tag 7 iPAddress: bytes, and a value that is not bytes is not comparable rather than equal.
+  var ip1 = Buffer.from([192, 0, 2, 1]), ip2 = Buffer.from([192, 0, 2, 2]);
+  check("iPAddress: equal bytes match", eq(gn(7, Buffer.from(ip1)), gn(7, Buffer.from(ip1))) === "match");
+  check("iPAddress: different bytes do not", eq(gn(7, ip1), gn(7, ip2)) === "no-match");
+  check("iPAddress: a value that is not bytes is not comparable",
+    eq(gn(7, "192.0.2.1"), gn(7, ip1)) === "not-comparable");
+
+  // tag 4 directoryName: the sec. 7.1 comparison, and an entry carrying no rdns array is not a
+  // directoryName this can compare. Returning "no-match" there would report a verdict it never reached.
+  check("directoryName: equal names match under the canonical comparison",
+    eq(gn(4, { rdns: [rdn(CN, "Root CA")] }), gn(4, { rdns: [rdn(CN, "root  ca")] })) === "match");
+  check("directoryName: different names do not",
+    eq(gn(4, { rdns: [rdn(CN, "Root")] }), gn(4, { rdns: [rdn(CN, "Other")] })) === "no-match");
+  check("directoryName: an entry carrying no rdns array is not comparable",
+    eq(gn(4, { dn: "CN=Root" }), gn(4, { rdns: [rdn(CN, "Root")] })) === "not-comparable");
+
+  // A form with no comparison rule of its own falls back to its encoded bytes, which is the only
+  // verdict available without knowing the form's semantics. It must not read `value` instead: two
+  // otherName entries of one typeId and different values would then compare as equal.
+  var b1 = Buffer.from([0xa0, 0x03, 0x0c, 0x01, 0x78]);
+  var b2 = Buffer.from([0xa0, 0x03, 0x0c, 0x01, 0x58]);
+  var sameValue = { typeId: "2.5.4.3", valueBytes: Buffer.from([0x0c, 0x01, 0x78]) };
+  check("otherName: equal encoded bytes match", eq(gn(0, sameValue, b1), gn(0, sameValue, Buffer.from(b1))) === "match");
+  check("otherName: different encoded bytes do not, though both carry one typeId",
+    eq(gn(0, sameValue, b1), gn(0, sameValue, b2)) === "no-match");
+  check("otherName: an entry carrying no bytes is not comparable",
+    eq(gn(0, sameValue, undefined), gn(0, sameValue, b1)) === "not-comparable");
+  // A tag nothing has a rule for behaves the same way, so a form added to the decoder later is
+  // compared by its bytes rather than silently by a rendering.
+  check("a tag with no rule of its own compares by its bytes",
+    eq(gn(5, undefined, b1), gn(5, undefined, Buffer.from(b1))) === "match");
 }
 
 // The host-label readers and the A-label scanner, read here rather than restated by each

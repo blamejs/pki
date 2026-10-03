@@ -295,6 +295,35 @@ function run() {
   check("10. every decode fault is a typed TlsError with a tls/* code", faults.every(function (f) {
     try { f(); return false; } catch (e) { return e instanceof pki.errors.TlsError && /^tls\//.test(e.code); }
   }));
+
+  // The message is taken before the options are read. `compressCertificate` reads `opts.algorithm`
+  // after it has looked at the certificate message, and reading an option is caller code when it is an
+  // accessor, so over a view of the message it would replace what gets compressed after the verb had
+  // accepted the message it was handed.
+  //
+  // The substitute has to be a WELL-FRAMED message of the same length. Filling the buffer with one byte
+  // is refused by the framing check that runs after the accessor, which would look like the window being
+  // closed when it is only that garbage is caught: the question is whether a message the framing check
+  // ACCEPTS can be swapped in.
+  var msgA = certMessage([Buffer.alloc(900, 0x41)]);
+  var msgB = certMessage([Buffer.alloc(900, 0x43)]);
+  check("11.0 CONTROL the two messages are the same length and both decode",
+    msgA.length === msgB.length &&
+    pki.tls.decompressCertificate(pki.tls.compressCertificate(msgA, { algorithm: "zlib" }))
+      .certificateMessage.equals(msgA) &&
+    pki.tls.decompressCertificate(pki.tls.compressCertificate(msgB, { algorithm: "zlib" }))
+      .certificateMessage.equals(msgB));
+  var live = Buffer.from(msgA);
+  var optReads = 0;
+  var hostile = {};
+  Object.defineProperty(hostile, "algorithm", {
+    get: function () { optReads += 1; msgB.copy(live); return "zlib"; },
+    enumerable: true, configurable: true,
+  });
+  var compressed = pki.tls.compressCertificate(live, hostile);
+  check("11.1 CONTROL the option accessor ran during the call", optReads > 0);
+  check("11.2 the message compressed is the one handed over, not what the accessor substituted",
+    pki.tls.decompressCertificate(compressed).certificateMessage.equals(msgA));
 }
 
 module.exports = { run: run };

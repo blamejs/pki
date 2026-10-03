@@ -444,6 +444,35 @@ async function testABadSignatureIsRefusedEverywhere() {
     accepted.length === 0);
 }
 
+/* The callback is handed a copy in an allocation of its own, written with the captured typed-array
+   `set`. Read off the instance that copy dispatches through `Uint8Array.prototype`, so a replacement
+   there writes different bytes into the allocation and the signer signs a message this toolkit never
+   assembled, while the certificate that goes out carries the real one. */
+async function testPreimageSurvivesAReplacedTypedArraySet() {
+  var e = await ed25519Signer();
+  var realSet = Uint8Array.prototype.set;
+  var der, live;
+  try {
+    Object.defineProperty(Uint8Array.prototype, "set", {
+      value: function () { for (var i = 0; i < this.length; i++) this[i] = 0; },
+      writable: true, configurable: true,
+    });
+    // CONTROL, inside the window: a copy through the instance method now writes zeros.
+    var probe = new Uint8Array(4);
+    probe.set(new Uint8Array([1, 2, 3, 4]));
+    live = probe[0] === 0 && probe[3] === 0;
+    der = await pki.x509.sign({ serialNumber: 7n, subject: "preimage.example", subjectPublicKey: e.spki,
+      notBefore: NOT_BEFORE, notAfter: NOT_AFTER }, { key: e.signer });
+  } finally {
+    Object.defineProperty(Uint8Array.prototype, "set", { value: realSet, writable: true, configurable: true });
+  }
+  check("a replaced typed-array set is live during the probe", live === true);
+  var tbs = pki.schema.x509.parse(der).tbsBytes;
+  check("the signer was handed the certificate's own tbsBytes, not what the replacement wrote",
+    e.signer.lastBytes !== null && Buffer.compare(e.signer.lastBytes, Buffer.from(tbs)) === 0 &&
+    e.signer.lastBytes.some(function (b) { return b !== 0; }));
+}
+
 async function run() {
   await testSignerSignsACertificate();
   await testDeclaredAlgorithmIsChecked();
@@ -453,6 +482,7 @@ async function run() {
   await testFormsTheSeamRefuses();
   await testEverySigningVerbTakesTheForm();
   await testABadSignatureIsRefusedEverywhere();
+  await testPreimageSurvivesAReplacedTypedArraySet();
 }
 
 module.exports = { run: run };

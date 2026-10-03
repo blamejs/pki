@@ -149,6 +149,32 @@ async function run() {
   var tamperHeader = rebuild([bk[0].bytes, ak[1].bytes, ak[2].bytes, ak[3].bytes]);
   var th = await pki.cmp.verify(tamperHeader, { signerCert: s.cert });
   check("5a. a swapped header (protection covers the original) -> cmp/protection-failed", th.valid === false && th.code === "cmp/protection-failed");
+  /* Fixing the options reads eleven members off the caller's object, and that read happens before the
+     message is coerced, because an argument expression runs before the call it is an argument to. An
+     accessor on any option would therefore run while the caller's message buffer is still the caller's
+     and could replace the message the verdict is about. What closes it is upstream: an options bag
+     carrying an accessor field is refused outright, before any value is read. This drives that, with a
+     getter that WOULD substitute the message so the vector fails loudly if the refusal is ever dropped
+     rather than passing on a technicality. */
+  var swapTarget = Buffer.from(tamperHeader);
+  var validBytes = Buffer.from(a);
+  var optGetterFired = false;
+  var substituteOpts = {};
+  Object.defineProperty(substituteOpts, "signerCert", {
+    enumerable: true,
+    get: function () {
+      if (!optGetterFired) { optGetterFired = true; validBytes.copy(swapTarget); }
+      return s.cert;
+    },
+  });
+  var subbed;
+  try { subbed = await pki.cmp.verify(swapTarget, substituteOpts); }
+  catch (e) { subbed = { valid: false, code: (e && e.code) || "NO-CODE" }; }
+  check("5a1. CONTROL the valid message and the swapped-header one are the same length, so one could replace the other",
+    swapTarget.length === validBytes.length);
+  check("5a2. an accessor-backed option is refused, so it never runs to substitute the message (" +
+    (optGetterFired ? "ran" : "never-read") + ", " + subbed.code + ")",
+    optGetterFired === false && subbed.valid === false && subbed.code === "cmp/bad-input");
   var aBody = await buildSig({}, IRBODY);
   var bBody = await buildSig({}, { ir: { certTemplate: { subject: [{ commonName: "OTHER" }], publicKey: s.spki } } });
   var abk = msgKids(aBody), bbk = msgKids(bBody);

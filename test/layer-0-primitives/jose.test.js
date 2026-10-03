@@ -97,6 +97,30 @@ async function testJws() {
     (await acode(function () { return pki.jose.verify(jws, Object.assign({}, OUTER, { key: otherJwk })); })) === "jose/key-mismatch");
   check("25d. ...and agreeing keys verify, naming opts.key as the one used",
     (await pki.jose.verify(jws, Object.assign({}, OUTER, { key: ecJwk }))).keySource === "opts.key");
+
+  /* The JWS is the CALLER's object, and the same rule the module already applies to `opts` applies to it:
+     a member reached through an accessor answers every read separately, so a field read more than once
+     need not answer the same twice. `protected` decides the header the profile rules are applied to AND
+     the signing input the signature is checked over; `signature` and `payload` likewise reach the
+     verification. Read repeatedly, the rules can be applied to one message and the signature checked over
+     another, and the verdict can describe a header that is not the one it verified.
+
+     The observable is the READ COUNT, not a swapped value: asserting "the verdict names the original url"
+     is satisfied both by a correct implementation and by one that verified the other message and reported
+     the first header, so it cannot tell them apart. Counting reads can. */
+  var counts = { protected: 0, signature: 0, payload: 0 };
+  var probe = {};
+  ["protected", "signature", "payload"].forEach(function (k) {
+    Object.defineProperty(probe, k, {
+      enumerable: true, get: function () { counts[k] += 1; return jws[k]; },
+    });
+  });
+  var probed = await pki.jose.verify(probe, Object.assign({}, OUTER, { key: ecJwk }));
+  check("25e. CONTROL the accessor-backed JWS still verifies, so the counts below are from a real run",
+    probed.header.url === "https://ca.example/o");
+  check("25f. each JWS member is read exactly once, so no accessor can answer two reads differently " +
+    "(protected " + counts.protected + ", signature " + counts.signature + ", payload " + counts.payload + ")",
+    counts.protected === 1 && counts.signature === 1 && counts.payload === 1);
   // Member order must not decide the outcome: the same key written differently still agrees.
   var reordered = { crv: ecJwk.crv, y: ecJwk.y, x: ecJwk.x, kty: ecJwk.kty };
   check("25e. ...compared canonically, so member order does not make an equal key disagree",
@@ -151,6 +175,58 @@ async function testJws() {
   var rsa = await subtle.generateKey({ name: "RSASSA-PKCS1-V1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]);
   var rsaJwk = await subtle.exportKey("jwk", rsa.publicKey);
   check("12. ES256/RSA-key confusion rejected", (await acode(function () { return pki.jose.verify(Object.assign({}, jws, { protected: pki.jose.base64url.encode(Buffer.from(JSON.stringify(outerHeader({ alg: "ES256", jwk: rsaJwk })))) }), OUTER); })) === "jose/bad-alg");
+  /* 12a. The SIGN side of the same confusion, through the caller's own options object. `opts.key` was read
+     four times: once to test it is key-like, twice by the check that binds the key's hash to the header's
+     `alg`, and once more to sign with. An accessor answers each read separately, so the check could see a
+     SHA-256 key and the signature be made by a SHA-512 one, and the emitted JWS then declares RS256 while
+     carrying a signature that was not made under it. The RSA arms are the exposure: the registry's fixed
+     signature widths catch the HMAC and EC arms, and two 2048-bit RSA keys produce the same 256-byte
+     signature, so the width pin cannot see the substitution.
+     `opts.key` is read once now, before the key-like test, and the check and the signing both read that. */
+  var sha256Key = await subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]);
+  var sha512Key = await subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-512" }, true, ["sign", "verify"]);
+  var keyReads = 0;
+  var swapKeyOpts = {
+    protected: { alg: "RS256", nonce: "AAAA", url: "https://ca.example/o",
+      kid: "https://ca.example/acct/1" },
+    payload: Buffer.from("{}"),
+  };
+  Object.defineProperty(swapKeyOpts, "key", {
+    enumerable: true,
+    get: function () { keyReads += 1; return keyReads >= 4 ? sha512Key.privateKey : sha256Key.privateKey; },
+  });
+  var swapOutcome = "NO-THROW";
+  var swapJws = null;
+  try { swapJws = await pki.jose.sign(swapKeyOpts, { profile: "acme-outer" }); }
+  catch (e) { swapOutcome = (e && e.code) || "NO-CODE"; }
+  /* If the substitution went through, the JWS says RS256 and its signature verifies under the SHA-512 key
+     and not under the SHA-256 one the check approved. That is what makes it algorithm confusion rather
+     than a mismatched-key error, so the vector asks the question that way. */
+  var signedByWrongKey = false;
+  if (swapJws !== null) {
+    var si = Buffer.from(swapJws.protected + "." + swapJws.payload, "ascii");
+    var sigBytes = Buffer.from(pki.jose.base64url.decode(swapJws.signature));
+    signedByWrongKey =
+      (await subtle.verify({ name: "RSASSA-PKCS1-v1_5" }, sha512Key.publicKey, sigBytes, si)) === true &&
+      (await subtle.verify({ name: "RSASSA-PKCS1-v1_5" }, sha256Key.publicKey, sigBytes, si)) === false;
+  }
+  check("12a. an accessor-backed opts.key cannot pass the hash-to-alg check as one key and sign with " +
+    "another (" + keyReads + " read(s), " + swapOutcome + ")",
+    keyReads <= 1 && signedByWrongKey === false);
+  /* CONTROL: an ordinary RS256 key still signs and the result verifies, and a key whose hash the
+     algorithm forbids is still refused, so reading the option once changed neither verdict. */
+  var honestRs = await pki.jose.sign({
+    protected: { alg: "RS256", nonce: "AAAA", url: "https://ca.example/o", kid: "https://ca.example/acct/1" },
+    payload: Buffer.from("{}"), key: sha256Key.privateKey,
+  }, { profile: "acme-outer" });
+  check("12b. CONTROL an RS256 key still signs, and a SHA-512 key under an RS256 header is still refused",
+    typeof honestRs.signature === "string" &&
+    (await acode(function () {
+      return pki.jose.sign({
+        protected: { alg: "RS256", nonce: "AAAA", url: "https://ca.example/o", kid: "https://ca.example/acct/1" },
+        payload: Buffer.from("{}"), key: sha512Key.privateKey,
+      }, { profile: "acme-outer" });
+    })) === "jose/bad-key");
   // 13/14. both jwk+kid / neither rejected.
   check("13. both jwk+kid rejected", (await acode(function () { return pki.jose.verify(Object.assign({}, jws, { protected: pki.jose.base64url.encode(Buffer.from(JSON.stringify(outerHeader({ jwk: ecJwk, kid: "https://ca.example/acct/1" })))) }), OUTER); })) === "jose/bad-header");
   check("14. neither jwk nor kid rejected", (await acode(function () { return pki.jose.verify(Object.assign({}, jws, { protected: pki.jose.base64url.encode(Buffer.from(JSON.stringify({ alg: "ES256", nonce: "AAAA", url: "https://ca.example/o" }))) }), OUTER); })) === "jose/bad-header");
@@ -185,6 +261,41 @@ async function testJws() {
     signature: pki.jose.base64url.encode(Buffer.concat([idPoint, Buffer.alloc(32)])),   // R=identity, S=0
   };
   check("28a. low-order OKP jwk rejected before verify", (await acode(function () { return pki.jose.verify(loJws, OUTER); })) === "jose/bad-key");
+  /* 28a-i. The gate above decides WHICH curve to validate the point against by reading `jwk.crv`, and the
+     caller's JWK is handed on to the import and to the algorithm selector unchanged, so `crv` was read
+     EIGHT times on a successful verify. An accessor answers each read separately, so the FIRST read, the
+     one the gate uses, can say Ed448 while the key that is imported and verified is Ed25519: the low-order
+     point check then runs against the wrong curve's parameters while the forged-signature protection it
+     exists for is what depends on it. Measured before the fix: `crv` answering Ed448 once and Ed25519
+     after VERIFIED.
+     The JWK is copied once at the door, so the gate, the import and the selector all read one value and a
+     divergent answer cannot reach past the copy. */
+  var crvReads = 0;
+  var swapCrv = {};
+  Object.keys(edJwk).forEach(function (k) {
+    Object.defineProperty(swapCrv, k, {
+      enumerable: true,
+      get: function () {
+        if (k !== "crv") return edJwk[k];
+        crvReads += 1;
+        return crvReads === 1 ? "Ed448" : edJwk.crv;
+      },
+    });
+  });
+  var swapCode = await acode(function () {
+    return pki.jose.verify(edJws, { profile: "acme-outer", key: swapCrv });
+  });
+  check("28a-i. an accessor-backed crv cannot pick the curve the point is gated against and then be " +
+    "imported as another (" + crvReads + " read(s), " + swapCode + ")",
+    crvReads <= 1 && swapCode !== "NO-THROW");
+  /* CONTROL: the honest JWK still verifies, so copying it did not break the ordinary path, and a jwk
+     carrying a genuinely wrong curve is still refused rather than coerced. */
+  check("28a-ii. CONTROL the honest EdDSA JWK still verifies, and a wrong curve is still refused",
+    (await pki.jose.verify(edJws, { profile: "acme-outer", key: edJwk })).header.alg === "EdDSA" &&
+    (await acode(function () {
+      return pki.jose.verify(edJws, { profile: "acme-outer",
+        key: { kty: "OKP", crv: "Ed448", x: edJwk.x } });
+    })) !== "NO-THROW");
   // 28b. an EdDSA kid-signed request (no embedded jwk) must still sign -- the curve
   // comes from the signing key, not the absent header jwk.
   var edKidJws = await pki.jose.sign({ protected: { alg: "EdDSA", nonce: "aGVsbG8", url: "https://ca.example/o", kid: "https://ca.example/acct/1" }, payload: Buffer.from("{}"), key: ed.privateKey });
@@ -250,6 +361,34 @@ async function testThumbprint() {
   var tpA = await pki.jose.thumbprint({ kty: "AKP", alg: "ML-DSA-65", pub: "AQID" });
   var tpB = await pki.jose.thumbprint({ kty: "AKP", alg: "ML-DSA-44", pub: "AQID" });
   check("38b. AKP thumbprint requires and includes alg", tpA !== tpB && (await acode(function () { return pki.jose.thumbprint({ kty: "AKP", pub: "AQID" }); })) === "jose/bad-key");
+  /* 38c. What this returns is an IDENTITY: RFC 7638 identifies a key by it, `pki.jose.verify` compares an
+     embedded jwk against `opts.key` with it, and ACME uses it as the account identity inside a key
+     authorization. Each member was read twice, the type check and then the value put into the hash, and
+     `kty` four times. An accessor answers each read separately, so a member could be CHECKED as one value
+     and HASHED as another, and the identifier returned would name a key that was never the one validated.
+     Measured before the fix: an `x` diverging after its first read produced a different thumbprint. */
+  var tpReads = 0;
+  var sneaky = {};
+  Object.keys(okpJwk).forEach(function (k) {
+    Object.defineProperty(sneaky, k, {
+      enumerable: true,
+      get: function () {
+        if (k !== "x") return okpJwk[k];
+        tpReads += 1;
+        return tpReads === 1 ? okpJwk.x : "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+      },
+    });
+  });
+  var sneakyTp = await acode(function () { return pki.jose.thumbprint(sneaky); });
+  check("38c. an accessor-backed member cannot be checked as one value and hashed as another (" +
+    tpReads + " read(s), " + sneakyTp + ")",
+    tpReads <= 1 && sneakyTp !== "NO-THROW");
+  /* CONTROL: the published known answers still hold, so copying the key did not change any identity the
+     RFCs fix. Both KATs are re-asserted here rather than trusted from above, because a copy that dropped
+     or reordered a member would still pass a self-comparison. */
+  check("38d. CONTROL both published thumbprint known answers still hold after the copy",
+    (await pki.jose.thumbprint(okpJwk)) === "kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k" &&
+    (await pki.jose.thumbprint(rsaJwk)) === "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs");
 }
 
 // ---- base64url codec (RFC 7515 sec. 2 / RFC 8555 sec. 6.1) -----------
@@ -280,6 +419,16 @@ function testJsonReader() {
   check("5a. duplicate top-level member rejected", code(function () { pki.jose.parseJson('{"a":1,"a":2}'); }) === "jose/duplicate-member");
   check("5b. duplicate nested member rejected", code(function () { pki.jose.parseJson('{"o":{"x":1,"x":2}}'); }) === "jose/duplicate-member");
   check("5c. distinct members parse", pki.jose.parseJson('{"a":1,"b":2}').b === 2);
+  /* The parse result carries the own `then` that ends the lookup promise resolution performs, and a
+     document that names `then` itself keeps the member it wrote: the sentinel is added, never
+     substituted for data. An ACME order document is read through this parser. */
+  var shielded = pki.jose.parseJson('{"status":"valid"}');
+  check("5c1. a parsed document owns a non-enumerable then",
+    Object.prototype.hasOwnProperty.call(shielded, "then") && shielded.then === undefined &&
+    Object.keys(shielded).join(",") === "status");
+  var carries = pki.jose.parseJson('{"then":42,"other":1}');
+  check("5c2. a document that names then keeps that member and round-trips",
+    carries.then === 42 && carries.other === 1 && JSON.stringify(carries) === '{"then":42,"other":1}');
   // A "__proto__" member must become an OWN property -- never mutate the returned
   // object's prototype (pollution) and never slip past the duplicate-member gate
   // (a primitive assignment to __proto__ creates no own property, so a naive
@@ -505,6 +654,72 @@ async function testOptionsReadOnce() {
   check("jose: opts.key is read exactly once", reads === 1);
 }
 
+// `pki.jose.sign` takes its payload and its key off ONE caller object, and it reads them in that order:
+// the payload first, then `opts.key`. Reading the key is caller code when it is an accessor, so over a
+// view of the payload it runs between the payload being looked at and being encoded, and replaces what
+// gets signed after the verb has accepted the payload it was handed. The JWS stays self-consistent, its
+// signature covering the payload it carries, which is why the check is against the ORIGINAL bytes and
+// not against the signature.
+//
+// The accessor is defined rather than written as a literal, because an object literal's getter would be
+// invoked by any copy the test itself made, firing before the verb was called and proving nothing.
+async function testPayloadIsTakenBeforeTheOptionsAreRead() {
+  var kp = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  var jwk = await subtle.exportKey("jwk", kp.publicKey);
+  var header = outerHeader({ jwk: jwk });
+  var original = Buffer.from("{\"a\":\"the original jose payload value\"}");
+
+  // CONTROL: a plain options object emits the payload it was given.
+  var plain = await pki.jose.sign({ protected: header, payload: Buffer.from(original), key: kp.privateKey });
+  check("PS1 CONTROL a plain options object emits the payload it was given",
+    Buffer.from(plain.payload, "base64url").equals(original));
+
+  var live = Buffer.from(original);
+  var reads = 0;
+  var hostile = { protected: header, payload: live };
+  Object.defineProperty(hostile, "key", {
+    get: function () { reads += 1; live.fill(0x42); return kp.privateKey; },
+    enumerable: true, configurable: true,
+  });
+  var jws = await pki.jose.sign(hostile);
+  check("PS2 CONTROL the key accessor ran during the call", reads > 0);
+  check("PS3 the signed payload is the one handed over, not what the key accessor substituted",
+    Buffer.from(jws.payload, "base64url").equals(original));
+
+  // `opts.protected` is read and serialized BEFORE the payload, so it is the EARLIER route, and closing
+  // the key route alone leaves it open. Serializing the header touches every field of it, so a getter on
+  // the header object, on one of its fields, or a `toJSON` on it, all run before the payload is taken.
+  var liveH = Buffer.from(original);
+  var headerReads = 0;
+  var hostileHeader = { protected: null, payload: liveH, key: kp.privateKey };
+  Object.defineProperty(hostileHeader, "protected", {
+    get: function () { headerReads += 1; liveH.fill(0x43); return header; },
+    enumerable: true, configurable: true,
+  });
+  var jws2 = await pki.jose.sign(hostileHeader);
+  check("PS5 CONTROL the protected-header accessor ran during the call", headerReads > 0);
+  check("PS6 the payload survives an accessor on opts.protected, which is read before it",
+    Buffer.from(jws2.payload, "base64url").equals(original));
+
+  // The same through a field of the header, which JSON serialization reaches.
+  var liveF = Buffer.from(original);
+  var fieldReads = 0;
+  var hdrWithGetter = { alg: header.alg, nonce: header.nonce, url: header.url };
+  Object.defineProperty(hdrWithGetter, "jwk", {
+    get: function () { fieldReads += 1; liveF.fill(0x44); return jwk; },
+    enumerable: true, configurable: true,
+  });
+  var jws3 = await pki.jose.sign({ protected: hdrWithGetter, payload: liveF, key: kp.privateKey });
+  check("PS7 CONTROL the header-field accessor ran during the call", fieldReads > 0);
+  check("PS8 and the payload survives an accessor on a header field",
+    Buffer.from(jws3.payload, "base64url").equals(original));
+  // The JWS must still verify, so the fix did not simply desynchronize the signature from the payload.
+  // The header embeds the JWK, so the verifier reads the key from the message itself, and `verify`
+  // throws rather than reporting a boolean, so reaching the payload at all is the verdict.
+  check("PS4 and the emitted JWS verifies, over the original payload",
+    Buffer.from((await pki.jose.verify(jws, OUTER)).payload).equals(original));
+}
+
 async function run() {
   testBase64url();
   testJsonReader();
@@ -515,6 +730,7 @@ async function run() {
   await testProfileAndErrorBranches();
   await testInnerProfilesAndRsaVariants();
   await testForeignCryptoKeys();
+  await testPayloadIsTakenBeforeTheOptionsAreRead();
   console.log("CHECKS " + helpers.getChecks());
 }
 

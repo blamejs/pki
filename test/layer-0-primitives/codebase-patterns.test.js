@@ -309,12 +309,42 @@ function _scanComments(src) {
 //
 // guard-all deliberately does not re-export the captures, so a DIRECT require is the only way to
 // reach them, and a direct require is exactly what shows up here as a child.
-// The exported object literal of a module, whether or not it is handed to Object.freeze on the way
-// out. The guard family freezes, so a pattern anchored on a bare `{` right after the `=` reads a
-// frozen module as exporting nothing -- and a meta-check that then walks an empty list reports no
-// findings while checking nothing, which is the one failure this file cannot afford. Every walk that
-// reads a module's exported names off its source shares this one definition.
-var EXPORT_LITERAL_RE = /module\.exports\s*=\s*(?:Object\.freeze\s*\(\s*)?\{([\s\S]*?)\}/;
+// The exported object literal of a module, whether or not it is handed to a freeze on the way out. A
+// pattern anchored on a bare `{` right after the `=` reads a frozen module as exporting nothing -- and a
+// meta-check that then walks an empty list reports no findings while checking nothing, which is the one
+// failure this file cannot afford. Naming ONE freeze spelling is the same failure: the guard family
+// freezes through `intrinsic.freeze`, `_intrinsic.freeze`, `_freeze` and `_freezeExports`, not through
+// `Object.freeze`, so a pattern naming only the last read 18 of the 19 guard modules as exporting nothing
+// and testEveryGuardEnforced passed over all of them. The wrapper is matched as any callee, and as any
+// NUMBER of them: one wrapper was the same mistake one spelling was, since `Object.freeze(_freeze({...}))`
+// defeated a pattern allowing exactly one. Every walk that reads a module's exported names off its source
+// shares this one definition.
+var EXPORT_LITERAL_RE = /module\.exports\s*=\s*(?:[\w$.]+\s*\(\s*)*\{([\s\S]*?)\}/;
+
+// This file's own source with its COMMENT LINES removed, for the checks that ask whether a detector class
+// really exists. They look for `_filterMarkers(bad, "<class>")`, and a plain search over the whole file
+// accepted a tag naming a class that appears only in prose: every paragraph here that writes the call out
+// to explain it would vouch for any class a tag named, including a stale or misspelled one. The string
+// LITERALS are kept, since the class name lives inside one, so this removes comment lines rather than
+// using the strip that also blanks literals.
+function _detectorClassSource() {
+  var src = fs.readFileSync(path.join(REPO_ROOT, "test/layer-0-primitives/codebase-patterns.test.js"), "utf8");
+  var lines = src.split(/\r?\n/), out = [], inBlock = false;
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i], trimmed = line.replace(/^\s+/, "");
+    if (inBlock) {
+      if (trimmed.indexOf("*/") !== -1) inBlock = false;
+      continue;
+    }
+    if (trimmed.indexOf("/*") === 0) {
+      if (trimmed.indexOf("*/") === -1) inBlock = true;
+      continue;
+    }
+    if (trimmed.indexOf("//") === 0) continue;
+    out.push(line);
+  }
+  return out.join("\n");
+}
 
 function _takesCaptures(absPath) {
   var entry = require.cache[absPath];
@@ -1699,6 +1729,28 @@ var KNOWN_ANTIPATTERNS = [
     ],
     reason: "Every format's matches() detector re-inlined the root-SEQUENCE guard `!root || root.tagClass !== \"universal\" || root.tagNumber !== TAGS.SEQUENCE` and the per-node `x.tagClass === class && x.tagNumber === TAGS.Y` probe, with one module hand-rolling a local tag predicate twice. Centralized as pkix.rootSequenceChildren + the schema.is{Universal,Context}[OneOf|InRange] predicates so a detector composes them; a new detector re-inlining the root guard (a `.tagClass !== \"universal\"` test that returns false) must route through the shared helper. This replaces the KNOWN_CLUSTERS matches() whitelist — after extraction the seq/probe shingle dissolves.",
   },
+  {
+    // A verdict returned as a bare object literal. Resolving a promise reads `then` off the value it
+    // settles with, and an object that does not own one hands that lookup to Object.prototype, where
+    // an accessor runs with the verdict as its receiver and can hand the caller a different object
+    // entirely: an unsigned document reported as verified, carrying a signer it does not name.
+    // guard.verdict.of builds the verdict with an own, non-enumerable `then` that ends the lookup;
+    // guard.verdict.shield adds it to a result whose shape or identity must survive.
+    //
+    // Anchored on the decision fields rather than on any symbol: these names are the public verdict
+    // contract, so the shape holds through a rename and fires on a verdict built in a module that
+    // does not exist yet. The window is every promise resolution, not only a public return: a
+    // signature check that answered `{ ok: false }` from inside a `.then` callback was read as
+    // `ok: true` by the caller that awaited it, so an internal result counts the same as a returned one.
+    id: "unshielded-verdict-literal",
+    primitive: "guard.verdict.of({...}) for a verdict assembled here, or guard.verdict.shield(existing) when the result's shape or identity must survive -- both give it the own `then` that ends the prototype lookup promise resolution performs",
+    regex: /return\s*\{(?:(?!;|\breturn\b)[\s\S]){0,4000}?\b(?:verified|signatureValid|trusted|valid|ok|matched|status)\s*:/,
+    skipCommentLines: true,
+    reportEvery: true,
+    allowClass: "unshielded-verdict",
+    allowlist: [],
+    reason: "a verdict with no own `then` is a thenable: promise resolution reads `then` off it, an inherited accessor answers with the verdict as its receiver, and the caller is resolved with whatever that accessor chooses, so a refusal reaches the caller as an acceptance",
+  },
 ];
 
 function testKnownAntipatterns() {
@@ -1874,6 +1926,50 @@ function _isBoilerplate(slice) {
   // prefix is exactly this 3-instantiation window; a format with more sub-schemas
   // has 4+.)
   if (factoryDecls >= 3) return true;
+  // Module-load CAPTURE runs — `var _pop = intrinsic.pop;` — are the sibling of the factory run above
+  // with a property read where that one has a call. Every module that opts into the captured-intrinsic
+  // discipline opens with one, so the run is identical across modules by construction, and the thing it
+  // would factor out is `guard-intrinsic`, which is where the captures already live. Taking one more
+  // capture is the prescribed fix for a live read, so without this the fix for one finding manufactures
+  // another. A run of plain aliases has no logic in it to extract.
+  // A capture has two spellings and a window holds a MIX of them: a plain alias of a module handle's
+  // property, `var _pop = intrinsic.pop;`, and an uncurried prototype method,
+  // `var _charAt = intrinsic.uncurry(String.prototype.charAt);`, which is the factory shape above. The
+  // window that fired held two of each, so neither count reached three on its own. Only an identifier
+  // that is a JS keyword survives normalization, so `uncurry` itself is indistinguishable from any other
+  // name and cannot be counted directly; the two declaration shapes can.
+  //
+  // The test is COVERAGE rather than a count, and that distinction is the whole rule. Counting three
+  // declarations anywhere in the window suppressed 2072 windows, MEASURED, and 53 of them in one module
+  // alone carried `if (!check(x)) throw E(...)` guard clauses with two aliases between them: a repeated
+  // validation shape, exactly what this class exists to find, excused because three `var`s sat near it.
+  // Requiring the declarations to account for most of the window admits the capture run, which is
+  // nothing else, and keeps a window that merely contains some.
+  // The test is what the window CONTAINS, not how much of it a pattern can match. Two attempts at a
+  // coverage ratio both failed on the same thing: a shingle starts and ends wherever its offset lands,
+  // so a window over a pure declaration run loses both edge declarations to clipping and measured 70 of
+  // 50 tokens' worth at best. A count alone is no good either, since three `var`s sitting beside an
+  // `if (!check(x)) throw E(...)` pair excused 2072 windows, 53 of them that exact guard-clause shape.
+  // What separates the two is that a declaration run holds no statement keyword but `var`: no branch, no
+  // call-and-return, no function body. A window that holds one is code, whatever else is in it.
+  // The rule is an ALLOWLIST of the tokens a capture run can be built from, not a blocklist of the ones
+  // it cannot. A blocklist of statement keywords was beaten by arithmetic: five declarations of
+  // `var total = net * rate + fee;` followed by `charge(total);` holds no statement keyword, is exactly
+  // fifty tokens, and is executable pricing logic that would merit extraction. The initializer has to be
+  // constrained, and the honest way is to say what a capture run contains: declarations, member access,
+  // a call, and nothing else. No operator, no literal, no bracket, no object, so no expression.
+  // FOUR declarations, measured against the two clusters that fired: one held two plain aliases and two
+  // uncurried captures, the other five plain aliases, and a shingle starts wherever its offset lands so
+  // the edge declarations are clipped and uncountable.
+  // `require` and the string it takes are in the allowlist because a module header interleaves the two:
+  // a window at the boundary holds one or two `var X = require("./y");` lines among the captures, and
+  // without them the run the recognizer exists for goes unrecognized at exactly that offset. They add no
+  // room for logic: with no operator, no bracket, no comma and no statement keyword, a window of four or
+  // more declarations over member accesses, calls and strings has nothing in it to extract.
+  var declStarts = (joined.match(/\bvar\s+_ID\s+=\s+/g) || []).length;
+  var CAPTURE_TOKENS = /^(?:var|_ID|_STR|require|=|\.|\(|\)|;|[A-Z][\w$]*)$/;
+  var captureShaped = declStarts >= 4 && toks.every(function (t) { return CAPTURE_TOKENS.test(t); });
+  if (captureShaped) return true;
   // The module-header TRANSITION: a slice that mixes a top-of-file require with a
   // factory-instantiation run is the header every format module shares (the 5
   // requires flow into `var NS = pkix.makeNS(...)` + `var X = pkix.factory(NS)`).
@@ -2045,7 +2141,10 @@ function testNoDuplicateCodeBlocks() {
         "lib/schema-crl.js:<top>", "lib/schema-ocsp.js:<top>",
         "lib/cmp-build.js:<top>", "lib/crmf-sign.js:<top>", "lib/key.js:<top>", "lib/sigstore.js:<top>",
         "lib/ip-utils.js:<top>", "lib/pkcs11-uri.js:<top>", "lib/guard-encoding.js:_alphabet",
-        "lib/identity-match.js:<top>", "lib/identity-match.js:E",
+        "lib/identity-match.js:<top>", "lib/identity-match.js:E", "lib/tlog.js:<top>",
+        "lib/sign-scheme.js:O", "lib/tuf.js:_err", "lib/tuf.js:<top>",
+        "lib/related-cert.js:<top>", "lib/related-cert.js:_err",
+        "lib/alt-sig.js:<top>", "lib/possession.js:<top>", "lib/possession.js:setEngine",
       ],
       mode: "family-subset",
       reason: "The per-module capture header binds each module's subset of guard-intrinsic to local names at load. The repeated shape is a deliberate convention so the set is comparable across modules; the subsets differ per module and a shared indirection would put back the call-site property read the capture removes. The regex-free character scanners (the IP-literal parser, the base-N alphabet-table builder) share the same captured-primitive binding run and char-code-loop idiom while doing genuinely different work.",
@@ -2150,7 +2249,8 @@ function testNoDuplicateCodeBlocks() {
       files: [
         "lib/attrcert-sign.js:_buildExtensions", "lib/cmc-build.js:popLinkWitnessV2",
         "lib/cms-sign.js:_pemToDer", "lib/cms-sign.js:_targetPreimage",
-        "lib/csr-sign.js:_challengePassword", "lib/tsp-sign.js:_signingCertV2",
+        "lib/csr-sign.js:_challengePassword", "lib/csr-sign.js:_relatedCertRequest",
+        "lib/tsp-sign.js:_signingCertV2",
         "lib/x509-sign.js:_hasCriticalSan",
       ],
       mode: "family-subset",
@@ -2181,8 +2281,10 @@ function testNoDuplicateCodeBlocks() {
         "lib/schema-ocsp.js:_shapeResponderID", "lib/schema-smime.js:assertSignerIssuerIsDirectoryName",
         "lib/schema-ocsp.js:_validateOcspExtensions",
         "lib/schema-csrattrs.js:<top>", "lib/schema-smime.js:signingCertificateSchema",
+        "lib/possession.js:<top>", "lib/possession.js:setEngine", "lib/possession.js:statementOf",
         "lib/schema-cmc.js:<top>", "lib/schema-cmc.js:rawList", "lib/schema-crmf.js:crmfName",
-        "lib/schema-cms.js:keyIdentifierSchema",
+        "lib/schema-cms.js:keyIdentifierSchema", "lib/schema-csr.js:<top>",
+        "lib/schema-crmf.js:popoPrivKey",
       ],
       mode: "family-subset",
       reason: "per-format schema.seq/decode declarations + build-fn output assembly share the combinator idiom (different fields/codes each); the combinators live in the engine, nothing further to extract.",
@@ -2199,7 +2301,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/cms-sign.js:<top>", "lib/tsp-sign.js:<top>", "lib/x509-sign.js:<top>", "lib/csr-sign.js:<top>", "lib/attrcert-sign.js:<top>", "lib/crmf-sign.js:<top>", "lib/cmp-build.js:<top>", "lib/crl-sign.js:<top>",
         "lib/cmc-build.js:<top>", "lib/cmc-verify.js:<top>", "lib/schema-cmc.js:<top>",
         "lib/cms-digest.js:<top>", "lib/cms-digest.js:_err",
-        "lib/trustanchor-build.js:<top>",
+        "lib/trustanchor-build.js:<top>", "lib/related-cert.js:<top>", "lib/related-cert.js:_err",
         "lib/cms-sign.js:_err", "lib/tsp-sign.js:_err", "lib/x509-sign.js:_err", "lib/csr-sign.js:_err", "lib/attrcert-sign.js:_err", "lib/crmf-sign.js:_err", "lib/cmp-build.js:_err", "lib/crl-sign.js:_err",
         // The run continues past the factories: makeNS(domain) then makeBuilder({...})
         // with that domain's error class and schemas. Same idiom, same reason -- the
@@ -2233,8 +2335,9 @@ function testNoDuplicateCodeBlocks() {
         "lib/cmp-build.js:_encodeHeader", "lib/cmp-build.js:_resolveProtection", "lib/cmp-build.js:_build",
         "lib/crmf-sign.js:_buildCertReqMsg", "lib/crmf-sign.js:_encodeCertTemplate", "lib/crmf-sign.js:_buildProofOfPossession",
         "lib/csr-sign.js:sign", "lib/csr-sign.js:_sign", "lib/csr-sign.js:_challengePassword", "lib/csr-sign.js:addAttr",
-        "lib/x509-sign.js:sign", "lib/x509-sign.js:_sign",
+        "lib/x509-sign.js:sign", "lib/x509-sign.js:_sign", "lib/x509-sign.js:_signNative",
         "lib/crl-sign.js:_sign", "lib/crl-sign.js:_idpValue", "lib/crl-sign.js:_buildCrlExtensions", "lib/crl-sign.js:_buildRevoked", "lib/crl-sign.js:_assertIssuerCanSignCrl",
+        "lib/crl-sign.js:_signNativeCrl",
         "lib/ct.js:fetchLogList",
         "lib/cmp-verify.js:_verify",
         "lib/cmp-session.js:session",
@@ -2295,7 +2398,9 @@ function testNoDuplicateCodeBlocks() {
         // lands on whatever function precedes it in each module. These are those neighbors.
         "lib/attrcert-sign.js:_buildExtensions", "lib/cmp-build.js:_classifyCmpResponse",
         "lib/cms-sign.js:_pemToDer", "lib/cms-sign.js:_targetPreimage",
-        "lib/csr-sign.js:_challengePassword", "lib/ocsp.js:_normCertDer",
+        "lib/csr-sign.js:_challengePassword", "lib/csr-sign.js:_relatedCertRequest",
+        "lib/crl-sign.js:_resolveCrlAltSigning",
+        "lib/ocsp.js:_normCertDer",
         "lib/tsp-sign.js:_signingCertV2", "lib/cmp-build.js:_transfer",
         "lib/x509-sign.js:_buildExtensions", "lib/crl-sign.js:_buildCrlExtensions",
         "lib/crmf-sign.js:_buildCertReqMsg", "lib/cmc-verify.js:_verify",
@@ -3236,7 +3341,15 @@ function testGuardReadsRuntimeLive() {
   // a mailbox separator sits, which substring is the domain, whether a local-part is well-formed,
   // how a URI splits into scheme and authority. Each is one replaceable call, and moving any one of
   // them moves the boundary, so the name the verb ends up comparing is not the one on the wire.
-  var LIVE_METHODS = "(?:forEach|map|filter|every|some|indexOf|sort|push|concat|join|" +
+  // The MUTATORS are here because a list is what a rule is enforced OVER, and one that drops an
+  // element drops the rule applied to it. A replaced `pop` that pops twice removed a note's final
+  // signature line along with the empty tail element the trailing newline leaves, so a forged
+  // signature under a known key was never checked and the note verified. That shipped in a module held
+  // to zero live reads, because this list is an ENUMERATION of names and `pop` was never in it: the
+  // read was never counted, so no budget was ever exceeded. `shift`, `unshift` and `splice` move the
+  // same boundary from the other end and are added with it.
+  var LIVE_METHODS = "(?:forEach|map|filter|every|some|indexOf|sort|push|pop|shift|unshift|splice|" +
+    "reverse|copyWithin|concat|join|" +
     "toLowerCase|toUpperCase|charAt|charCodeAt|fill|getTime|equals|compare|toString|subarray|" +
     "slice|lastIndexOf|search|test|exec|replace|split|trim|substring|substr|startsWith|endsWith|" +
     "includes|hasOwnProperty)";
@@ -3361,28 +3474,28 @@ function testGuardReadsRuntimeLive() {
   // budget nobody tightens is a number that stops meaning anything, and the next reader would take
   // it for the real count. A module reaching zero is deleted from the map and held to zero forever.
   var MIGRATING = {
-    "lib/acme.js": 187,
+    "lib/acme.js": 186,
     "lib/est.js": 159,
     "lib/cmp-build.js": 130,
     "lib/crmf-sign.js": 35,
-    "lib/path-validate.js": 95,
-    "lib/webauthn.js": 163,
+    "lib/path-validate.js": 89,
+    "lib/webauthn.js": 160,
     "lib/asn1-der.js": 105,
     "lib/schema-engine.js": 45,
     "lib/trust.js": 100,
     "lib/cms-sign.js": 57,
-    "lib/webauthn-mds.js": 89,
+    "lib/webauthn-mds.js": 88,
     "lib/attrcert-sign.js": 76,
-    "lib/tsp-sign.js": 49,
+    "lib/tsp-sign.js": 42,
     "lib/http-digest.js": 73,
     "lib/pkcs12-build.js": 63,
-    "lib/ct.js": 74,
+    "lib/ct.js": 71,
     "lib/cms-verify.js": 16,
     "lib/cms-encrypt.js": 66,
     "lib/crl-sign.js": 65,
     "lib/cmc-build.js": 57,
     "lib/pki-build.js": 33,
-    "lib/hpke.js": 39,
+    "lib/hpke.js": 32,
     "lib/cms-decrypt.js": 49,
     "lib/cmc-verify.js": 34,
     "lib/x509-sign.js": 26,
@@ -3427,7 +3540,8 @@ function testEveryGuardEnforced() {
   // must be REAL -- reported by a `_filterMarkers(bad, "<class>")` detector in this
   // file -- so the tag cannot reference a detector that does not exist. This is why
   // adding guard-range / guard-name / ... cannot silently skip its enforcement.
-  var selfSrc = fs.readFileSync(path.join(REPO_ROOT, "test/layer-0-primitives/codebase-patterns.test.js"), "utf8");
+  //
+  var selfSrc = _detectorClassSource();
   var bad = [];
   var guardFiles = _libFiles().filter(function (f) {
     var rel = _relPath(f);
@@ -3581,7 +3695,7 @@ function testEveryValidatorEnforced() {
   // A validator function with NO such tag is DRIFT: a fresh validator could ship whose
   // rule set a boundary re-derives inline with nothing catching it. A NAMED detector-class
   // must be REAL -- reported by a `_filterMarkers(bad, "<class>")` detector in this file.
-  var selfSrc = fs.readFileSync(path.join(REPO_ROOT, "test/layer-0-primitives/codebase-patterns.test.js"), "utf8");
+  var selfSrc = _detectorClassSource();
   var bad = [];
   var validatorFiles = _libFiles().filter(function (f) {
     var rel = _relPath(f);

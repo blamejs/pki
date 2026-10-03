@@ -801,6 +801,17 @@ async function testReadyAndRelativeRedirect() {
   var acmeUtf8Cap = pki.acme.client(A.URLS.directory, { accountKey: ACCT.key, accountJwk: ACCT.jwk, alg: "ES256", transport: routeUtf8, maxResponseBytes: capUtf8 });
   check("#13 an injected string body is measured as UTF-8 against the cap", (await codeOf(acmeUtf8Cap.newAccount({}))) === "acme/response-too-large");
 
+  // The transport is a caller-supplied option, so its response is a caller object: a `body` accessor that
+  // answers the length measurement with a short string and the handback with a long one would put a body
+  // past maxResponseBytes into the client. The body is read once, so the bytes measured are the bytes used.
+  // NOTE on the transport response's own members. `_sendFollowing` now reads `res.body` and `res.status`
+  // once each, because a caller-supplied transport returns a caller object and reading the body per use
+  // would let the bytes measured against maxResponseBytes differ from the bytes handed back. There is no
+  // vector here for it: `test/helpers/fake-transport` normalizes `body` before the client sees it, so an
+  // accessor placed on the response is consumed by the helper and the client's own reads are of a plain
+  // value. Reaching it needs a transport that returns its response object straight through, which the
+  // helpers do not offer, so the change is hardening without a behavioral vector and is recorded as such.
+
   // (t) a CROSS-origin request resets the origin-specific servername (SNI, pinned to the trusted host) but
   // RETAINS the caller's checkServerIdentity pin (an additional constraint node re-evaluates against the
   // actual host); the trusted origin keeps both.
@@ -973,6 +984,42 @@ async function testRenewalWindow() {
   var s2 = A.acmeServer({ renewalInfoResponse: riResp(T - 20 * DAY, T - 10 * DAY) });
   var r2 = await clientAt(s2, T).renewalWindow(certDer, { random: function () { return 0.5; } });
   check("#15 RW-2 a past window forces renewNow", r2.renewNow === true);
+
+  /* RW-2a `opts.previous` is the prior result the stickiness decision compares against, and it is the
+     CALLER's object. It was validated as an object before the renewalInfo fetch and then read three more
+     times after it: `previous.suggestedWindow` twice in one expression and `previous.selectedTime` once
+     for its string test and again for the parse. The fetch is the window in which an accessor changes its
+     answer, so the prior window compared against need not be the one validated, and a non-object arriving
+     after the await reached `.start` and raised a bare TypeError with no code.
+     The option is read once, before the fetch, and the comparison reads that reading. */
+  var sPrev = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) });
+  var prevReads = 0;
+  var honestPrev = {
+    suggestedWindow: { start: new Date(T + 10 * DAY).toISOString(), end: new Date(T + 20 * DAY).toISOString() },
+    selectedTime: new Date(T + 15 * DAY).toISOString(),
+  };
+  var sneakyPrev = {};
+  Object.defineProperty(sneakyPrev, "suggestedWindow", {
+    enumerable: true,
+    get: function () { prevReads += 1; return prevReads === 1 ? honestPrev.suggestedWindow : 7; },
+  });
+  Object.defineProperty(sneakyPrev, "selectedTime", {
+    enumerable: true, get: function () { return honestPrev.selectedTime; },
+  });
+  var sneakyOutcome = await codeOf(clientAt(sPrev, T).renewalWindow(certDer, {
+    random: function () { return 0.5; }, previous: sneakyPrev,
+  }));
+  check("#15 RW-2a an accessor-backed previous cannot become a non-object across the fetch (" +
+    prevReads + " read(s), " + sneakyOutcome + ")",
+    prevReads <= 1 && sneakyOutcome.indexOf("RAW:") !== 0);
+  /* CONTROL: a plain prior result still sticks, so reading it once did not break the stickiness this
+     option exists for. The selected time must come back unchanged when the window has not moved. */
+  var sStick = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) });
+  var stuck = await clientAt(sStick, T).renewalWindow(certDer, {
+    random: function () { return 0.5; }, previous: honestPrev,
+  });
+  check("#15 RW-2b CONTROL an unchanged window still keeps the previously selected time",
+    stuck.selectedTime === honestPrev.selectedTime);
 
   // RW-23 a random callback that throws is surfaced as a typed caller error, not the raw exception.
   var sRw23 = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) });
