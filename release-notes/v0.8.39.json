@@ -1,0 +1,15 @@
+{
+  "version": "0.8.39",
+  "date": "2026-09-29",
+  "headline": "Verify a bundle logged in a Rekor v2 tiled transparency log.",
+  "summary": "Rekor v2 is the tiled log sigstore now writes to, and a bundle it logged was refused outright: the entry it carries is a `hashedrekord` v0.0.2, a shape `verifyBundle` did not read. Rekor v2 also supports no DSSE entry type and issues no signed entry timestamp, so a DSSE signature is logged as a `hashedrekord` over the hash of its signing preimage and the log time has to come from an RFC 3161 token instead. Both are now read, on either content arm.",
+  "sections": {
+    "Added": [
+      "`pki.sigstore.verifyBundle` reads a Rekor v2 `hashedrekord` v0.0.2 entry, on a DSSE envelope or a message signature. The entry is bound to the bundle by three separate comparisons, because dropping any one leaves inclusion proving nothing about this artifact: the signature the entry records equals the bundle's, the certificate it names is the bundle's Fulcio leaf byte for byte, and the digest it records is the hash of what was actually signed. For a DSSE envelope that digest is over the signing preimage, recomputed from the bundle's own envelope; for a message signature it is the artifact digest the caller confirms against the bytes it supplies.",
+      "Where a v0.0.2 entry states `keyDetails`, that statement is held to the leaf key rather than read in its place: an entry naming one algorithm while the signature was made with another is refused. An algorithm name outside the set this build reads is refused rather than passed over, since passing over it would accept the statement unchecked.",
+      "`opts.tsaRoots` pins timestamp-authority anchors, and an RFC 3161 token over the signature bytes dates the bundle. A Rekor v2 entry writes `integratedTime` as zero, so it is ignored and never read as a log time; with no token this caller can check and no `opts.time`, the verdict is `sigstore/no-attested-time`, because a Fulcio certificate lives about ten minutes and cannot be validated against an unattested instant. The token must cover the signature bytes: one over the payload would date the thing signed rather than the signing. An empty `tsaRoots` list is refused rather than read as a timestamp policy that checks nothing.",
+      "The verdict reports `timestampSource`, naming which of the caller's instant, a signed entry timestamp, or an RFC 3161 token dated the certificate, and `logOrigin`, `treeSize` and `checkpointKeyId`, each read from the verified checkpoint.",
+      "The entry version is part of the dispatch, so a v0.0.1 body relabelled 0.0.2 is not read with v0.0.1 field names, and a version this build does not read is refused rather than parsed under the nearest one it does."
+    ]
+  }
+}

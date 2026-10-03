@@ -72,6 +72,30 @@ async function run() {
   var t3 = ctx.ctFetchOpts(fx, ctx.okRoutes(fx), { signerKey: ctx.otherSignerKey() });
   check("3. a valid document under the WRONG pinned key -> ct/log-list-untrusted", (await code(function () { return pki.ct.fetchLogList(t3.opts); })) === "ct/log-list-untrusted");
 
+  // ==== 3b. the pinned key is the one pinned AT THE CALL ===========================================
+  // `opts.signerKey` was read after BOTH fetches, so a caller reusing that buffer had the list verified
+  // under whatever it held by then rather than under the key it pinned. The route function is the
+  // mutation point, which is where a real caller's buffer reuse would land.
+  var other = ctx.makeFixture();                   // a second distributor, with its own key and signature
+  var livePin = Buffer.from(fx.signerKey);
+  check("3b. the two distributor keys are the same length, so one can overwrite the other",
+    fx.signerKey.length === other.signerKey.length);
+  var swapRoutes = ctx.okRoutes(other, {
+    json: function () {
+      other.signerKey.copy(livePin);               // the pinned key becomes the other distributor's
+      return ctx.resp(200, other.json, "application/json");
+    },
+  });
+  var t3b = ctx.ctFetchOpts(other, swapRoutes, { signerKey: livePin });
+  var c3b = await code(function () { return pki.ct.fetchLogList(t3b.opts); });
+  check("3b. a list signed by a distributor substituted into the key buffer mid-fetch is refused (" + c3b + ")",
+    c3b === "ct/log-list-untrusted");
+  // CONTROL: the other distributor's list verifies when that distributor is the one pinned, so 3b is
+  // about the substitution and not about the second fixture being unusable.
+  var t3c = ctx.ctFetchOpts(other, ctx.okRoutes(other));
+  check("3c. CONTROL the other distributor's list verifies when its own key is pinned",
+    (await pki.ct.fetchLogList(t3c.opts)).status === 200);
+
   // ==== 4. missing signerKey (M3/M11) ==============================================================
   var t4 = ctx.ctFetchOpts(fx, ctx.okRoutes(fx), { signerKey: undefined });
   check("4. an omitted signerKey -> config-time ct/bad-input", (await code(function () { return pki.ct.fetchLogList(t4.opts); })) === "ct/bad-input");

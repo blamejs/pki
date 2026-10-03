@@ -1,0 +1,16 @@
+{
+  "version": "0.8.36",
+  "date": "2026-09-29",
+  "headline": "Assemble a transparency-log inclusion proof from the tiles a log serves.",
+  "summary": "A tiled transparency log has no proof endpoint: where RFC 6962 offers `get-proof-by-hash`, a C2SP tlog-tiles log serves tiles and the client computes the audit path itself. `pki.tlog.inclusionProof` is that computation, over a `read` the caller supplies, and `pki.tlog.tileWidth` is what tells the caller which tile to ask for. Together with the checkpoint verification already shipped, a client can prove a leaf is in a log it only knows through HTTP.",
+  "sections": {
+    "Added": [
+      "`pki.tlog.inclusionProof({ index, size, read })` assembles the RFC 6962 audit path for one leaf of a tiled log and returns what `pki.merkle.verifyInclusion` folds against a verified checkpoint's root. `read(level, index, width)` takes the same three values `pki.tlog.tilePath` takes, so a caller wires it straight to a fetch of that path, and it may return bytes or a promise of them. Tiles are cached for the life of one call, because a tile carries 256 hashes and an audit path walks neighbors.",
+      "`pki.tlog.tileWidth(treeSize, level, index)` reports how wide a tile is: `null` when it is full, which is the form `tilePath` takes, or 1 to 255 when it is partial. A client has to know this before it asks, since a log serves a full and a partial tile at different paths and the full path for a partial tile is a request for something the log does not have. A tile the tree does not reach is refused rather than answered with a width of zero, because the specification says an empty tile is not served.",
+      "A tile served narrower than the verified tree size requires is refused as `tlog/bad-tile` rather than folded into a root computed from short data, and an `index` at or above `size` is `tlog/index-out-of-range` before any tile is read."
+    ],
+    "Fixed": [
+      "A tile, an entry bundle and a public key are binary, and a string handed to `pki.tlog.parseTile`, `parseEntryBundle`, `keyId` or `verifyNote` was decoded as UTF-8 instead of refused. That rewrites every byte above 0x7f, so the result could never be the data it stood for, yet a 32-character string is the length of one hash and parsed as a valid one-hash tile. Each now refuses a string with `tlog/bad-input` and says to read the response as bytes. The documented signatures already said bytes; nothing that passes bytes is affected."
+    ]
+  }
+}

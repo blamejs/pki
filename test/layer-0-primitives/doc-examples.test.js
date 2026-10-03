@@ -219,6 +219,21 @@ function fixturesFor(tag) {
     caCertsDer: caCertsDer, roundTripped: null, renewCsr: estRenewCsr, caPem: signFixtureSigner.cert,
     // RFC 6962 SCT-list extension value (inner DER OCTET STRING) for the pki.ct examples.
     sctExtValue: sctListDer,
+    // The RFC 6962 sec. 4 log-client examples name a log, its key and a transport.
+    // The transport answers 404, so each verb reaches the wire and fails closed
+    // with a typed ct/http-error: the example's shape is exercised without a
+    // socket, and a renamed option or a reshaped call still surfaces as a raw
+    // throw rather than passing.
+    base: "https://ct.example/",
+    spki: pki.asn1.decode(certDer).children[0].children[6].bytes,
+    t: function () { return Promise.resolve({ status: 404, headers: {}, body: "no" }); },
+    lh: pki.merkle.leafHash(certDer),
+    sth: { treeSize: 1, rootHash: pki.merkle.emptyRootHash() },
+    a: { treeSize: 1, rootHash: pki.merkle.emptyRootHash() },
+    b: { treeSize: 2, rootHash: pki.merkle.emptyRootHash() },
+    preDer: certDer,
+    tbs: pki.asn1.decode(certDer).children[0].bytes,
+    ikh: require("crypto").createHash("sha256").update(certDer).digest(),
     // the stand-in "your error class" some engine examples pass as ctx.E — a
     // PkiError factory so a thrown result still satisfies the fuzz-style contract.
     MyError: function (code, msg) { return new pki.errors.PkiError(msg, code); },

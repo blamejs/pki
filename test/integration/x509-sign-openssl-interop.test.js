@@ -21,6 +21,7 @@ var check = ctx.check;
 var signing = require("../helpers/signing");
 var pkixMod = require("../../lib/schema-pkix");
 var oidMod = require("../../lib/oid");
+var crypto = require("node:crypto");
 var os = require("node:os");
 var fs = require("node:fs");
 var path = require("node:path");
@@ -225,6 +226,102 @@ async function run() {
       pkixMod.certExtensionDecoders(pkixMod.makeNS("path", pki.errors.PathError, oidMod)).byOid[oidMod.byName("subjectDirectoryAttributes")](sdaBack.value)[0].type === "1.3.6.1.4.1.99999.1");
     check("openssl shows the OCSP no-check marker",
       /OCSP No ?Check/i.test(siaT.stdout) || siaT.stdout.indexOf("1.3.6.1.5.5.7.48.1.5") >= 0);
+
+    // RFC 9763 sec. 4.1, whose stated concern about this extension is interoperability. openssl has no
+    // name for the OID yet, and `-text` prints an unnamed extension's value as a lossy ASCII dump, so
+    // the digest is read back the two ways that are byte-faithful: the certificate re-encoded through
+    // openssl must be identical, and openssl's own ASN.1 parser must walk the value and report both
+    // fields. The second is the real cross-check, since it is an independent implementation agreeing on
+    // the structure and on every digest byte, not merely carrying bytes it did not read.
+    var relKp = signing.makeSigner("ec-p256");
+    var relatedPem = await pki.x509.sign({
+      subject: [{ commonName: "related.interop.example" }], subjectPublicKey: relKp.spki, notBefore: NB, notAfter: NA,
+      extensions: { keyUsage: ["digitalSignature"] },
+    }, { key: relKp.key }, { pem: true });
+    var relatedDer = pki.schema.x509.pemDecode(relatedPem, "CERTIFICATE");
+    var relValue = pki.relatedCert.certificateHash(relatedDer, "sha384");
+    var relLeafPem = await pki.x509.sign({
+      subject: [{ commonName: "leaf.interop.example" }], subjectPublicKey: relKp.spki, notBefore: NB, notAfter: NA,
+      extensions: { keyUsage: ["digitalSignature"], relatedCertificate: { relatedCertificate: relatedDer, hashAlgorithm: "sha384" } },
+    }, { key: relKp.key }, { pem: true });
+    var relLeafDer = pki.schema.x509.pemDecode(relLeafPem, "CERTIFICATE");
+    var relLeafFile = path.join(dir, "related-leaf.pem"); fs.writeFileSync(relLeafFile, relLeafPem);
+    var relT = ctx.runOpenssl(["x509", "-in", relLeafFile, "-noout", "-text"], { allowNonZero: true });
+    check("openssl x509 -text parses a certificate carrying the relatedCertificate extension", relT.code === 0);
+    check("openssl reports the relatedCertificate extension by its OID",
+      relT.stdout.indexOf("1.3.6.1.5.5.7.1.36") >= 0);
+    check("openssl does not report it critical, which sec. 4.1 asks for at SHOULD NOT",
+      !/1\.3\.6\.1\.5\.5\.7\.1\.36:\s*critical/i.test(relT.stdout));
+
+    var relDerOut = path.join(dir, "related-leaf.der");
+    var relRe = ctx.runOpenssl(["x509", "-in", relLeafFile, "-outform", "DER", "-out", relDerOut], { allowNonZero: true });
+    check("openssl re-encodes the certificate to the same bytes, carrying the extension unaltered",
+      relRe.code === 0 && Buffer.compare(fs.readFileSync(relDerOut), relLeafDer) === 0);
+
+    var relBack = pki.schema.x509.parse(relLeafDer).extensions
+      .filter(function (e) { return (e.name || e.oid) === "relatedCertificate"; })[0];
+    var relValueFile = path.join(dir, "related-value.der"); fs.writeFileSync(relValueFile, relBack.value);
+    var relA1 = ctx.runOpenssl(["asn1parse", "-inform", "DER", "-in", relValueFile], { allowNonZero: true });
+    check("openssl's ASN.1 parser walks the RelatedCertificate value", relA1.code === 0);
+    check("openssl names the digest algorithm the extension carries",
+      /OBJECT\s*:sha384/.test(relA1.stdout));
+    check("and dumps the digest bytes openssl read, matching the ones computed here",
+      relA1.stdout.replace(/[^0-9A-Fa-f]/g, "").toUpperCase()
+        .indexOf(relValue.hashValue.toString("hex").toUpperCase()) >= 0);
+    check("and the extension round-trips through the toolkit, naming the certificate it was built from",
+      pki.relatedCert.matchesCertificate(pki.schema.x509.decodeExtension(relBack).decoded, relatedDer) === true);
+
+    // ITU-T X.509 (2019) clause 9.8, the Catalyst shape. openssl recognizes all three extensions by
+    // name, which is the strongest confirmation available that an independent implementation reads the
+    // same structures at the same OIDs. Its ASN.1 parser also names the alternative key's algorithm,
+    // and it re-encodes the certificate to the same bytes, which matters more here than anywhere else:
+    // the alternative signature is verified over a reconstruction, so a producer whose bytes an
+    // independent implementation would not reproduce has made a certificate nobody can verify.
+    var catNativeKp = signing.makeSigner("ec-p256");
+    var catSubject = signing.makeSigner("ec-p256");
+    var catAltKp = crypto.generateKeyPairSync("ml-dsa-65");
+    var catAltSpki = catAltKp.publicKey.export({ format: "der", type: "spki" });
+    var catAltPkcs8 = catAltKp.privateKey.export({ format: "der", type: "pkcs8" });
+    var catPem = await pki.x509.sign({
+      subject: [{ commonName: "catalyst.interop.example" }], subjectPublicKey: catSubject.spki, notBefore: NB, notAfter: NA,
+      extensions: { keyUsage: ["digitalSignature"], subjectAltPublicKeyInfo: catAltSpki },
+    }, { name: [{ commonName: "Catalyst Interop CA" }], publicKey: catNativeKp.spki, key: catNativeKp.key,
+      altKey: catAltPkcs8, altPublicKey: catAltSpki }, { pem: true });
+    var catDer = pki.schema.x509.pemDecode(catPem, "CERTIFICATE");
+    check("the alternative signature on the emitted certificate verifies here",
+      (await pki.altSig.verify(catDer, catAltSpki)) === true);
+
+    var catFile = path.join(dir, "catalyst.pem"); fs.writeFileSync(catFile, catPem);
+    var catT = ctx.runOpenssl(["x509", "-in", catFile, "-noout", "-text"], { allowNonZero: true });
+    check("openssl x509 -text parses a Catalyst certificate", catT.code === 0);
+    // Names on this release, OIDs on an older one: either is an independent implementation reading the
+    // extension, and asserting both forms is what keeps the check from turning on a release string.
+    [["Subject Alternative Public Key Info", "2.5.29.72"],
+      ["Alternative Signature Algorithm", "2.5.29.73"],
+      ["Alternative Signature Value", "2.5.29.74"]].forEach(function (r) {
+      check("openssl recognizes the " + r[1] + " extension (as \"" + r[0] + "\" or by OID)",
+        catT.stdout.indexOf(r[0]) >= 0 || catT.stdout.indexOf(r[1]) >= 0);
+    });
+
+    var catDerOut = path.join(dir, "catalyst.der");
+    var catRe = ctx.runOpenssl(["x509", "-in", catFile, "-outform", "DER", "-out", catDerOut], { allowNonZero: true });
+    check("openssl re-encodes the Catalyst certificate to the same bytes",
+      catRe.code === 0 && Buffer.compare(fs.readFileSync(catDerOut), catDer) === 0);
+
+    var catParsed = pki.schema.x509.parse(catDer);
+    var sapkiExt = catParsed.extensions.filter(function (e) { return e.oid === "2.5.29.72"; })[0];
+    var sapkiFile = path.join(dir, "catalyst-sapki.der"); fs.writeFileSync(sapkiFile, sapkiExt.value);
+    var sapkiA1 = ctx.runOpenssl(["asn1parse", "-inform", "DER", "-in", sapkiFile], { allowNonZero: true });
+    check("openssl's ASN.1 parser walks the SubjectAltPublicKeyInfo value", sapkiA1.code === 0);
+    check("and names the alternative key's algorithm, reading it as a key rather than as opaque bytes",
+      /OBJECT\s*:ML-DSA-65/i.test(sapkiA1.stdout));
+    // The extension value is an SPKI on the wire, so openssl imports it as a public key with no
+    // conversion. That is the property `pki.altSig.subjectAltPublicKey` relies on.
+    var sapkiPubFile = path.join(dir, "catalyst-sapki-pub.der");
+    fs.writeFileSync(sapkiPubFile, pki.altSig.subjectAltPublicKey(catDer));
+    var sapkiPub = ctx.runOpenssl(["pkey", "-pubin", "-inform", "DER", "-in", sapkiPubFile, "-noout", "-text"], { allowNonZero: true });
+    check("openssl imports the subjectAltPublicKeyInfo value directly as a public key",
+      sapkiPub.code === 0 && /ML-DSA-65/i.test(sapkiPub.stdout));
 
     // The Active Directory Certificate Services enrollment extensions. OpenSSL names the certificate
     // template and prints the rest by OID, so it confirms the extensions parse and carry the bytes;
