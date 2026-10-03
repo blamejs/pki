@@ -732,6 +732,16 @@ function testOneStageScheduleWipesEveryCopy() {
   var PSK = Buffer.from("5b7e2a1f0c94d6338ae5f21b47c0d98e6a3f15b2c8074e91da26b3f5081c7a4d", "hex");
   var PSK_ID = Buffer.from("one-stage-wipe");
 
+  /* The module captures `Buffer.concat` at LOAD, so replacing the method afterwards reaches nothing,
+     which is the property `hpke-hybrid.test.js` pins for the combiner. The observation point moves to
+     the capture: a FRESH copy of the guard captures and of the module is taken with the spy already
+     installed, this vector drives that copy, and the original modules are put back afterwards so
+     nothing else in the process sees a second set of error classes. */
+  var nodePath = require("node:path");
+  var LIB_DIR = nodePath.resolve(__dirname, "..", "..", "lib");
+  function _instrumented(k) {
+    return k.indexOf(nodePath.join("lib", "guard-")) >= 0 || k.indexOf(nodePath.join("lib", "hpke.js")) >= 0;
+  }
   function recordConcats(fn) {
     var real = Buffer.concat, seen = [];
     Buffer.concat = function (list, total) {
@@ -739,8 +749,18 @@ function testOneStageScheduleWipesEveryCopy() {
       seen.push({ buf: b, heldPsk: b.indexOf(PSK) >= 0 });
       return b;
     };
+    var saved = {};
+    Object.keys(require.cache).forEach(function (k) {
+      if (_instrumented(k)) { saved[k] = require.cache[k]; delete require.cache[k]; }
+    });
     var code = "NO-THROW";
-    try { fn(); } catch (e) { code = e.code || e.message; } finally { Buffer.concat = real; }
+    try { fn(require(nodePath.join(LIB_DIR, "hpke.js"))); }
+    catch (e) { code = e.code || e.message; }
+    finally {
+      Buffer.concat = real;
+      Object.keys(require.cache).forEach(function (k) { if (_instrumented(k)) delete require.cache[k]; });
+      Object.keys(saved).forEach(function (k) { require.cache[k] = saved[k]; });
+    }
     return { seen: seen, code: code };
   }
   function allZero(b) { for (var i = 0; i < b.length; i += 1) if (b[i] !== 0) return false; return true; }
@@ -749,8 +769,8 @@ function testOneStageScheduleWipesEveryCopy() {
     return { code: r.code, held: held.length, live: held.filter(function (e) { return !allZero(e.buf); }).length };
   }
 
-  var ok = recordConcats(function () {
-    pki.hpke.setupS(SS, kp.publicKey, { mode: S.MODE.PSK, psk: PSK, pskId: PSK_ID });
+  var ok = recordConcats(function (hpke) {
+    hpke.setupS(SS, kp.publicKey, { mode: S.MODE.PSK, psk: PSK, pskId: PSK_ID });
   });
   var okR = report(ok);
   check("a single-stage setup allocates buffers holding the psk, so this is not a vacuous check", okR.held >= 1);
@@ -759,8 +779,8 @@ function testOneStageScheduleWipesEveryCopy() {
 
   // The refused path: an info over the two-byte limit. The psk is a valid length, so a schedule that
   // allocated before checking would leave its concatenation behind.
-  var refused = recordConcats(function () {
-    pki.hpke.setupS(SS, kp.publicKey, { mode: S.MODE.PSK, psk: PSK, pskId: PSK_ID, info: Buffer.alloc(65536) });
+  var refused = recordConcats(function (hpke) {
+    hpke.setupS(SS, kp.publicKey, { mode: S.MODE.PSK, psk: PSK, pskId: PSK_ID, info: Buffer.alloc(65536) });
   });
   var refR = report(refused);
   check("an input refused for its length leaves no live buffer holding the psk (" +
