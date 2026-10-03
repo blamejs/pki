@@ -41,6 +41,30 @@ function fail(msg) {
   process.exit(1);
 }
 
+// A stdout that cannot be written -- a closed descriptor, a full pipe -- raises an `error` event on
+// the stream rather than throwing where the write was called, and with nothing listening Node ended
+// the process with its own stack trace. Two things follow. The message an operator gets is a
+// `node:events` dump instead of a `pki:` line, and for a verb whose product is a FILE the exit code
+// said failure about work that had completed: `keygen` wrote the key, could not print the line saying
+// so, and exited non-zero with the key on disk, which is indistinguishable from the failure that
+// leaves a secret behind.
+//
+// So the product's location decides the exit code. `wroteToDisk` is set by a verb once its output is
+// on disk rather than on stdout; for every other verb stdout IS the product and a failure to write it
+// is the command failing.
+var wroteToDisk = false;
+function _onOutputError(stream, e) {
+  if (stream !== "stderr") {
+    try {
+      process.stderr.write("pki: " + stream + " could not be written (" + e.message + ")" +
+        (wroteToDisk ? "; the output was written to disk and is intact" : "") + "\n");
+    } catch (_e) { /* allow:swallow-unverified nothing can be reported; the exit code is the record */ }
+  }
+  process.exit(wroteToDisk ? 0 : 1);
+}
+process.stdout.on("error", function (e) { _onOutputError("stdout", e); });
+process.stderr.on("error", function (e) { _onOutputError("stderr", e); });
+
 // Minimal flag parser: `--flag value` for value-taking flags, `--flag` for booleans, the
 // rest are positionals in `_`. A value-taking flag whose value is absent or is itself another
 // flag is a usage error (never silently coerced to `true`, which would make e.g. `--time`
@@ -239,14 +263,93 @@ var KEYGEN_USAGE = "usage: pki keygen --out <key-file> [--pub <spki-file>] [--al
   "  over. The file is created owner-only where the platform enforces a file mode; on Windows the\n" +
   "  mode is not applied and the file inherits the directory's permissions.";
 
+// The files THIS invocation created, so a run that does not complete removes its own residue and
+// nothing else. A pre-existing file is never listed and so is never removed: the failure an operator
+// is most likely to hit is a name already taken, and destroying what is there would be the very thing
+// refusing to write over it prevents.
+//
+// It hangs off `exit` rather than off each failure site because `fail` ends the process where it is
+// called, so there is no scope around the sequence to clean up in. Reserving the public name before
+// writing the private key fixed one residue and created another: a run that failed on `--out` left
+// the empty public file behind and the corrected retry then refused for THAT name instead.
+// Each entry records what the file looked like when this run created it, so cleanup can tell its own
+// file from one that replaced it. Without that, a path swapped between the create and the cleanup had
+// the REPLACEMENT deleted, which turns a tidy-up into data loss. The window is not closed by this,
+// there being no unlink-by-handle to use, but a file whose size or timestamp has changed is left
+// where it is and named.
+var createdFiles = [];
+// Registered with NO identity, at the moment the name becomes ours and before any content goes into
+// it. A record whose size is null is removed without the comparison below, which is what a file we
+// created but never finished writing needs: registering only after the write returned left a created,
+// partially written private key unlisted, so the cleanup walked past it and the corrected retry then
+// refused for that name.
+function _claimCreated(file) {
+  var rec = { path: file, size: null, mtimeMs: null };
+  createdFiles.push(rec);
+  return rec;
+}
+// Called once the content is in and the handle closed, so the identity compared at exit is the file as
+// this run left it rather than the empty one it started as.
+function _sealCreated(rec) {
+  try { var st = fs.statSync(rec.path); rec.size = st.size; rec.mtimeMs = st.mtimeMs; }
+  catch (_e) { /* allow:swallow-unverified unstattable; the record stays identity-free and is removed */ }
+}
+process.on("exit", function (code) {
+  // `wroteToDisk` means the product is COMPLETE on disk, and then no exit path may remove it. A
+  // synchronous throw out of the final status write reaches `fail`, which exits non-zero, and cleanup
+  // keyed on the exit code alone deleted a key that had been written exactly as asked.
+  if (code === 0 || wroteToDisk) return;
+  for (var i = 0; i < createdFiles.length; i++) {
+    var rec = createdFiles[i];
+    var now;
+    try { now = fs.statSync(rec.path); }
+    catch (_e) { continue; /* allow:swallow-unverified already gone, which is the outcome wanted */ }
+    if (rec.size !== null && (now.size !== rec.size || now.mtimeMs !== rec.mtimeMs)) {
+      try {
+        process.stderr.write("pki: " + rec.path + " changed since this run created it and was left " +
+          "in place\n");
+      } catch (_e2) { /* allow:swallow-unverified nothing can be reported; the file is intact */ }
+      continue;
+    }
+    try { fs.unlinkSync(rec.path); }
+    catch (e) {
+      try {
+        process.stderr.write("pki: " + rec.path + " was created by this run and could not be " +
+          "removed (" + e.message + ")\n");
+      } catch (_e3) { /* allow:swallow-unverified nothing can be reported; the exit code stands */ }
+    }
+  }
+});
+
 // Write a file that must not exist yet, with its mode set in the call that creates it: a chmod
 // after the write leaves a window where the key is readable by anyone who can open the file.
+// Create a file that must not exist yet and write it through the DESCRIPTOR the create returned. Four
+// rules meet here and each of them was learned the hard way:
+//
+//   - the mode goes in the creating call, because a chmod afterwards leaves a window where the key is
+//     readable by anyone who can open the file;
+//   - only the descriptor is written through. Closing the exclusive create and reopening the PATH let
+//     the reservation be replaced in between, and the write would then follow a replacement symlink or
+//     truncate a replacement file, which is the no-overwrite guarantee defeating itself;
+//   - the claim is recorded BEFORE any content, so a write that fails part way through still leaves a
+//     file the cleanup knows to remove, and its identity is sealed only once the content is in;
+//   - the descriptor is closed on every path before the cleanup can run, because Windows will not
+//     unlink a file something still has open.
 function writeNewFile(file, bytes, mode) {
-  try { fs.writeFileSync(file, bytes, { flag: "wx", mode: mode }); }
+  var fd;
+  try { fd = fs.openSync(file, "wx", mode); }
   catch (e) {
     if (e.code === "EEXIST") return fail(file + " already exists, and a key is never written over one");
     return fail("cannot write " + file + ": " + e.message);
   }
+  var rec = _claimCreated(file);
+  var err = null;
+  try { fs.writeFileSync(fd, bytes); }
+  catch (e2) { err = e2; }
+  try { fs.closeSync(fd); }
+  catch (e3) { if (err === null) err = e3; }
+  if (err !== null) return fail("cannot write " + file + ": " + err.message);
+  _sealCreated(rec);
 }
 
 // pki keygen --out <file> -- generate a key pair and write the private key to a file. The public
@@ -263,8 +366,24 @@ function cmdKeygen(args) {
     if (both === undefined) return undefined;   // fail() already exited
     var privDer = both[0], pubDer = both[1];
     var priv = args.pem ? pki.schema.pkcs8.pemEncode(privDer, "PRIVATE KEY") : privDer;
-    writeNewFile(args.out, priv, KEY_FILE_MODE);
+    // Both destinations are taken before either key is written. Writing the private half first left a
+    // freshly generated secret at --out whenever the public write failed, with the command reporting
+    // failure, and the retry an operator would run next then refused because --out existed. The public
+    // NAME is claimed first, by the same exclusive create that refuses an existing file, so a
+    // collision there is found before any key reaches the disk.
+    // The PUBLIC half goes first, which is what secures its name before any private key reaches the
+    // disk while still writing each file through its own descriptor. Writing the private key first
+    // left a freshly generated secret at --out whenever the public write failed, and reserving the
+    // public name as an empty file to be filled later meant reopening a path, which is the race above.
+    // A failure on the private key now leaves a complete PUBLIC file, and the exit handler removes it.
+    // There is no cleanup written by hand here: every failure exits non-zero and the handler removes
+    // what this run created, checking each file is still the one it wrote.
     if (args.pub) writeNewFile(args.pub, args.pem ? _spkiPem(pubDer) : pubDer, undefined);
+    writeNewFile(args.out, priv, KEY_FILE_MODE);
+    // The product of this verb is the FILE, not the line that says so, so a stdout that cannot be
+    // written does not undo a key that is already on disk. See `wroteToDisk` above for what that
+    // changes: the message and the exit code, not the key.
+    wroteToDisk = true;
     process.stdout.write("wrote " + alg + " private key to " + args.out +
       (args.pub ? " and its public key to " + args.pub : "") + "\n");
   });
@@ -311,6 +430,11 @@ function subjectArg(arg) {
 function writeOrPrint(args, bytes) {
   if (!args.out) { process.stdout.write(bytes); return; }
   try { fs.writeFileSync(args.out, bytes); } catch (e) { return fail("cannot write " + args.out + ": " + e.message); }
+  // The product is the FILE here too, for every verb that routes through this: `csr`, `issue` and
+  // `fetch` with `--out`. The rule arrived with `keygen` and applied to keygen alone, so a broken
+  // stdout made these exit non-zero over a file that was already written, which is the same
+  // contradiction one verb further on.
+  wroteToDisk = true;
   process.stdout.write("wrote " + args.out + "\n");
 }
 

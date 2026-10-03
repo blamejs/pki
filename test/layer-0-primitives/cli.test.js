@@ -352,6 +352,90 @@ async function run() {
         Buffer.compare(fs.readFileSync(kgOut), before) === 0);
     check("pki keygen requires --out rather than defaulting to stdout",
       cli(["keygen"]).status !== 0 && /usage: pki keygen/.test(cli(["keygen"]).stderr));
+    /* A run that FAILS must leave no private key behind. The private half was written first and the
+     * public half second, so a --pub that already exists reported failure with a freshly generated
+     * secret sitting at --out, and the obvious retry then refused because --out existed. An operator
+     * reading "pki: ... already exists" has no reason to look for a key file. */
+    var txnOut = path.join(tmp, "txn.key");
+    var txnPub = path.join(tmp, "txn.pub");
+    fs.writeFileSync(txnPub, "already here");
+    var txn = cli(["keygen", "--out", txnOut, "--pub", txnPub]);
+    check("pki keygen leaves no private key behind when the public destination is taken (" +
+      "exit " + txn.status + ", key file " + (fs.existsSync(txnOut) ? "LEFT" : "absent") + ")",
+    txn.status !== 0 && fs.existsSync(txnOut) === false &&
+      txn.stderr.indexOf(txnPub) !== -1);
+    /* The product of keygen is the FILE. A stdout that cannot be written made a COMPLETED generation
+     * exit non-zero with the key on disk, which looks exactly like the failure above while being the
+     * opposite: the run did what it was asked. Driven with a READ-ONLY descriptor as stdout, which is
+     * what a closed or full pipe amounts to here. */
+    var fdOut = path.join(tmp, "fd.key");
+    var roFd = fs.openSync(BIN, "r");
+    var fdRun;
+    try {
+      fdRun = spawnSync(process.execPath, [BIN, "keygen", "--alg", "Ed25519", "--out", fdOut],
+        { stdio: ["ignore", roFd, "pipe"], encoding: "utf8" });
+    } finally { fs.closeSync(roFd); }
+    check("pki keygen still reports success when the key was written and only stdout failed (" +
+      "exit " + fdRun.status + ", key " + (fs.existsSync(fdOut) ? "present" : "ABSENT") + ")",
+    fdRun.status === 0 && fs.existsSync(fdOut) &&
+      /stdout could not be written/.test(String(fdRun.stderr || "")));
+    check("and the key that run wrote is a usable private key",
+      pki.schema.pkcs8.parse(fs.readFileSync(fdOut)).privateKeyAlgorithm.name === "Ed25519");
+    /* The same rule for every verb whose product is a file, not just keygen: `csr` with --out writes
+     * its request and then says so, and a broken stdout used to make that exit non-zero over a file
+     * already on disk. */
+    var csrKey = path.join(tmp, "fd-csr.key");
+    cli(["keygen", "--alg", "Ed25519", "--out", csrKey]);
+    var csrOut = path.join(tmp, "fd.csr");
+    var roFd3 = fs.openSync(BIN, "r");
+    var csrBroken;
+    try {
+      csrBroken = spawnSync(process.execPath,
+        [BIN, "csr", "--key", csrKey, "--subject", "CN=fd.example", "--out", csrOut],
+        { stdio: ["ignore", roFd3, "pipe"], encoding: "utf8" });
+    } finally { fs.closeSync(roFd3); }
+    check("a file-backed verb other than keygen also succeeds when only stdout failed (" +
+      "exit " + csrBroken.status + ", csr " + (fs.existsSync(csrOut) ? "present" : "ABSENT") + ")",
+    csrBroken.status === 0 && fs.existsSync(csrOut) &&
+      pki.schema.csr.parse(fs.readFileSync(csrOut)) !== undefined);
+    /* The other half of the same rule: for a verb whose product IS stdout, a stdout that cannot be
+     * written is the command failing, and it says so as a `pki:` line rather than as the runtime's
+     * own unhandled-error stack dump. */
+    var roFd2 = fs.openSync(BIN, "r");
+    var inspectBroken;
+    try {
+      inspectBroken = spawnSync(process.execPath, [BIN, "inspect", FIXTURE],
+        { stdio: ["ignore", roFd2, "pipe"], encoding: "utf8" });
+    } finally { fs.closeSync(roFd2); }
+    check("a verb whose product is stdout still fails on a broken stdout, with a pki message (" +
+      "exit " + inspectBroken.status + ")",
+    inspectBroken.status !== 0 &&
+      /^pki: stdout could not be written/.test(String(inspectBroken.stderr || "")) &&
+      String(inspectBroken.stderr || "").indexOf("node:events") === -1);
+    /* The mirror of the same rule, and the one reserving the public name first created: when --out is
+     * the collision, the public destination has already been claimed, so a run that fails there must
+     * not leave THAT behind either. Only files this invocation created are removed, never one that
+     * was already there. */
+    var mirrorOut = path.join(tmp, "mirror.key");
+    var mirrorPub = path.join(tmp, "mirror.pub");
+    fs.writeFileSync(mirrorOut, "already here");
+    var mirror = cli(["keygen", "--out", mirrorOut, "--pub", mirrorPub]);
+    check("pki keygen leaves no reserved public file behind when the private destination is taken (" +
+      "exit " + mirror.status + ", pub " + (fs.existsSync(mirrorPub) ? "LEFT" : "absent") + ")",
+    mirror.status !== 0 && fs.existsSync(mirrorPub) === false &&
+      fs.readFileSync(mirrorOut, "utf8") === "already here");
+    check("and that retry succeeds once the private destination is cleared",
+      (function () {
+        fs.unlinkSync(mirrorOut);
+        var again = cli(["keygen", "--out", mirrorOut, "--pub", mirrorPub]);
+        return again.status === 0 && fs.existsSync(mirrorOut) && fs.existsSync(mirrorPub);
+      })());
+    check("and the retry an operator would run next succeeds",
+      (function () {
+        fs.unlinkSync(txnPub);
+        var again = cli(["keygen", "--out", txnOut, "--pub", txnPub]);
+        return again.status === 0 && fs.existsSync(txnOut) && fs.existsSync(txnPub);
+      })());
     /* PQC-first: an ML-DSA key is as reachable as a classical one, and the default is one of the
      * suites the toolkit leads with. The default is read from the file rather than assumed. */
     var kgDefault = pki.schema.pkcs8.parse(fs.readFileSync(kgOut));
