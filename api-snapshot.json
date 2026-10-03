@@ -77,6 +77,9 @@
             "CT_MAX_ENTRIES_PER_REQUEST": {
               "kind": "number"
             },
+            "CT_MAX_ROOTS": {
+              "kind": "number"
+            },
             "DEEP_COPY_MAX_NODES": {
               "kind": "number"
             },
@@ -1599,6 +1602,9 @@
               "kind": "number"
             },
             "CT_MAX_ENTRIES_PER_REQUEST": {
+              "kind": "number"
+            },
+            "CT_MAX_ROOTS": {
               "kind": "number"
             },
             "DEEP_COPY_MAX_NODES": {

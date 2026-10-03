@@ -32,6 +32,7 @@ var pki = helpers.pki;
 var crypto = require("crypto");
 var ctx = require("../helpers/ct-fetch-transport");
 var resp = ctx.resp, routeByUrl = ctx.routeByUrl;
+var C = pki.constants;
 
 async function code(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code || e.constructor.name; } }
 
@@ -431,6 +432,23 @@ async function runGetEntriesRoots() {
   var rgot = await pki.ct.getRoots(r.o);
   check("E6: the accepted roots are fetched and decoded",
     rgot.certificates.length === 2 && rgot.certificates[0].toString("utf8") === "root-a");
+
+  /* The element COUNT is capped, which it was not: the cap in the shared base64-array reader was keyed on
+     the proof entries' fixed 32-byte width, so the roots path, whose entries have no fixed width, had
+     none. A configured log is trusted for its own signatures and not for its resource use, and a response
+     well under the 4 MiB body cap carries about a million empty strings, each of which became its own
+     Buffer (CWE-770). Measured below by count rather than by heap, since the count is what the cap decides
+     and a heap figure on a 64-bit runtime is noise. */
+  var many = [];
+  for (var mi = 0; mi < C.LIMITS.CT_MAX_ROOTS + 1; mi++) many.push("");
+  var overRoots = opts(log, { [u("get-roots")]: resp(200, JSON.stringify({ certificates: many }), "application/json") });
+  check("E6a: a roots response carrying more entries than the cap is refused",
+    await code(function () { return pki.ct.getRoots(overRoots.o); }) === "ct/bad-roots");
+  var atCap = [];
+  for (var ai = 0; ai < C.LIMITS.CT_MAX_ROOTS; ai++) atCap.push(Buffer.from("r" + ai).toString("base64"));
+  var ok = opts(log, { [u("get-roots")]: resp(200, JSON.stringify({ certificates: atCap }), "application/json") });
+  check("E6b: CONTROL a response exactly at the cap is accepted, so the bound is the count and not the shape",
+    (await pki.ct.getRoots(ok.o)).certificates.length === C.LIMITS.CT_MAX_ROOTS);
 }
 
 // ---------------------------------------------------------------------------
