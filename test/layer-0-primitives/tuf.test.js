@@ -304,8 +304,21 @@ function rootSigned(o) {
     expires: o.expires || EXPIRES,
     consistent_snapshot: true,
     keys: keys,
-    roles: o.roles || { root: { keyids: (o.signers || []).map(function (s) { return s.keyId; }),
-      threshold: o.threshold === undefined ? 1 : o.threshold } },
+    /* All four top-level roles, because the specification sec. 4.3 states "A role for each of "root",
+       "snapshot", "targets", and "timestamp" MUST be specified in the roles object". The three beyond
+       root carry the same keys here: these fixtures exercise the root chain, and what matters is that
+       a conforming root states them at all. `o.roles` overrides the whole map for the vectors that
+       drive an omission. */
+    roles: o.roles || (function () {
+      var ids = (o.signers || []).map(function (s) { return s.keyId; });
+      var th = o.threshold === undefined ? 1 : o.threshold;
+      return {
+        root: { keyids: ids, threshold: th },
+        targets: { keyids: ids, threshold: 1 },
+        snapshot: { keyids: ids, threshold: 1 },
+        timestamp: { keyids: ids, threshold: 1 },
+      };
+    })(),
   };
   // `specVersion: null` omits the field entirely, which is the case TAP 6 forbids and the one a client
   // cannot match against the version it implements.
@@ -862,6 +875,45 @@ async function runVerify() {
   /* CONTROL: the same objects with plain values still verify and still pass the expiry check, so the
      refusal is about the accessor rather than about anything else these fixtures carry. */
   var plain = pki.tuf.parseMetadata(metadataFor(specA, [a]));
+  /* `type` and `version` are convenience copies beside the signed body exactly as `specVersion` and
+     `expires` are, and a caller reads `version` for a rollback comparison and `type` to choose which
+     role a document belongs to. Cross-checking one copy and not the others left those two free to
+     contradict the body while the verdict still read `verified`. Every copy is checked against the
+     body now, so there is one document in the answer. */
+  var COPIES = [["type", "snapshot"], ["version", 999], ["specVersion", "2.0.31"],
+    ["expires", "2099-01-01T00:00:00Z"]];
+  var contradicted = [];
+  for (var ci = 0; ci < COPIES.length; ci++) {
+    var copyName = COPIES[ci][0], value = COPIES[ci][1];
+    var vicVerify = pki.tuf.parseMetadata(metadataFor(specA, [a]));
+    vicVerify[copyName] = value;
+    var vCode = await codeAsync(pki.tuf.verifySignatures({ metadata: vicVerify, keys: specA.keys,
+      role: specA.roles.root }));
+    var vicExpiry = pki.tuf.parseMetadata(metadataFor(specA, [a]));
+    vicExpiry[copyName] = value;
+    var eCode = code(function () { pki.tuf.checkExpiry(vicExpiry, NOW); });
+    if (vCode !== "tuf/bad-input" || eCode !== "tuf/bad-input") {
+      contradicted.push(copyName + " -> verify " + vCode + ", expiry " + eCode);
+    }
+  }
+  check("M19af: a convenience copy that contradicts the signed body is refused by both verbs, for " +
+    "every copy (" + (contradicted.length ? contradicted.join(" | ") : COPIES.length + " fields") + ")",
+    contradicted.length === 0);
+  /* `signedBytes` is a copy of the body too, in bytes rather than in a field, and the two verbs have to
+     agree about which objects they will answer for at all: the expiry check read the body while the
+     bytes beside it encoded another document, and returned true for it. It does not USE those bytes,
+     which is why this went unnoticed, and that is the point: an object the signature check refuses
+     should not be one the expiry check answers about. Absent bytes stay acceptable, a caller being
+     free to ask only about an expiry. */
+  var otherBody = rootSigned({ signers: [a], version: 2, specVersion: "1.0.31" });
+  var mismatched = pki.tuf.parseMetadata(metadataFor(specA, [a]));
+  mismatched.signedBytes = pki.tuf.canonicalJson(otherBody);
+  check("M19ag: signedBytes encoding another document is refused by the expiry check too (" +
+    code(function () { pki.tuf.checkExpiry(mismatched, NOW); }) + ")",
+    code(function () { pki.tuf.checkExpiry(mismatched, NOW); }) === "tuf/bad-input");
+  check("M19ah: CONTROL an object carrying no signedBytes at all still answers about its expiry",
+    pki.tuf.checkExpiry({ signed: { _type: "root", spec_version: SPEC, version: 1,
+      expires: "2099-01-01T00:00:00Z" } }, NOW) === true);
   check("M19ab: CONTROL a plain parsed document is unaffected by the refusal",
     (await pki.tuf.verifySignatures({ metadata: plain, keys: specA.keys,
       role: specA.roles.root })).verified === true &&
@@ -969,6 +1021,102 @@ async function runRootChain() {
   check("T3g: a trusted root naming another major version is refused, as a candidate is",
     await anchoredIn("2.0.0") === "tuf/unsupported-spec-version" &&
     await anchoredIn(null) === "tuf/bad-metadata");
+
+  /* "A role for each of "root", "snapshot", "targets", and "timestamp" MUST be specified in the roles
+     object" (specification sec. 4.3), and "The role of "mirror" is OPTIONAL". A root carrying only its
+     own role was adopted, which leaves the client holding a trust anchor that cannot authenticate any
+     other metadata the repository publishes: there is no keyids list or threshold to check targets,
+     snapshot or timestamp against. Each of the four is held to naming a keyids array and a positive
+     integer threshold, those being what makes the record usable rather than merely present. */
+  function rolesMissing(drop) {
+    var full = {
+      root: { keyids: [k1.keyId], threshold: 1 },
+      targets: { keyids: [k1.keyId], threshold: 1 },
+      snapshot: { keyids: [k1.keyId], threshold: 1 },
+      timestamp: { keyids: [k1.keyId], threshold: 1 },
+    };
+    if (drop) delete full[drop];
+    var anchor = rootSigned({ signers: [k1], version: 1, roles: full });
+    return codeAsync(pki.tuf.updateRoot({ trustedRoot: metadataFor(anchor, [k1]), candidates: [],
+      now: NOW }));
+  }
+  check("T3h: CONTROL a root naming all four top-level roles is read",
+    await rolesMissing(null) === "NO-THROW");
+  var missing = [];
+  for (var rm = 0; rm < 3; rm++) {
+    var role = ["targets", "snapshot", "timestamp"][rm];
+    var got = await rolesMissing(role);
+    if (got !== "tuf/bad-metadata") missing.push(role + " -> " + got);
+  }
+  check("T3i: a root omitting targets, snapshot or timestamp is refused (" +
+    (missing.length ? missing.join(", ") : "all three refused") + ")", missing.length === 0);
+  /* A role that is present but states no keyids or no usable threshold is the same gap with an extra
+     step: the record exists and still cannot authenticate anything. */
+  function rolesWith(role, record) {
+    var full = {
+      root: { keyids: [k1.keyId], threshold: 1 },
+      targets: { keyids: [k1.keyId], threshold: 1 },
+      snapshot: { keyids: [k1.keyId], threshold: 1 },
+      timestamp: { keyids: [k1.keyId], threshold: 1 },
+    };
+    full[role] = record;
+    var anchor = rootSigned({ signers: [k1], version: 1, roles: full });
+    return codeAsync(pki.tuf.updateRoot({ trustedRoot: metadataFor(anchor, [k1]), candidates: [],
+      now: NOW }));
+  }
+  /* A FRACTIONAL threshold is not in this list on purpose: canonical JSON admits no floating point,
+     so the signer refuses to encode one and the parse's own `integersOnly` refuses it as
+     `tuf/bad-json` before any role record is read. It is unreachable here rather than unchecked. */
+  check("T3j: a top-level role with no keyids array, or a threshold that is not a positive integer, " +
+    "is refused",
+    await rolesWith("snapshot", { threshold: 1 }) === "tuf/bad-metadata" &&
+    await rolesWith("snapshot", { keyids: "not-an-array", threshold: 1 }) === "tuf/bad-metadata" &&
+    await rolesWith("targets", { keyids: [k1.keyId] }) === "tuf/bad-metadata" &&
+    await rolesWith("targets", { keyids: [k1.keyId], threshold: 0 }) === "tuf/bad-metadata" &&
+    await rolesWith("timestamp", { keyids: [k1.keyId], threshold: -1 }) === "tuf/bad-metadata");
+  check("T3k: and the optional mirrors role is not required, the specification calling it OPTIONAL",
+    await rolesMissing("mirrors") === "NO-THROW");
+  /* A role can be PRESENT and still state no signer this root carries, which is the same gap wearing a
+     well-formed shape. Two of these are the specification's own words and two are this toolkit
+     refusing a record that cannot be used, with the specification silent:
+       - "The identifier of the key signing the ROLE object, which is a hexdigest of the SHA-256 hash
+         of the canonical form of the key", so a keyid that is not a string is not a KEYID; and
+         "A positive integer number of keys (>=1)" for the threshold.
+       - An EMPTY keyids list, and a keyid with no entry in the root's own `keys` map, name no key that
+         exists. A threshold above the number of keys the role names can never be met. The
+         specification does not say so, and the refusals say which of the two they are. */
+  var unusable = [];
+  var UNUSABLE = [
+    ["a keyid that is not a string", { keyids: [7], threshold: 1 }],
+    ["a null keyid", { keyids: [null], threshold: 1 }],
+    ["an object keyid", { keyids: [{}], threshold: 1 }],
+    ["an empty keyids list", { keyids: [], threshold: 1 }],
+    ["a keyid the keys map does not carry", { keyids: ["00".repeat(32)], threshold: 1 }],
+    ["a threshold above the number of keys named", { keyids: [k1.keyId], threshold: 2 }],
+    /* A DUPLICATE inflates the count the threshold is compared against, so a role naming one key
+       twice for a threshold of two reads as reachable and is not: a verdict counts each key id once,
+       so one signature is all that list can ever produce. */
+    ["one key named twice for a threshold of two", { keyids: [k1.keyId, k1.keyId], threshold: 2 }],
+  ];
+  for (var ui = 0; ui < UNUSABLE.length; ui++) {
+    var got2 = await rolesWith("targets", UNUSABLE[ui][1]);
+    if (got2 !== "tuf/bad-metadata") unusable.push(UNUSABLE[ui][0] + " -> " + got2);
+  }
+  check("T3l: a role present but naming no usable signer is refused (" +
+    (unusable.length ? unusable.join(" | ") : UNUSABLE.length + " forms refused") + ")",
+    unusable.length === 0);
+  /* The CANDIDATE route as well as the anchor route, since a rotation is where an unusable role would
+     arrive from a repository rather than from the caller's own pin. */
+  var candRoles = {
+    root: { keyids: [k2.keyId], threshold: 1 },
+    targets: { keyids: [], threshold: 1 },
+    snapshot: { keyids: [k2.keyId], threshold: 1 },
+    timestamp: { keyids: [k2.keyId], threshold: 1 },
+  };
+  var candBad = rootSigned({ signers: [k2], version: 2, roles: candRoles });
+  check("T3m: and a candidate carrying an unusable role is refused on the rotation route too",
+    await codeAsync(pki.tuf.updateRoot({ trustedRoot: r1Bytes,
+      candidates: [metadataFor(candBad, [k1, k2])], now: NOW })) === "tuf/bad-metadata");
 
   /* "The version number of the new root metadata (version N+1) MUST be exactly
      the version in the trusted root metadata (version N) incremented by one." */

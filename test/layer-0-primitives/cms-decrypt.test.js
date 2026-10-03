@@ -654,12 +654,21 @@ async function run() {
   check("DS8a. and both paths report the recipient they actually used, never the rejected candidate",
     ds8buf.recipientIndex === 1 && ds8strRes.recipientIndex === 1);
 
-  // The same rule with a LONE candidate: there is nothing to fall back to, so the verdict is the uniform
-  // failure, every time rather than 255 times in 256. One key, many envelopes, since the substitute is
-  // drawn per decrypt and it is the draw that used to decide this.
+  // The same rule with a LONE candidate: there is nothing to fall back to. The verdict that holds on
+  // every draw and on every platform is the DEFAULT one, where the combination is refused before any
+  // unwrap runs, so nothing random has happened yet when the answer is decided.
+  //
+  // Under the OPT-IN the outcome rests on OpenSSL's implicit rejection, which returns a synthetic key
+  // of pseudorandom length rather than throwing, and the CBC padding check is then the only signal a
+  // content with no integrity tag offers. MEASURED over 200000 random AES-256-CBC keys against one
+  // ciphertext: padding accepts 832 of them, 1 in 240, so a 128-draw assertion that every draw fails
+  // holds only 59 percent of the time. An earlier form of this vector asserted exactly that and failed
+  // on CI while passing here, which is the shape the note on refusal vectors drawn from random bytes
+  // warns about: measure the mechanism rather than re-running until it passes. So the opt-in arm
+  // asserts the outcome SET, which is the security property, and carries the distribution in its label.
   var ds9rsa = makeRecipient("rsa");
-  var ds9outcomes = {};
-  for (var ds9i = 0; ds9i < 128; ds9i++) {
+  var ds9default = {}, ds9optedIn = {};
+  for (var ds9i = 0; ds9i < 64; ds9i++) {
     var ds9env = await pki.cms.encrypt(MSG, [{ cert: ds9rsa.cert }], { contentEncryptionAlgorithm: "aes-256-cbc" });
     var ds9bad = surgery.patch(ds9env, function (node) {
       if (surgery.isAlgId(node, "1.2.840.113549.1.1.7")) {
@@ -668,12 +677,25 @@ async function run() {
       return undefined;
     });
     var ds9code;
-    try { await pki.cms.decrypt(ds9bad, { key: ds9rsa.key, cert: ds9rsa.cert }, { allowUnauthenticatedRsa15: true }); ds9code = "NO-THROW"; }
+    try { await pki.cms.decrypt(ds9bad, { key: ds9rsa.key, cert: ds9rsa.cert }); ds9code = "NO-THROW"; }
     catch (e) { ds9code = e.code || e.constructor.name; }
-    ds9outcomes[ds9code] = (ds9outcomes[ds9code] || 0) + 1;
+    ds9default[ds9code] = (ds9default[ds9code] || 0) + 1;
+    var ds9opt;
+    try { await pki.cms.decrypt(ds9bad, { key: ds9rsa.key, cert: ds9rsa.cert }, { allowUnauthenticatedRsa15: true }); ds9opt = "NO-THROW"; }
+    catch (e) { ds9opt = e.code || e.constructor.name; }
+    ds9optedIn[ds9opt] = (ds9optedIn[ds9opt] || 0) + 1;
   }
-  check("DS9. an implicitly-rejected lone recipient fails closed on every draw, not on 255 of 256",
-    ds9outcomes["cms/decrypt-failed"] === 128 && Object.keys(ds9outcomes).length === 1);
+  check("DS9. a lone implicitly-rejected recipient is refused before any unwrap by default, on every " +
+    "draw (" + JSON.stringify(ds9default) + ")",
+    ds9default["cms/unauthenticated-rsa-v15"] === 64 && Object.keys(ds9default).length === 1);
+  // The security property under the opt-in is that NO outcome distinguishes a conforming unwrap from a
+  // rejected one. A third code would be that distinction, whatever it said. The padding failure must
+  // still be the common answer, since the alternative needs the 1-in-240 draw.
+  var ds9codes = Object.keys(ds9optedIn).sort();
+  check("DS9a. and under the opt-in no third outcome appears to distinguish a conforming unwrap from a " +
+    "rejected one (" + JSON.stringify(ds9optedIn) + ")",
+    ds9codes.length >= 1 && ds9codes.length <= 2 && (ds9optedIn["cms/decrypt-failed"] || 0) >= 1 &&
+    ds9codes.every(function (k) { return k === "cms/decrypt-failed" || k === "NO-THROW"; }));
 
   // And it is indistinguishable from any other wrong key on the lazy stream path in all three of the
   // ways an attacker can watch: the CODE, the STAGE, and the BYTES DELIVERED before the failure. A key of
