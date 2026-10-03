@@ -711,29 +711,51 @@ async function run() {
       catch (e) { return "consumption:" + (e.code || e.constructor.name) + ":" + bytes; }
     } catch (e) { return "call:" + (e.code || e.constructor.name) + ":" + bytes; }
   }
-  var ds10env = surgery.patch(await pki.cms.encrypt(MSG, [{ cert: ds9rsa.cert }], { contentEncryptionAlgorithm: "aes-256-cbc" }),
-    function (node) {
-      if (surgery.isAlgId(node, "1.2.840.113549.1.1.7")) {
-        return pki.asn1.build.sequence([pki.asn1.build.oid("1.2.840.113549.1.1.1"), pki.asn1.build.raw(Buffer.from([5, 0]))]);
-      }
-      return undefined;
-    });
-  var ds10substituted = await ds10stage(function () {
-    return pki.cms.decrypt(ds10env, { key: ds9rsa.key, cert: ds9rsa.cert }, { stream: true, allowUnauthenticatedRsa15: true });
-  });
-  // The stage to match: an explicit cek of the right length and the wrong value, which reaches the same
-  // lazy stream with no substitute involved.
-  var ds10ed = await pki.cms.encrypt(MSG, { cek: Buffer.alloc(32, 0x11) }, { contentEncryptionAlgorithm: "aes-256-cbc" });
-  var ds10wrongKey = await ds10stage(function () {
-    return pki.cms.decrypt(ds10ed, { cek: Buffer.alloc(32, 0x22) }, { stream: true });
-  });
   // A CBC stream withholds its final block until the padding check, so a failing stream delivers the
-  // padded length minus one block, and a succeeding one delivers the plaintext length.
+  // padded length minus one block. The 1-in-240 draw where the garbage plaintext's last byte happens
+  // to spell a valid padding length instead SUCCEEDS, delivering between padded-16 and padded-1 bytes.
+  // Both sides of the comparison draw from that same two-outcome space, so the assertion is on the
+  // SPACE and on the sides agreeing about it, never on one draw: a single-draw form of this vector is
+  // the shape the note on refusal vectors drawn from random bytes warns about, and it failed on one
+  // smoke run in roughly the expected proportion.
   var ds10padded = Math.ceil((MSG.length + 1) / 16) * 16;
-  check("DS10. CONTROL a right-length wrong key on the lazy stream path delivers its chunks, then fails",
-    ds10wrongKey === "consumption:cms/decrypt-failed:" + (ds10padded - 16));
-  check("DS10a. and an implicitly-rejected one is identical in code, stage and bytes delivered",
-    ds10substituted === ds10wrongKey);
+  var DS10_FAILED = "consumption:cms/decrypt-failed:" + (ds10padded - 16);
+  function ds10classify(outcome) {
+    if (outcome === DS10_FAILED) return "failed";
+    if (outcome.indexOf("consumption-ok:") !== 0) return outcome;
+    var n = Number(outcome.slice("consumption-ok:".length));
+    return (n >= ds10padded - 16 && n <= ds10padded - 1) ? "accepted" : outcome;
+  }
+  var ds10sub = {}, ds10wrong = {};
+  for (var ds10i = 0; ds10i < 24; ds10i++) {
+    var ds10env = surgery.patch(await pki.cms.encrypt(MSG, [{ cert: ds9rsa.cert }], { contentEncryptionAlgorithm: "aes-256-cbc" }),
+      function (node) {
+        if (surgery.isAlgId(node, "1.2.840.113549.1.1.7")) {
+          return pki.asn1.build.sequence([pki.asn1.build.oid("1.2.840.113549.1.1.1"), pki.asn1.build.raw(Buffer.from([5, 0]))]);
+        }
+        return undefined;
+      });
+    var subOne = ds10classify(await ds10stage(function () {
+      return pki.cms.decrypt(ds10env, { key: ds9rsa.key, cert: ds9rsa.cert }, { stream: true, allowUnauthenticatedRsa15: true });
+    }));
+    ds10sub[subOne] = (ds10sub[subOne] || 0) + 1;
+    // The stage to match: an explicit cek of the right length and the wrong value, which reaches the
+    // same lazy stream with no substitute involved, over a fresh ciphertext each draw.
+    var ds10edOne = await pki.cms.encrypt(MSG, { cek: Buffer.alloc(32, 0x11) }, { contentEncryptionAlgorithm: "aes-256-cbc" });
+    var wrongOne = ds10classify(await ds10stage(function () {
+      return pki.cms.decrypt(ds10edOne, { cek: Buffer.alloc(32, 0x22) }, { stream: true });
+    }));
+    ds10wrong[wrongOne] = (ds10wrong[wrongOne] || 0) + 1;
+  }
+  function ds10onlyKnown(dist) {
+    return Object.keys(dist).every(function (k) { return k === "failed" || k === "accepted"; }) &&
+      (dist.failed || 0) >= 1;
+  }
+  check("DS10. CONTROL a right-length wrong key on the lazy stream path delivers its chunks, then fails " +
+    "on all but the padding-accepting draw (" + JSON.stringify(ds10wrong) + ")", ds10onlyKnown(ds10wrong));
+  check("DS10a. and an implicitly-rejected one produces no outcome an ordinary wrong key does not, in " +
+    "code, stage and bytes delivered (" + JSON.stringify(ds10sub) + ")", ds10onlyKnown(ds10sub));
+  var ds10ed = await pki.cms.encrypt(MSG, { cek: Buffer.alloc(32, 0x11) }, { contentEncryptionAlgorithm: "aes-256-cbc" });
   // CONTROL for both: the right key streams the content through to the end on that same path.
   check("DS10b. CONTROL the right key streams the whole content",
     (await ds10stage(function () {

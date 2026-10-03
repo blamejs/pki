@@ -129,6 +129,52 @@ function testPreimage() {
     code(function () { pki.relatedCert.requestSignedData({ certID: { issuer: issuer.bytes, serialNumber: 0n }, requestTime: CERT_TIME }); }) === "relatedcert/bad-input");
   check("P7: a name that is not a Name SEQUENCE is refused",
     code(function () { pki.relatedCert.requestSignedData({ certID: { issuer: Buffer.from([5, 0]), serialNumber: 1n }, requestTime: CERT_TIME }); }) === "relatedcert/bad-input");
+  /* The outer tag is not the type. A SEQUENCE holding anything at all passed as a Name, so bytes that
+     no verifier can read back as an issuer were signed as whatever they are, and `pki.csr.sign` under
+     `profile: "none"` emitted a request this toolkit's OWN parser then refuses with `csr/bad-rdn`.
+     The node goes through the shared X.509 Name schema, which is what the parser on the other side
+     reads it with. */
+  /* The code names WHICH part of the Name failed, because the shared schema is what reads it and that
+     is what the schema reports. A caller branching on it learns whether the RDN or the attribute
+     inside it was wrong, rather than being told only that the input was bad. */
+  var NOT_NAMES = [
+    ["a SEQUENCE holding a NULL", Buffer.from([0x30, 0x02, 0x05, 0x00]), "relatedcert/bad-rdn"],
+    ["a SET that holds nothing", Buffer.from([0x30, 0x02, 0x31, 0x00]), "relatedcert/bad-rdn"],
+    ["a SEQUENCE of INTEGER", Buffer.from([0x30, 0x03, 0x02, 0x01, 0x01]), "relatedcert/bad-rdn"],
+    ["an RDN whose member is not an AttributeTypeAndValue",
+      Buffer.from([0x30, 0x04, 0x31, 0x02, 0x05, 0x00]), "relatedcert/bad-atv"],
+  ];
+  var notNames = [];
+  for (var nn = 0; nn < NOT_NAMES.length; nn++) {
+    var got2 = code(function () {
+      pki.relatedCert.requestSignedData({
+        certID: { issuer: NOT_NAMES[nn][1], serialNumber: 1n }, requestTime: CERT_TIME });
+    });
+    if (got2 !== NOT_NAMES[nn][2]) {
+      notNames.push(NOT_NAMES[nn][0] + " -> " + got2 + " (wanted " + NOT_NAMES[nn][2] + ")");
+    }
+  }
+  check("P7a: a SEQUENCE that is not a Name is refused, naming the part that failed, not accepted " +
+    "for its outer tag (" + (notNames.length ? notNames.join(" | ") : NOT_NAMES.length + " forms") + ")",
+  notNames.length === 0);
+  /* An EMPTY Name is a readable Name and still names no issuer, which is why this one needs its own
+     arm: `30 00` decodes as a SEQUENCE OF nothing and the shared schema is content with it. The
+     toolkit's own certificate signer refuses an empty issuer, so accepting it here signs a certID that
+     identifies no certificate while `pki.x509.sign` would not emit the matching one. An empty SUBJECT
+     is a different question and stays legal, a certificate being allowed to carry its identity in a
+     subjectAltName instead. */
+  check("P7c: an empty Name is refused as the certID issuer, which names no issuer (" +
+    code(function () {
+      pki.relatedCert.requestSignedData({
+        certID: { issuer: Buffer.from([0x30, 0x00]), serialNumber: 1n }, requestTime: CERT_TIME });
+    }) + ")",
+  code(function () {
+    pki.relatedCert.requestSignedData({
+      certID: { issuer: Buffer.from([0x30, 0x00]), serialNumber: 1n }, requestTime: CERT_TIME });
+  }) === "relatedcert/bad-input");
+  check("P7b: CONTROL a real issuer name is still read",
+    Buffer.isBuffer(pki.relatedCert.requestSignedData({
+      certID: { issuer: issuer.bytes, serialNumber: 1n }, requestTime: CERT_TIME })));
   check("P8: an unknown option is refused rather than dropped",
     code(function () { pki.relatedCert.requestSignedData({ certID: certId, requestTime: CERT_TIME, locationInfo: ["https://x/"] }); }) === "relatedcert/bad-input");
   check("P9: an unknown field beside the two certID reads is refused",

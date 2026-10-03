@@ -454,23 +454,35 @@ function testOptionsReadOnce() {
 }
 
 function testExpandFailurePathWipes() {
-  // A KDF block computed before a later block's HMAC fails is wiped on the failing path too.
+  // The KDF accumulator a failing export has already built is wiped on the failing path too. The
+  // failure is injected at `Buffer.prototype.copy`, which the expand reads live where it trims the
+  // accumulator to the requested length, after every block has been computed. The MAC operations
+  // themselves are captured at load and a replacement no longer reaches them.
   var crypto = require("crypto");
   var kp = crypto.generateKeyPairSync("x25519");
   var ctx = pki.hpke.setupS(IDS, kp.publicKey, {}).context;
-  var real = crypto.createHmac, digests = [], calls = 0, threw = false;
-  crypto.createHmac = function (hash, key) {
-    var h = real.call(crypto, hash, key), n = ++calls;
-    return {
-      update: function (d) { if (n === 2) throw new Error("injected engine failure"); h.update(d); return this; },
-      digest: function () { var b = h.digest(); digests.push(b); return b; },
-    };
-  };
-  try { ctx.export(Buffer.from("ctx"), 64); }
-  catch (e) { threw = e.message === "injected engine failure"; }
-  finally { crypto.createHmac = real; }
-  var wiped = digests.length === 1 && digests[0].every(function (b) { return b === 0; });
-  check("a KDF block produced before an expand failure is wiped", threw && wiped);
+  var expCtx = Buffer.from("ctx");
+  var realCopy = Buffer.prototype.copy, seen = [], threw = false, live = false;
+  try {
+    Object.defineProperty(Buffer.prototype, "copy", {
+      value: function () { seen.push(this); throw new Error("injected engine failure"); },
+      writable: true, configurable: true,
+    });
+    // CONTROL, inside the window: the replacement is reached, so the probe below exercises it.
+    try { Buffer.alloc(1).copy(Buffer.alloc(1)); }
+    catch (ce) { live = ce.message === "injected engine failure"; }
+    try { ctx.export(expCtx, 64); }
+    catch (e) { threw = e.message === "injected engine failure"; }
+  } finally {
+    Object.defineProperty(Buffer.prototype, "copy", { value: realCopy, writable: true, configurable: true });
+  }
+  // Two 32-byte blocks make the 64-byte accumulator, so the length pins that the examined buffer is
+  // the accumulator the export built rather than the one-byte buffer the control touched.
+  var held = seen.length ? seen[seen.length - 1] : null;
+  var wiped = held !== null && held.length === 64 && held.every(function (b) { return b === 0; });
+  check("CONTROL the replaced copy is reached, so the expand probe runs against it", live === true);
+  check("the KDF accumulator a failing export had built is wiped (" +
+    (held === null ? "never reached" : "len " + held.length) + ")", threw && wiped);
 }
 
 // The four standalone KEM verbs, asked of EVERY KEM the module registers rather than of a list written
@@ -1073,6 +1085,73 @@ function testEveryByteSourceRepresentation() {
   var ct3 = s3.context.seal(Buffer.alloc(0), pt);
   check("R-aad-empty: CONTROL an empty AAD opens under an absent one, both meaning no additional data",
     Buffer.compare(r3.open(undefined, ct3), pt) === 0);
+
+  /* `update` and `digest` are ordinary writable properties of the hash and MAC prototypes, and a
+     chained `createHash(name).update(b).digest()` reads them off the live prototype, so a replacement
+     decides what a derivation covers. Measured: an `update` that returned its receiver without
+     forwarding made two X25519/SHAKE128 setups with different encapsulations export the same secret,
+     the encapsulation having dropped out of the key schedule entirely. Both operations are captured at
+     load, so a replacement installed afterwards reaches nothing. */
+  var nodeCryptoForProbe = require("crypto");
+  var EMPTY_SHA256 = nodeCryptoForProbe.createHash("sha256").update(Buffer.alloc(0)).digest();
+  var EMPTY_HMAC = nodeCryptoForProbe.createHmac("sha256", "probe-key").update(Buffer.alloc(0)).digest();
+  var PROBE_A = Buffer.from("input one"), PROBE_B = Buffer.from("a different input");
+  /* Each control answers two things from inside the window: the replacement is reached, and the
+     chained form the guard replaces DOES collapse under it -- two different inputs derive the same
+     bytes. The second half is the failure this capture prevents, demonstrated rather than asserted
+     about the module. */
+  function hashUpdateIsLive() {
+    var collapses = nodeCryptoForProbe.createHash("shake128", { outputLength: 32 }).update(PROBE_A).digest()
+      .equals(nodeCryptoForProbe.createHash("shake128", { outputLength: 32 }).update(PROBE_B).digest());
+    return collapses &&
+      nodeCryptoForProbe.createHash("sha256").update(Buffer.from("abc")).digest().equals(EMPTY_SHA256);
+  }
+  function hmacUpdateIsLive() {
+    var collapses = nodeCryptoForProbe.createHmac("sha256", "probe-key").update(PROBE_A).digest()
+      .equals(nodeCryptoForProbe.createHmac("sha256", "probe-key").update(PROBE_B).digest());
+    return collapses &&
+      nodeCryptoForProbe.createHmac("sha256", "probe-key").update(Buffer.from("abc")).digest().equals(EMPTY_HMAC);
+  }
+  function twoExports(ids) {
+    var a = pki.hpke.setupS(ids, kp.publicKey, {});
+    var b = pki.hpke.setupS(ids, kp.publicKey, {});
+    return {
+      differentEnc: Buffer.compare(Buffer.from(a.enc), Buffer.from(b.enc)) !== 0,
+      sameExport: Buffer.compare(a.context.export(Buffer.from("probe"), 32),
+        b.context.export(Buffer.from("probe"), 32)) === 0,
+    };
+  }
+  function underReplacedUpdate(proto, isLive, ids) {
+    var real = proto.update, out = { live: false, threw: null, r: null };
+    try {
+      Object.defineProperty(proto, "update", {
+        value: function () { return this; }, writable: true, configurable: true,
+      });
+      // CONTROL, inside the window: a chained digest now covers nothing, so the probe exercises it.
+      out.live = isLive();
+      out.r = twoExports(ids);
+    } catch (e) {
+      out.threw = (e && e.code) || String(e);
+    } finally {
+      Object.defineProperty(proto, "update", { value: real, writable: true, configurable: true });
+    }
+    return out;
+  }
+  var shakeIds = { kem: S.KEM.DHKEM_X25519_HKDF_SHA256, kdf: S.KDF.SHAKE128, aead: S.AEAD.AES_256_GCM };
+  var hashProto = Object.getPrototypeOf(nodeCryptoForProbe.createHash("sha256"));
+  var hmacProto = Object.getPrototypeOf(nodeCryptoForProbe.createHmac("sha256", "x"));
+  var xofProbe = underReplacedUpdate(hashProto, hashUpdateIsLive, shakeIds);
+  check("R-xof-capture: CONTROL the replacement is reached and the chained XOF form collapses under it",
+    xofProbe.live === true);
+  check("R-xof-capture: two SHAKE128 setups still derive different exports (" +
+    (xofProbe.threw || JSON.stringify(xofProbe.r)) + ")",
+  xofProbe.threw === null && xofProbe.r.differentEnc === true && xofProbe.r.sameExport === false);
+  var macProbe = underReplacedUpdate(hmacProto, hmacUpdateIsLive, IDS);
+  check("R-hmac-capture: CONTROL the replacement is reached and the chained MAC form collapses under it",
+    macProbe.live === true);
+  check("R-hmac-capture: two HKDF-SHA256 setups still derive different exports (" +
+    (macProbe.threw || JSON.stringify(macProbe.r)) + ")",
+  macProbe.threw === null && macProbe.r.differentEnc === true && macProbe.r.sameExport === false);
 
   // CONTROL: shared memory is outside the admitted set and stays refused, typed.
   if (typeof SharedArrayBuffer === "function") {

@@ -1729,6 +1729,28 @@ var KNOWN_ANTIPATTERNS = [
     ],
     reason: "Every format's matches() detector re-inlined the root-SEQUENCE guard `!root || root.tagClass !== \"universal\" || root.tagNumber !== TAGS.SEQUENCE` and the per-node `x.tagClass === class && x.tagNumber === TAGS.Y` probe, with one module hand-rolling a local tag predicate twice. Centralized as pkix.rootSequenceChildren + the schema.is{Universal,Context}[OneOf|InRange] predicates so a detector composes them; a new detector re-inlining the root guard (a `.tagClass !== \"universal\"` test that returns false) must route through the shared helper. This replaces the KNOWN_CLUSTERS matches() whitelist — after extraction the seq/probe shingle dissolves.",
   },
+  {
+    // A verdict returned as a bare object literal. Resolving a promise reads `then` off the value it
+    // settles with, and an object that does not own one hands that lookup to Object.prototype, where
+    // an accessor runs with the verdict as its receiver and can hand the caller a different object
+    // entirely: an unsigned document reported as verified, carrying a signer it does not name.
+    // guard.verdict.of builds the verdict with an own, non-enumerable `then` that ends the lookup;
+    // guard.verdict.shield adds it to a result whose shape or identity must survive.
+    //
+    // Anchored on the decision fields rather than on any symbol: these names are the public verdict
+    // contract, so the shape holds through a rename and fires on a verdict built in a module that
+    // does not exist yet. The window is every promise resolution, not only a public return: a
+    // signature check that answered `{ ok: false }` from inside a `.then` callback was read as
+    // `ok: true` by the caller that awaited it, so an internal result counts the same as a returned one.
+    id: "unshielded-verdict-literal",
+    primitive: "guard.verdict.of({...}) for a verdict assembled here, or guard.verdict.shield(existing) when the result's shape or identity must survive -- both give it the own `then` that ends the prototype lookup promise resolution performs",
+    regex: /return\s*\{(?:(?!;|\breturn\b)[\s\S]){0,4000}?\b(?:verified|signatureValid|trusted|valid|ok|matched|status)\s*:/,
+    skipCommentLines: true,
+    reportEvery: true,
+    allowClass: "unshielded-verdict",
+    allowlist: [],
+    reason: "a verdict with no own `then` is a thenable: promise resolution reads `then` off it, an inherited accessor answers with the verdict as its receiver, and the caller is resolved with whatever that accessor chooses, so a refusal reaches the caller as an acceptance",
+  },
 ];
 
 function testKnownAntipatterns() {
@@ -3456,7 +3478,7 @@ function testGuardReadsRuntimeLive() {
     "lib/est.js": 159,
     "lib/cmp-build.js": 130,
     "lib/crmf-sign.js": 35,
-    "lib/path-validate.js": 95,
+    "lib/path-validate.js": 89,
     "lib/webauthn.js": 160,
     "lib/asn1-der.js": 105,
     "lib/schema-engine.js": 45,

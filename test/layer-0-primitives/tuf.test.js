@@ -473,6 +473,31 @@ async function runVerify() {
       metadata: pki.tuf.parseMetadata(metadataFor(mislabeled, [a])),
       keys: mislabeled.keys, role: mislabeled.roles.root,
     })) === "tuf/bad-key");
+  /* And that refusal does not depend on the hash the identifier is computed with being the live one.
+     `update` and `digest` are ordinary writable properties of the hash prototype, so a replacement
+     decided which key matched an authorized identifier: a different key filed under an authorized one
+     was accepted and the metadata it signed reported `verified: true`. The digest is taken through the
+     operations captured at load. */
+  var mislabeledMeta = pki.tuf.parseMetadata(metadataFor(mislabeled, [a]));
+  var hashProto = Object.getPrototypeOf(crypto.createHash("sha256"));
+  var realHashUpdate = hashProto.update;
+  var hashLive, stillRefused;
+  try {
+    Object.defineProperty(hashProto, "update", {
+      value: function () { return this; }, writable: true, configurable: true,
+    });
+    // CONTROL, inside the window: a chained digest now covers nothing, so two inputs agree.
+    hashLive = crypto.createHash("sha256").update(Buffer.from("abc")).digest()
+      .equals(crypto.createHash("sha256").update(Buffer.from("def")).digest());
+    stillRefused = await codeAsync(pki.tuf.verifySignatures({
+      metadata: mislabeledMeta, keys: mislabeled.keys, role: mislabeled.roles.root,
+    }));
+  } finally {
+    Object.defineProperty(hashProto, "update", { value: realHashUpdate, writable: true, configurable: true });
+  }
+  check("M9a: CONTROL the replaced hash update is live, so M9b exercises it", hashLive === true);
+  check("M9b: a replaced hash cannot file a key under another key's identifier (" + stillRefused + ")",
+    stillRefused === "tuf/bad-key");
 
   /* Shape refusals on the wrapper. */
   check("M10: a document with no signatures array is refused",
@@ -1011,6 +1036,32 @@ async function runVerify() {
   check("M19ah: CONTROL an object carrying no signedBytes at all still answers about its expiry",
     pki.tuf.checkExpiry({ signed: { _type: "root", spec_version: SPEC, version: 1,
       expires: "2099-01-01T00:00:00Z" } }, NOW) === true);
+  /* The native verifier itself was read live, once per signature, so a replacement installed after
+     the package loaded decided the threshold: `crypto.verify` returning true made metadata carrying a
+     64-byte all-zero signature pass against a genuine pinned key. That is the whole verdict, not a
+     detail of it. */
+  var realVerify = crypto.verify;
+  var zeroSigned = pki.tuf.parseMetadata(Buffer.from(JSON.stringify({
+    signatures: [{ keyid: a.keyId, sig: "00".repeat(64) }], signed: signed })));
+  var underReplacedVerify, verifyReplacementLive;
+  try {
+    crypto.verify = function () { return true; };
+    verifyReplacementLive = crypto.verify(null, Buffer.from("x"), {}, Buffer.from("y")) === true;
+    underReplacedVerify = await pki.tuf.verifySignatures({ metadata: zeroSigned, keys: signed.keys,
+      role: signed.roles.root });
+  } catch (e) {
+    underReplacedVerify = { verified: "threw:" + ((e && e.code) || e) };
+  } finally { crypto.verify = realVerify; }
+  check("M19am: CONTROL the replaced native verifier is live, so the next check exercises it",
+    verifyReplacementLive === true);
+  check("M19an: a replaced native verifier cannot make an all-zero signature meet a threshold (" +
+    underReplacedVerify.verified + ")", underReplacedVerify.verified === false);
+  check("M19ao: CONTROL the same document is still unverified with the real verifier, and a genuine " +
+    "one still verifies",
+    (await pki.tuf.verifySignatures({ metadata: zeroSigned, keys: signed.keys,
+      role: signed.roles.root })).verified === false &&
+    (await pki.tuf.verifySignatures({ metadata: meta, keys: signed.keys,
+      role: signed.roles.root })).verified === true);
   check("M19ab: CONTROL a plain parsed document is unaffected by the refusal",
     (await pki.tuf.verifySignatures({ metadata: plain, keys: specA.keys,
       role: specA.roles.root })).verified === true &&

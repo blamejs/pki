@@ -247,6 +247,49 @@ async function runNoteFormat() {
     substituted.length === 2 && substituted[0] === "tlog/bad-signature/ran" &&
     substituted[1] === "tlog/bad-signature/ran");
 
+  /* A verdict returned as a PLAIN object is a thenable the moment something installs
+   * `Object.prototype.then`: resolving a promise reads `then` off the resolution value, and an
+   * inherited one runs with the verdict as its receiver, resolving the caller with a verdict of its
+   * own choosing. Measured, a note signed by a key the caller did not supply reported
+   * `verified: true` carrying a signer the note does not name. The accessor below answers only for
+   * an object with an own `verified`, so the window reaches a verdict and nothing else, and every
+   * verdict these verbs return carries the own `then` sentinel that ends the lookup. */
+  var thenNote = await makeNote(text, [bob]);        // signed by a key the caller does not supply
+  var thenVerdict, thenCheckpoint, thenLive, thenThrew = null;
+  /* The forged verdict carries its OWN `then`, or resolving IT would read the accessor again and
+     chain forever. That termination is exactly what the sentinel on a real verdict does. */
+  var forged = { verified: true, signers: ["forged"] };
+  Object.defineProperty(forged, "then", { value: undefined, enumerable: false, configurable: true, writable: true });
+  var hijack = function (resolve) { resolve(forged); };
+  var ownProp = Object.prototype.hasOwnProperty;
+  try {
+    Object.defineProperty(Object.prototype, "then", {
+      configurable: true,
+      get: function () {
+        if (this === null || this === undefined) return undefined;
+        return ownProp.call(Object(this), "verified") ? hijack : undefined;
+      },
+    });
+    thenLive = ({ verified: false }).then === hijack && ({ other: 1 }).then === undefined;
+    thenVerdict = await pki.tlog.verifyNote(thenNote, aliceKey);
+    /* A null-prototype options bag: the options gate reports every readable name on the bag,
+       including an inherited one, so a plain `{}` is refused for carrying `then`. */
+    thenCheckpoint = await pki.tlog.verifyCheckpoint(thenNote, aliceKey, Object.create(null));
+  } catch (e) {
+    thenThrew = (e && e.code) || String(e);
+  } finally {
+    delete Object.prototype.then;
+  }
+  check("N11i: CONTROL the inherited accessor answers for a verdict-shaped object and nothing else",
+    thenLive === true && ({}).then === undefined);
+  check("N11j: an inherited thenable cannot rewrite a note verdict (" +
+    (thenThrew || JSON.stringify(thenVerdict && thenVerdict.verified)) + ")",
+  thenThrew === null && !!thenVerdict && thenVerdict.verified === false &&
+    thenVerdict.signers.length === 0);
+  check("N11k: and it cannot rewrite a checkpoint verdict either (" +
+    JSON.stringify(thenCheckpoint && thenCheckpoint.verified) + ")",
+  !!thenCheckpoint && thenCheckpoint.verified === false && thenCheckpoint.signers.length === 0);
+
   /* "Verifiers MUST accept at least up to 16 signatures." */
   var many = [];
   for (var i = 0; i < 16; i++) many.push(await makeSigner("signer" + i + ".example"));
@@ -1371,6 +1414,33 @@ async function runKeyTypes() {
     Buffer.concat([pki.tlog.keyId("example.com/log", ecSpki), badEc]).toString("base64") + "\n";
   check("K10: a matched ECDSA key whose signature fails rejects the note",
     await codeOfAsync(pki.tlog.verifyNote(badNote, [{ name: "example.com/log", publicKey: ecSpki }])) === "tlog/bad-signature");
+
+  /* The native verifier is captured at load, but it verifies against whatever key object it is
+     handed, and the key came from a live `crypto.createPublicKey`. A replacement returning a
+     DIFFERENT genuine P-256 key makes the captured verifier check the signature against that key, so
+     a line carrying the caller's name and key id with another key's signature verified. The forged
+     line below names the caller's key by both name and id, which is what makes it a forgery rather
+     than an unknown signer, and the import is captured so the substitution reaches nothing. */
+  var other = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var forgedSig = nodeCrypto.sign("sha256", msg, { key: other.privateKey, dsaEncoding: "der" });
+  var forgedLine = text + "\n" + EM_DASH + " example.com/log " +
+    Buffer.concat([pki.tlog.keyId("example.com/log", ecSpki), forgedSig]).toString("base64") + "\n";
+  var realCreatePublicKey = nodeCrypto.createPublicKey;
+  var substitutedCode, substituteLive;
+  try {
+    nodeCrypto.createPublicKey = function () { return other.publicKey; };
+    // CONTROL, inside the window: the replacement answers for any argument, so the probe exercises it.
+    substituteLive = nodeCrypto.createPublicKey({ key: ecSpki, format: "der", type: "spki" }) === other.publicKey;
+    substitutedCode = await codeOfAsync(pki.tlog.verifyNote(forgedLine,
+      [{ name: "example.com/log", publicKey: ecSpki }]));
+  } finally { nodeCrypto.createPublicKey = realCreatePublicKey; }
+  check("K10a: CONTROL the replaced key import is live during the probe", substituteLive === true);
+  check("K10a2: CONTROL the forged signature is a genuine one by the other key over the same bytes, so " +
+    "only the toolkit's choice of key refuses it",
+  nodeCrypto.verify("sha256", msg, { key: other.publicKey, dsaEncoding: "der" }, forgedSig) === true &&
+    nodeCrypto.verify("sha256", msg, { key: ec.publicKey, dsaEncoding: "der" }, forgedSig) === false);
+  check("K10b: a replaced crypto.createPublicKey cannot substitute the key a note is verified against (" +
+    substitutedCode + ")", substitutedCode === "tlog/bad-signature");
   /* The load-bearing form: a FAILING matched line beside a VALID matched line.
      Without the second line this tests only "nothing verified"; with it, it tests
      that a forged line from a known signer is not masked by a real one. */

@@ -26,6 +26,41 @@
  */
 
 var nodeCrypto = require("node:crypto");
+
+/* The KeyObject export runs through an operation the package captures when it LOADS, so a wrapper
+   installed afterwards never sees it. This one is installed BEFORE the require below, which is what
+   makes the capture the package takes be this wrapper: every export the engine performs then reaches
+   `_exportTap` for the lifetime of the process, and `tap()` only decides whether one is recording. */
+var _secretKeyProto = Object.getPrototypeOf(nodeCrypto.createSecretKey(Buffer.alloc(32)));
+var _realSecretExport = _secretKeyProto.export;
+var _exportTap = null;
+Object.defineProperty(_secretKeyProto, "export", {
+  value: function () {
+    var out = _realSecretExport.apply(this, arguments);
+    if (_exportTap !== null) _exportTap(out);
+    return out;
+  },
+  writable: true, configurable: true,
+});
+
+/* The key imports are captured at load for the same reason, so these wrappers are installed before the
+   require too. They are the last place a toolkit-allocated private-key or raw-key copy can be held: a
+   caller's Uint8Array or PEM becomes a copy inside the signing and recipient paths, and that copy is
+   what owes the wipe. `_importTap` records the buffer each import was handed. */
+var _realCreatePrivateKey = nodeCrypto.createPrivateKey;
+var _realCreateSecretKey = nodeCrypto.createSecretKey;
+var _importTap = null;
+nodeCrypto.createPrivateKey = function (spec) {
+  if (_importTap !== null && spec !== null && typeof spec === "object" && spec.key !== undefined) {
+    _importTap("import.pkcs8", spec.key);
+  }
+  return _realCreatePrivateKey.apply(this, arguments);
+};
+nodeCrypto.createSecretKey = function (material) {
+  if (_importTap !== null) _importTap("import.raw", material);
+  return _realCreateSecretKey.apply(this, arguments);
+};
+
 var helpers = require("../helpers");
 var check = helpers.check;
 var pki = helpers.pki;
@@ -66,15 +101,12 @@ function tap() {
   nodeCrypto.decapsulate = function () { return grab("kem.decap", real.decapsulate.apply(this, arguments)); };
   nodeCrypto.diffieHellman = function () { return grab("dh.z", real.diffieHellman.apply(this, arguments)); };
   // A cipher or KDF copies its key material out of the KeyObject via export(); that copy is
-  // toolkit-owned and owes the same wipe as a shared secret. Wrapping export on the
-  // instance catches it wherever the key was created, including keys the CMS paths build
-  // internally and a test could not otherwise reach.
-  nodeCrypto.createSecretKey = function () {
-    var ko = real.createSecretKey.apply(this, arguments);
-    var realExport = ko.export.bind(ko);
-    ko.export = function () { return grab("key.export", realExport.apply(null, arguments)); };
-    return ko;
-  };
+  // toolkit-owned and owes the same wipe as a shared secret. The wrapper installed at the top of this
+  // file is what the engine's captured export resolves to, so recording is switched on here and off
+  // again in restore(); the capture catches the copy wherever the key was created, including keys the
+  // CMS paths build internally and a test could not otherwise reach.
+  _exportTap = function (out) { grab("key.export", out); };
+  _importTap = function (label, buf) { if (buf !== null && typeof buf === "object") grab(label, buf); };
   // The classic PKCS#12 KDF (RFC 7292 App. B) is a JS loop, not a node primitive, so the only view
   // of the key it derives is the moment it is handed to a cipher or HMAC.
   real.createHmac = nodeCrypto.createHmac;
@@ -148,7 +180,8 @@ function tap() {
       nodeCrypto.encapsulate = real.encapsulate;
       nodeCrypto.decapsulate = real.decapsulate;
       nodeCrypto.diffieHellman = real.diffieHellman;
-      nodeCrypto.createSecretKey = real.createSecretKey;
+      _exportTap = null;
+      _importTap = null;
       nodeCrypto.pbkdf2Sync = real.pbkdf2Sync;
       nodeCrypto.randomBytes = real.randomBytes;
       nodeCrypto.createHmac = real.createHmac;

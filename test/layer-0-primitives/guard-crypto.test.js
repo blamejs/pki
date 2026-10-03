@@ -31,6 +31,20 @@ function run() {
   check("CONTROL the platform primitive does throw on that pair, which is what the guard absorbs",
     threw(function () { crypto.timingSafeEqual(Buffer.from("abc"), Buffer.from("abcd")); }) !== null);
 
+  /* The comparison is the operation a MAC verdict rests on, and `crypto.timingSafeEqual` is an ordinary
+     writable property of the module object, so a replacement answering `true` accepted any
+     equal-length wrong MAC. It is captured at load. */
+  var realEqual = crypto.timingSafeEqual;
+  var underReplacedEqual, equalLive;
+  try {
+    crypto.timingSafeEqual = function () { return true; };
+    equalLive = crypto.timingSafeEqual(Buffer.from("abc"), Buffer.from("abd")) === true;
+    underReplacedEqual = guard.constantTimeEqual(Buffer.from("abc"), Buffer.from("abd"));
+  } finally { crypto.timingSafeEqual = realEqual; }
+  check("CONTROL the replaced comparison is live, so the next check exercises it", equalLive === true);
+  check("a replaced crypto.timingSafeEqual cannot turn unequal bytes into a match",
+    underReplacedEqual === false);
+
   // ---- digest ----
   var MSG = Buffer.from("the message");
   check("a digest is the platform's own value for the same name and bytes",
@@ -76,6 +90,98 @@ function run() {
      value: nothing is returned in its place. */
   check("an unknown algorithm name throws rather than answering",
     threw(function () { guard.digest("sha-not-a-real-one", MSG); }) !== null);
+
+  // ---- xof ----
+  /* A single-stage KDF squeezes an extendable-output function for key material, so a replaced `update`
+     chooses what the derivation covers and a replaced `digest` chooses the key bytes. */
+  var xofExpected = crypto.createHash("shake128", { outputLength: 32 }).update(MSG).digest();
+  check("an XOF is the platform's own value for the same name, bytes and length",
+    guard.xof("shake128", MSG, 32).equals(xofExpected) &&
+    guard.xof("shake256", MSG, 64).length === 64);
+  var underReplacedXof, xofLive;
+  try {
+    Object.defineProperty(hashProto, "update", {
+      value: function () { return this; }, writable: true, configurable: true,
+    });
+    xofLive = crypto.createHash("shake128", { outputLength: 32 }).update(MSG).digest()
+      .equals(crypto.createHash("shake128", { outputLength: 32 }).update(Buffer.from("other")).digest());
+    underReplacedXof = guard.xof("shake128", MSG, 32).equals(xofExpected);
+  } finally {
+    Object.defineProperty(hashProto, "update", { value: realUpdate, writable: true, configurable: true });
+  }
+  check("CONTROL under the replacement the chained XOF form derives the same bytes from different input",
+    xofLive === true);
+  check("a replaced hash update cannot change what an XOF covers", underReplacedXof === true);
+
+  // ---- hmac ----
+  /* HKDF-Extract and every HKDF-Expand round are MACs, so a replacement here decides the pseudo-random
+     key a whole key schedule hangs off. The Hmac prototype is its own object, not the Hash one. */
+  var MAC_KEY = Buffer.alloc(32, 0x5c);
+  var macExpected = crypto.createHmac("sha256", MAC_KEY).update(MSG).digest();
+  check("a MAC is the platform's own value for the same name, key and bytes",
+    guard.hmac("sha256", MAC_KEY, MSG).equals(macExpected));
+  var macProto = Object.getPrototypeOf(crypto.createHmac("sha256", MAC_KEY));
+  var realMacUpdate = macProto.update, realMacDigest = macProto.digest;
+  var underReplacedMac, macLive, underReplacedMacDigest, macDigestLive;
+  try {
+    Object.defineProperty(macProto, "update", {
+      value: function () { return this; }, writable: true, configurable: true,
+    });
+    macLive = crypto.createHmac("sha256", MAC_KEY).update(MSG).digest()
+      .equals(crypto.createHmac("sha256", MAC_KEY).update(Buffer.from("other")).digest());
+    underReplacedMac = guard.hmac("sha256", MAC_KEY, MSG).equals(macExpected);
+  } finally {
+    Object.defineProperty(macProto, "update", { value: realMacUpdate, writable: true, configurable: true });
+  }
+  check("CONTROL under the replacement the chained MAC form answers the same for different input",
+    macLive === true);
+  check("a replaced MAC update cannot change what a MAC covers", underReplacedMac === true);
+
+  try {
+    Object.defineProperty(macProto, "digest", {
+      value: function () { return Buffer.alloc(32, 0x7a); }, writable: true, configurable: true,
+    });
+    macDigestLive = crypto.createHmac("sha256", MAC_KEY).update(MSG).digest()[0] === 0x7a;
+    underReplacedMacDigest = guard.hmac("sha256", MAC_KEY, MSG).equals(macExpected);
+  } finally {
+    Object.defineProperty(macProto, "digest", { value: realMacDigest, writable: true, configurable: true });
+  }
+  check("CONTROL the replaced MAC digest is live too", macDigestLive === true);
+  check("and a replaced MAC digest cannot change the value returned", underReplacedMacDigest === true);
+
+  // ---- verify and sign ----
+  /* `crypto.verify` and `crypto.sign` are ordinary writable properties of the module object, and they
+     were read once per signature at every call site in `lib/`, so a replacement installed after the
+     package loaded decided the verdict. Captured at load, a later replacement reaches nothing. */
+  var pair = crypto.generateKeyPairSync("ed25519");
+  var msg = Buffer.from("the signed bytes", "utf8");
+  var good = guard.sign(null, msg, pair.privateKey);
+  check("a signature made through the guard verifies through it",
+    guard.verify(null, msg, pair.publicKey, good) === true);
+  check("and a signature over other bytes does not",
+    guard.verify(null, Buffer.from("other", "utf8"), pair.publicKey, good) === false);
+
+  var realVerify = crypto.verify, realSign = crypto.sign;
+  var zero = Buffer.alloc(64, 0);
+  var underReplacedVerify, verifyLive, underReplacedSign, signLive;
+  try {
+    crypto.verify = function () { return true; };
+    verifyLive = crypto.verify(null, msg, pair.publicKey, zero) === true;
+    underReplacedVerify = guard.verify(null, msg, pair.publicKey, zero);
+  } finally { crypto.verify = realVerify; }
+  check("CONTROL the replaced verifier is live, so the next check exercises it", verifyLive === true);
+  check("a replaced crypto.verify cannot turn an all-zero signature into a verdict",
+    underReplacedVerify === false);
+
+  try {
+    crypto.sign = function () { return Buffer.alloc(64, 0x7a); };
+    signLive = crypto.sign(null, msg, pair.privateKey)[0] === 0x7a;
+    underReplacedSign = guard.sign(null, msg, pair.privateKey);
+  } finally { crypto.sign = realSign; }
+  check("CONTROL the replaced signer is live too", signLive === true);
+  check("and a replaced crypto.sign cannot decide the signature bytes",
+    Buffer.compare(underReplacedSign, good) === 0 &&
+    guard.verify(null, msg, pair.publicKey, underReplacedSign) === true);
 
   // ---- octet alignment ----
   check("a BIT STRING with no unused bits is octet-aligned",

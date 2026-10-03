@@ -6489,6 +6489,44 @@ async function testKeyStrengthFloor() {
   check("and a raised floor still applies through a custom verifier",
     (await run([interStrong, leafUnderStrong], { time: T2027, trustAnchors: anchor, verifier: everTrue, minRsaModulusBits: 4096 })).valid === false);
 
+  /* The verifier's `verify` is read ONCE, before the walk, not per certificate. Read inside the loop
+     it asks the caller's object the same question once per certificate, so an accessor could answer
+     with a refusing verifier for the leaf and an accepting one for the issuer above it, and the
+     verdict would then cover a path no single verifier accepted. */
+  var verifyReads = 0;
+  var flipping = {};
+  Object.defineProperty(flipping, "verify", {
+    enumerable: true,
+    get: function () {
+      verifyReads += 1;
+      var answer = verifyReads > 1;
+      return function () { return Promise.resolve(answer); };
+    },
+  });
+  /* TWO matching anchors, which is the configuration that makes this bite: a list whose names all
+     match the first certificate's issuer retries the walk per anchor, so a read inside the walk is one
+     read per ATTEMPT. The accessor's first answer refused both certificates and its second accepted
+     them, and the call returned valid. One anchor would hide it, which is the configuration this vector
+     deliberately does not use. */
+  var flipped = await run([interStrong, leafUnderStrong],
+    { time: T2027, trustAnchors: [anchor, anchor], verifier: flipping });
+  check("a verifier accessor is read once per call, across every anchor attempt (" + verifyReads + " read(s))",
+    verifyReads === 1);
+  check("so the first answer governs every certificate and every attempt, and a refusal is a refusal",
+    flipped.valid === false && failCodes(flipped).indexOf("path/bad-signature") !== -1);
+  // CONTROL: the same object read once the other way round validates, so the refusal above is the
+  // first answer being honored rather than the accessor being ignored.
+  verifyReads = 1;
+  var honored = await run([interStrong, leafUnderStrong],
+    { time: T2027, trustAnchors: [anchor, anchor], verifier: flipping });
+  check("CONTROL the same accessor answering true on its single read validates the path",
+    honored.valid === true && verifyReads === 2);
+  var missing = null;
+  try { await run([leafUnderStrong], { time: T2027, trustAnchors: anchor, verifier: {} }); }
+  catch (e) { missing = e && e.code; }
+  check("and a verifier carrying no verify function is refused at the door (" + missing + ")",
+    missing === "path/bad-input");
+
   // The strength gate reads the signature algorithm to decide whether the issuer key is RSA
   // at all. A certificate whose signature algorithm does not resolve (sha1WithRSAEncryption
   // is deliberately unregistered) gives it no algorithm to key off, so it declines to answer

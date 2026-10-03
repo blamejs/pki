@@ -419,6 +419,16 @@ function testJsonReader() {
   check("5a. duplicate top-level member rejected", code(function () { pki.jose.parseJson('{"a":1,"a":2}'); }) === "jose/duplicate-member");
   check("5b. duplicate nested member rejected", code(function () { pki.jose.parseJson('{"o":{"x":1,"x":2}}'); }) === "jose/duplicate-member");
   check("5c. distinct members parse", pki.jose.parseJson('{"a":1,"b":2}').b === 2);
+  /* The parse result carries the own `then` that ends the lookup promise resolution performs, and a
+     document that names `then` itself keeps the member it wrote: the sentinel is added, never
+     substituted for data. An ACME order document is read through this parser. */
+  var shielded = pki.jose.parseJson('{"status":"valid"}');
+  check("5c1. a parsed document owns a non-enumerable then",
+    Object.prototype.hasOwnProperty.call(shielded, "then") && shielded.then === undefined &&
+    Object.keys(shielded).join(",") === "status");
+  var carries = pki.jose.parseJson('{"then":42,"other":1}');
+  check("5c2. a document that names then keeps that member and round-trips",
+    carries.then === 42 && carries.other === 1 && JSON.stringify(carries) === '{"then":42,"other":1}');
   // A "__proto__" member must become an OWN property -- never mutate the returned
   // object's prototype (pollution) and never slip past the duplicate-member gate
   // (a primitive assignment to __proto__ creates no own property, so a naive
