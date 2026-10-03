@@ -392,7 +392,9 @@ var FETCH_USAGE = "usage: pki fetch <https-url> [--anchor <cert>] [--system] [--
   "  a configured anchor and that its name matches the URL; it checked no revocation status, no\n" +
   "  policy, and nothing about what the certificate is authorized to do. pki verify is the verb\n" +
   "  that validates a path.\n" +
-  "  An anchor is required: --anchor names one, --system uses the platform's store.";
+  "  An anchor is required: --anchor names one, --system uses the platform's store.\n" +
+  "  --der writes one certificate. A chain of several is refused under it, several concatenated DER\n" +
+  "  certificates not being a DER document that pki parse can read back.";
 
 // pki fetch <url> -- the chain a live endpoint presents, read from a TLS handshake that sends no
 // request, so nothing reaches the application behind it.
@@ -407,8 +409,17 @@ function cmdFetch(args) {
     var chain = channel.peerChain || [];
     if (!chain.length) return fail("fetch: the endpoint presented no certificate");
     if (args.der) {
-      var der = Buffer.concat(chain);
-      writeOrPrint(args, der);
+      // Concatenating several certificates produces several top-level DER values with nothing framing
+      // them, which is not a DER document: `pki parse` and `pki convert` reject it with `x509/bad-der`,
+      // so the file written was one this tool could not read back. One certificate is a document and is
+      // written as it was; more than one is refused, naming the two forms that do hold a chain.
+      if (chain.length > 1) {
+        return fail("fetch: --der writes one certificate, and this chain has " + chain.length +
+          ". Several DER certificates concatenated are not a DER document, so `pki parse` and " +
+          "`pki convert` reject the result. Omit --der for the chain as PEM, whose first block is the " +
+          "leaf, and convert that one block if you need its DER");
+      }
+      writeOrPrint(args, chain[0]);
     } else {
       var pem = chain.map(function (d) { return pki.schema.x509.pemEncode(d, "CERTIFICATE"); }).join("");
       writeOrPrint(args, pem);

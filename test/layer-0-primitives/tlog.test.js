@@ -212,6 +212,41 @@ async function runNoteFormat() {
   check("N11f: and a replaced array pop cannot drop that line past the check (" + underReplacedPop + ")",
     underReplacedPop === "tlog/bad-signature");
 
+  /* The KEY LIST is caller state too, and its members are read before the note is copied, so an
+   * accessor on one runs while the caller's input buffer is still the caller's. It can replace the
+   * note being verified with a different one: the verdict then reports on a document that was not
+   * the argument. Reading the key once bounds what the key can say about ITSELF and says nothing
+   * about what reading it can do to the subject, so the subject is snapshotted first. Both members
+   * the loop reads are the same door, so both are driven. */
+  var validNote = Buffer.from(await makeNote(text, [alice]), "utf8");
+  var substituted = [];
+  var sameLength = true;
+  for (var m = 0; m < 2; m++) {
+    var member = ["publicKey", "name"][m];
+    var answer = member === "name" ? alice.name : alice.raw;
+    var forgedInput = Buffer.from(alteredText, "utf8");
+    sameLength = sameLength && forgedInput.length === validNote.length;
+    var record = { name: alice.name, publicKey: alice.raw };
+    var ran = { fired: false, target: forgedInput };
+    Object.defineProperty(record, member, {
+      enumerable: true,
+      get: (function (state, reply) {
+        return function () {
+          if (!state.fired) { state.fired = true; validNote.copy(state.target); }
+          return reply;
+        };
+      })(ran, answer),
+    });
+    substituted.push(await codeOfAsync(pki.tlog.verifyNote(forgedInput, [record])) +
+      (ran.fired ? "/ran" : "/never-read"));
+  }
+  check("N11g: CONTROL the valid note and the altered one are the same length, so one replaces the other",
+    sameLength);
+  check("N11h: a key accessor cannot substitute the note before it is snapshotted (" +
+    substituted.join(" | ") + ")",
+    substituted.length === 2 && substituted[0] === "tlog/bad-signature/ran" &&
+    substituted[1] === "tlog/bad-signature/ran");
+
   /* "Verifiers MUST accept at least up to 16 signatures." */
   var many = [];
   for (var i = 0; i < 16; i++) many.push(await makeSigner("signer" + i + ".example"));

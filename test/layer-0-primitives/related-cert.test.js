@@ -57,6 +57,19 @@ async function codeAsync(p) { try { await p; return "NO-THROW"; } catch (e) { re
 var RELATED_OID = "1.3.6.1.5.5.7.1.36";
 var REQUEST_OID = "1.2.840.113549.1.9.16.2.60";
 var CERT_TIME = 1800000000;   // seconds since the epoch
+// RFC 9763 sec. 3.2 makes the freshness check a MUST on the certification authority and leaves the window
+// to local policy, so `pki.relatedCert.verifyRequest` requires one: there is no default window the toolkit
+// could choose, and the proof covers the certID and the requestTime alone, so without a window a captured
+// attribute replayed into a new request verifies forever. These vectors judge against the fixture's own
+// instant, which is what a CA reading a request made then would do.
+// `at` sits a minute after the fixture's instant, so a vector that shifts `requestTime` by a second to
+// change the preimage is still judged as past rather than as future.
+var FRESH = { maxAge: 300, at: new Date((CERT_TIME + 60) * 1000) };
+// The vectors below are about everything EXCEPT freshness, so they state the policy once here rather than
+// thirty times. The freshness arms themselves call the verb directly, with their own window and instant.
+function verifyFresh(rc, cert, opts) {
+  return pki.relatedCert.verifyRequest(rc, cert, Object.assign({}, FRESH, opts || {}));
+}
 
 // A certificate whose signatureAlgorithm is whatever is named, over whatever key is given. Hand-built,
 // because pki.x509.sign derives the signature algorithm from the signing key and so cannot produce the
@@ -155,16 +168,16 @@ async function testCsrAttribute() {
 
   // The proof is the evidence the requester holds the other certificate.
   check("C8: the proof verifies under the key of the certificate certID names",
-    (await pki.relatedCert.verifyRequest(rc, held.cert)) === true);
+    (await verifyFresh(rc, held.cert)) === true);
 
   var other = signing.makeSigner("ec-p256", { cn: "Other", serial: 44 });
   var forged = crypto.sign("sha256", preimage, { key: other.keyObject, dsaEncoding: "der" });
   check("C9: a proof made by another key does not verify",
-    (await pki.relatedCert.verifyRequest({ certID: rc.certID, requestTime: rc.requestTime,
+    (await verifyFresh({ certID: rc.certID, requestTime: rc.requestTime,
       locationInfo: rc.locationInfo, signature: { unusedBits: 0, bytes: forged } }, held.cert)) === false);
 
   check("C10: a certificate whose issuer and serial are not the ones certID names is refused",
-    (await codeAsync(pki.relatedCert.verifyRequest(rc, other.cert))) === "relatedcert/cert-mismatch");
+    (await codeAsync(verifyFresh(rc, other.cert))) === "relatedcert/cert-mismatch");
 
   // RFC 9763 sec. 3.2 says the CA "extracts the IssuerAndSerialNumber from the indicated certificate and
   // compares this VALUE against the IssuerAndSerialNumber provided in the certID field". `issuer` is a
@@ -183,7 +196,7 @@ async function testCsrAttribute() {
   var utf8Req = { certID: utf8CertId, requestTime: BigInt(CERT_TIME), locationInfo: locationInfo,
     signature: { unusedBits: 0, bytes: utf8Proof } };
   check("C10b: a request naming the same issuer in another string encoding verifies",
-    (await pki.relatedCert.verifyRequest(utf8Req, held.cert)) === true);
+    (await verifyFresh(utf8Req, held.cert)) === true);
   // And the comparison is still a comparison: a different name in the same encoding is still refused.
   var wrongName = b.sequence([b.set([b.sequence([
     b.oid(pki.oid.byName("commonName")), b.utf8("Not The Held Cert")])])]);
@@ -191,8 +204,34 @@ async function testCsrAttribute() {
   var wrongProof = crypto.sign("sha256",
     pki.relatedCert.requestSignedData({ certID: wrongCertId, requestTime: CERT_TIME }),
     { key: held.keyObject, dsaEncoding: "der" });
+  /* RFC 9763 sec. 3.2: the certification authority "MUST check that the BinaryTime indicated in the
+     requestTime field is sufficiently fresh", and "sufficient freshness is defined by local policy and is
+     out of the scope of this document". The window is therefore the caller's and there is no default: the
+     proof covers the certID and the requestTime alone (sec. 3.1), so a captured attribute copied into a
+     fresh request for an attacker's own key verified forever. A verifier that cannot perform a MUST check
+     must not answer true, so the option is required rather than defaulted. */
+  check("C11: a verify with no freshness policy is refused rather than answering true",
+    (await codeAsync(pki.relatedCert.verifyRequest(rc, held.cert))) === "relatedcert/no-freshness-policy");
+  var atNow = new Date((CERT_TIME + 60) * 1000);
+  check("C11a: CONTROL inside the window it verifies",
+    (await pki.relatedCert.verifyRequest(rc, held.cert, { maxAge: 300, at: atNow })) === true);
+  check("C11b: and one second past the window is refused, the proof being unchanged",
+    (await codeAsync(pki.relatedCert.verifyRequest(rc, held.cert, { maxAge: 59, at: atNow }))) === "relatedcert/stale-request");
+  check("C11c: exactly at the window is still fresh, the bound being inclusive",
+    (await pki.relatedCert.verifyRequest(rc, held.cert, { maxAge: 60, at: atNow })) === true);
+  check("C11d: a requestTime in the future is refused, so a producer cannot set one that stays fresh",
+    (await codeAsync(pki.relatedCert.verifyRequest(rc, held.cert,
+      { maxAge: 300, at: new Date((CERT_TIME - 1) * 1000) }))) === "relatedcert/stale-request");
+  check("C11e: a maxAge of 0 admits only the instant itself",
+    (await pki.relatedCert.verifyRequest(rc, held.cert, { maxAge: 0, at: new Date(CERT_TIME * 1000) })) === true &&
+    (await codeAsync(pki.relatedCert.verifyRequest(rc, held.cert, { maxAge: 0, at: atNow }))) === "relatedcert/stale-request");
+  check("C11f: a negative or non-integer maxAge is refused at the door",
+    (await codeAsync(pki.relatedCert.verifyRequest(rc, held.cert, { maxAge: -1, at: atNow }))) === "relatedcert/bad-input" &&
+    (await codeAsync(pki.relatedCert.verifyRequest(rc, held.cert, { maxAge: 1.5, at: atNow }))) === "relatedcert/bad-input");
+  check("C11g: an `at` that is not a Date is refused rather than coerced",
+    (await codeAsync(pki.relatedCert.verifyRequest(rc, held.cert, { maxAge: 300, at: CERT_TIME * 1000 }))) === "relatedcert/bad-input");
   check("C10c: and a different issuer name is still refused, the rule folding encodings and not names",
-    (await codeAsync(pki.relatedCert.verifyRequest({ certID: wrongCertId, requestTime: BigInt(CERT_TIME),
+    (await codeAsync(verifyFresh({ certID: wrongCertId, requestTime: BigInt(CERT_TIME),
       locationInfo: locationInfo, signature: { unusedBits: 0, bytes: wrongProof } }, held.cert))) === "relatedcert/cert-mismatch");
 
   // The identifier is ENCODED ONCE and those bytes are both hashed into the preimage and compared with
@@ -209,20 +248,20 @@ async function testCsrAttribute() {
   });
   var countedReq = { requestTime: rc.requestTime, locationInfo: rc.locationInfo, signature: rc.signature };
   Object.defineProperty(countedReq, "certID", { enumerable: true, get: function () { reads.certID += 1; return countedId; } });
-  var countedOk = await pki.relatedCert.verifyRequest(countedReq, held.cert);
+  var countedOk = await verifyFresh(countedReq, held.cert);
   check("C10a: certID and each field inside it are read from the caller exactly once (certID " +
     reads.certID + ", issuer " + reads.issuer + ", serialNumber " + reads.serialNumber + ")",
     countedOk === true && reads.certID === 1 && reads.issuer === 1 && reads.serialNumber === 1);
 
   check("C11: altering requestTime breaks the proof, since the time is inside the preimage",
-    (await pki.relatedCert.verifyRequest({ certID: rc.certID, requestTime: rc.requestTime + 1n,
+    (await verifyFresh({ certID: rc.certID, requestTime: rc.requestTime + 1n,
       locationInfo: rc.locationInfo, signature: rc.signature }, held.cert)) === false);
 
   // Altering locationInfo does NOT break it, because sec. 3.1 leaves it out of the signature.
   // Pinning this is how the scope of the proof stays a fact rather than an assumption: a caller must
   // not read a verified proof as vouching for where the certificate can be fetched.
   check("C12: altering locationInfo does not break the proof, which is the signature's stated scope",
-    (await pki.relatedCert.verifyRequest({ certID: rc.certID, requestTime: rc.requestTime,
+    (await verifyFresh({ certID: rc.certID, requestTime: rc.requestTime,
       locationInfo: ["https://attacker.example/other.cer"], signature: rc.signature }, held.cert)) === true);
 
   var ok = { certID: certID, requestTime: CERT_TIME, locationInfo: locationInfo, signature: proof };
@@ -522,13 +561,13 @@ async function testPlacementAndAlgorithms(ctx) {
   var rc384 = { certID: certID, requestTime: BigInt(CERT_TIME), locationInfo: ["https://a.example/"],
     signature: { unusedBits: 0, bytes: crypto.sign("sha384", preimage, { key: held.keyObject, dsaEncoding: "der" }) } };
   check("V1: a proof made under a named digest verifies when that digest is named",
-    (await pki.relatedCert.verifyRequest(rc384, held.cert, { digestAlgorithm: "sha384" })) === true);
+    (await verifyFresh(rc384, held.cert, { digestAlgorithm: "sha384" })) === true);
   check("V2: and does not verify under the derived one, so the option is read rather than ignored",
-    (await pki.relatedCert.verifyRequest(rc384, held.cert)) === false);
+    (await verifyFresh(rc384, held.cert)) === false);
   check("V3: a digest outside the accepted set is refused",
-    (await codeAsync(pki.relatedCert.verifyRequest(rc384, held.cert, { digestAlgorithm: "sha1" }))) === "relatedcert/bad-input");
+    (await codeAsync(verifyFresh(rc384, held.cert, { digestAlgorithm: "sha1" }))) === "relatedcert/bad-input");
   check("V4: an unknown option is refused rather than dropped",
-    (await codeAsync(pki.relatedCert.verifyRequest(rc384, held.cert, { digest: "sha384" }))) === "relatedcert/bad-input");
+    (await codeAsync(verifyFresh(rc384, held.cert, { digest: "sha384" }))) === "relatedcert/bad-input");
 
   // The keys whose algorithm admits no digest choice. The claim is about a class, so every member the
   // key table names is driven: the proof is a plain signature over the same bytes, it verifies with no
@@ -543,11 +582,11 @@ async function testPlacementAndAlgorithms(ctx) {
     var fkRc = { certID: fkId, requestTime: BigInt(CERT_TIME), locationInfo: ["https://a.example/"],
       signature: { unusedBits: 0, bytes: crypto.sign(null, fkPre, fk.keyObject) } };
     check("V5." + (fi + 1) + ": a " + kind + " proof verifies with no digest named",
-      (await pki.relatedCert.verifyRequest(fkRc, fk.cert)) === true);
+      (await verifyFresh(fkRc, fk.cert)) === true);
     check("V6." + (fi + 1) + ": naming a digest for " + kind + " is refused, not ignored",
-      (await codeAsync(pki.relatedCert.verifyRequest(fkRc, fk.cert, { digestAlgorithm: "sha256" }))) === "relatedcert/bad-input");
+      (await codeAsync(verifyFresh(fkRc, fk.cert, { digestAlgorithm: "sha256" }))) === "relatedcert/bad-input");
     check("V7." + (fi + 1) + ": a tampered " + kind + " proof does not verify",
-      (await pki.relatedCert.verifyRequest({ certID: fkId, requestTime: fkRc.requestTime + 1n,
+      (await verifyFresh({ certID: fkId, requestTime: fkRc.requestTime + 1n,
         locationInfo: fkRc.locationInfo, signature: fkRc.signature }, fk.cert)) === false);
   }
 
@@ -562,23 +601,23 @@ async function testPlacementAndAlgorithms(ctx) {
     var rsaRc = { certID: rsaId, requestTime: BigInt(CERT_TIME), locationInfo: ["https://a.example/"],
       signature: { unusedBits: 0, bytes: crypto.sign(dg, rsaPre, rsa.keyObject) } };
     check("V8." + (di + 1) + ": an RSA proof under " + dg + " verifies when that digest is named",
-      (await pki.relatedCert.verifyRequest(rsaRc, rsa.cert, { digestAlgorithm: dg })) === true);
+      (await verifyFresh(rsaRc, rsa.cert, { digestAlgorithm: dg })) === true);
     check("V9." + (di + 1) + ": and an RSA proof under " + dg + " fails under a different digest",
-      (await pki.relatedCert.verifyRequest(rsaRc, rsa.cert,
+      (await verifyFresh(rsaRc, rsa.cert,
         { digestAlgorithm: dg === "sha256" ? "sha384" : "sha256" })) === false);
   }
 
   // signatureAlgorithm names the algorithm outright, for a key the derivation does not reach.
   check("V8: a named DER AlgorithmIdentifier is used instead of the derivation",
-    (await pki.relatedCert.verifyRequest(rc384, held.cert,
+    (await verifyFresh(rc384, held.cert,
       { signatureAlgorithm: b.sequence([b.oid(O("ecdsaWithSHA384"))]) })) === true);
   check("V9: a named algorithm that does not match the key does not verify",
-    (await pki.relatedCert.verifyRequest(rc384, held.cert,
+    (await verifyFresh(rc384, held.cert,
       { signatureAlgorithm: b.sequence([b.oid(O("sha384WithRSAEncryption"))]) })) === false);
   check("V10: a signatureAlgorithm that is not an AlgorithmIdentifier is refused",
-    (await codeAsync(pki.relatedCert.verifyRequest(rc384, held.cert, { signatureAlgorithm: Buffer.from([5, 0]) }))) === "relatedcert/bad-input");
+    (await codeAsync(verifyFresh(rc384, held.cert, { signatureAlgorithm: Buffer.from([5, 0]) }))) === "relatedcert/bad-input");
   check("V11: an empty proof signature is refused rather than verified against nothing",
-    (await codeAsync(pki.relatedCert.verifyRequest({ certID: certID, requestTime: BigInt(CERT_TIME),
+    (await codeAsync(verifyFresh({ certID: certID, requestTime: BigInt(CERT_TIME),
       locationInfo: ["https://a.example/"], signature: { unusedBits: 0, bytes: Buffer.alloc(0) } }, held.cert))) === "relatedcert/bad-input");
   // A parsed certID carries serialNumberHex beside the serial, so the field is accepted. Both
   // directions are asserted on the same route: an agreeing value passes and a disagreeing one is
@@ -589,9 +628,9 @@ async function testPlacementAndAlgorithms(ctx) {
   }
   var agreeing = ctx.heldParsed.serialNumber.toString(16);
   check("V12: a certID whose serialNumberHex agrees with its serialNumber is accepted",
-    (await pki.relatedCert.verifyRequest(withHex(agreeing), held.cert, { digestAlgorithm: "sha384" })) === true);
+    (await verifyFresh(withHex(agreeing), held.cert, { digestAlgorithm: "sha384" })) === true);
   check("V13: and one that disagrees is refused rather than ignored",
-    (await codeAsync(pki.relatedCert.verifyRequest(withHex("ff"), held.cert, { digestAlgorithm: "sha384" }))) === "relatedcert/bad-input");
+    (await codeAsync(verifyFresh(withHex("ff"), held.cert, { digestAlgorithm: "sha384" }))) === "relatedcert/bad-input");
 
   // The signature is read as every other ASN.1 signature field is, so an ECDSA proof is the DER
   // SEQUENCE { r, s }. A WebCrypto sign returns the fixed-width r || s, and a caller reaching for it
@@ -604,9 +643,9 @@ async function testPlacementAndAlgorithms(ctx) {
       signature: { unusedBits: 0, bytes: bytes } };
   }
   check("V17: a DER SEQUENCE { r, s } proof verifies",
-    (await pki.relatedCert.verifyRequest(proofRc(asDer), held.cert)) === true);
+    (await verifyFresh(proofRc(asDer), held.cert)) === true);
   check("V18: the same signature as fixed-width r || s does not, that not being the field's encoding",
-    (await pki.relatedCert.verifyRequest(proofRc(raw), held.cert)) === false);
+    (await verifyFresh(proofRc(raw), held.cert)) === false);
 
   // An RSASSA-PSS key, whose parameters are part of its algorithm rather than derivable from a digest
   // name. Resolving the identifier through the same resolver the signing verbs use reaches it, so the
@@ -623,9 +662,9 @@ async function testPlacementAndAlgorithms(ctx) {
     var pssRc = { certID: pssId, requestTime: BigInt(CERT_TIME), locationInfo: ["https://a.example/"],
       signature: { unusedBits: 0, bytes: pssSig } };
     check("V14." + (pi + 1) + ": an RSASSA-PSS proof under " + pd + " verifies, parameters and all",
-      (await pki.relatedCert.verifyRequest(pssRc, pss.cert, { digestAlgorithm: pd })) === true);
+      (await verifyFresh(pssRc, pss.cert, { digestAlgorithm: pd })) === true);
     check("V15." + (pi + 1) + ": and the same proof fails under a different digest",
-      (await pki.relatedCert.verifyRequest(pssRc, pss.cert,
+      (await verifyFresh(pssRc, pss.cert,
         { digestAlgorithm: pd === "sha256" ? "sha512" : "sha256" })) === false);
   }
 
@@ -644,12 +683,12 @@ async function testPlacementAndAlgorithms(ctx) {
   var pinnedRc = { certID: pinnedId, requestTime: BigInt(CERT_TIME), locationInfo: ["https://a.example/"],
     signature: { unusedBits: 0, bytes: pinnedSig } };
   var pinnedCode = "NO-THROW", pinnedOk = null;
-  try { pinnedOk = await pki.relatedCert.verifyRequest(pinnedRc, pinned.cert, { digestAlgorithm: "sha256" }); }
+  try { pinnedOk = await verifyFresh(pinnedRc, pinned.cert, { digestAlgorithm: "sha256" }); }
   catch (e) { pinnedCode = e.code || e.message; }
   check("V19: a proof under a hash-restricted RSASSA-PSS key verifies at the digest the key pins" +
     (pinnedCode === "NO-THROW" ? "" : " (refused with " + pinnedCode + ")"), pinnedOk === true);
   check("V19a: and it verifies with no digest named at all, the key having only one",
-    (await pki.relatedCert.verifyRequest(pinnedRc, pinned.cert)) === true);
+    (await verifyFresh(pinnedRc, pinned.cert)) === true);
   check("V19b: CONTROL the same key's SPKI does pin a hash, so this is the restricted case",
     pinnedParsed.subjectPublicKeyInfo.algorithm.name === "rsassaPss" &&
     pinnedParsed.subjectPublicKeyInfo.algorithm.parameters != null);
@@ -661,7 +700,7 @@ async function testPlacementAndAlgorithms(ctx) {
     var recip = signing.makeRecipient(kems[ki]);
     var rp = pki.schema.x509.parse(recip.cert);
     check("V16." + (ki + 1) + ": a " + kems[ki] + " key, which cannot sign, is refused",
-      (await codeAsync(pki.relatedCert.verifyRequest({
+      (await codeAsync(verifyFresh({
         certID: { issuer: rp.issuer.bytes, serialNumber: rp.serialNumber },
         requestTime: BigInt(CERT_TIME), locationInfo: ["https://a.example/"],
         signature: { unusedBits: 0, bytes: Buffer.alloc(64, 1) },

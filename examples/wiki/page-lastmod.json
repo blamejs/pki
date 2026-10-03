@@ -119,7 +119,7 @@
   "lib/sigstore.js": "2026-10-02",
   "lib/sleep.js": "2026-09-01",
   "lib/smime.js": "2026-10-03",
-  "lib/tlog.js": "2026-10-02",
+  "lib/tlog.js": "2026-10-03",
   "lib/tls-cert-compress.js": "2026-10-02",
   "lib/trust.js": "2026-09-24",
   "lib/trustanchor-build.js": "2026-09-24",

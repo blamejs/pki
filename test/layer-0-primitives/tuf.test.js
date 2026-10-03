@@ -190,6 +190,19 @@ function runCanonical() {
     pki.tuf.canonicalJson(HI + LO).equals(Buffer.from("22f0908080" + "22", "hex")));
   check("J: CONTROL U+FFFD itself still encodes",
     pki.tuf.canonicalJson(String.fromCharCode(0xfffd)).equals(Buffer.from("22efbfbd22", "hex")));
+  /* Escaping only those two means the canonical form of a document holding a PEM is NOT a document a
+     strict JSON reader accepts: the newlines inside the key land as raw bytes. This is the encoding the
+     specification states, so it is pinned rather than fixed, and it is the reason `verifySignatures`
+     reads the specification version from the parsed object's own field instead of from the bytes the
+     signatures cover, which would be the stronger place for it. */
+  var pemish = { keyval: { public: "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n" } };
+  var pemCanonical = pki.tuf.canonicalJson(pemish);
+  check("J: a string holding newlines is emitted with them raw, this being the stated encoding",
+    pemCanonical.indexOf(0x0a) >= 0 &&
+    code(function () {
+      pki.tuf.parseMetadata(Buffer.concat([Buffer.from('{"signatures":[],"signed":'), pemCanonical,
+        Buffer.from("}")]));
+    }) === "tuf/bad-json");
   /* Depth is bounded, so a nested document cannot drive the recursion. */
   var deep = {}, cur = deep;
   for (var i = 0; i < 200; i++) { cur.a = {}; cur = cur.a; }
@@ -266,6 +279,7 @@ function runKeyIds() {
 // ---------------------------------------------------------------------------
 var EXPIRES = "2030-01-01T00:00:00Z";
 var NOW = new Date("2027-01-01T00:00:00Z");
+var SPEC = "1.0.31";
 
 function signWith(signer, signedObj) {
   var preimage = pki.tuf.canonicalJson(signedObj);
@@ -284,8 +298,8 @@ function rootSigned(o) {
   o = o || {};
   var keys = {};
   (o.signers || []).forEach(function (s) { keys[s.keyId] = s.key; });
-  return {
-    _type: "root", spec_version: "1.0.31",
+  var body = {
+    _type: "root", spec_version: o.specVersion === undefined ? "1.0.31" : o.specVersion,
     version: o.version === undefined ? 1 : o.version,
     expires: o.expires || EXPIRES,
     consistent_snapshot: true,
@@ -293,6 +307,10 @@ function rootSigned(o) {
     roles: o.roles || { root: { keyids: (o.signers || []).map(function (s) { return s.keyId; }),
       threshold: o.threshold === undefined ? 1 : o.threshold } },
   };
+  // `specVersion: null` omits the field entirely, which is the case TAP 6 forbids and the one a client
+  // cannot match against the version it implements.
+  if (o.specVersion === null) delete body.spec_version;
+  return body;
 }
 
 async function runVerify() {
@@ -314,7 +332,8 @@ async function runVerify() {
      refused for the container rather than for the content. Run on the VERIFYING metadata above, so the
      narrow operation is reached: the Buffer arm is the control that says so. */
   async function verifyWithSignedBytesAs(convert) {
-    var m = { type: meta.type, version: meta.version, expires: meta.expires, signed: meta.signed,
+    var m = { type: meta.type, specVersion: meta.specVersion, version: meta.version,
+      expires: meta.expires, signed: meta.signed,
       signatures: meta.signatures, signedBytes: convert(meta.signedBytes) };
     try {
       var r = await pki.tuf.verifySignatures({ metadata: m, keys: signed.keys, role: signed.roles.root });
@@ -448,7 +467,7 @@ async function runVerify() {
   check("M11: a document with no signed body is refused",
     code(function () { pki.tuf.parseMetadata(Buffer.from(JSON.stringify({ signatures: [] }))); }) === "tuf/bad-metadata");
   check("M12: a signed body with no _type is refused",
-    code(function () { pki.tuf.parseMetadata(Buffer.from(JSON.stringify({ signatures: [], signed: { version: 1, expires: EXPIRES } }))); }) === "tuf/bad-metadata");
+    code(function () { pki.tuf.parseMetadata(Buffer.from(JSON.stringify({ signatures: [], signed: { spec_version: SPEC, version: 1, expires: EXPIRES } }))); }) === "tuf/bad-metadata");
   check("M13: a version that is not a positive integer is refused",
     code(function () { pki.tuf.parseMetadata(metadataFor(rootSigned({ signers: [a], version: 0 }), [a])); }) === "tuf/bad-metadata");
   check("M14: an expires that is not a date-time is refused",
@@ -502,7 +521,7 @@ async function runVerify() {
      true for metadata whose real expiry is in the past. Expiry is the freeze-attack check, so a verdict of
      true on an expired document is the whole defense answering the wrong question. */
   var expReads = 0;
-  var sneakyExp = { type: "root", version: 1 };
+  var sneakyExp = { type: "root", specVersion: SPEC, version: 1 };
   Object.defineProperty(sneakyExp, "expires", {
     enumerable: true,
     get: function () {
@@ -519,8 +538,8 @@ async function runVerify() {
   /* CONTROL: a plain object with the same expired date is still refused, and an unexpired one still
      passes, so reading it once did not change either verdict. */
   check("M18b: CONTROL a plain expired object is still refused and an unexpired one still passes",
-    code(function () { pki.tuf.checkExpiry({ type: "root", expires: "2026-01-01T00:00:00Z" }, NOW); }) === "tuf/expired" &&
-    pki.tuf.checkExpiry({ type: "root", expires: "2099-01-01T00:00:00Z" }, NOW) === true);
+    code(function () { pki.tuf.checkExpiry({ type: "root", specVersion: SPEC, expires: "2026-01-01T00:00:00Z" }, NOW); }) === "tuf/expired" &&
+    pki.tuf.checkExpiry({ type: "root", specVersion: SPEC, expires: "2099-01-01T00:00:00Z" }, NOW) === true);
 
   /* `keyId` validates `keytype`, `scheme` and `keyval`, then hashes the key through `canonicalJson`,
      which reads every field AGAIN. The identifier is the identity a role's `keyids` list matches against,
@@ -541,6 +560,162 @@ async function runVerify() {
      the key to a single read did not change the identity any existing document states. */
   check("M18d: CONTROL an ordinary key still derives its stated identifier",
     pki.tuf.keyId(a.key) === a.keyId && a.keyId.length === 64);
+
+  /* "Metadata is written according to version "spec_version" of the specification, and clients MUST
+     verify that "spec_version" matches the expected version number". The clause is about metadata, not
+     about root metadata, so it binds every role. `updateRoot` holds a root to it; `parseMetadata` is the
+     only door the other three roles come through, and from there a document reaches `verifySignatures`
+     and `checkExpiry`. Both of those answer under 1.x rules -- the key identifier is a hash of the
+     canonical form this version defines, and the expiry format is the one this version states -- so a
+     positive verdict on a document written to another major version is an answer about rules the
+     document does not claim. Measured before the fix: a targets, snapshot or timestamp document
+     declaring 2.0.0, and one declaring nothing at all, parsed; `checkExpiry` then returned true. */
+  function parseRole(type, spec) {
+    var body = { _type: type, version: 1, expires: EXPIRES };
+    if (spec !== null) body.spec_version = spec;
+    return code(function () { pki.tuf.parseMetadata(Buffer.from(JSON.stringify({ signatures: [], signed: body }))); });
+  }
+  var ROLES = ["targets", "snapshot", "timestamp"];
+  var controlOk = true, otherMajor = true, absent = true, notSemver = true, laterMinor = true;
+  for (var ri = 0; ri < ROLES.length; ri++) {
+    controlOk = controlOk && parseRole(ROLES[ri], "1.0.31") === "NO-THROW";
+    laterMinor = laterMinor && parseRole(ROLES[ri], "1.9.7") === "NO-THROW";
+    otherMajor = otherMajor && parseRole(ROLES[ri], "2.0.0") === "tuf/unsupported-spec-version";
+    absent = absent && parseRole(ROLES[ri], null) === "tuf/bad-metadata";
+    notSemver = notSemver && parseRole(ROLES[ri], "one point oh") === "tuf/unsupported-spec-version";
+  }
+  check("M19a: CONTROL every role naming this build's major version parses", controlOk);
+  check("M19b: and a later 1.x minor parses too, the match being the major version", laterMinor);
+  check("M19c: every role naming another major version is refused, not only root", otherMajor);
+  check("M19d: a document naming no spec_version is refused for every role, TAP 6 requiring it", absent);
+  check("M19e: and a spec_version that is not a semantic version is refused for every role", notSemver);
+  /* The rule is at the door, so no later verb can be handed a document written to another major
+     version: there is no parsed object to pass on. */
+  var reached;
+  try {
+    var alien = pki.tuf.parseMetadata(Buffer.from(JSON.stringify({ signatures: [],
+      signed: { _type: "targets", spec_version: "2.0.0", version: 1, expires: EXPIRES } })));
+    reached = String(pki.tuf.checkExpiry(alien, NOW));
+  } catch (e) { reached = (e && e.code) || "NO-CODE"; }
+  check("M19f: checkExpiry cannot report on a 2.x document, the parse refusing it first (" + reached + ")",
+    reached === "tuf/unsupported-spec-version");
+  /* `_type`, `version` and `expires` are themselves rules of this specification version, so the match
+     is made before any of them is read: a document decided on its version field first has been judged
+     under rules it may not be written to. Each of these carries a value the 1.x rule below would
+     refuse, and the version mismatch is what answers. */
+  function withBoth(extra) {
+    var body = { _type: "targets", spec_version: "2.0.0", version: 1, expires: EXPIRES };
+    var keys = Object.keys(extra);
+    for (var i = 0; i < keys.length; i++) body[keys[i]] = extra[keys[i]];
+    return code(function () { pki.tuf.parseMetadata(Buffer.from(JSON.stringify({ signatures: [], signed: body }))); });
+  }
+  check("M19g: the version match is made before the fields this version defines are read",
+    withBoth({ _type: "" }) === "tuf/unsupported-spec-version" &&
+    withBoth({ version: 0 }) === "tuf/unsupported-spec-version" &&
+    withBoth({ expires: "soon" }) === "tuf/unsupported-spec-version");
+  /* The canonical form admits no floating point at any version this build reads, so a fractional number
+     is refused on the JSON before the document states anything: the version match cannot precede the
+     read that makes the field addressable. */
+  check("M19h: a fractional number is refused on the JSON whatever version the document declares",
+    code(function () {
+      pki.tuf.parseMetadata(Buffer.from('{"signatures":[],"signed":{"_type":"targets",' +
+        '"spec_version":"2.0.0","version":1.5,"expires":"' + EXPIRES + '"}}'));
+    }) === "tuf/bad-json");
+
+  /* `verifySignatures` and `checkExpiry` take a metadata OBJECT, and both are reachable with one a
+     caller assembled rather than one `parseMetadata` produced -- which is why `checkExpiry` already
+     re-enforces the `expires` format there. Measured before the rule was carried across: a hand-built
+     targets document declaring 2.0.0, 0.9.0, or nothing at all, carrying a REAL Ed25519 signature,
+     was reported `verified` and `checkExpiry` returned true for it. A key identifier is a hash of the
+     canonical form this version defines, so that verdict answers under rules the document does not
+     claim. */
+  function handBuilt(spec) {
+    var body = { _type: "targets", version: 1, expires: EXPIRES };
+    if (spec !== null) body.spec_version = spec;
+    var canonical = pki.tuf.canonicalJson(body);
+    var m = { type: body._type, version: body.version, expires: body.expires, signed: body,
+      signatures: [{ keyid: a.keyId, sig: crypto.sign(null, canonical, a.kp.privateKey).toString("hex") }],
+      signedBytes: canonical };
+    if (spec !== null) m.specVersion = spec;
+    return m;
+  }
+  async function verifyHand(spec) {
+    var m = handBuilt(spec);
+    try {
+      var v = await pki.tuf.verifySignatures({ metadata: m, keys: signed.keys, role: signed.roles.root });
+      return "verified=" + v.verified;
+    } catch (e) { return (e && e.code) || "NO-CODE"; }
+  }
+  function expiryHand(spec) {
+    return code(function () { pki.tuf.checkExpiry(handBuilt(spec), NOW); });
+  }
+  check("M19i: CONTROL a hand-built document naming this build's major version still verifies",
+    await verifyHand(SPEC) === "verified=true" && expiryHand(SPEC) === "NO-THROW");
+  check("M19j: verifySignatures refuses a hand-built document written to another major version",
+    await verifyHand("2.0.0") === "tuf/unsupported-spec-version" &&
+    await verifyHand("0.9.0") === "tuf/unsupported-spec-version");
+  check("M19k: and one that names no version at all, which is the caller's object being incomplete",
+    await verifyHand(null) === "tuf/bad-input");
+  check("M19l: checkExpiry carries the same rule, so no verb answers about a 2.x document",
+    expiryHand("2.0.0") === "tuf/unsupported-spec-version" &&
+    expiryHand("0.9.0") === "tuf/unsupported-spec-version" &&
+    expiryHand(null) === "tuf/bad-input");
+
+  /* A parsed object is the CALLER's once it is returned, and its `signedBytes` is a Buffer whose contents
+     can be overwritten. `specVersion` is filled from the document at parse time, so agreement between
+     the two does not survive a mutation: the field names the document that was parsed while the bytes
+     name the document that gets verified. This is A16's shape with `spec_version` in place of `version`,
+     and it is answered the same way -- by deriving the bytes verified from ONE read of `signed`, so the
+     version read and the document reported on are the same value. Both documents here are signed by a
+     real key held by the role, which is what A16 assumes too: two validly signed documents and one
+     buffer between them. */
+  var specA = rootSigned({ signers: [a], version: 1, specVersion: "1.0.31" });
+  var specB = rootSigned({ signers: [a], version: 1, specVersion: "2.0.31" });
+  var preA = pki.tuf.canonicalJson(specA), preB = pki.tuf.canonicalJson(specB);
+  check("M19m: the two documents' canonical forms are the same length, so one overwrites the other",
+    preA.length === preB.length);
+  var swapped = pki.tuf.parseMetadata(metadataFor(specA, [a]));
+  preB.copy(swapped.signedBytes);                       // the bytes become the 2.x document's
+  swapped.signatures[0].sig = crypto.sign(null, preB, a.kp.privateKey).toString("hex");
+  var swappedGot;
+  try {
+    swappedGot = await pki.tuf.verifySignatures({ metadata: swapped, keys: specA.keys,
+      role: specA.roles.root });
+  } catch (e) { swappedGot = (e && e.code) || "NO-CODE"; }
+  check("M19n: overwriting signedBytes with a 2.x document cannot yield a verified verdict (" +
+    (swappedGot && swappedGot.verified !== undefined ? "verified=" + swappedGot.verified : swappedGot) + ")",
+    swappedGot === "tuf/bad-input" || swappedGot.verified === false);
+  /* And with the signed body changed to agree with the bytes, so nothing is inconsistent any more, the
+     document itself is one this build does not implement. */
+  var agreed = pki.tuf.parseMetadata(metadataFor(specA, [a]));
+  preB.copy(agreed.signedBytes);
+  agreed.signed.spec_version = "2.0.31";
+  agreed.signatures[0].sig = crypto.sign(null, preB, a.kp.privateKey).toString("hex");
+  var agreedGot;
+  try {
+    agreedGot = await pki.tuf.verifySignatures({ metadata: agreed, keys: specA.keys,
+      role: specA.roles.root });
+  } catch (e) { agreedGot = (e && e.code) || "NO-CODE"; }
+  check("M19o: and a consistent 2.x document is refused on its version (" +
+    (agreedGot && agreedGot.verified !== undefined ? "verified=" + agreedGot.verified : agreedGot) + ")",
+    agreedGot === "tuf/unsupported-spec-version");
+  /* CONTROL: the same object, unmutated, still verifies, so the two above are about the swap rather than
+     about anything the derivation broke. */
+  var untouched = await pki.tuf.verifySignatures({
+    metadata: pki.tuf.parseMetadata(metadataFor(specA, [a])), keys: specA.keys, role: specA.roles.root });
+  check("M19p: CONTROL the unmutated document still verifies", untouched.verified === true);
+  /* The verdict is about the document as of the CALL. Both the body and the bytes are copied before the
+     first await, so changing either afterwards cannot alter what was verified -- it leaves the caller's
+     own object no longer matching the verdict it already holds, which is A16's reasoning applied to the
+     body. What a mutation before the call does is get refused, which M19n and M19o pin. */
+  var live = pki.tuf.parseMetadata(metadataFor(specA, [a]));
+  var livePending = pki.tuf.verifySignatures({ metadata: live, keys: specA.keys,
+    role: specA.roles.root });
+  live.signed.spec_version = "2.0.31";
+  preB.copy(live.signedBytes);
+  var liveGot = await livePending;
+  check("M19q: a mutation after the call cannot change the document the verdict was about",
+    liveGot.verified === true);
 }
 
 // ---------------------------------------------------------------------------
@@ -567,6 +742,40 @@ async function runRootChain() {
   var r2NewOnly = metadataFor(r2, [k2]);
   check("T3: a root signed only by the NEW keys is refused",
     await codeAsync(pki.tuf.updateRoot({ trustedRoot: r1Bytes, candidates: [r2NewOnly], now: NOW })) === "tuf/root-unsigned");
+
+  /* "Metadata is written according to version "spec_version" of the specification, and clients MUST verify
+     that "spec_version" matches the expected version number", with adopters free to decide what counts as
+     a match. This build implements 1.x, so the MAJOR version is the match: a later 1.x document is written
+     to rules that extend these, while a 2.x document is written to rules this build does not have. A root
+     naming no version states nothing to match and TAP 6 makes the field mandatory, so it is refused rather
+     than assumed to be this one. Without this, a root omitting the field or declaring 2.0.0 was adopted
+     and read under 1.x rules. */
+  function adopt(specVersion) {
+    var cand = rootSigned({ signers: [k2], version: 2, specVersion: specVersion });
+    return codeAsync(pki.tuf.updateRoot({ trustedRoot: r1Bytes, candidates: [metadataFor(cand, [k1, k2])], now: NOW }));
+  }
+  check("T3a: CONTROL a candidate naming this build's major version is adopted",
+    await adopt("1.0.31") === "NO-THROW");
+  check("T3b: and a later 1.x minor is adopted too, the match being the major version",
+    await adopt("1.9.7") === "NO-THROW");
+  check("T3c: a candidate naming another major version is refused",
+    await adopt("2.0.0") === "tuf/unsupported-spec-version");
+  check("T3d: a candidate naming no spec_version at all is refused, TAP 6 requiring the field",
+    await adopt(null) === "tuf/bad-metadata");
+  check("T3e: and a spec_version that is not a semantic version is refused",
+    await adopt("one point oh") === "tuf/unsupported-spec-version");
+  /* The trusted root is a separate route into the same rule: it is the caller's own anchor rather than
+     a document fetched from the repository, and a chain anchored in a root this build cannot read is
+     walked under rules that root does not state. */
+  function anchoredIn(specVersion) {
+    var anchor = rootSigned({ signers: [k1], version: 1, specVersion: specVersion });
+    return codeAsync(pki.tuf.updateRoot({ trustedRoot: metadataFor(anchor, [k1]), candidates: [], now: NOW }));
+  }
+  check("T3f: CONTROL an anchor naming this build's major version is read",
+    await anchoredIn("1.0.31") === "NO-THROW");
+  check("T3g: a trusted root naming another major version is refused, as a candidate is",
+    await anchoredIn("2.0.0") === "tuf/unsupported-spec-version" &&
+    await anchoredIn(null) === "tuf/bad-metadata");
 
   /* "The version number of the new root metadata (version N+1) MUST be exactly
      the version in the trusted root metadata (version N) incremented by one." */
@@ -698,7 +907,7 @@ async function runGuards() {
   /* An unreadable PEM, and a key type this build does not read. */
   var badPem = { keytype: "ecdsa", scheme: "ecdsa-sha2-nistp256", keyval: { public: "not a pem" } };
   var bpId = pki.tuf.keyId(badPem); var bpKeys = {}; bpKeys[bpId] = badPem;
-  var bpSigned = { _type: "root", version: 1, expires: EXPIRES, keys: bpKeys,
+  var bpSigned = { _type: "root", spec_version: SPEC, version: 1, expires: EXPIRES, keys: bpKeys,
     roles: { root: { keyids: [bpId], threshold: 1 } } };
   var bpMeta = pki.tuf.parseMetadata(Buffer.from(JSON.stringify({
     signatures: [{ keyid: bpId, sig: "00" }], signed: bpSigned })));
@@ -706,7 +915,7 @@ async function runGuards() {
     await codeAsync(pki.tuf.verifySignatures({ metadata: bpMeta, keys: bpKeys, role: bpSigned.roles.root })) === "tuf/bad-key");
   var alien = { keytype: "dilithium", scheme: "dilithium", keyval: { public: "00" } };
   var alId = pki.tuf.keyId(alien); var alKeys = {}; alKeys[alId] = alien;
-  var alSigned = { _type: "root", version: 1, expires: EXPIRES, keys: alKeys,
+  var alSigned = { _type: "root", spec_version: SPEC, version: 1, expires: EXPIRES, keys: alKeys,
     roles: { root: { keyids: [alId], threshold: 1 } } };
   var alMeta = pki.tuf.parseMetadata(Buffer.from(JSON.stringify({
     signatures: [{ keyid: alId, sig: "00" }], signed: alSigned })));
@@ -715,7 +924,7 @@ async function runGuards() {
   /* An ed25519 key of the wrong length, and one that is not a full-order point. */
   var shortEd = { keytype: "ed25519", scheme: "ed25519", keyval: { public: "00".repeat(31) } };
   var seId = pki.tuf.keyId(shortEd); var seKeys = {}; seKeys[seId] = shortEd;
-  var seSigned = { _type: "root", version: 1, expires: EXPIRES, keys: seKeys,
+  var seSigned = { _type: "root", spec_version: SPEC, version: 1, expires: EXPIRES, keys: seKeys,
     roles: { root: { keyids: [seId], threshold: 1 } } };
   var seMeta = pki.tuf.parseMetadata(Buffer.from(JSON.stringify({
     signatures: [{ keyid: seId, sig: "00".repeat(64) }], signed: seSigned })));
@@ -723,7 +932,7 @@ async function runGuards() {
     await codeAsync(pki.tuf.verifySignatures({ metadata: seMeta, keys: seKeys, role: seSigned.roles.root })) === "tuf/bad-key");
   var lowOrder = { keytype: "ed25519", scheme: "ed25519", keyval: { public: "00".repeat(32) } };
   var loId = pki.tuf.keyId(lowOrder); var loKeys = {}; loKeys[loId] = lowOrder;
-  var loSigned = { _type: "root", version: 1, expires: EXPIRES, keys: loKeys,
+  var loSigned = { _type: "root", spec_version: SPEC, version: 1, expires: EXPIRES, keys: loKeys,
     roles: { root: { keyids: [loId], threshold: 1 } } };
   var loMeta = pki.tuf.parseMetadata(Buffer.from(JSON.stringify({
     signatures: [{ keyid: loId, sig: "00".repeat(64) }], signed: loSigned })));
@@ -904,7 +1113,7 @@ async function runKeyMaterialAcrossAwaits() {
   check("A15: the two documents' canonical forms are the same length, so one overwrites the other",
     preV1.length === preV2.length);
   var mixed = {
-    type: "root", version: 1,
+    type: "root", specVersion: SPEC, version: 1, signed: docV1,
     signedBytes: Buffer.from(preV1),
     signatures: [
       { keyid: a.keyId, sig: crypto.sign(null, preV1, a.kp.privateKey).toString("hex") },
@@ -922,12 +1131,14 @@ async function runKeyMaterialAcrossAwaits() {
   /* CONTROL: each signature does verify against its OWN document, so A16 is about the swap rather than
      either signature being bad. */
   var justA = await pki.tuf.verifySignatures({
-    metadata: { type: "root", version: 1, signedBytes: Buffer.from(preV1),
+    metadata: { type: "root", specVersion: SPEC, version: 1, signed: docV1,
+      signedBytes: Buffer.from(preV1),
       signatures: [{ keyid: a.keyId, sig: crypto.sign(null, preV1, a.kp.privateKey).toString("hex") }] },
     keys: docV1.keys, role: { keyids: [a.keyId, b.keyId], threshold: 1 },
   });
   var justB = await pki.tuf.verifySignatures({
-    metadata: { type: "root", version: 2, signedBytes: Buffer.from(preV2),
+    metadata: { type: "root", specVersion: SPEC, version: 2, signed: docV2,
+      signedBytes: Buffer.from(preV2),
       signatures: [{ keyid: b.keyId, sig: crypto.sign(null, preV2, b.kp.privateKey).toString("hex") }] },
     keys: docV1.keys, role: { keyids: [a.keyId, b.keyId], threshold: 1 },
   });
