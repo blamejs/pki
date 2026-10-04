@@ -182,6 +182,29 @@ function testObjects() {
   check("46e. unknown challenge type without a token accepted", pki.acme.validate("challenge", { type: "future-99", url: "https://ca/c", status: "pending" }).type === "future-99");
   // unknown fields are tolerated, never reflected.
   check("47b. unknown field ignored", pki.acme.validate("order", Object.assign({}, ORDER, { futureField: 1 })).status === "pending");
+  // An ACME resource may carry extension members, and this validator documents unknown fields as
+  // ignored. Ignoring one means not reading it: an accessor on an unknown name is caller code, so
+  // invoking it lets a throwing getter leave by a path that carries no code, and lets a
+  // side-effecting getter change a field the validator has not captured yet. The order of the keys
+  // puts the unknown one first, which is where it would run before any known field is read.
+  var unknownFired = 0;
+  var withThrowingUnknown = {};
+  Object.defineProperty(withThrowingUnknown, "futureField", {
+    enumerable: true, configurable: true,
+    get: function () { unknownFired++; throw new RangeError("an unknown field's accessor ran"); },
+  });
+  Object.keys(ORDER).forEach(function (k) { withThrowingUnknown[k] = ORDER[k]; });
+  check("47b1. an unknown field's throwing accessor is never invoked",
+    pki.acme.validate("order", withThrowingUnknown).status === "pending" && unknownFired === 0);
+
+  var mutated = {};
+  Object.defineProperty(mutated, "futureField", {
+    enumerable: true, configurable: true,
+    get: function () { mutated.status = "valid"; return 1; },
+  });
+  Object.keys(ORDER).forEach(function (k) { mutated[k] = ORDER[k]; });
+  check("47b2. and it cannot change a known field before that field is read",
+    pki.acme.validate("order", mutated).status === "pending");
   // a wildcard dns identifier is legal in an ORDER (CA order resources carry them);
   // the order validator must not reject the *. shape the authorization validator does.
   check("47c. wildcard order identifier accepted", pki.acme.validate("order", Object.assign({}, ORDER, { identifiers: [{ type: "dns", value: "*.example.org" }] })).identifiers.length === 1);
