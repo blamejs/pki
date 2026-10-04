@@ -3385,7 +3385,7 @@ function testGuardReadsRuntimeLive() {
     "lib/tsp-sign.js": 49,
     "lib/http-digest.js": 73,
     "lib/pkcs12-build.js": 63,
-    "lib/ct.js": 71,
+    "lib/ct.js": 70,
     "lib/cms-verify.js": 16,
     "lib/cms-encrypt.js": 66,
     "lib/crl-sign.js": 65,

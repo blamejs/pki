@@ -1102,6 +1102,40 @@ function run() {
   testDecisionsSurviveSubstitution();
   testCoerceToDerRequiresItsOptions();
   testPemScannerWalksForward();
+  testAdmittedByteSourcesAreAllHandled();
+}
+
+/* A door that admits every BufferSource and then reads through a primitive wanting a narrower type
+ * refuses, one line later, a form it has just accepted. The class had seven members across six
+ * modules: three in the transparency-log readers, where an ArrayBuffer left an UNTYPED TypeError out
+ * of a public verb; three in HPKE, whose own refusal named "Buffer / TypedArray / DataView /
+ * ArrayBuffer" while refusing the last two; and one each in the TUF signed-bytes door, the Sigstore
+ * option copier, this module's requested-extension reader, and the CMP central-key-generation test,
+ * where an ArrayBuffer was read as an ordinary request rather than the one it was. Driven across the
+ * modules in one place, because the defect is the pairing rather than any one module's. */
+function testAdmittedByteSourcesAreAllHandled() {
+  function forms(buf) {
+    var ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.length);
+    return [["Buffer", buf], ["Uint8Array", new Uint8Array(ab.slice(0))],
+      ["ArrayBuffer", ab.slice(0)], ["DataView", new DataView(ab.slice(0))]];
+  }
+  var extValue = pki.asn1.build.octetString(Buffer.from([0x01, 0x02, 0x03]));
+  var gaps = [];
+  forms(extValue).forEach(function (pair) {
+    try {
+      var row = pki.schema.x509.decodeExtension({ oid: "2.5.29.15", critical: true, value: pair[1] });
+      if (!Buffer.isBuffer(row.value) || Buffer.compare(row.value, extValue) !== 0) {
+        gaps.push("decodeExtension(" + pair[0] + ") carried " + (row.value && row.value.length) + " bytes");
+      }
+    } catch (e) { gaps.push("decodeExtension(" + pair[0] + ") -> " + (e.code || e.name)); }
+  });
+  check("every BufferSource form schema.decodeExtension admits reaches the same record: " +
+    gaps.join("; "), gaps.length === 0);
+  check("CONTROL a string, a number and null are still refused by that door, typed",
+    ["0102", 7, null].every(function (bad) {
+      try { pki.schema.x509.decodeExtension({ oid: "2.5.29.15", critical: true, value: bad }); return false; }
+      catch (e2) { return typeof e2.code === "string" && e2.code.indexOf("/") !== -1; }
+    }));
 }
 
 // The scanner reads a file of encapsulated blocks (RFC 7468 sec. 2). It takes untrusted text at
