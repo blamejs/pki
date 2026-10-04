@@ -3405,15 +3405,15 @@ function testGuardReadsRuntimeLive() {
   // a replacement the sentinel is a different object and every comparison against it is false.
   // A `uncurry(X.prototype.m)` capture is a call-time-free read taken at load, so it is excluded.
   var protoRe = /(?:^|[^\w.$])(Object|Buffer|Array|Function|Promise)\.prototype(?!\s*\.\s*\w+\s*\))/g;
-  // A capture handed a LIVE GLOBAL as its receiver. This is the eighth tier and the one the seven
-  // above do not reach: the operation is captured correctly and then called with the replaceable
-  // global in the receiver position, which puts the decision straight back under a replacement.
+  // A capture handed a LIVE GLOBAL as its receiver, which the patterns above do not reach: the
+  // operation is captured correctly and then called with the replaceable global in the receiver
+  // position, which puts the decision straight back under a replacement.
   // `Promise.resolve` BUILDS through its receiver, so `_promiseResolve(Promise, p)` constructs with
   // whatever `globalThis.Promise` is at call time. A constructor whose executor settles with
   // `{ valid: true }` instead of the real value made `pki.possession.verifyRequest` read a validated
   // certification path where there was none, and report the RFC 9883 sec. 4 MUST as satisfied; the
   // same shape sat on the alternative-signature paths of `x509.sign` and `crl.sign` and on three
-  // `acme` sites, eight in all, found one at a time by a reviewer rather than here.
+  // `acme` sites, eight in all.
   // It keys on the GLOBAL's name in the receiver position rather than on what the capture is called,
   // and the CALLEE is deliberately unconstrained. A first version required a `_`-prefixed local and
   // missed six spellings of the same defect, measured: a capture named without the underscore (the
@@ -3524,21 +3524,21 @@ function testGuardReadsRuntimeLive() {
       liveReceiverRe.lastIndex = 0;
       while ((m = liveReceiverRe.exec(code)) !== null) {
         bad.push({ file: rel, line: i + 1,
-          content: "hands the live global `" + m[1] + "` to a capture as its receiver — pass the " +
+          content: "hands the live global `" + m[1] + "` to a capture as its receiver: pass the " +
             "captured `intrinsic." + m[1] + "`, since an operation called on a replaceable receiver " +
             "builds through whatever replaced it and decides the value this guard goes on to read" });
       }
       liveThisArgRe.lastIndex = 0;
       while ((m = liveThisArgRe.exec(code)) !== null) {
         bad.push({ file: rel, line: i + 1,
-          content: "hands the live global `" + m[1] + "` through `.call`/`.apply` as the receiver — " +
+          content: "hands the live global `" + m[1] + "` through `.call`/`.apply` as the receiver: " +
             "pass the captured `intrinsic." + m[1] + "`, since the thisArg is what the operation " +
             "builds through and a replacement decides the value this guard goes on to read" });
       }
       liveApplyThisArgRe.lastIndex = 0;
       while ((m = liveApplyThisArgRe.exec(code)) !== null) {
         bad.push({ file: rel, line: i + 1,
-          content: "hands the live global `" + m[1] + "` to an apply-shaped helper as the thisArg — " +
+          content: "hands the live global `" + m[1] + "` to an apply-shaped helper as the thisArg: " +
             "pass the captured `intrinsic." + m[1] + "`, since that argument is the receiver the " +
             "operation builds through and a replacement decides the value this guard goes on to read" });
       }
