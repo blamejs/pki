@@ -915,6 +915,50 @@ async function run() {
       ignoreRun.status === 0 &&
         pki.schema.x509.decodeExtensions(pki.schema.x509.parse(fs.readFileSync(ignored)))
           .filter(function (r) { return r.name === "subjectAltName"; }).length === 0);
+    /* A SAN-only request is the one shape whose subjectAltName MUST be critical: RFC 5280
+     * sec. 4.2.1.6 requires it where the subject is empty, and this toolkit's own linter refuses
+     * the non-critical form through `lint/rfc2986/san-not-critical-empty-subject`. So the only
+     * conforming empty-subject request is a critical one, and refusing every critical request made
+     * that request unissuable through --copy-requested-san. The criticality is not lost either: the
+     * certificate builder takes it from the subject it encodes, so an empty subject writes the
+     * critical form. The refusal belongs to the case where the request carries a subject, which is
+     * where copying a critical SAN would answer a different request. The pre-encoded array form
+     * builds the request, because the object form always writes the requested SAN non-critical. */
+    var sanOnlyCsr = path.join(tmp, "san-only.csr.der");
+    var sanOnlyLeaf = path.join(tmp, "san-only.leaf.der");
+    var reqKeyBytes = fs.readFileSync(reqKey);
+    var reqSpki = await pki.key.publicFromPrivate(reqKeyBytes);
+    var critSanExt = b.sequence([b.oid(pki.oid.byName("subjectAltName")), b.boolean(true),
+      b.octetString(b.sequence([b.contextPrimitive(2, Buffer.from("san-only.example"))]))]);
+    fs.writeFileSync(sanOnlyCsr, await pki.csr.sign(
+      { subject: [], subjectPublicKey: reqSpki, extensionRequest: [critSanExt] },
+      { key: reqKeyBytes }));
+    var sanOnlyRun = cli(["issue", "--csr", sanOnlyCsr, "--issuer-cert", caCert, "--issuer-key", caKey,
+      "--days", "30", "--copy-requested-san", "--out", sanOnlyLeaf]);
+    check("a SAN-only request's critical subjectAltName is issued, not refused",
+      sanOnlyRun.status === 0 && fs.existsSync(sanOnlyLeaf));
+    check("and the issued certificate keeps the empty subject and writes the SAN critical",
+      sanOnlyRun.status === 0 && (function () {
+        var der = fs.readFileSync(sanOnlyLeaf);
+        var parsed = pki.schema.x509.parse(der);
+        if (pki.asn1.decode(parsed.subject.bytes).children.length !== 0) return false;
+        var row = pki.schema.x509.decodeExtensions(der)
+          .filter(function (r) { return r.name === "subjectAltName"; })[0];
+        return !!row && row.critical === true && row.decoded.names.length === 1 &&
+          row.decoded.names[0].value === "san-only.example";
+      })());
+    /* The refusal still stands where it is true: beside a subject the builder writes the
+     * non-critical form, so copying a critical request would answer a different request. */
+    var withSubjectCsr = path.join(tmp, "crit-san-subject.csr.der");
+    var withSubjectLeaf = path.join(tmp, "crit-san-subject.der");
+    fs.writeFileSync(withSubjectCsr, await pki.csr.sign(
+      { subject: [{ commonName: "crit.example" }], subjectPublicKey: reqSpki,
+        extensionRequest: [critSanExt] }, { key: reqKeyBytes }));
+    var critWithSubject = cli(["issue", "--csr", withSubjectCsr, "--issuer-cert", caCert,
+      "--issuer-key", caKey, "--days", "30", "--copy-requested-san", "--out", withSubjectLeaf]);
+    check("a critical subjectAltName requested BESIDE a subject is still refused",
+      critWithSubject.status !== 0 && /CRITICAL subjectAltName/.test(critWithSubject.stderr) &&
+        !fs.existsSync(withSubjectLeaf));
     check("--san and --copy-requested-san both name the subjectAltName, so passing both is refused",
       (function () {
         var r = cli(["issue", "--csr", reqOut, "--issuer-cert", caCert, "--issuer-key", caKey,

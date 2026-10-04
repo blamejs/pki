@@ -606,22 +606,34 @@ var SAN_FORM_FOR_TAG = { 1: "rfc822Name", 2: "dNSName", 6: "uniformResourceIdent
 // and a form with no conversion stops the issuance: a certificate carrying SOME of the names a
 // request asked for is a different certificate from the one it asked for, and the operator asked for
 // the copy.
-function requestedSanNames(rows) {
+// Whether the Name the certificate will carry is empty, read the way the certificate builder reads
+// it: an encoded Name holding no RDNs. The builder takes the subjectAltName's criticality from that
+// same answer, so the two agree on which form is being issued.
+function subjectNameIsEmpty(subject) {
+  if (!Buffer.isBuffer(subject)) return false;
+  try { return pki.asn1.decode(subject).children.length === 0; }
+  catch (_e) { return false; }
+}
+
+function requestedSanNames(rows, subject) {
   var san = rows.filter(function (r) { return r.name === "subjectAltName"; });
   if (!san.length) return undefined;
   if (san[0].state !== "decoded") {
     return fail("issue: the request's subjectAltName cannot be read (" + (san[0].code || san[0].state) +
       "), so --copy-requested-san has nothing to copy");
   }
-  // The certificate builder's extensions object writes a non-critical subjectAltName, which is what
-  // RFC 5280 sec. 4.2.1.6 asks for beside a non-empty subject. A request asking for a critical one is
-  // asking for the empty-subject form, and writing it non-critical would answer a different request
-  // than the one that was made.
-  if (san[0].critical === true) {
+  // RFC 5280 sec. 4.2.1.6 asks for a critical subjectAltName where the subject is empty and a
+  // non-critical one beside a subject, and the certificate builder writes whichever the subject it
+  // encodes calls for. So a critical request is answered as it was made when the subject is empty,
+  // which is the only conforming shape for a SAN-only request, and loses its criticality only beside
+  // a non-empty subject. That is the case this refuses.
+  if (san[0].critical === true && !subjectNameIsEmpty(subject)) {
     return fail("issue: the request asks for a CRITICAL subjectAltName, which RFC 5280 sec. 4.2.1.6 " +
-      "requires only beside an empty subject, and this verb writes a non-critical one; state the " +
-      "names with --san to issue a non-critical subjectAltName, or build the certificate through " +
-      "pki.x509.sign, whose pre-encoded extensions array writes the criticality it is given");
+      "asks for only where the subject is empty, and this request carries a subject; beside a " +
+      "subject this verb writes a non-critical subjectAltName, so copying it would answer a " +
+      "different request than the one that was made. State the names with --san, or build the " +
+      "certificate through pki.x509.sign, whose pre-encoded extensions array writes the " +
+      "criticality it is given");
   }
   var names = (san[0].decoded && san[0].decoded.names) || [];
   var out = [], unconvertible = [];
@@ -749,7 +761,7 @@ function cmdIssue(args) {
     }
     if (args["copy-requested-san"]) {
       if (san) return fail("issue: --san and --copy-requested-san both name the subjectAltName; pass one");
-      san = requestedSanNames(from.requested || []);
+      san = requestedSanNames(from.requested || [], from.subject);
       if (san === undefined) return fail("issue: --copy-requested-san was passed and the request asks for no subjectAltName");
     }
     if (san) exts.subjectAltName = san;
