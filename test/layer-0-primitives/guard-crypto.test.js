@@ -192,6 +192,42 @@ function run() {
   check("asserting alignment returns the value and refuses an unaligned one through the caller's factory",
     guard.assertOctetAligned({ unusedBits: 0, bytes: Buffer.from("x") }, E, "x/bad", "sig").unusedBits === 0 &&
     threw(function () { guard.assertOctetAligned({ unusedBits: 1 }, E, "x/bad", "sig"); }) === "x/bad");
+
+  testLoadGeneratesOnlyApprovedKeys();
+}
+
+// The module captures the three KeyObject `export` methods by making a sample key pair at load, which
+// makes the generation part of `require`. An algorithm outside the FIPS 140-3 boundary therefore makes
+// the WHOLE package unloadable under `crypto.setFips(1)`: OpenSSL's FIPS provider carries no Ed25519,
+// so the generation raises ERR_OSSL_EVP_UNSUPPORTED before any export is reached, and a caller needing
+// only approved RSA or EC operations cannot require the package at all. The prototypes do not depend
+// on the algorithm (measured: the ed25519, P-256 and RSA pairs all yield the same two prototypes), so
+// the sample is an approved algorithm and one pair serves both.
+//
+// Driven in a CHILD process: the module is already loaded here, and the property is about what its
+// load does, so reloading it in-process would leave every other module holding the first instance.
+function testLoadGeneratesOnlyApprovedKeys() {
+  var spawnSync = require("node:child_process").spawnSync;
+  var probe =
+    "var c = require('node:crypto');" +
+    "var calls = [];" +
+    "var real = c.generateKeyPairSync;" +
+    "c.generateKeyPairSync = function (alg) { calls.push(String(alg)); return real.apply(c, arguments); };" +
+    "require('./lib/guard-crypto.js');" +
+    "process.stdout.write(JSON.stringify(calls));";
+  var rv = spawnSync(process.execPath, ["-e", probe], { encoding: "utf8", cwd: process.cwd() });
+  check("the load probe ran", rv.status === 0);
+  var calls;
+  try { calls = JSON.parse(rv.stdout || "[]"); } catch (_e) { calls = ["UNPARSEABLE:" + rv.stdout]; }
+
+  // Everything OpenSSL's FIPS provider does not carry. A sample key drawn from one of these is what
+  // turns a load into a failure for a FIPS deployment.
+  var OUTSIDE_FIPS = ["ed25519", "ed448", "x25519", "x448"];
+  var offending = calls.filter(function (alg) { return OUTSIDE_FIPS.indexOf(alg) !== -1; });
+  check("requiring guard-crypto generates no key outside the FIPS boundary",
+    offending.length === 0);
+  check("and it generates at most one sample pair, since both prototypes come from one",
+    calls.length <= 1);
 }
 
 module.exports = { run: run };

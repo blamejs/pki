@@ -92,13 +92,39 @@ module.exports.fuzz = async function (data) {
     // Target D -- the root rotation, whose verdict depends on BOTH the trusted root
     // and the candidate, so a mutated candidate drives the version, expiry and
     // threshold rules against a root the caller already trusts.
-    var trusted;
-    try { trusted = pki.tuf.parseMetadata(Buffer.from(REAL)); } catch (_e2) { trusted = null; }
-    if (trusted !== null) {
-      try {
-        await pki.tuf.updateRoot({ trustedRoot: trusted, candidates: [meta],
-          now: new Date("2030-01-01T00:00:00Z") });
-      } catch (e) { if (!isPki(e)) throw e; }
-    }
+    //
+    // `updateRoot` takes ENCODED documents: it parses each one itself, so handing it
+    // the already-parsed metadata refuses on `tuf/bad-input` before a single rotation
+    // rule runs, and the catch below accepts that silently. The control under this
+    // target exists because an inert target reads as coverage it does not provide.
+    await _assertRotationReachable();
+    try {
+      await pki.tuf.updateRoot({ trustedRoot: Buffer.from(REAL),
+        candidates: [Buffer.from(JSON.stringify(doc))],
+        now: new Date("2030-01-01T00:00:00Z") });
+    } catch (e) { if (!isPki(e)) throw e; }
   }
 };
+
+// The PASSING control for Target D, run once. The unmutated document as both the trusted
+// root and the candidate must get PAST input validation: it still fails a rotation rule,
+// because a candidate at the trusted root's own version is not a rotation, but the code it
+// fails in is the code this target exists to drive. A `tuf/bad-input` here means the target
+// is refusing its own arguments and fuzzing nothing, which is a finding, not a pass.
+var _rotationChecked = false;
+async function _assertRotationReachable() {
+  if (_rotationChecked) return;
+  _rotationChecked = true;
+  var code = null;
+  try {
+    await pki.tuf.updateRoot({ trustedRoot: Buffer.from(REAL), candidates: [Buffer.from(REAL)],
+      now: new Date("2030-01-01T00:00:00Z") });
+  } catch (e) {
+    if (!isPki(e)) throw e;
+    code = e.code;
+  }
+  if (code === "tuf/bad-input") {
+    throw new Error("fuzz/tuf-parse Target D is inert: updateRoot refused its own arguments with " +
+      "tuf/bad-input, so no rotation rule is being fuzzed");
+  }
+}
