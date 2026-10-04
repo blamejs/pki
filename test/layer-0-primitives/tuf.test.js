@@ -756,7 +756,32 @@ async function runVerify() {
      clause states the expected format rather than forbidding an equivalent one, and refusing it would
      promote a statement of form into a conformance rule the document does not make. */
   check("M14g: a zero numeric offset is accepted, denoting the same instant as Z",
-    expiresIs("2026-01-01T00:00:00+00:00") === "NO-THROW");
+    expiresIs("2026-01-01T00:00:00+00:00") === "NO-THROW" &&
+    expiresIs("2026-01-01T00:00:00-00:00") === "NO-THROW");
+  /* A NONZERO offset is a different matter. "Time is always in UTC" is the clause, and the shared RFC
+     3339 scanner admits every numeric offset because RFC 3339 does. An expires of +01:00 names a real
+     instant, so nothing about it is malformed as a date, but it is not the UTC the specification
+     requires: a client reading the stated form refuses the document, and adopting it here means
+     trusting metadata a conforming client would not. Refused on the offset, not on the date. */
+  check("M14h: a nonzero numeric offset is refused, the specification putting the time in UTC",
+    expiresIs("2026-01-01T01:00:00+01:00") === "tuf/bad-metadata" &&
+    expiresIs("2026-01-01T00:00:00+05:30") === "tuf/bad-metadata" &&
+    expiresIs("2025-12-31T23:00:00-01:00") === "tuf/bad-metadata");
+  /* The rule belongs to BOTH doors. `checkExpiry` is reachable with a metadata object a caller
+     assembled rather than one `parseMetadata` returned, so a rule enforced at the parse alone is a
+     document one verb accepts and the other refuses. */
+  function checkExpiryOf(v) {
+    return code(function () {
+      pki.tuf.checkExpiry(
+        { signed: { _type: "root", spec_version: "1.0.31", version: 1, expires: v } },
+        new Date("2026-01-01T00:00:00Z"));
+    });
+  }
+  check("M14i: and checkExpiry reads the offset the same way the parse does",
+    checkExpiryOf("2030-01-01T00:00:00Z") === "NO-THROW" &&
+    checkExpiryOf("2030-01-01T00:00:00+00:00") === "NO-THROW" &&
+    checkExpiryOf("2030-01-01T01:00:00+01:00") === "tuf/bad-metadata" &&
+    checkExpiryOf("2030-01-01T00:00:00+05:30") === "tuf/bad-metadata");
   check("M15: a duplicate JSON member is refused before anything is read",
     code(function () { pki.tuf.parseMetadata(Buffer.from('{"signed":{},"signed":{}}')); }) === "tuf/duplicate-member");
   check("M16: a threshold that is not a positive integer is refused",
