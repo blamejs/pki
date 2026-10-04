@@ -67,6 +67,105 @@ function testRobustness() {
   // Generated-key round-trip (the non-KAT path: fresh ephemeral).
   var o = pki.hpke.seal(IDS, kp.publicKey, {}, Buffer.from("aad"), Buffer.from("hello"));
   check("generated-key round-trip", pki.hpke.open(IDS, o.enc, kp.privateKey, {}, Buffer.from("aad"), o.ct).toString() === "hello");
+
+  /* Every BufferSource form these doors admit is read. Each door asked `guard.bytes.isByteSource`,
+     which accepts an ArrayBuffer and a DataView, and the line after it measured or copied through a
+     primitive wanting a Buffer or a Uint8Array: so the admitted set was wider than the handled one and
+     a form the door had just accepted was refused a line later. `deriveKeyPair` said so out loud, its
+     own refusal naming "Buffer / TypedArray / DataView / ArrayBuffer" while refusing the last two.
+     Driven through the shipped verbs, with the plaintext round-tripping so the vector says the bytes
+     were read correctly rather than only that the call returned. */
+  function byteForms(n, fill) {
+    var b = Buffer.alloc(n, fill);
+    var ab = b.buffer.slice(b.byteOffset, b.byteOffset + n);
+    return [["Buffer", b], ["Uint8Array", new Uint8Array(ab.slice(0))],
+      ["ArrayBuffer", ab.slice(0)], ["DataView", new DataView(ab.slice(0))]];
+  }
+  var formGaps = [];
+  byteForms(32, 0x41).forEach(function (pair) {
+    try {
+      var dk = pki.hpke.deriveKeyPair(IDS.kem, pair[1]);
+      if (!dk || !dk.publicKey) formGaps.push("deriveKeyPair(" + pair[0] + ") returned no key");
+    } catch (e) { formGaps.push("deriveKeyPair(" + pair[0] + ") -> " + (e.code || e.name)); }
+  });
+  byteForms(16, 0x61).forEach(function (pair) {
+    try {
+      var sealed = pki.hpke.seal(IDS, kp.publicKey, { info: pair[1] }, pair[1], Buffer.from("hello"));
+      var opened = pki.hpke.open(IDS, sealed.enc, kp.privateKey, { info: pair[1] }, pair[1], sealed.ct);
+      if (opened.toString() !== "hello") formGaps.push("seal/open(" + pair[0] + ") gave " + opened.toString());
+    } catch (e2) { formGaps.push("seal/open(" + pair[0] + ") -> " + (e2.code || e2.name)); }
+  });
+  check("every BufferSource form the hpke doors admit is read by deriveKeyPair, seal and open: " +
+    formGaps.join("; "), formGaps.length === 0);
+  check("CONTROL a string, a number and a plain object are still refused by deriveKeyPair, typed",
+    ["a string", 7, {}].every(function (bad) {
+      return codeOf(function () { pki.hpke.deriveKeyPair(IDS.kem, bad); }) === "hpke/bad-input";
+    }));
+  /* A key is a fixed width, and the check enforcing that width ran on the COPY, so a value handed
+     where a 32-byte key belongs was duplicated in full and only then refused. MEASURED by allocation,
+     because the copy is fast enough that a time budget separating it from a passing run would be a few
+     milliseconds wide; `arrayBuffers` counts exactly the pool a Buffer copy comes from. */
+  var oversizeKey = Buffer.alloc(64 * 1024 * 1024, 0x41);
+  var allocBefore = process.memoryUsage().arrayBuffers;
+  var oversizeCode = codeOf(function () {
+    pki.hpke.seal(IDS, oversizeKey, {}, Buffer.alloc(0), Buffer.from("x"));
+  });
+  var allocGrewMiB = (process.memoryUsage().arrayBuffers - allocBefore) / (1024 * 1024);
+  check("a value far wider than a key is refused before it is copied (" + oversizeCode + ", " +
+    allocGrewMiB.toFixed(1) + " MiB allocated)",
+  oversizeCode === "hpke/bad-key" && allocGrewMiB < 1);
+  /* CONTROL: the width check still refuses a key that is merely WRONG rather than enormous, which is
+     the case the early bound must not swallow, and a right-width key still works. */
+  check("CONTROL a wrong-width key is still refused, and a right-width one still seals",
+    codeOf(function () { pki.hpke.seal(IDS, Buffer.alloc(31, 1), {}, Buffer.alloc(0), Buffer.from("x")); }) === "hpke/bad-key" &&
+    codeOf(function () { pki.hpke.seal(IDS, Buffer.alloc(33, 1), {}, Buffer.alloc(0), Buffer.from("x")); }) === "hpke/bad-key" &&
+    (function () {
+      var ok = pki.hpke.seal(IDS, kp.publicKey, {}, Buffer.alloc(0), Buffer.from("hello"));
+      return pki.hpke.open(IDS, ok.enc, kp.privateKey, {}, Buffer.alloc(0), ok.ct).toString() === "hello";
+    })());
+  /* An encapsulated key is a fixed width too, and the checks enforcing it read it off the COPY, so an
+     oversized `enc` was duplicated before being refused. The setup path copied it a second time, which
+     made two copies of one value and left the outer one unbounded. */
+  var encBefore = process.memoryUsage().arrayBuffers;
+  var oversizeEncCode = codeOf(function () {
+    pki.hpke.open(IDS, oversizeKey, kp.privateKey, {}, Buffer.alloc(0), o.ct);
+  });
+  var encGrewMiB = (process.memoryUsage().arrayBuffers - encBefore) / (1024 * 1024);
+  check("an oversized encapsulated key is refused before it is copied (" + oversizeEncCode + ", " +
+    encGrewMiB.toFixed(1) + " MiB allocated)",
+  oversizeEncCode === "hpke/bad-key" && encGrewMiB < 1);
+
+  /* A supplied `pkm` must match the `skm` beside it. That rule was applied to an OWN property only, so
+     a key pair carrying `pkm` on its PROTOTYPE had the check skipped rather than applied: the field was
+     read as absent. `skm` on the line above it was always read through the prototype, so the two fields
+     disagreed about what counts as supplied. Both are now read the same way, once each. */
+  var rawPair = require("crypto").generateKeyPairSync("x25519");
+  var rawSk = rawPair.privateKey.export({ format: "der", type: "pkcs8" }).subarray(-32);
+  var rawPk = rawPair.publicKey.export({ format: "der", type: "spki" }).subarray(-32);
+  var sealedToRaw = pki.hpke.seal(IDS, rawPair.publicKey, {}, Buffer.alloc(0), Buffer.from("hello"));
+  function openWith(sk) {
+    try {
+      return pki.hpke.open(IDS, sealedToRaw.enc, sk, {}, Buffer.alloc(0), sealedToRaw.ct).toString();
+    } catch (e) { return e.code || e.name; }
+  }
+  function inheriting(pkm) { var o2 = Object.create({ pkm: pkm }); o2.skm = rawSk; return o2; }
+  check("a mismatching pkm is refused whether it is the key pair's own property or inherited",
+    openWith({ skm: rawSk, pkm: Buffer.alloc(32, 0xff) }) === "hpke/bad-key" &&
+    openWith(inheriting(Buffer.alloc(32, 0xff))) === "hpke/bad-key");
+  check("CONTROL a MATCHING pkm still opens either way, and a key pair carrying none still opens",
+    openWith({ skm: rawSk, pkm: rawPk }) === "hello" &&
+    openWith(inheriting(rawPk)) === "hello" &&
+    openWith({ skm: rawSk }) === "hello");
+
+  /* CONTROL: the copy is still a COPY, which is what the snapshot is for. A caller overwriting its own
+     buffer after the call must not change what was sealed, and reading the form rather than the bytes
+     would have made the view share memory with the caller. */
+  var mutable = Buffer.alloc(16, 0x61);
+  var sealedFromMutable = pki.hpke.seal(IDS, kp.publicKey, { info: mutable }, mutable, Buffer.from("hello"));
+  mutable.fill(0x62);
+  check("CONTROL overwriting the caller's buffer after the call does not change what was sealed",
+    pki.hpke.open(IDS, sealedFromMutable.enc, kp.privateKey, { info: Buffer.alloc(16, 0x61) },
+      Buffer.alloc(16, 0x61), sealedFromMutable.ct).toString() === "hello");
   // A flipped ciphertext byte -> hpke/open-failed (no plaintext).
   var bad = Buffer.from(o.ct); bad[0] ^= 1;
   check("flipped ciphertext -> hpke/open-failed", codeOf(function () { pki.hpke.open(IDS, o.enc, kp.privateKey, {}, Buffer.from("aad"), bad); }) === "hpke/open-failed");

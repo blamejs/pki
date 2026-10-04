@@ -1,6 +1,6 @@
 {
   "version": "0.8.45",
-  "date": "2026-09-29",
+  "date": "2026-10-03",
   "headline": "Encrypt to a post-quantum and a classical key at once, so one broken primitive does not open the message.",
   "summary": "HPKE gains the three PQ/T hybrid KEMs: MLKEM768-P256, MLKEM1024-P384 and MLKEM768-X25519, which is X-Wing under the name the CFRG concrete-hybrid-KEMs draft gave it. Each pairs an ML-KEM with a nominal group and mixes both shared secrets into one, so the message stays closed unless both components are broken. `pki.hpke.seal` and `open` take them like any other suite, and `deriveKeyPair`, `generateKeyPair`, `encap` and `decap` reach a KEM on its own.",
   "sections": {

@@ -85,6 +85,82 @@ async function runNoteFormat() {
     verified.verified === true && verified.signers.length === 1 &&
       verified.signers[0].keyName === alice.name);
 
+  /* N6a: EVERY BufferSource these verbs admit reaches the same answer. Each door asks
+     `guard.bytes.isByteSource`, which accepts an ArrayBuffer and a DataView, while the measurement
+     wanted a view and the copy wanted a Buffer or a Uint8Array: so the admitted set was wider than the
+     handled one, and an ArrayBuffer left an UNTYPED TypeError out of a public verb while a DataView or a
+     Uint16Array drew a refusal for input the door had accepted. A caller handing over
+     `await response.arrayBuffer()` could not read a tile at all. Every form is driven through the
+     shipped verb, and the string and number cases are the controls: those are still refused, typed, so
+     the fix widened the set to what the door states rather than to anything at all. */
+  var noteBuf = Buffer.from(note, "utf8");
+  function asForms(buf) {
+    var ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.length);
+    var forms = [["Buffer", buf], ["Uint8Array", new Uint8Array(ab.slice(0))],
+      ["ArrayBuffer", ab.slice(0)], ["DataView", new DataView(ab.slice(0))]];
+    // A non-byte typed array views the same memory with a wider element, which is still a BufferSource.
+    if (buf.length % 2 === 0) forms.push(["Uint16Array", new Uint16Array(ab.slice(0))]);
+    return forms;
+  }
+  var formGaps = [];
+  for (var nf = 0; nf < asForms(noteBuf).length; nf++) {
+    var pair = asForms(noteBuf)[nf], label = pair[0], value = pair[1];
+    try {
+      var p = pki.tlog.parseNote(value);
+      if (p.signatures.length !== 1) formGaps.push("parseNote(" + label + ") read " + p.signatures.length + " signatures");
+      var v = await pki.tlog.verifyNote(value, [{ name: alice.name, publicKey: alice.raw }]);
+      if (v.verified !== true) formGaps.push("verifyNote(" + label + ") -> " + v.verified);
+    } catch (e) { formGaps.push("parseNote/verifyNote(" + label + ") threw " + (e.code || e.name)); }
+  }
+  var tileBuf = Buffer.alloc(64, 0x11);
+  for (var tf = 0; tf < asForms(tileBuf).length; tf++) {
+    var tp = asForms(tileBuf)[tf];
+    try {
+      var hashes = pki.tlog.parseTile(tp[1]);
+      if (hashes.length !== 2) formGaps.push("parseTile(" + tp[0] + ") read " + hashes.length + " hashes");
+    } catch (e2) { formGaps.push("parseTile(" + tp[0] + ") threw " + (e2.code || e2.name)); }
+  }
+  check("N6a: every BufferSource form the door admits is read by parseNote, verifyNote and parseTile: " +
+    formGaps.join("; "), formGaps.length === 0);
+  check("N6b: CONTROL a string and a number are still refused, typed, by each of those doors",
+    (function () {
+      var codes = [];
+      [["parseTile", function (x) { return pki.tlog.parseTile(x); }],
+        ["parseNote", function (x) { return pki.tlog.parseNote(x); }]].forEach(function (door) {
+        [7, {}, null].forEach(function (bad) {
+          try { door[1](bad); codes.push(door[0] + " accepted " + JSON.stringify(bad)); }
+          catch (e3) { if (e3.code !== "tlog/bad-input") codes.push(door[0] + "(" + JSON.stringify(bad) + ") -> " + (e3.code || e3.name)); }
+        });
+      });
+      // A string is a note's own form, so it is only the binary doors that refuse one.
+      try { pki.tlog.parseTile("x".repeat(64)); codes.push("parseTile accepted a string"); }
+      catch (e4) { if (e4.code !== "tlog/bad-input") codes.push("parseTile(string) -> " + (e4.code || e4.name)); }
+      return codes.length === 0;
+    })());
+  /* N6c: widening the set to every BufferSource did not widen it to anything else, and did not move
+     where the byte count comes from. A detached buffer and shared memory are each refused typed rather
+     than read, and a Buffer whose own `length` property lies about its byte count is still measured by
+     the authoritative count: 64 bytes read as two hashes, not as the eight its shadowed length claims. */
+  var lying = Buffer.alloc(64, 0x11);
+  Object.defineProperty(lying, "length", { value: 8, configurable: true });
+  var detached = new ArrayBuffer(64);
+  try { structuredClone(detached, { transfer: [detached] }); } catch (_dt) { /* allow:swallow-unverified the transfer is the point; a runtime without it leaves the buffer attached and the check below still answers */ }
+  check("N6c: the widened set stops at BufferSource, and the byte count is still the authoritative one",
+    (function () {
+      var notes = [];
+      try {
+        var h = pki.tlog.parseTile(lying);
+        if (h.length !== 2) notes.push("a shadowed length changed the count to " + h.length);
+      } catch (e5) { notes.push("a shadowed length threw " + (e5.code || e5.name)); }
+      try { pki.tlog.parseTile(detached); notes.push("a detached buffer was read"); }
+      catch (e6) { if (e6.code !== "tlog/bad-input") notes.push("detached -> " + (e6.code || e6.name)); }
+      try {
+        pki.tlog.parseTile(new Uint8Array(new SharedArrayBuffer(64)));
+        notes.push("shared memory was read");
+      } catch (e7) { if (e7.code !== "tlog/bad-input") notes.push("shared -> " + (e7.code || e7.name)); }
+      return notes.length === 0;
+    })());
+
   /* Altering the text must fail, INCLUDING altering only the delimiter byte. The second is the one
    * a re-serializing parser gets wrong, because it rebuilds the text it wanted rather than reading
    * the text that was signed. */
