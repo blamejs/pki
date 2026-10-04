@@ -1324,6 +1324,39 @@ async function run() {
   check("26e. every key in the package is surfaced, in the order it was packaged",
     two.keys.length === 2 && two.keys[0].equals(deliveredPkcs8) && two.keys[1].equals(deliveredSecond));
 
+  // RSAES-PKCS1-v1_5 key transport over a content with no integrity tag is the combination
+  // pki.cms.decrypt refuses, because acceptance tells an attacker submitting chosen containers that
+  // theirs decoded. openKeyPackage takes the container directly, so it cannot establish that one
+  // arrived inside an authenticated exchange, and the decision belongs to the caller. Assembled
+  // rather than built: pki.cms.encrypt emits only RSAES-OAEP, so this shape comes from another
+  // implementation.
+  function v15Container(recipientCert) {
+    var NL = b.raw(Buffer.from([5, 0]));
+    var rp = pki.schema.x509.parse(recipientCert);
+    var ias = b.sequence([b.raw(rp.issuer.bytes), b.integer(BigInt("0x" + rp.serialNumberHex))]);
+    var ktri = b.sequence([b.integer(0n), ias,
+      b.sequence([b.oid(pki.oid.byName("rsaEncryption")), NL]), b.octetString(Buffer.alloc(128))]);
+    var eci = b.sequence([b.oid(pki.oid.byName("signedData")),
+      b.sequence([b.oid(pki.oid.byName("aes256-CBC")), b.octetString(Buffer.alloc(16))]),
+      b.contextPrimitive(0, Buffer.alloc(16))]);
+    return b.sequence([b.oid(pki.oid.byName("envelopedData")),
+      b.explicit(0, b.sequence([b.integer(0n), b.setOf([ktri]), eci]))]);
+  }
+  var v15Cont = v15Container(kgaEeKt.cert);
+  var v15Refused = null;
+  try { await pki.cmp.openKeyPackage(v15Cont, anchored({ key: kgaEeKt.key })); }
+  catch (e) { v15Refused = e; }
+  check("26f1. a v1.5 container over an unauthenticated content is refused without the caller's opt-in",
+    v15Refused !== null && v15Refused.code === "cmp/bad-key-package" &&
+    v15Refused.cause != null && v15Refused.cause.code === "cms/unauthenticated-rsa-v15");
+  var v15OptedIn = null;
+  try {
+    await pki.cmp.openKeyPackage(v15Cont, anchored({ key: kgaEeKt.key, allowUnauthenticatedRsa15: true }));
+  } catch (e) { v15OptedIn = e; }
+  check("26f2. and the caller's opt-in carries through to the unwrap",
+    v15OptedIn !== null && v15OptedIn.code === "cmp/bad-key-package" &&
+    v15OptedIn.cause != null && v15OptedIn.cause.code === "cms/decrypt-failed");
+
   // "recipientInfos MUST contain a sequence of one RecipientInfo": a second recipient is a second
   // party able to open a key generated for this entity.
   check("26f. a container naming more than one recipient is refused",

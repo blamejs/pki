@@ -268,6 +268,50 @@ async function testPathThroughAnIntermediate() {
   check("P3: the signature still verifies in that case, so the two verdicts stay separate",
     withoutChain.verified === true);
 
+  /* P3a: the path result is awaited through the promise constructor captured at LOAD, not the live
+     global. `Promise.resolve` builds through its receiver, so handing it `globalThis.Promise` put the
+     capture back under something a replacement installed afterwards could take over: a constructor
+     whose `resolve` hands back `{ valid: true }` made this verb read a validated path where there was
+     none, and the RFC 9883 sec. 4 MUST it exists to apply reported satisfied. Driven on the SAME
+     request P2 uses, whose path genuinely does not validate, so a substituted `true` is the only way
+     the verdict could flip. */
+  /* The substitution has to sit in the CONSTRUCTOR, not in `resolve`. `Promise.resolve.call(C, x)`
+     builds through `new C(executor)` when `x.constructor` is not `C`, so a hostile `C.resolve` is never
+     reached and a vector that puts the substitution there proves nothing. This one hands the executor a
+     `resolve` that discards the real value and settles with `{ valid: true }` instead, which is what a
+     replaced constructor can actually do. */
+  var RealPromise = Promise;
+  function Hostile(executor) {
+    return new RealPromise(function (settle, reject) {
+      executor(function () { settle({ valid: true }); }, reject);
+    });
+  }
+  Hostile.resolve = function (v) { return RealPromise.resolve(v); };
+  Hostile.reject = function (e) { return RealPromise.reject(e); };
+  Hostile.all = function (xs) { return RealPromise.all(xs); };
+  Hostile.prototype = RealPromise.prototype;
+  var underHostile;
+  globalThis.Promise = Hostile;
+  try {
+    underHostile = await RealPromise.resolve(
+      pki.possession.verifyRequest(der, { trustAnchors: [rootDer], time: AT }));
+  } catch (e) {
+    underHostile = { threw: e.code || e.name };
+  } finally {
+    globalThis.Promise = RealPromise;
+  }
+  check("P3a: a promise constructor replaced after load cannot report a path as validated (" +
+    JSON.stringify(underHostile && (underHostile.threw || underHostile.pathValidated)) + ")",
+  underHostile !== undefined && underHostile.threw === undefined &&
+    underHostile.pathValidated === false && underHostile.valid === false);
+  /* CONTROL: the replacement really does substitute when a capture is called with the LIVE global as
+     its receiver, which is the shape the fix removes. Without this the check above could pass because
+     nothing hostile ever happened. */
+  var realResolve = RealPromise.resolve;
+  var throughHostile = await realResolve.call(Hostile, RealPromise.resolve({ valid: false }));
+  check("P3b: CONTROL a capture called with the replaced global as receiver does substitute (" +
+    JSON.stringify(throughHostile) + ")", throughHostile.valid === true);
+
   check("P4: intermediates must be an array of certificates",
     (await codeAsync(pki.possession.verifyRequest(der,
       { trustAnchors: [rootDer], time: AT, intermediates: sigCertDer }))) === "possession/bad-input");

@@ -3405,6 +3405,46 @@ function testGuardReadsRuntimeLive() {
   // a replacement the sentinel is a different object and every comparison against it is false.
   // A `uncurry(X.prototype.m)` capture is a call-time-free read taken at load, so it is excluded.
   var protoRe = /(?:^|[^\w.$])(Object|Buffer|Array|Function|Promise)\.prototype(?!\s*\.\s*\w+\s*\))/g;
+  // A capture handed a LIVE GLOBAL as its receiver. This is the eighth tier and the one the seven
+  // above do not reach: the operation is captured correctly and then called with the replaceable
+  // global in the receiver position, which puts the decision straight back under a replacement.
+  // `Promise.resolve` BUILDS through its receiver, so `_promiseResolve(Promise, p)` constructs with
+  // whatever `globalThis.Promise` is at call time. A constructor whose executor settles with
+  // `{ valid: true }` instead of the real value made `pki.possession.verifyRequest` read a validated
+  // certification path where there was none, and report the RFC 9883 sec. 4 MUST as satisfied; the
+  // same shape sat on the alternative-signature paths of `x509.sign` and `crl.sign` and on three
+  // `acme` sites, eight in all, found one at a time by a reviewer rather than here.
+  // It keys on the GLOBAL's name in the receiver position rather than on what the capture is called,
+  // and the CALLEE is deliberately unconstrained. A first version required a `_`-prefixed local and
+  // missed six spellings of the same defect, measured: a capture named without the underscore (the
+  // prefix is a convention here, not a guarantee), a receiver written `globalThis.Promise` or
+  // `global.Promise`, one reached through a local alias, one handed through `.call`/`.apply` as the
+  // thisArg, and -- the one that matters most in this codebase -- `intrinsic.promiseResolve(Promise,
+  // ...)`, since reaching the captures through the module handle is how most modules spell it. A
+  // detector that only sees one spelling of a call is a detector one rename away from silence.
+  // The global may be bare or qualified, and must be followed by a comma or a close paren: that is
+  // what separates `_f(Object, ...)` from `_f(Object.keys(x))`, where the global is the start of a
+  // member expression rather than the receiver being handed over.
+  var LIVE_GLOBAL_RECEIVER =
+    "(?:globalThis\\.|global\\.)?(Promise|Object|Array|Buffer|Function|Reflect|JSON|Math|Number|String|Date)";
+  var liveReceiverRe = new RegExp(
+    "(?:^|[^\\w.$])(?:_[\\w$]*|[A-Za-z$][\\w$]*(?:\\.[A-Za-z$][\\w$]*)*)\\(\\s*" +
+    LIVE_GLOBAL_RECEIVER + "\\s*[,)]", "g");
+  // The same receiver handed through `.call`/`.apply`, where the thisArg IS the receiver.
+  var liveThisArgRe = new RegExp("\\.(?:call|apply)\\(\\s*" + LIVE_GLOBAL_RECEIVER + "\\s*[,)]", "g");
+  // And an `apply`-shaped HELPER, where the thisArg is the SECOND argument rather than the first:
+  // `intrinsic.apply(fn, Promise, [v])` is the live-receiver defect with the global one position
+  // further along, and both patterns above look at the first argument only. This is not hypothetical:
+  // `cms-verify` invokes its captured `Promise.resolve` exactly this way in the path that builds a
+  // signature verdict, so the one-character regression from `_Promise` to `Promise` there is a
+  // verification bypass that neither of the above would have named.
+  // The first argument may itself be a CALL, so it is matched as a run of plain characters or one
+  // parenthesized group rather than as "anything without parens": written the narrow way,
+  // `apply(pick(x), Promise, ...)` slipped through. The `{1,120}` is a ReDoS backstop set far above
+  // any real argument, not the precision mechanism.
+  var liveApplyThisArgRe = new RegExp(
+    "(?:^|[^\\w.$])[\\w$.]*[aA]pply\\(\\s*(?:[^,()]|\\([^()]*\\)){1,120},\\s*" +
+    LIVE_GLOBAL_RECEIVER + "\\s*[,)]", "g");
   // SCOPE, chosen so it needs no list to maintain. A module is IN once it takes the captures:
   // that is how it opts into the discipline, and once opted in it is held to it completely rather
   // than at the one site somebody happened to change. A module that has not opted in is out of
@@ -3480,6 +3520,27 @@ function testGuardReadsRuntimeLive() {
         bad.push({ file: rel, line: i + 1,
           content: "converts through the live global `" + m[1] + "` — take it from guard-intrinsic, " +
             "so a replacement cannot decide what this value converts to" });
+      }
+      liveReceiverRe.lastIndex = 0;
+      while ((m = liveReceiverRe.exec(code)) !== null) {
+        bad.push({ file: rel, line: i + 1,
+          content: "hands the live global `" + m[1] + "` to a capture as its receiver — pass the " +
+            "captured `intrinsic." + m[1] + "`, since an operation called on a replaceable receiver " +
+            "builds through whatever replaced it and decides the value this guard goes on to read" });
+      }
+      liveThisArgRe.lastIndex = 0;
+      while ((m = liveThisArgRe.exec(code)) !== null) {
+        bad.push({ file: rel, line: i + 1,
+          content: "hands the live global `" + m[1] + "` through `.call`/`.apply` as the receiver — " +
+            "pass the captured `intrinsic." + m[1] + "`, since the thisArg is what the operation " +
+            "builds through and a replacement decides the value this guard goes on to read" });
+      }
+      liveApplyThisArgRe.lastIndex = 0;
+      while ((m = liveApplyThisArgRe.exec(code)) !== null) {
+        bad.push({ file: rel, line: i + 1,
+          content: "hands the live global `" + m[1] + "` to an apply-shaped helper as the thisArg — " +
+            "pass the captured `intrinsic." + m[1] + "`, since that argument is the receiver the " +
+            "operation builds through and a replacement decides the value this guard goes on to read" });
       }
     }
   });

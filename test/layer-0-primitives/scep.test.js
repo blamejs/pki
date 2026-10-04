@@ -109,6 +109,57 @@ async function testNoKeyParse() {
   check("no recipientKey: attributes still read", v.transactionId === "t");
 }
 
+// An EnvelopedData using RSAES-PKCS1-v1_5 key transport over an AES-256-CBC content, the combination
+// a deployed SCEP peer sends and the one pki.cms.decrypt refuses without an opt-in. Assembled rather
+// than built, because this toolkit's own producer emits RSAES-OAEP and would never encode it.
+// The RecipientInfo names the recipient certificate's own issuer and serial, because a RecipientInfo
+// that matches no arm is refused while the envelope is still being read and never reaches the decrypt.
+function v15Envelope(recipientCert) {
+  var NL = b.raw(Buffer.from([5, 0]));
+  var rp = pki.schema.x509.parse(recipientCert);
+  var ias = b.sequence([b.raw(rp.issuer.bytes), b.integer(BigInt("0x" + rp.serialNumberHex))]);
+  var ktri = b.sequence([b.integer(0n), ias,
+    b.sequence([b.oid(O("rsaEncryption")), NL]), b.octetString(Buffer.alloc(128))]);
+  var eci = b.sequence([b.oid(ID_DATA),
+    b.sequence([b.oid(O("aes256-CBC")), b.octetString(Buffer.alloc(16))]),
+    b.contextPrimitive(0, Buffer.alloc(16))]);
+  return b.sequence([b.oid(O("envelopedData")),
+    b.explicit(0, b.sequence([b.integer(0n), b.setOf([ktri]), eci]))]);
+}
+
+// The opt-in that lets a SCEP envelope use v1.5 key transport rests on the outer signature naming an
+// authorized peer. Without opts.signerCert the signer is not authenticated -- parse reports
+// signerAuthenticated: false and tells the caller to authenticate the surfaced certificate itself --
+// so anyone able to sign anything can submit chosen ciphertexts, and the decrypt distinguishes a
+// conforming unwrap from a rejected one by which error it reports. The refusal must apply until a
+// signer has been authenticated, and must not apply once one has.
+async function testV15EnvelopeNeedsAnAuthenticatedSigner() {
+  var attrs = [
+    { type: O("scepMessageType"), values: [b.printable("19")] },
+    { type: O("scepTransactionId"), values: [b.printable("v15-txn")] },
+    { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] },
+  ];
+  var msg = await signWith(v15Envelope(F.caCert), attrs);
+  var key = { cert: F.caCert, key: F.caKey };
+
+  var unauth = null;
+  try { await pki.scep.parse(msg, { recipientKey: key }); }
+  catch (e) { unauth = e; }
+  check("an unauthenticated signer's v1.5 envelope is refused", unauth !== null && unauth.code === "scep/decrypt-failed");
+  check("and the refusal is the unauthenticated-v1.5 one, not a decrypt outcome",
+    unauth !== null && unauth.cause != null && unauth.cause.code === "cms/unauthenticated-rsa-v15");
+
+  // The same message with the signer authenticated reaches the unwrap, so the verdict then rests on the
+  // key rather than on the opt-in. It still fails, because the encryptedKey is not a real ciphertext;
+  // what this pins is that the refusal is no longer what refused it.
+  var authed = null;
+  try { await pki.scep.parse(msg, { recipientKey: key, signerCert: F.signer.cert }); }
+  catch (e) { authed = e; }
+  check("an authenticated signer's v1.5 envelope reaches the unwrap",
+    authed !== null && authed.code === "scep/decrypt-failed" &&
+    authed.cause != null && authed.cause.code === "cms/decrypt-failed");
+}
+
 async function testNonceEcho() {
   var sent = nodeCrypto.randomBytes(16);
   var rep = await buildCertRep({ statusCode: "0", transactionId: "t", recipientNonce: sent, content: await cmsEncrypt.encrypt(certsOnly([F.issuedCert]), [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" }) });
@@ -1503,6 +1554,7 @@ async function main() {
   await testMultiValuedAttribute();
   await testMultipleSigners();
   await testTamperFailsClosed();
+  await testV15EnvelopeNeedsAnAuthenticatedSigner();
   await testInputGuards();
   await testGetCACaps();
   await testProxyThreadsThrough();
