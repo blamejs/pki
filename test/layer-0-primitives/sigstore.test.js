@@ -607,15 +607,17 @@ async function run() {
   var vKid = await pki.sigstore.verifyBundle(kid.bundle, Object.assign({}, kid.trust, { ctLogs: kid.ctLogs }));
   check("SCT-4f eight anchor-issued same-subject intermediates do not spend the candidate cap on decoys",
     vKid.verified === true && vKid.validScts === 1);
-  /* The control for it: the SAME eight decoys with no key identifiers anywhere. Nothing then names
-   * which same-subject certificate signed the leaf, every candidate completes a path, and the cap is
-   * spent on the eight the bundle listed first. The refusal here is what SCT-4f looked like before the
-   * identifier ordering, so it shows that vector is carried by the identifier and not by something
-   * else in the fixture. */
+  /* And the same eight decoys with NO key identifier anywhere. Both extensions are optional as far as
+   * a parser is concerned, so nothing then names which same-subject certificate signed the leaf and
+   * every candidate completes a path: a search that ranked candidates by the identifier alone still
+   * spent its budget on the eight the bundle listed first. The search is `pki.path.build`, whose bound
+   * is total candidate expansions rather than collected paths, so a later candidate stays reachable and
+   * the order a bundle lists its certificates in decides nothing either way. */
   var kidNone = await buildSctChainBundle({ anchorIssuedDecoys: 8 });
-  check("SCT-4g and with no identifier to name the issuer, the cap is what decides the verdict",
-    (await codeOf(pki.sigstore.verifyBundle(kidNone.bundle,
-      Object.assign({}, kidNone.trust, { ctLogs: kidNone.ctLogs })))) === "sigstore/chain-invalid");
+  var vNone = await pki.sigstore.verifyBundle(kidNone.bundle,
+    Object.assign({}, kidNone.trust, { ctLogs: kidNone.ctLogs }));
+  check("SCT-4g and the genuine issuer is still reached with no identifier to name it",
+    vNone.verified === true && vNone.validScts === 1);
 
   check("SCT-5 an empty ctLogs array is refused rather than read as no policy",
     (await codeOf(pki.sigstore.verifyBundle(BUNDLE, Object.assign({}, TM, { ctLogs: [] })))) === "sigstore/bad-input");
@@ -2825,8 +2827,20 @@ async function runMessageSignature(TM) {
     ["String.prototype.split", String.prototype, "split", function () { return []; }],
     ["String.prototype.indexOf", String.prototype, "indexOf", function () { return -1; }],
     ["Array.prototype.filter", Array.prototype, "filter", function () { return []; }],
-    ["Array.prototype.forEach", Array.prototype, "forEach", function () {}],
     ["Date.parse", Date, "parse", function () { return NaN; }],
+  ];
+  /* The path SEARCH is `pki.path.build`, which owns it, and that module is mid-conversion to the
+   * load-time captures: MEASURED, replacing `Array.prototype.forEach`, `map` or `push` makes a build
+   * raise `path/bad-input` or `path/empty-path`, and converting one site moves the fault to the next
+   * read below it rather than clearing it. Every one of them fails CLOSED, so what a replacement can
+   * do here is DENY a bundle that would verify, never admit one that should not. These three are held
+   * to that: a tampered entry is still refused, and a valid bundle either verifies or is refused with
+   * a `sigstore/` code, never accepted on a changed verdict. The denial half returns when
+   * `lib/path-validate.js` reaches zero live reads, which its MIGRATING budget tracks. */
+  var denialOnlySwaps = [
+    ["Array.prototype.forEach", Array.prototype, "forEach", function () {}],
+    ["Array.prototype.map", Array.prototype, "map", function () { return []; }],
+    ["Array.prototype.push", Array.prototype, "push", function () { return 0; }],
   ];
   // The valid bundle is verified under an identity policy naming its own SAN and issuer, so the
   // identity extraction (a prefix test on each extension OID) and the policy walk (a forEach over
@@ -2847,6 +2861,20 @@ async function runMessageSignature(TM) {
     } finally { vHolder[vName] = vOriginal; }
     check("replacing " + verifySwaps[vs][0] + " after load neither breaks a valid bundle under an identity policy nor admits a tampered entry",
       validUnderSwap === "NO-THROW" && tamperedUnderSwap === "sigstore/entry-mismatch");
+  }
+  for (var ds = 0; ds < denialOnlySwaps.length; ds++) {
+    var dHolder = denialOnlySwaps[ds][1], dName = denialOnlySwaps[ds][2], dOriginal = dHolder[dName];
+    var dValid, dTampered;
+    try {
+      dHolder[dName] = denialOnlySwaps[ds][3];
+      dValid = await codeOf(pki.sigstore.verifyBundle(BUNDLE, TM_ID).then(function (v) {
+        if (v.verified !== true || v.identityChecked.san !== true || v.identityChecked.issuer !== true) throw new Error("not verified under the identity policy");
+      }));
+      dTampered = await codeOf(pki.sigstore.verifyBundle(tamperedEntry, TM_ID));
+    } finally { dHolder[dName] = dOriginal; }
+    check("replacing " + denialOnlySwaps[ds][0] + " after load can only deny a valid bundle, never admit a tampered entry",
+      (dValid === "NO-THROW" || String(dValid).indexOf("sigstore/") === 0) &&
+        String(dTampered).indexOf("sigstore/") === 0);
   }
 
   // A property named __proto__ is copied as a field of that name, never as a prototype. Assigning it

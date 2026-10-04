@@ -1085,12 +1085,14 @@ async function run() {
   // Array.prototype.map is a replaceable global, and the anchor list becomes path-builder input
   // AFTER verification suspends. A caller who swaps it during that window must not end up trusted.
   //
-  // What this vector establishes, precisely: the swap is live and is reached, and the verdict is
-  // still untrusted. It does NOT isolate cmp-verify's explicit loops as the cause -- a global map
-  // replacement also corrupts path building's own internals, so the refusal cannot be attributed to
-  // one change. The loops in _certList and the pool assembly are kept on principle, because a trust
-  // decision should not dispatch through a replaceable global at all, and they are honestly recorded
-  // here as unproven by this vector rather than credited with a result they may not produce.
+  // What this vector establishes, precisely: the verdict is still untrusted with the swap installed
+  // mid-call, AND the anchor path no longer dispatches through the replaced operation at all. The
+  // second half used to read the other way: path building coerced its candidate pool with a live
+  // `poolInput.map(...)`, so the swap was reached and the vector could only record that the refusal
+  // was not attributable to one change. That read is captured now, so nothing on the route from the
+  // anchor list to a trust decision reaches a replaceable `map`, which is the stronger statement and
+  // the one asserted below. It also keeps the pair from going vacuous: if a live `map` returns to
+  // this route, the reach assertion fails rather than the verdict quietly depending on it again.
   var realMap = Array.prototype.map;
   var swapped = false;
   var pendingSwap = pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: [s.cert], time: T });
@@ -1099,13 +1101,11 @@ async function run() {
   try { swapVerdict = await pendingSwap; } finally { Array.prototype.map = realMap; }
   check("23y. replacing Array.prototype.map mid-call does not decide the anchor set",
     swapVerdict.trusted === false);
-  // The replacement really was live and really was reached during the window -- without this the
-  // vector above would pass on a call that simply never touched it. What the fix changes is that
-  // nothing on the ANCHOR path dispatches through it: cmp-verify builds its lists with explicit
-  // loops, so the swap cannot answer the question "which certificates are trusted". Code deeper in
-  // path building still calls it, which is why this asserts the swap fired rather than claiming the
-  // whole call is free of it.
-  check("23z. the replacement was installed and reached while the call was pending", swapped === true);
+  // And it was never reached: cmp-verify builds its lists with explicit loops, and the candidate-pool
+  // coercion inside path building takes `map` from the load-time captures, so no step between the
+  // anchor list and the trust decision asks a replaceable operation which certificates are trusted.
+  // A live `map` reappearing anywhere on that route fails this.
+  check("23z. and the replacement is never reached on the route to a trust decision", swapped === false);
 
   // An Array.prototype index SETTER is the sharper form of the same idea: a fresh array has no own
   // slot at 0, so `out[0] = cert` is a [[Set]] that walks the prototype chain and lands in caller
