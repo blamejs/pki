@@ -668,6 +668,57 @@ async function run() {
           "--out", "/dev/null"]);
         check("an output destination that is not a regular file is still written (exit " +
           nullRun.status + ")", nullRun.status === 0);
+        /* A FIFO reaches a READER, it is not consumed by the writer. Opening an existing destination
+           read-write makes this process its own reader, so the open succeeds with nobody listening and
+           the bytes go into a pipe no one drains: the command reports success and the output is gone.
+           A write-only open waits for a reader, which is what naming a FIFO asks for. Driven with a
+           real reader so the vector asserts the bytes ARRIVED rather than that the call returned, and
+           only where `mkfifo` exists. This cannot run on win32, which is why the defect reached a
+           reviewer rather than this suite. */
+        var fifoPath = path.join(tmp, "out.fifo");
+        var haveFifo = false;
+        try {
+          require("node:child_process").execFileSync("mkfifo", [fifoPath], { stdio: "ignore" });
+          haveFifo = fs.existsSync(fifoPath);
+        } catch (_mk) { haveFifo = false; }
+        if (!haveFifo) {
+          helpers.skip("mkfifo is unavailable here, so a FIFO destination cannot be driven");
+        } else {
+          // The reader starts first and drains the pipe, which is what a write-only open waits for.
+          var reader = require("node:child_process").spawn(process.execPath,
+            ["-e", "process.stdout.write(String(require('fs').readFileSync(process.argv[1]).length))",
+              fifoPath], { stdio: ["ignore", "pipe", "ignore"] });
+          var readBytes = "";
+          reader.stdout.on("data", function (d) { readBytes += d; });
+          var fifoRun = cli(["csr", "--key", csrKeyT, "--subject", "CN=fifo.example", "--out", fifoPath]);
+          await helpers.waitUntil(function () { return readBytes.length > 0; },
+            { timeoutMs: 20000, label: "the FIFO reader to report what it drained" });
+          check("a FIFO destination reaches a reader rather than being swallowed (exit " +
+            fifoRun.status + ", reader drained " + readBytes + " bytes)",
+          fifoRun.status === 0 && Number(readBytes) > 0);
+          try { fs.unlinkSync(fifoPath); } catch (_rm) { /* allow:swallow-unverified the fixture is gone either way */ }
+          /* And the case that DISTINGUISHES the two opens, which the one above does not: NO reader.
+             With a reader present both a write-only and a read-write open deliver, so that check alone
+             passes either way. Without one, a read-write open makes the writer its own reader and
+             returns success having written into a pipe nobody drains, while a write-only open waits.
+             So the question is whether the command can report SUCCESS with no reader: it must not. */
+          var lonePath = path.join(tmp, "noreader.fifo");
+          var haveLone = false;
+          try {
+            require("node:child_process").execFileSync("mkfifo", [lonePath], { stdio: "ignore" });
+            haveLone = fs.existsSync(lonePath);
+          } catch (_mk2) { haveLone = false; }
+          if (haveLone) {
+            var lone = spawnSync(process.execPath,
+              [BIN, "csr", "--key", csrKeyT, "--subject", "CN=lonefifo.example", "--out", lonePath],
+              { encoding: "utf8", timeout: 6000 });
+            var blocked = !!(lone.error && lone.error.code === "ETIMEDOUT");
+            check("a FIFO with no reader does not report success with the output discarded (" +
+              (blocked ? "waited for a reader" : "exit " + lone.status) + ")",
+            blocked || lone.status !== 0);
+            try { fs.unlinkSync(lonePath); } catch (_rm2) { /* allow:swallow-unverified the fixture is gone either way */ }
+          }
+        }
       }
       fs.unlinkSync(csrOutT);
       fs.unlinkSync(csrKeyT);
@@ -682,15 +733,35 @@ async function run() {
         helpers.skip("this filesystem (" + process.platform + ") does not admit a newline in a file " +
           "name, so a report naming one cannot be driven here");
       } else {
+        /* The collision has to be on the path that CARRIES the newline. Pre-creating the `--out` path
+           instead made the refusal name THAT one, which holds no newline, so the vector drove a report
+           that could never have broken a line and the escaping it was written to check went untested.
+           Here `--pub` is the one that already exists, so the refusal names the newline-carrying path. */
         var nlOut = path.join(tmp, "nl.key");
-        fs.writeFileSync(nlOut, "already here");
+        fs.writeFileSync(nlPub, "already here");
         var nlRun = cli(["keygen", "--out", nlOut, "--pub", nlPub]);
         var pkiLines = nlRun.stderr.split("\n").filter(function (l) { return l.indexOf("pki: ") === 0; });
+        var rawNewlineInReport = nlRun.stderr.replace(/pki: /g, "").indexOf("\n") !==
+          nlRun.stderr.replace(/pki: /g, "").trimEnd().length;
         check("a report naming a path that carries a newline is still one line (" +
-          pkiLines.length + " pki line(s))",
-        nlRun.status !== 0 && pkiLines.length === 1 && nlRun.stderr.indexOf("\\x0a") !== -1);
+          pkiLines.length + " pki line(s), escaped " + (nlRun.stderr.indexOf("\\x0a") !== -1) + ")",
+        nlRun.status !== 0 && pkiLines.length === 1 && nlRun.stderr.indexOf("\\x0a") !== -1 &&
+          !rawNewlineInReport);
         if (fs.existsSync(nlPub)) fs.unlinkSync(nlPub);
-        fs.unlinkSync(nlOut);
+        if (fs.existsSync(nlOut)) fs.unlinkSync(nlOut);
+        /* And the SUCCESS line, which names the caller's paths too and goes to STDOUT, where a script
+           reading this tool's output is most likely to be parsing it. The escaping was applied to the
+           refusals and not to the report of a completed write, so the rule reached the failing half of
+           the verb and not the succeeding half. */
+        var okOut = path.join(tmp, "nlok.key");
+        var okPub = path.join(tmp, "nlok\nb.pub");
+        var okRun = cli(["keygen", "--alg", "Ed25519", "--out", okOut, "--pub", okPub]);
+        var okLines = okRun.stdout.replace(/\n$/, "").split("\n");
+        check("the report of a completed write is one line too (" + okLines.length + " line(s), " +
+          "escaped " + (okRun.stdout.indexOf("\\x0a") !== -1) + ")",
+        okRun.status === 0 && okLines.length === 1 && okRun.stdout.indexOf("\\x0a") !== -1);
+        if (fs.existsSync(okPub)) fs.unlinkSync(okPub);
+        if (fs.existsSync(okOut)) fs.unlinkSync(okOut);
       }
     }
     /* Both halves at one name would put the private key where the public one was asked for. The

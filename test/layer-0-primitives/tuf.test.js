@@ -1904,6 +1904,45 @@ async function runKeyMaterialAcrossAwaits() {
   try { mixedGot = await mixedPending; } catch (_e) { mixedGot = null; }
   check("A16: signatures over two different documents cannot together meet one threshold",
     mixedGot === null || mixedGot.verified === false);
+  /* A17: `signedBytes` is bounded before it is copied. These bytes must equal the canonical form of a
+     body that itself came from a document no larger than the cap, so anything above it cannot match,
+     and copying it first paid an allocation the size of whatever arrived to reach that conclusion:
+     measured, a 32 MiB value allocated 32 MiB before the comparison rejected it. MEASURED by
+     allocation, `arrayBuffers` counting exactly the pool a Buffer copy comes from. */
+  var oversizeSigned = Buffer.alloc(pki.C.LIMITS.JSON_MAX_BYTES * 8, 0x41);
+  var allocBefore = process.memoryUsage().arrayBuffers;
+  var oversizeCode = await pki.tuf.verifySignatures({
+    metadata: { type: "root", specVersion: SPEC, version: 1, signed: docV1,
+      signedBytes: oversizeSigned, signatures: [] },
+    keys: {}, role: { keyids: [], threshold: 1 },
+  }).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  var allocGrewMiB = (process.memoryUsage().arrayBuffers - allocBefore) / (1024 * 1024);
+  check("A17: a signedBytes above the document cap is refused without being copied (" + oversizeCode +
+    ", " + allocGrewMiB.toFixed(1) + " MiB)",
+  oversizeCode === "tuf/too-large" && allocGrewMiB < 1);
+  /* CONTROL: a signedBytes WITHIN the cap is still read and still compared, so A17 bounds the copy
+     rather than narrowing what the verb accepts. */
+  var withinCap = await pki.tuf.verifySignatures({
+    metadata: { type: "root", specVersion: SPEC, version: 1, signed: docV1,
+      signedBytes: Buffer.from(preV1), signatures: [] },
+    keys: {}, role: { keyids: [], threshold: 1 },
+  }).then(function (v) { return v.verified === false ? "read" : "verified"; }, function (e) { return e.code; });
+  check("A17a: CONTROL a signedBytes within the cap is still read and compared (" + withinCap + ")",
+    withinCap === "read");
+  /* A17b: and the SAME field on the expiry route, which carries its own copy of that comparison. The
+     bound was applied to the verify path alone, so the same oversized value still allocated here: the
+     rule reached one of the two verbs that compare this field. */
+  var expiryBefore = process.memoryUsage().arrayBuffers;
+  var expiryCode;
+  try {
+    pki.tuf.checkExpiry({ type: "root", specVersion: SPEC, version: 1, signed: docV1,
+      signedBytes: oversizeSigned, signatures: [] }, new Date());
+    expiryCode = "NO-THROW";
+  } catch (e) { expiryCode = e.code; }
+  var expiryGrewMiB = (process.memoryUsage().arrayBuffers - expiryBefore) / (1024 * 1024);
+  check("A17b: checkExpiry bounds the same field before copying it (" + expiryCode + ", " +
+    expiryGrewMiB.toFixed(1) + " MiB)",
+  expiryCode === "tuf/too-large" && expiryGrewMiB < 1);
   /* CONTROL: each signature does verify against its OWN document, so A16 is about the swap rather than
      either signature being bad. */
   var justA = await pki.tuf.verifySignatures({

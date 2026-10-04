@@ -488,7 +488,30 @@ function testSurface() {
   check("pki.merkle.consistencyProof is exposed", typeof pki.merkle.consistencyProof === "function");
 }
 
+/* A node is exactly 32 bytes, and the check enforcing that ran on the COPY, so a value handed where a
+ * hash belongs was duplicated in full and only then refused: measured, one 64 MiB leaf allocated
+ * another 64 MiB to reject it. MEASURED by allocation, `arrayBuffers` counting exactly the pool a
+ * Buffer copy comes from, because the copy is far too fast for a time budget to separate. */
+function testHashWidthPrecedesTheCopy() {
+  var oversize = Buffer.alloc(64 * 1024 * 1024, 0x41);
+  var before = process.memoryUsage().arrayBuffers;
+  var code;
+  try { pki.merkle.root([oversize]); code = "NO-THROW"; } catch (e) { code = e.code || e.name; }
+  var grewMiB = (process.memoryUsage().arrayBuffers - before) / (1024 * 1024);
+  check("a leaf far wider than a hash is refused before it is copied (" + code + ", " +
+    grewMiB.toFixed(1) + " MiB)", code === "merkle/bad-hash-length" && grewMiB < 1);
+  /* CONTROL: a valid pair still folds, and a merely WRONG width is still refused with the same code,
+     so the bound did not narrow what the verb accepts. */
+  var folded = pki.merkle.root([Buffer.alloc(32, 1), Buffer.alloc(32, 2)]);
+  var wrongWidth;
+  try { pki.merkle.root([Buffer.alloc(31, 1)]); wrongWidth = "NO-THROW"; }
+  catch (e2) { wrongWidth = e2.code; }
+  check("CONTROL valid leaves still fold and a 31-byte leaf is still refused",
+    Buffer.isBuffer(folded) && folded.length === 32 && wrongWidth === "merkle/bad-hash-length");
+}
+
 function run() {
+  testHashWidthPrecedesTheCopy();
   testSurface();
   testHashKats();
   testInclusionAccept();

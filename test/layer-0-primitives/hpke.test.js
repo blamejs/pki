@@ -135,6 +135,28 @@ function testRobustness() {
     encGrewMiB.toFixed(1) + " MiB allocated)",
   oversizeEncCode === "hpke/bad-key" && encGrewMiB < 1);
 
+  /* The SENDER's subject is its recipient key, and it has to be taken before the options bag is read,
+     because reading that bag runs caller code. A getter on `opts.info` that copied another recipient's
+     key over the buffer had the setup encapsulate to THAT recipient while the caller had named the
+     first: measured, a sender naming A produced a message only B could open, and every width check
+     passed because both keys are the same width. The verdict is not a refusal, it is a message for the
+     wrong party, so the vector asks WHO can open it rather than whether the call threw. `setupR` takes
+     its ciphertext first for the same reason; this is the sender side of one rule. */
+  var recipA = require("crypto").generateKeyPairSync("x25519");
+  var recipB = require("crypto").generateKeyPairSync("x25519");
+  var pkRecipA = Buffer.from(recipA.publicKey.export({ format: "der", type: "spki" }).subarray(-32));
+  var pkRecipB = recipB.publicKey.export({ format: "der", type: "spki" }).subarray(-32);
+  var swapOpts = { get info() { pkRecipB.copy(pkRecipA); return Buffer.alloc(0); } };
+  var swapped = pki.hpke.setupS(IDS, pkRecipA, swapOpts);
+  var swappedCt = swapped.context.seal(Buffer.alloc(0), Buffer.from("secret"));
+  function opensFor(priv) {
+    try {
+      return pki.hpke.open(IDS, swapped.enc, priv, {}, Buffer.alloc(0), swappedCt).toString();
+    } catch (e) { return e.code || e.name; }
+  }
+  check("an option getter cannot swap the recipient a sender setup encapsulates to",
+    opensFor(recipA.privateKey) === "secret" && opensFor(recipB.privateKey) === "hpke/open-failed");
+
   /* A supplied `pkm` must match the `skm` beside it. That rule was applied to an OWN property only, so
      a key pair carrying `pkm` on its PROTOTYPE had the check skipped rather than applied: the field was
      read as absent. `skm` on the line above it was always read through the prototype, so the two fields

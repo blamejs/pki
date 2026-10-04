@@ -36,8 +36,27 @@
 var fs  = require("node:fs");
 var pki = require("../index.js");
 
+// One line stays one line. A path comes from the command line, and a carriage return or newline in one
+// would end the line early and put whatever follows it where an operator reads a report of the tool's
+// own, so those two bytes are shown rather than obeyed. Shared by every report: fifteen `fail` call
+// sites interpolate a caller-supplied path, and escaping only the exit-handler's reports left those
+// printing the raw byte. Measured: `keygen --pub "nl\na.pub"` over an existing file reported across two
+// lines, the second reading as a line of this tool's own output.
+function _oneLine(message) {
+  var text = String(message);
+  var one = "";
+  for (var i = 0; i < text.length; i++) {
+    var c = text.charCodeAt(i);
+    // TWO hex digits. `(0x0a).toString(16)` is "a", so a one-digit escape ran straight into the next
+    // character of the path: a newline followed by "a" printed as "\xaa", which reads as an escape of
+    // one byte while standing for two. The reader cannot tell those apart, so the width is fixed.
+    one += (c === 0x0a || c === 0x0d) ? (c === 0x0a ? "\\x0a" : "\\x0d") : text.charAt(i);
+  }
+  return one;
+}
+
 function fail(msg) {
-  process.stderr.write("pki: " + msg + "\n");
+  process.stderr.write("pki: " + _oneLine(msg) + "\n");
   process.exit(1);
 }
 
@@ -329,15 +348,9 @@ function _sealCreated(rec, fd) {
 // report, and that is the end of it: the file is intact either way, which is the half that matters, and
 // there is nowhere else to say so from inside an exit handler.
 function _say(message) {
-  // One line stays one line. A path comes from the command line, and a carriage return or newline in
-  // one would end the line early and put whatever follows it where an operator reads a report of its
-  // own, so those two bytes are shown rather than obeyed.
-  var one = "";
-  for (var i = 0; i < message.length; i++) {
-    var c = message.charCodeAt(i);
-    one += (c === 0x0a || c === 0x0d) ? "\\x" + c.toString(16) : message.charAt(i);
-  }
-  try { process.stderr.write("pki: " + one + "\n"); }
+  // Through the same escaper every report uses, so a path with a newline in it cannot forge a line
+  // here either.
+  try { process.stderr.write("pki: " + _oneLine(message) + "\n"); }
   catch (_e) { /* allow:swallow-unverified nothing can be reported; the file is untouched */ }
 }
 process.on("exit", function (code) {
@@ -452,13 +465,19 @@ function writeOutputFile(file, bytes) {
     catch (e) {
       if (e.code !== "EEXIST") return fail("cannot write " + file + ": " + e.message);
       var efd;
-      try { efd = fs.openSync(file, "r+"); }
+      /** WRITE-ONLY, and without permission to create. A read-write open makes this process its own
+       * reader on a FIFO, so the open succeeds with nobody listening and the bytes go into a pipe no
+       * one drains: a small result is written, the descriptor closes, the command reports success and
+       * the output is gone, while a larger one blocks. A write-only open waits for a reader, which is
+       * what a caller naming a FIFO asked for. `O_TRUNC` is NOT set here: it is what made this open
+       * EINVAL on Windows, not `O_WRONLY`, and a regular file is truncated through its descriptor
+       * below where that is meaningful. */
+      try { efd = fs.openSync(file, fs.constants.O_WRONLY); }
       catch (e2) {
         if (e2.code === "ENOENT") continue;
-        /** A destination that refuses a read-write open is not a regular file: `/dev/stdout` when
-         * stdout is a pipe, a FIFO, a device. Those are written by name, as every one of these verbs
-         * did before, and nothing is tracked for them because this run did not create them and will
-         * never remove them. A regular file always takes the descriptor path above. */
+        /** A destination that refuses a write-only open without create is written by name, as every one
+         * of these verbs did before, and nothing is tracked for it because this run did not create it
+         * and will never remove it. A regular file always takes the descriptor path above. */
         try { fs.writeFileSync(file, bytes); }
         catch (e3) { return fail("cannot write " + file + ": " + e3.message); }
         return undefined;
@@ -536,8 +555,11 @@ function cmdKeygen(args) {
     // written does not undo a key that is already on disk. See `wroteToDisk` above for what that
     // changes: the message and the exit code, not the key.
     wroteToDisk = true;
-    process.stdout.write("wrote " + alg + " private key to " + args.out +
-      (args.pub ? " and its public key to " + args.pub : "") + "\n");
+    // Through the same escaper the refusals use. A SUCCESS line names the caller's paths too, so a
+    // newline in one ended the line early here as well, and this one goes to stdout where a script
+    // reading the tool's output is most likely to be parsing it.
+    process.stdout.write(_oneLine("wrote " + alg + " private key to " + args.out +
+      (args.pub ? " and its public key to " + args.pub : "")) + "\n");
   });
 }
 // The public half has no PEM codec of its own on the schema surface (an SPKI is not a format the
@@ -637,7 +659,7 @@ function writeOrPrint(args, bytes) {
   // stdout made these exit non-zero over a file that was already written, which is the same
   // contradiction one verb further on.
   wroteToDisk = true;
-  process.stdout.write("wrote " + args.out + "\n");
+  process.stdout.write(_oneLine("wrote " + args.out) + "\n");
 }
 
 // pki csr --key <key> --subject <dn> -- a PKCS#10 certification request over the key's public half,
