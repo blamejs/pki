@@ -67,6 +67,105 @@ function testRobustness() {
   // Generated-key round-trip (the non-KAT path: fresh ephemeral).
   var o = pki.hpke.seal(IDS, kp.publicKey, {}, Buffer.from("aad"), Buffer.from("hello"));
   check("generated-key round-trip", pki.hpke.open(IDS, o.enc, kp.privateKey, {}, Buffer.from("aad"), o.ct).toString() === "hello");
+
+  /* Every BufferSource form these doors admit is read. Each door asked `guard.bytes.isByteSource`,
+     which accepts an ArrayBuffer and a DataView, and the line after it measured or copied through a
+     primitive wanting a Buffer or a Uint8Array: so the admitted set was wider than the handled one and
+     a form the door had just accepted was refused a line later. `deriveKeyPair` said so out loud, its
+     own refusal naming "Buffer / TypedArray / DataView / ArrayBuffer" while refusing the last two.
+     Driven through the shipped verbs, with the plaintext round-tripping so the vector says the bytes
+     were read correctly rather than only that the call returned. */
+  function byteForms(n, fill) {
+    var b = Buffer.alloc(n, fill);
+    var ab = b.buffer.slice(b.byteOffset, b.byteOffset + n);
+    return [["Buffer", b], ["Uint8Array", new Uint8Array(ab.slice(0))],
+      ["ArrayBuffer", ab.slice(0)], ["DataView", new DataView(ab.slice(0))]];
+  }
+  var formGaps = [];
+  byteForms(32, 0x41).forEach(function (pair) {
+    try {
+      var dk = pki.hpke.deriveKeyPair(IDS.kem, pair[1]);
+      if (!dk || !dk.publicKey) formGaps.push("deriveKeyPair(" + pair[0] + ") returned no key");
+    } catch (e) { formGaps.push("deriveKeyPair(" + pair[0] + ") -> " + (e.code || e.name)); }
+  });
+  byteForms(16, 0x61).forEach(function (pair) {
+    try {
+      var sealed = pki.hpke.seal(IDS, kp.publicKey, { info: pair[1] }, pair[1], Buffer.from("hello"));
+      var opened = pki.hpke.open(IDS, sealed.enc, kp.privateKey, { info: pair[1] }, pair[1], sealed.ct);
+      if (opened.toString() !== "hello") formGaps.push("seal/open(" + pair[0] + ") gave " + opened.toString());
+    } catch (e2) { formGaps.push("seal/open(" + pair[0] + ") -> " + (e2.code || e2.name)); }
+  });
+  check("every BufferSource form the hpke doors admit is read by deriveKeyPair, seal and open: " +
+    formGaps.join("; "), formGaps.length === 0);
+  check("CONTROL a string, a number and a plain object are still refused by deriveKeyPair, typed",
+    ["a string", 7, {}].every(function (bad) {
+      return codeOf(function () { pki.hpke.deriveKeyPair(IDS.kem, bad); }) === "hpke/bad-input";
+    }));
+  /* A key is a fixed width, and the check enforcing that width ran on the COPY, so a value handed
+     where a 32-byte key belongs was duplicated in full and only then refused. MEASURED by allocation,
+     because the copy is fast enough that a time budget separating it from a passing run would be a few
+     milliseconds wide; `arrayBuffers` counts exactly the pool a Buffer copy comes from. */
+  var oversizeKey = Buffer.alloc(64 * 1024 * 1024, 0x41);
+  var allocBefore = process.memoryUsage().arrayBuffers;
+  var oversizeCode = codeOf(function () {
+    pki.hpke.seal(IDS, oversizeKey, {}, Buffer.alloc(0), Buffer.from("x"));
+  });
+  var allocGrewMiB = (process.memoryUsage().arrayBuffers - allocBefore) / (1024 * 1024);
+  check("a value far wider than a key is refused before it is copied (" + oversizeCode + ", " +
+    allocGrewMiB.toFixed(1) + " MiB allocated)",
+  oversizeCode === "hpke/bad-key" && allocGrewMiB < 1);
+  /* CONTROL: the width check still refuses a key that is merely WRONG rather than enormous, which is
+     the case the early bound must not swallow, and a right-width key still works. */
+  check("CONTROL a wrong-width key is still refused, and a right-width one still seals",
+    codeOf(function () { pki.hpke.seal(IDS, Buffer.alloc(31, 1), {}, Buffer.alloc(0), Buffer.from("x")); }) === "hpke/bad-key" &&
+    codeOf(function () { pki.hpke.seal(IDS, Buffer.alloc(33, 1), {}, Buffer.alloc(0), Buffer.from("x")); }) === "hpke/bad-key" &&
+    (function () {
+      var ok = pki.hpke.seal(IDS, kp.publicKey, {}, Buffer.alloc(0), Buffer.from("hello"));
+      return pki.hpke.open(IDS, ok.enc, kp.privateKey, {}, Buffer.alloc(0), ok.ct).toString() === "hello";
+    })());
+  /* An encapsulated key is a fixed width too, and the checks enforcing it read it off the COPY, so an
+     oversized `enc` was duplicated before being refused. The setup path copied it a second time, which
+     made two copies of one value and left the outer one unbounded. */
+  var encBefore = process.memoryUsage().arrayBuffers;
+  var oversizeEncCode = codeOf(function () {
+    pki.hpke.open(IDS, oversizeKey, kp.privateKey, {}, Buffer.alloc(0), o.ct);
+  });
+  var encGrewMiB = (process.memoryUsage().arrayBuffers - encBefore) / (1024 * 1024);
+  check("an oversized encapsulated key is refused before it is copied (" + oversizeEncCode + ", " +
+    encGrewMiB.toFixed(1) + " MiB allocated)",
+  oversizeEncCode === "hpke/bad-key" && encGrewMiB < 1);
+
+  /* A supplied `pkm` must match the `skm` beside it. That rule was applied to an OWN property only, so
+     a key pair carrying `pkm` on its PROTOTYPE had the check skipped rather than applied: the field was
+     read as absent. `skm` on the line above it was always read through the prototype, so the two fields
+     disagreed about what counts as supplied. Both are now read the same way, once each. */
+  var rawPair = require("crypto").generateKeyPairSync("x25519");
+  var rawSk = rawPair.privateKey.export({ format: "der", type: "pkcs8" }).subarray(-32);
+  var rawPk = rawPair.publicKey.export({ format: "der", type: "spki" }).subarray(-32);
+  var sealedToRaw = pki.hpke.seal(IDS, rawPair.publicKey, {}, Buffer.alloc(0), Buffer.from("hello"));
+  function openWith(sk) {
+    try {
+      return pki.hpke.open(IDS, sealedToRaw.enc, sk, {}, Buffer.alloc(0), sealedToRaw.ct).toString();
+    } catch (e) { return e.code || e.name; }
+  }
+  function inheriting(pkm) { var o2 = Object.create({ pkm: pkm }); o2.skm = rawSk; return o2; }
+  check("a mismatching pkm is refused whether it is the key pair's own property or inherited",
+    openWith({ skm: rawSk, pkm: Buffer.alloc(32, 0xff) }) === "hpke/bad-key" &&
+    openWith(inheriting(Buffer.alloc(32, 0xff))) === "hpke/bad-key");
+  check("CONTROL a MATCHING pkm still opens either way, and a key pair carrying none still opens",
+    openWith({ skm: rawSk, pkm: rawPk }) === "hello" &&
+    openWith(inheriting(rawPk)) === "hello" &&
+    openWith({ skm: rawSk }) === "hello");
+
+  /* CONTROL: the copy is still a COPY, which is what the snapshot is for. A caller overwriting its own
+     buffer after the call must not change what was sealed, and reading the form rather than the bytes
+     would have made the view share memory with the caller. */
+  var mutable = Buffer.alloc(16, 0x61);
+  var sealedFromMutable = pki.hpke.seal(IDS, kp.publicKey, { info: mutable }, mutable, Buffer.from("hello"));
+  mutable.fill(0x62);
+  check("CONTROL overwriting the caller's buffer after the call does not change what was sealed",
+    pki.hpke.open(IDS, sealedFromMutable.enc, kp.privateKey, { info: Buffer.alloc(16, 0x61) },
+      Buffer.alloc(16, 0x61), sealedFromMutable.ct).toString() === "hello");
   // A flipped ciphertext byte -> hpke/open-failed (no plaintext).
   var bad = Buffer.from(o.ct); bad[0] ^= 1;
   check("flipped ciphertext -> hpke/open-failed", codeOf(function () { pki.hpke.open(IDS, o.enc, kp.privateKey, {}, Buffer.from("aad"), bad); }) === "hpke/open-failed");
@@ -123,12 +222,18 @@ function testRobustness() {
   // Unknown suite id -> hpke/unknown-suite (no default fall-through).
   check("unknown KEM id -> hpke/unknown-suite", codeOf(function () { pki.hpke.setupS({ kem: 0x9999, kdf: S.KDF.HKDF_SHA256, aead: S.AEAD.AES_128_GCM }, kp.publicKey, {}); }) === "hpke/unknown-suite");
   check("unknown KDF id -> hpke/unknown-suite", codeOf(function () { pki.hpke.setupS({ kem: IDS.kem, kdf: 0x9999, aead: S.AEAD.AES_128_GCM }, kp.publicKey, {}); }) === "hpke/unknown-suite");
-  // DHKEM(P-384) (0x0011) is RFC 9180-registered but no known-answer vector pairs it
-  // with an HKDF key schedule (draft-ietf-hpke-pq-05 A.8 runs it under the SHAKE256
-  // KDF of the HPKE revision), so it is not offered: a request must fail closed,
-  // never run crypto no test vector proves. HKDF-SHA384 (0x0002) IS offered: A.3
-  // is its KAT (testMlKemKat), so a DHKEM suite may select it too.
-  check("P-384 KEM 0x0011 -> hpke/unknown-suite", codeOf(function () { pki.hpke.setupS({ kem: 0x0011, kdf: S.KDF.HKDF_SHA256, aead: S.AEAD.AES_128_GCM }, kp.publicKey, {}); }) === "hpke/unknown-suite");
+  // DHKEM(P-384) (0x0011) is offered now that a known-answer vector reaches it: draft-ietf-hpke-pq-05
+  // A.8 pairs it with SHAKE256 and testAppendixAEverySuite drives that whole suite, which is what proves
+  // the KEM's own ExtractAndExpand over HKDF-SHA384. The key schedule it is paired with here has its own
+  // vectors (A.3 and the RFC 9180 set), so each half of the composition is covered.
+  var p384 = { kem: S.KEM.DHKEM_P384_HKDF_SHA384, kdf: S.KDF.HKDF_SHA384, aead: S.AEAD.AES_256_GCM };
+  var p384kp = pki.hpke.generateKeyPair(p384.kem);
+  var o384p = pki.hpke.seal(p384, p384kp.publicKey, {}, Buffer.from("aad"), Buffer.from("p384"));
+  check("DHKEM(P-384) 0x0011 round-trips, and its sizes are RFC 9180 Table 2's",
+    S.KEM.DHKEM_P384_HKDF_SHA384 === 0x0011 &&
+    p384kp.publicKey.length === 97 && p384kp.privateKey.length === 48 && o384p.enc.length === 97 &&
+    pki.hpke.open(p384, o384p.enc, { skm: p384kp.privateKey }, {}, Buffer.from("aad"), o384p.ct).toString() === "p384");
+  check("DHKEM(P-384) shared secret is Nsecret 48", pki.hpke.encap(p384.kem, p384kp.publicKey).sharedSecret.length === 48);
   var sha384 = { kem: IDS.kem, kdf: S.KDF.HKDF_SHA384, aead: S.AEAD.AES_128_GCM };
   var o384 = pki.hpke.seal(sha384, kp.publicKey, {}, Buffer.from("aad"), Buffer.from("sha384"));
   check("HKDF-SHA384 KDF 0x0002 round-trips on a DHKEM suite", S.KDF.HKDF_SHA384 === 0x0002 &&
@@ -143,11 +248,17 @@ function testRobustness() {
     check("hybrid KEM 0x" + id.toString(16) + " refuses a DHKEM public key",
       codeOf(function () { pki.hpke.setupS({ kem: id, kdf: S.KDF.HKDF_SHA256, aead: S.AEAD.AES_128_GCM }, kp.publicKey, {}); }) === "hpke/bad-key");
   });
-  // The single-stage KDFs of the same section are NOT implemented: HPKE's key schedule is two-stage, so
-  // their code points must fail closed rather than be key-scheduled as if they were HKDF.
-  [0x0010, 0x0011, 0x0012, 0x0013].forEach(function (id) {
-    check("single-stage KDF 0x" + id.toString(16) + " -> hpke/unknown-suite",
+  // SHAKE128 (0x0010) and SHAKE256 (0x0011) are key-scheduled through CombineSecrets_OneStage and driven
+  // by Appendix A.7, A.8, A.11 and A.12. The TurboSHAKE rows of the same table are not offered, because
+  // no released OpenSSL exposes the XOF; their code points must fail closed rather than be scheduled as
+  // if they were HKDF.
+  [0x0012, 0x0013].forEach(function (id) {
+    check("TurboSHAKE KDF 0x" + id.toString(16) + " -> hpke/unknown-suite",
       codeOf(function () { pki.hpke.setupS({ kem: IDS.kem, kdf: id, aead: S.AEAD.AES_128_GCM }, kp.publicKey, {}); }) === "hpke/unknown-suite");
+  });
+  [0x0010, 0x0011].forEach(function (id) {
+    check("single-stage KDF 0x" + id.toString(16) + " is key-scheduled, not refused",
+      codeOf(function () { pki.hpke.setupS({ kem: IDS.kem, kdf: id, aead: S.AEAD.AES_128_GCM }, kp.publicKey, {}); }) === "NO-THROW");
   });
   // An unknown mode must be rejected, not silently key-scheduled with a bad mode
   // byte (RFC 9180 sec. 5.1 defines exactly base / psk / auth / auth-psk).
@@ -226,6 +337,11 @@ function testAdversarialBranches() {
   // BEFORE any allocation, never truncates or returns short output. Nh=32 (SHA256).
   var ctxE = pki.hpke.setupS(IDS, kp.publicKey, {}).context;
   check("export length > 255*Nh -> hpke/export-length", codeOf(function () { ctxE.export(Buffer.alloc(0), 255 * 32 + 1); }) === "hpke/export-length");
+  // Past 65535 as well, where the labeled info's own two-byte length encoding is what first cannot hold
+  // the request. The verdict is still the 255*Nh one: 8161 and 70000 are both too long for the same
+  // reason, and 8161 alone leaves the encodable range untested.
+  check("export length over 65535 still reports 255*Nh, not an encoding width",
+    codeOf(function () { ctxE.export(Buffer.alloc(0), 70000); }) === "hpke/export-length");
   // A RECIPIENT context for an export-only AEAD must refuse open (role check first,
   // then export-only): the export-only guard must hold on the recipient side too.
   var expIds = { kem: IDS.kem, kdf: IDS.kdf, aead: S.AEAD.EXPORT_ONLY };
@@ -259,8 +375,14 @@ function testMlKemKat() {
   // side is a complete known answer: the vector's enc decapsulated under its 64-byte seed, the
   // key schedule, all ten opens and all five exports. node:crypto takes no encapsulation
   // randomness, so the sender side is proven by round trip against the same seed.
+  // The fixture carries every Appendix A suite; this one is about the three pure-ML-KEM sections, whose
+  // recipient shape (a 64-byte seed, pkm optional) and Nsecret of 32 are asserted below.
+  // A.13 is also a pure ML-KEM suite but pairs it with TurboSHAKE256, so the KDF is part of the filter.
+  var PURE_ML_KEM = [S.KEM.ML_KEM_512, S.KEM.ML_KEM_768, S.KEM.ML_KEM_1024];
+  var HKDF = [S.KDF.HKDF_SHA256, S.KDF.HKDF_SHA384, S.KDF.HKDF_SHA512];
   var fails = [], n = 0;
   pqVectors.forEach(function (v) {
+    if (PURE_ML_KEM.indexOf(v.kem_id) < 0 || HKDF.indexOf(v.kdf_id) < 0) return;
     var ids = { kem: v.kem_id, kdf: v.kdf_id, aead: v.aead_id };
     var problems = [];
     try {
@@ -507,12 +629,15 @@ function testDeriveKeyPairVectors() {
   var seen = {};
   var checked = 0;
   function one(kemId, ikmHex, skHex, pkHex, label) {
-    var got = pki.hpke.deriveKeyPair(kemId, Buffer.from(ikmHex, "hex"));
-    var ok = got.privateKey.equals(Buffer.from(skHex, "hex")) &&
-      got.publicKey.equals(Buffer.from(pkHex, "hex"));
-    if (!ok) check("DKP 0x" + kemId.toString(16) + " " + label + " matches the published key pair", false);
+    var ok = false, why = "";
+    try {
+      var got = pki.hpke.deriveKeyPair(kemId, Buffer.from(ikmHex, "hex"));
+      ok = got.privateKey.equals(Buffer.from(skHex, "hex")) &&
+        got.publicKey.equals(Buffer.from(pkHex, "hex"));
+    } catch (e) { why = " -- " + (e.code || e.message); }
+    if (!ok) check("DKP 0x" + kemId.toString(16) + " " + label + " matches the published key pair" + why, false);
     checked += 1;
-    seen[kemId] = (seen[kemId] || 0) + 1;
+    if (ok) seen[kemId] = (seen[kemId] || 0) + 1;
   }
   vectors.forEach(function (v) {
     if (v.ikmE && v.skEm && v.pkEm) one(v.kem_id, v.ikmE, v.skEm, v.pkEm, "ikmE");
@@ -521,11 +646,11 @@ function testDeriveKeyPairVectors() {
   pqVectors.forEach(function (v) {
     if (v.ikmR && v.skRm && v.pkRm) one(v.kem_id, v.ikmR, v.skRm, v.pkRm, "ikmR");
   });
-  // Every KEM family the fixtures cover must have contributed, or "the vectors pass" would be a
-  // statement about an empty set for a suite whose rows were filtered out.
-  [0x0010, 0x0012, 0x0020, 0x0021, 0x0040, 0x0041, 0x0042].forEach(function (id) {
-    check("DKP 0x" + id.toString(16) + " is covered by at least one published ikm vector",
-      (seen[id] || 0) >= 1);
+  // The set is taken from the registry rather than written down, so a KEM added without an ikm vector
+  // fails here instead of leaving "the vectors pass" a statement about a suite nothing exercised.
+  Object.keys(S.KEM).forEach(function (name) {
+    check("DKP " + name + " is covered by at least one published ikm vector",
+      (seen[S.KEM[name]] || 0) >= 1);
   });
   check("DKP every published ikm vector reproduces its key pair (" + checked + " vectors)", checked >= 190);
 
@@ -535,6 +660,298 @@ function testDeriveKeyPairVectors() {
   var p521 = pki.hpke.deriveKeyPair(0x0012, Buffer.from("00", "hex"));
   check("DKP a P-521 derived scalar has at most 521 bits, the top byte being masked to 0x01",
     p521.privateKey.length === 66 && p521.privateKey[0] <= 0x01);
+}
+
+// The KDF ids draft-ietf-hpke-pq-05 sec. 5 registers, and what each one needs from the runtime. A row
+// with no `hash` in node:crypto cannot be driven, and the fixture carries its vectors regardless, so the
+// suites that light up are decided here and the rest are named as skipped rather than dropped.
+var SINGLE_STAGE = { 0x0010: "SHAKE128", 0x0011: "SHAKE256", 0x0012: "TurboSHAKE128", 0x0013: "TurboSHAKE256" };
+function xofAvailable(name) {
+  try { require("crypto").createHash(name, { outputLength: 8 }).update("x").digest(); return true; }
+  catch (e) {
+    // The one expected failure is the runtime not carrying the XOF, which node reports as
+    // "Digest method not supported". Anything else is a real fault and must not read as absence.
+    if (String(e.message).indexOf("not supported") >= 0) return false;
+    throw e;
+  }
+}
+
+// draft-ietf-hpke-pq-05 Appendix A, every suite. The recipient half is a complete known answer: the
+// key pair derived from ikmR, the vector's enc decapsulated under it, then all ten opens and all five
+// exports through the context. This is the oracle for the single-stage key schedule (A.7, A.8, A.11,
+// A.12) and, for the HKDF suites A.4 to A.6, the first HPKE-level check of the hybrid KEMs -- until now
+// those were covered only at the KEM level by the hybrid-kems Appendix B vectors.
+function testAppendixAEverySuite() {
+  var fails = [], ran = [], skipped = [];
+  pqVectors.forEach(function (v) {
+    var ids = { kem: v.kem_id, kdf: v.kdf_id, aead: v.aead_id };
+    var xof = SINGLE_STAGE[v.kdf_id];
+    if (xof && !xofAvailable(xof.toLowerCase())) { skipped.push(v.section + ":" + xof); return; }
+    var problems = [];
+    try {
+      var kp = pki.hpke.deriveKeyPair(v.kem_id, hx(v.ikmR));
+      if (!eq(kp.privateKey, v.skRm)) problems.push("skRm");
+      if (!eq(kp.publicKey, v.pkRm)) problems.push("pkRm");
+      var r = pki.hpke.setupR(ids, hx(v.enc), { skm: hx(v.skRm), pkm: hx(v.pkRm) }, { info: hx(v.info) });
+      v.encryptions.forEach(function (e) {
+        if (!eq(r.open(hx(e.aad), hx(e.ct)), e.pt)) problems.push("open@" + e.seq);
+      });
+      v.exports.forEach(function (x) {
+        if (!eq(r.export(hx(x.exporter_context), x.L), x.exported_value)) problems.push("export");
+      });
+      // The shared secret is checked on its own route, because setupR folds it into the schedule.
+      if (!eq(pki.hpke.decap(v.kem_id, hx(v.enc), { skm: hx(v.skRm), pkm: hx(v.pkRm) }), v.shared_secret)) {
+        problems.push("shared_secret");
+      }
+    } catch (e) { problems.push("THREW:" + (e.code || e.message)); }
+    if (problems.length) fails.push(v.section + ": " + problems.slice(0, 4).join(","));
+    else ran.push(v.kdf_id);
+  });
+  check("HPKE Appendix A: all " + (ran.length + fails.length) + " drivable suites match" + (fails.length ? " -- " + fails.join("; ") : ""),
+    fails.length === 0 && ran.length === 10);
+  // Read off the suites that actually verified, so a KDF dropped from the run cannot pass as covered.
+  check("HPKE Appendix A verified both single-stage KDFs and two HKDF sizes",
+    ran.indexOf(0x0010) >= 0 && ran.indexOf(0x0011) >= 0 && ran.indexOf(0x0001) >= 0 && ran.indexOf(0x0002) >= 0);
+  // The skip list is exact. A suite that silently stopped running would otherwise read as a pass.
+  check("HPKE Appendix A skips exactly the TurboSHAKE suites, which no released OpenSSL exposes (" +
+    (skipped.join(" ") || "none") + ")",
+    skipped.length === 3 && skipped.join(" ") === "A.9:TurboSHAKE128 A.10:TurboSHAKE256 A.13:TurboSHAKE256");
+}
+
+// The rules that hold only for a single-stage KDF, none of which any Appendix A vector reaches.
+function testSingleStageKdfContract() {
+  var SS = { kem: S.KEM.DHKEM_X25519_HKDF_SHA256, kdf: S.KDF.SHAKE256, aead: S.AEAD.AES_128_GCM };
+  var kp = pki.hpke.generateKeyPair(SS.kem);
+  var big = Buffer.alloc(65536);
+
+  check("the single-stage KDF code points are the draft's",
+    S.KDF.SHAKE128 === 0x0010 && S.KDF.SHAKE256 === 0x0011);
+  var sealed = pki.hpke.seal(SS, kp.publicKey, {}, Buffer.from("a"), Buffer.from("ss"));
+  check("a single-stage KDF runs the whole seal / open round trip",
+    pki.hpke.open(SS, sealed.enc, { skm: kp.privateKey }, {}, Buffer.from("a"), sealed.ct).toString() === "ss");
+  check("a single-stage KDF still authenticates: the wrong aad does not open",
+    codeOf(function () { return pki.hpke.open(SS, sealed.enc, { skm: kp.privateKey }, {}, Buffer.from("b"), sealed.ct); }) === "hpke/open-failed");
+
+  // sec. 7.2.1: psk, psk_id and info are length-prefixed with two bytes, so 65,535 is the limit and
+  // 65,536 cannot be encoded. Without the check I2OSP would silently truncate the length and the two
+  // ends would derive different secrets from inputs they both consider valid.
+  var psk = { mode: S.MODE.PSK, psk: big, pskId: Buffer.from("id") };
+  check("sec. 7.2.1: a psk over 65,535 bytes is refused on a single-stage KDF",
+    codeOf(function () { return pki.hpke.seal(SS, kp.publicKey, psk, Buffer.alloc(0), Buffer.alloc(1)); }) === "hpke/input-length");
+  check("sec. 7.2.1: a psk_id over 65,535 bytes is refused on a single-stage KDF",
+    codeOf(function () { return pki.hpke.seal(SS, kp.publicKey, { mode: S.MODE.PSK, psk: Buffer.from("k"), pskId: big }, Buffer.alloc(0), Buffer.alloc(1)); }) === "hpke/input-length");
+  check("sec. 7.2.1: an info over 65,535 bytes is refused on a single-stage KDF",
+    codeOf(function () { return pki.hpke.seal(SS, kp.publicKey, { info: big }, Buffer.alloc(0), Buffer.alloc(1)); }) === "hpke/input-length");
+  // The control: one byte under the limit is accepted on all three, so the refusals above are the
+  // length and not the option.
+  check("sec. 7.2.1 control: 65,535 bytes of info is accepted",
+    pki.hpke.seal(SS, kp.publicKey, { info: big.subarray(1) }, Buffer.alloc(0), Buffer.alloc(1)).ct.length === 17);
+  check("sec. 7.2.1 control: 65,535 bytes of psk and psk_id are accepted",
+    pki.hpke.seal(SS, kp.publicKey, { mode: S.MODE.PSK, psk: big.subarray(1), pskId: big.subarray(1) },
+      Buffer.alloc(0), Buffer.alloc(1)).ct.length === 17);
+  // A Buffer can carry an own `length` property that shadows the prototype's while `byteLength` still
+  // reports its real size, so a limit read off `length` is not a limit on the bytes that get copied.
+  // Every caller byte input is snapshotted through the guard, which re-views the source, so the length
+  // checked is the length used.
+  ["info", "psk", "pskId"].forEach(function (field) {
+    var shadowed = Buffer.alloc(65536, 0x61);
+    Object.defineProperty(shadowed, "length", { value: 1 });
+    var o = { mode: field === "info" ? S.MODE.BASE : S.MODE.PSK };
+    if (field !== "info") { o.psk = Buffer.from("k"); o.pskId = Buffer.from("id"); }
+    o[field] = shadowed;
+    check("sec. 7.2.1: an over-long " + field + " is refused even when it shadows its own length",
+      codeOf(function () { return pki.hpke.seal(SS, kp.publicKey, o, Buffer.alloc(0), Buffer.alloc(1)); }) === "hpke/input-length");
+  });
+  // The control: the same shadowing at a legal size is ACCEPTED, and the context derives from the REAL
+  // bytes rather than the one byte `length` claims. Without this the refusals above would also hold for
+  // an implementation that simply rejected any shadowed buffer, or that truncated to the false length.
+  var honest = Buffer.alloc(100, 0x7a);
+  var lying = Buffer.alloc(100, 0x7a);
+  Object.defineProperty(lying, "length", { value: 1 });
+  var fromHonest = pki.hpke.setupS(SS, kp.publicKey, { info: honest });
+  var fromLying = pki.hpke.setupR(SS, fromHonest.enc, { skm: kp.privateKey }, { info: lying });
+  check("a shadowed length at a legal size is accepted and the real bytes are the ones used",
+    Buffer.compare(fromLying.export(Buffer.from("c"), 32), fromHonest.context.export(Buffer.from("c"), 32)) === 0);
+
+  // And refused BEFORE the input is copied. Every caller byte input is snapshotted, so an oversized one
+  // would otherwise be copied in full and only then refused for exceeding 65535. Measured on
+  // `arrayBuffers`, where Buffer data lives, because `heapUsed` does not move for a large Buffer.
+  var oversizeInfo = Buffer.alloc(128 * 1024 * 1024);
+  var beforeAb = process.memoryUsage().arrayBuffers;
+  var oversizeCode = codeOf(function () { return pki.hpke.seal(SS, kp.publicKey, { info: oversizeInfo }, Buffer.alloc(0), Buffer.alloc(1)); });
+  var grewBy = process.memoryUsage().arrayBuffers - beforeAb;
+  check("sec. 7.2.1: an over-long info is refused before it is copied (" + oversizeCode + ", " +
+    Math.round(grewBy / 1024) + " KiB for a 131072 KiB input)",
+    oversizeCode === "hpke/input-length" && grewBy < 16 * 1024 * 1024);
+
+  // A two-stage KDF has its own, different limits and must not inherit this one.
+  var TS = { kem: SS.kem, kdf: S.KDF.HKDF_SHA256, aead: SS.aead };
+  check("the 65,535-byte limit is the single-stage one: a two-stage KDF still takes a larger info",
+    pki.hpke.seal(TS, kp.publicKey, { info: big }, Buffer.alloc(0), Buffer.alloc(1)).ct.length === 17);
+
+  // sec. 4.4 puts I2OSP(L, 2) in the derive input, so an export longer than 65,535 has no encoding.
+  var ctx = pki.hpke.setupS(SS, kp.publicKey, {});
+  check("an export of 65,535 bytes is produced", ctx.context.export(Buffer.from("c"), 65535).length === 65535);
+  check("an export of 65,536 bytes is refused on a single-stage KDF",
+    codeOf(function () { return ctx.context.export(Buffer.from("c"), 65536); }) === "hpke/export-length");
+  check("an export of 0 bytes is empty on a single-stage KDF", ctx.context.export(Buffer.from("c"), 0).length === 0);
+
+  // Export-only: Table 5 gives it Nk = 0 and Nn = 0, so the one derive yields exactly Nh bytes and
+  // the whole of it is the exporter secret. No published vector combines export-only with a
+  // single-stage KDF, so this is derived from the two tables.
+  var EO = { kem: SS.kem, kdf: S.KDF.SHAKE128, aead: S.AEAD.EXPORT_ONLY };
+  var eo = pki.hpke.setupS(EO, kp.publicKey, {});
+  check("export-only over a single-stage KDF exports, and refuses to seal",
+    eo.context.export(Buffer.from("c"), 32).length === 32 &&
+    codeOf(function () { return eo.context.seal(Buffer.alloc(0), Buffer.alloc(1)); }) === "hpke/export-only");
+
+  // The two registered TurboSHAKE rows are not offered, because no released OpenSSL has the XOF. A
+  // row present but unusable would fail at the first derive with an opaque node error.
+  check("the TurboSHAKE KDF ids are not offered while the runtime lacks the XOF",
+    S.KDF.TURBOSHAKE128 === undefined && S.KDF.TURBOSHAKE256 === undefined &&
+    codeOf(function () { return pki.hpke.seal({ kem: SS.kem, kdf: 0x0012, aead: SS.aead }, kp.publicKey, {}, Buffer.alloc(0), Buffer.alloc(1)); }) === "hpke/unknown-suite");
+
+  // Nh is a property of the KDF definition for a single-stage KDF (sec. 4.2), not an Extract width.
+  // The exporter secret is the tail of one derive, so its length is the only observable of Nh.
+  var n128 = pki.hpke.setupS({ kem: SS.kem, kdf: S.KDF.SHAKE128, aead: S.AEAD.EXPORT_ONLY }, kp.publicKey, {});
+  check("SHAKE128 has Nh 32 and SHAKE256 has Nh 64",
+    n128.context._exporterSecret.length === 32 && eo.context._exporterSecret.length === 32 &&
+    pki.hpke.setupS({ kem: SS.kem, kdf: S.KDF.SHAKE256, aead: S.AEAD.EXPORT_ONLY }, kp.publicKey, {})
+      .context._exporterSecret.length === 64);
+}
+
+// The one-stage schedule feeds the psk and the KEM shared secret into one derive behind two-byte
+// lengths. Every buffer it allocates that holds the psk must be wiped by the time the call returns, and a
+// refused length must not leave one behind either. The observation point is `Buffer.concat`, which the
+// module reads live: each result is recorded with whether it held the psk AT THE TIME, since a wiped
+// buffer no longer matches on content.
+function testOneStageScheduleWipesEveryCopy() {
+  var SS = { kem: S.KEM.DHKEM_X25519_HKDF_SHA256, kdf: S.KDF.SHAKE256, aead: S.AEAD.AES_128_GCM };
+  var kp = pki.hpke.generateKeyPair(SS.kem);
+  var PSK = Buffer.from("5b7e2a1f0c94d6338ae5f21b47c0d98e6a3f15b2c8074e91da26b3f5081c7a4d", "hex");
+  var PSK_ID = Buffer.from("one-stage-wipe");
+
+  function recordConcats(fn) {
+    var real = Buffer.concat, seen = [];
+    Buffer.concat = function (list, total) {
+      var b = total === undefined ? real.call(Buffer, list) : real.call(Buffer, list, total);
+      seen.push({ buf: b, heldPsk: b.indexOf(PSK) >= 0 });
+      return b;
+    };
+    var code = "NO-THROW";
+    try { fn(); } catch (e) { code = e.code || e.message; } finally { Buffer.concat = real; }
+    return { seen: seen, code: code };
+  }
+  function allZero(b) { for (var i = 0; i < b.length; i += 1) if (b[i] !== 0) return false; return true; }
+  function report(r) {
+    var held = r.seen.filter(function (e) { return e.heldPsk; });
+    return { code: r.code, held: held.length, live: held.filter(function (e) { return !allZero(e.buf); }).length };
+  }
+
+  var ok = recordConcats(function () {
+    pki.hpke.setupS(SS, kp.publicKey, { mode: S.MODE.PSK, psk: PSK, pskId: PSK_ID });
+  });
+  var okR = report(ok);
+  check("a single-stage setup allocates buffers holding the psk, so this is not a vacuous check", okR.held >= 1);
+  check("every buffer a single-stage setup allocated holding the psk is wiped on return (" +
+    okR.live + " of " + okR.held + " left live)", okR.code === "NO-THROW" && okR.live === 0);
+
+  // The refused path: an info over the two-byte limit. The psk is a valid length, so a schedule that
+  // allocated before checking would leave its concatenation behind.
+  var refused = recordConcats(function () {
+    pki.hpke.setupS(SS, kp.publicKey, { mode: S.MODE.PSK, psk: PSK, pskId: PSK_ID, info: Buffer.alloc(65536) });
+  });
+  var refR = report(refused);
+  check("an input refused for its length leaves no live buffer holding the psk (" +
+    refR.live + " of " + refR.held + " left live)", refR.code === "hpke/input-length" && refR.live === 0);
+}
+
+// The same shadowing at the KEY doors. A width check that reads `.length` on a caller's buffer is not a
+// check on the bytes that get used, so every raw key, seed and encapsulated key is snapshotted through the
+// guard before any width is read. Each refusal is paired with the honest form of the same call.
+function testShadowedLengthAtEveryKeyDoor() {
+  function shadow(buf, fake) {
+    var b = Buffer.from(buf);
+    Object.defineProperty(b, "length", { value: fake });
+    return b;
+  }
+  function over(buf, extra) { return shadow(Buffer.concat([buf, Buffer.alloc(extra, 0x09)]), buf.length); }
+  // The set is every registered KEM, read off the registry, so a KEM added later is held to this too.
+  var names = Object.keys(S.KEM);
+  var bad = [], controls = 0;
+  names.forEach(function (name) {
+    var kem = S.KEM[name];
+    var kp = pki.hpke.generateKeyPair(kem);
+    var e = pki.hpke.encap(kem, kp.publicKey);
+    var honest = pki.hpke.decap(kem, e.enc, { skm: kp.privateKey });
+    // Each door, each with the honest call as its own control.
+    if (codeOf(function () { return pki.hpke.encap(kem, over(kp.publicKey, 32)); }) !== "hpke/bad-key") bad.push(name + ":publicKey");
+    if (codeOf(function () { return pki.hpke.decap(kem, over(e.enc, 32), { skm: kp.privateKey }); }) !== "hpke/bad-key") bad.push(name + ":enc");
+    if (codeOf(function () { return pki.hpke.decap(kem, e.enc, { skm: over(kp.privateKey, 32) }); }) !== "hpke/bad-key") bad.push(name + ":skm");
+    if (honest.length < 32) bad.push(name + ":control-length");
+    // A shadowed length EQUAL to the real width is accepted and the whole buffer used, which is what
+    // separates a snapshot from a rule that rejects any shadowed buffer or truncates to the false length.
+    var claimed = pki.hpke.decap(kem, shadow(e.enc, e.enc.length), { skm: kp.privateKey });
+    if (Buffer.compare(claimed, honest) !== 0) bad.push(name + ":honest-width-differs");
+    controls += 1;
+  });
+  check("every KEM refuses an over-long public key, encapsulated key and private key that shadow their " +
+    "own length, and accepts the honest forms (" + controls + " KEMs" +
+    (bad.length ? " -- " + bad.join(", ") : "") + ")", bad.length === 0 && controls === names.length);
+}
+
+// `opts.eph` fixes the sender's ephemeral key pair, which only a DHKEM suite can honor: ML-KEM and the
+// hybrids take their encapsulation randomness from the runtime. Every KEM must therefore either USE the
+// key or REFUSE it. Accepting one and generating a random encapsulation instead returns a success to a
+// caller who believes the key it named was used, and the module's own documented promise is that an
+// option belonging elsewhere is refused rather than left unused.
+function testNoKemSilentlyIgnoresAFixedEphemeralKey() {
+  var names = Object.keys(S.KEM);
+  var ignored = [], honored = 0, refused = 0;
+  names.forEach(function (name) {
+    var kem = S.KEM[name];
+    var ids = { kem: kem, kdf: S.KDF.HKDF_SHA256, aead: S.AEAD.AES_128_GCM };
+    var kp = pki.hpke.generateKeyPair(kem), fixed = pki.hpke.generateKeyPair(kem);
+    var eph = { eph: { skm: fixed.privateKey, pkm: fixed.publicKey } };
+    var out;
+    try { out = pki.hpke.setupS(ids, kp.publicKey, eph); }
+    catch (e) {
+      if (e.code !== "hpke/bad-input") ignored.push(name + ":" + e.code);
+      else refused += 1;
+      return;
+    }
+    // Honored means the encapsulated key IS the fixed public key. Anything else was ignored.
+    if (Buffer.compare(out.enc, fixed.publicKey) === 0) honored += 1;
+    else ignored.push(name + ":accepted-but-ignored");
+  });
+  check("no KEM accepts a fixed ephemeral key and then ignores it (" + honored + " honored, " +
+    refused + " refused" + (ignored.length ? " -- " + ignored.join(", ") : ") ").replace(/\)? $/, ")"),
+    ignored.length === 0 && honored + refused === names.length);
+  // Both outcomes must actually occur, or the claim holds for a tree that refused or honored everything.
+  check("the eph sweep saw both outcomes: the DHKEM suites honor it and the ML-KEM and hybrid suites refuse it",
+    honored === 5 && refused === 6);
+}
+
+// A hybrid encapsulation produces the ML-KEM shared secret before it generates the traditional half's
+// ephemeral key. A fault in that generation must still wipe the secret already in hand.
+function testHybridEncapWipesPqSecretOnAnEphemeralFault() {
+  var crypto = require("crypto");
+  var kem = S.KEM.MLKEM768_X25519;
+  var kp = pki.hpke.generateKeyPair(kem);
+  var realEncap = crypto.encapsulate, realGen = crypto.generateKeyPairSync;
+  var captured = [], threw = "";
+  crypto.encapsulate = function (k) { var r = realEncap.call(crypto, k); captured.push(r.sharedKey); return r; };
+  crypto.generateKeyPairSync = function (t, o) {
+    if (t === "x25519") throw new Error("injected key-generation failure");
+    return o === undefined ? realGen.call(crypto, t) : realGen.call(crypto, t, o);
+  };
+  try { pki.hpke.encap(kem, kp.publicKey); }
+  catch (e) { threw = e.message; }
+  finally { crypto.encapsulate = realEncap; crypto.generateKeyPairSync = realGen; }
+  var wiped = captured.length === 1 && captured[0].every(function (b) { return b === 0; });
+  check("the ML-KEM shared secret is wiped when the hybrid's ephemeral generation faults (" +
+    captured.length + " captured, threw \"" + threw + "\")",
+    threw.indexOf("injected key-generation failure") >= 0 && wiped);
 }
 
 function run() {
@@ -548,6 +965,12 @@ function run() {
   testExpandFailurePathWipes();
   testStandaloneKemVerbsEveryKem();
   testDeriveKeyPairVectors();
+  testAppendixAEverySuite();
+  testSingleStageKdfContract();
+  testOneStageScheduleWipesEveryCopy();
+  testShadowedLengthAtEveryKeyDoor();
+  testNoKemSilentlyIgnoresAFixedEphemeralKey();
+  testHybridEncapWipesPqSecretOnAnEphemeralFault();
 }
 
 module.exports = { run: run };

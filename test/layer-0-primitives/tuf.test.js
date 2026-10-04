@@ -209,6 +209,23 @@ async function runVerify() {
   var v = await pki.tuf.verifySignatures({ metadata: meta, keys: signed.keys, role: signed.roles.root });
   check("M3: a single signature meets a threshold of one", v.verified === true && v.keyIds.length === 1);
 
+  /* TUF's canonical JSON admits no floating point, and every number the format carries is a version, a
+     threshold or a length. A fractional token has to be refused while it is still TEXT: 1.0000000000000001
+     converts to the Number 1, so an integer check after conversion sees a conforming document and the
+     version reported is not the one the bytes state. The control is the same document with an integer. */
+  var intBytes = metadataFor(signed, [a]);
+  check("M3a: control -- the same document with an integer version parses",
+    pki.tuf.parseMetadata(intBytes).version === 1);
+  var fracBytes = Buffer.from(intBytes.toString("utf8").replace('"version":1', '"version":1.0000000000000001'));
+  check("M3b: the fractional form was actually substituted, so M3c is not testing the same bytes",
+    Buffer.compare(fracBytes, intBytes) !== 0 && fracBytes.toString("utf8").indexOf("1.0000000000000001") > 0);
+  check("M3c: a fractional version is refused rather than rounded to an integer",
+    code(function () { return pki.tuf.parseMetadata(fracBytes); }) === "tuf/bad-json");
+  check("M3d: and an exponent-form integer is refused for the same reason",
+    code(function () {
+      return pki.tuf.parseMetadata(Buffer.from(intBytes.toString("utf8").replace('"version":1', '"version":1e0')));
+    }) === "tuf/bad-json");
+
   /* An ECDSA key and an Ed25519 key in one role, both counted. */
   var two = rootSigned({ signers: [a, c], threshold: 2 });
   var vt = await pki.tuf.verifySignatures({ metadata: pki.tuf.parseMetadata(metadataFor(two, [a, c])),
@@ -342,6 +359,21 @@ async function runRootChain() {
   var none = await pki.tuf.updateRoot({ trustedRoot: r1Bytes, candidates: [], now: NOW });
   check("T8: with no candidate the trusted root stands and reports no update",
     none.version === 1 && none.updated === false);
+
+  /* The candidate list is read and parsed before the first await, so a call made with no candidate cannot
+     be handed a chain while the trusted root is being verified. Without that, the cap on the chain length
+     was applied to the empty list and the walk then read whatever the array had grown to. */
+  var growing = [];
+  var grownPromise = pki.tuf.updateRoot({ trustedRoot: r1Bytes, candidates: growing, now: NOW });
+  growing.push(r2BothBytes, r3Bytes);
+  var grown = await grownPromise;
+  check("T8a: candidates appended while the trusted root is being verified are not adopted",
+    grown.version === 1 && grown.updated === false && grown.walked.length === 0);
+  /* The control: the same two candidates present before the call ARE adopted, so T8a is the late addition
+     being ignored rather than the walk failing. */
+  var pinnedFirst = await pki.tuf.updateRoot({ trustedRoot: r1Bytes, candidates: [r2BothBytes, r3Bytes], now: NOW });
+  check("T8b: control -- the same candidates supplied before the call are adopted",
+    pinnedFirst.version === 3 && pinnedFirst.updated === true);
 
   /* Expiry is checked on the root the walk ENDS on, which is step 5.3.10 of the specification: the
      freeze-attack check follows the chain walk of steps 5.3.2 to 5.3.9 rather than preceding it, and

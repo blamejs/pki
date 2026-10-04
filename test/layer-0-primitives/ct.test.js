@@ -635,6 +635,77 @@ async function run() {
   await testVerifySct();
   testEncodeSctList();
   await testSignSct();
+  await testCapsPrecedeAllocation();
+}
+
+/* A cap read AFTER the copy costs an allocation the size of a hostile input before the limit that
+ * refuses it. Every caller byte input enters this module through one door that COPIES, so a value far
+ * above a route's cap was duplicated in full and then refused: measured, a 64 MiB value against the
+ * 4 MiB log-list cap allocated another 64 MiB. MEASURED by allocation rather than by time, since the
+ * copy is fast enough that a time budget separating it from a passing run would be a few milliseconds
+ * wide. `process.memoryUsage().arrayBuffers` counts exactly the pool a Buffer copy comes from, so the
+ * reading attributes the growth to the copy and not to the test's own fixture. */
+async function testCapsPrecedeAllocation() {
+  var L = pki.C.LIMITS;
+  // Sixteen times the log-list cap, so a copy is unmistakable against any ambient movement.
+  var oversize = L.CT_LOG_LIST_MAX_BYTES * 16;
+  async function allocatedWhileRefusing(label, expected, run) {
+    global.gc && global.gc();
+    var before = process.memoryUsage().arrayBuffers;
+    var code = await Promise.resolve().then(run).then(function () { return "NO-THROW"; },
+      function (e) { return e.code || e.name; });
+    var grewMiB = (process.memoryUsage().arrayBuffers - before) / (1024 * 1024);
+    return { label: label, code: code, grewMiB: grewMiB, ok: code === expected && grewMiB < 1 };
+  }
+  var bigBuf = Buffer.alloc(oversize, 0x7b);
+  var results = [
+    await allocatedWhileRefusing("verifyLogListSignature(Buffer)", "ct/too-large", function () {
+      return pki.ct.verifyLogListSignature(bigBuf, Buffer.alloc(64), Buffer.alloc(91));
+    }),
+    await allocatedWhileRefusing("parseSctList(Buffer)", "ct/too-large", function () {
+      return pki.ct.parseSctList(bigBuf);
+    }),
+    /* Not only the routes with a cap of their own. Every caller byte input enters through one door that
+       COPIES, and the fixed-width fields had no cap at all, so the copy went ahead at whatever size was
+       supplied: a value handed as a 32-byte tree head hash allocated its full size, and one handed as
+       the signature allocated twice that across the two reads. The door now carries the DER ceiling as
+       its default, so a call added later is bounded without anyone remembering to bound it. */
+    await allocatedWhileRefusing("verifySth(rootHash)", "ct/too-large", function () {
+      return pki.ct.verifySth({ treeSize: 1, timestamp: 1n, rootHash: bigBuf,
+        signature: Buffer.alloc(70) }, Buffer.alloc(91));
+    }),
+    await allocatedWhileRefusing("verifySth(signature)", "ct/too-large", function () {
+      return pki.ct.verifySth({ treeSize: 1, timestamp: 1n, rootHash: Buffer.alloc(32),
+        signature: bigBuf }, Buffer.alloc(91));
+    }),
+  ];
+  var failures = results.filter(function (r) { return !r.ok; }).map(function (r) {
+    return r.label + " -> " + r.code + ", allocated " + r.grewMiB.toFixed(1) + " MiB";
+  });
+  check("an input far above a route's cap is refused without being copied first (" +
+    results.map(function (r) { return r.label.split("(")[1].replace(")", "") + " " + r.grewMiB.toFixed(1) + " MiB"; }).join(", ") +
+    ")" + (failures.length ? ": " + failures.join("; ") : ""), failures.length === 0);
+  /* The string arm is measured by WHICH NUMBER the cap reads, not by allocation: a conversion that
+     small is inside the noise a collection makes. A string of 1,500,000 euro signs is 1.5 million code
+     units, under the 4 MiB cap, and 4.5 million UTF-8 bytes, over it. Capping on the code-unit count
+     admits it and then allocates the 4.5 MB the conversion costs; capping on the bytes it will encode
+     to refuses it. The length its own `.length` reports is asserted here too, so the vector says the
+     two numbers really do straddle the cap rather than assuming it. */
+  var multiByte = "€".repeat(1500000);
+  var mbUtf8 = Buffer.byteLength(multiByte, "utf8");
+  check("the string arm is capped on the bytes it will encode to, not on its code-unit count (" +
+    multiByte.length + " units, " + mbUtf8 + " bytes, cap " + L.CT_LOG_LIST_MAX_BYTES + ")",
+  multiByte.length < L.CT_LOG_LIST_MAX_BYTES && mbUtf8 > L.CT_LOG_LIST_MAX_BYTES &&
+    await pki.ct.verifyLogListSignature(multiByte, Buffer.alloc(64), Buffer.alloc(91))
+      .then(function () { return "NO-THROW"; }, function (e) { return e.code; }) === "ct/too-large");
+  /* CONTROL: the cap still ADMITS what it should, and the value that comes back is still a COPY rather
+     than a view, which is what the door exists for. A caller overwriting its own buffer afterwards must
+     not change what was parsed. */
+  var parsedOk;
+  try { parsedOk = pki.ct.parseSctList(extValueOf([serialized(sctBody())])); } catch (e) { parsedOk = e.code; }
+  check("CONTROL a list within the cap is still read rather than refused (" +
+    (parsedOk && parsedOk.scts ? parsedOk.scts.length + " scts" : String(parsedOk)) + ")",
+  parsedOk !== null && typeof parsedOk === "object" && Array.isArray(parsedOk.scts));
 }
 
 module.exports = { run: run };

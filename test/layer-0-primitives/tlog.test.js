@@ -85,6 +85,82 @@ async function runNoteFormat() {
     verified.verified === true && verified.signers.length === 1 &&
       verified.signers[0].keyName === alice.name);
 
+  /* N6a: EVERY BufferSource these verbs admit reaches the same answer. Each door asks
+     `guard.bytes.isByteSource`, which accepts an ArrayBuffer and a DataView, while the measurement
+     wanted a view and the copy wanted a Buffer or a Uint8Array: so the admitted set was wider than the
+     handled one, and an ArrayBuffer left an UNTYPED TypeError out of a public verb while a DataView or a
+     Uint16Array drew a refusal for input the door had accepted. A caller handing over
+     `await response.arrayBuffer()` could not read a tile at all. Every form is driven through the
+     shipped verb, and the string and number cases are the controls: those are still refused, typed, so
+     the fix widened the set to what the door states rather than to anything at all. */
+  var noteBuf = Buffer.from(note, "utf8");
+  function asForms(buf) {
+    var ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.length);
+    var forms = [["Buffer", buf], ["Uint8Array", new Uint8Array(ab.slice(0))],
+      ["ArrayBuffer", ab.slice(0)], ["DataView", new DataView(ab.slice(0))]];
+    // A non-byte typed array views the same memory with a wider element, which is still a BufferSource.
+    if (buf.length % 2 === 0) forms.push(["Uint16Array", new Uint16Array(ab.slice(0))]);
+    return forms;
+  }
+  var formGaps = [];
+  for (var nf = 0; nf < asForms(noteBuf).length; nf++) {
+    var pair = asForms(noteBuf)[nf], label = pair[0], value = pair[1];
+    try {
+      var p = pki.tlog.parseNote(value);
+      if (p.signatures.length !== 1) formGaps.push("parseNote(" + label + ") read " + p.signatures.length + " signatures");
+      var v = await pki.tlog.verifyNote(value, [{ name: alice.name, publicKey: alice.raw }]);
+      if (v.verified !== true) formGaps.push("verifyNote(" + label + ") -> " + v.verified);
+    } catch (e) { formGaps.push("parseNote/verifyNote(" + label + ") threw " + (e.code || e.name)); }
+  }
+  var tileBuf = Buffer.alloc(64, 0x11);
+  for (var tf = 0; tf < asForms(tileBuf).length; tf++) {
+    var tp = asForms(tileBuf)[tf];
+    try {
+      var hashes = pki.tlog.parseTile(tp[1]);
+      if (hashes.length !== 2) formGaps.push("parseTile(" + tp[0] + ") read " + hashes.length + " hashes");
+    } catch (e2) { formGaps.push("parseTile(" + tp[0] + ") threw " + (e2.code || e2.name)); }
+  }
+  check("N6a: every BufferSource form the door admits is read by parseNote, verifyNote and parseTile: " +
+    formGaps.join("; "), formGaps.length === 0);
+  check("N6b: CONTROL a string and a number are still refused, typed, by each of those doors",
+    (function () {
+      var codes = [];
+      [["parseTile", function (x) { return pki.tlog.parseTile(x); }],
+        ["parseNote", function (x) { return pki.tlog.parseNote(x); }]].forEach(function (door) {
+        [7, {}, null].forEach(function (bad) {
+          try { door[1](bad); codes.push(door[0] + " accepted " + JSON.stringify(bad)); }
+          catch (e3) { if (e3.code !== "tlog/bad-input") codes.push(door[0] + "(" + JSON.stringify(bad) + ") -> " + (e3.code || e3.name)); }
+        });
+      });
+      // A string is a note's own form, so it is only the binary doors that refuse one.
+      try { pki.tlog.parseTile("x".repeat(64)); codes.push("parseTile accepted a string"); }
+      catch (e4) { if (e4.code !== "tlog/bad-input") codes.push("parseTile(string) -> " + (e4.code || e4.name)); }
+      return codes.length === 0;
+    })());
+  /* N6c: widening the set to every BufferSource did not widen it to anything else, and did not move
+     where the byte count comes from. A detached buffer and shared memory are each refused typed rather
+     than read, and a Buffer whose own `length` property lies about its byte count is still measured by
+     the authoritative count: 64 bytes read as two hashes, not as the eight its shadowed length claims. */
+  var lying = Buffer.alloc(64, 0x11);
+  Object.defineProperty(lying, "length", { value: 8, configurable: true });
+  var detached = new ArrayBuffer(64);
+  try { structuredClone(detached, { transfer: [detached] }); } catch (_dt) { /* allow:swallow-unverified the transfer is the point; a runtime without it leaves the buffer attached and the check below still answers */ }
+  check("N6c: the widened set stops at BufferSource, and the byte count is still the authoritative one",
+    (function () {
+      var notes = [];
+      try {
+        var h = pki.tlog.parseTile(lying);
+        if (h.length !== 2) notes.push("a shadowed length changed the count to " + h.length);
+      } catch (e5) { notes.push("a shadowed length threw " + (e5.code || e5.name)); }
+      try { pki.tlog.parseTile(detached); notes.push("a detached buffer was read"); }
+      catch (e6) { if (e6.code !== "tlog/bad-input") notes.push("detached -> " + (e6.code || e6.name)); }
+      try {
+        pki.tlog.parseTile(new Uint8Array(new SharedArrayBuffer(64)));
+        notes.push("shared memory was read");
+      } catch (e7) { if (e7.code !== "tlog/bad-input") notes.push("shared -> " + (e7.code || e7.name)); }
+      return notes.length === 0;
+    })());
+
   /* Altering the text must fail, INCLUDING altering only the delimiter byte. The second is the one
    * a re-serializing parser gets wrong, because it rebuilds the text it wanted rather than reading
    * the text that was signed. */
@@ -191,6 +267,29 @@ async function runNoteFormat() {
     EM_DASH + " k " + Buffer.alloc(8).toString("base64") + "\n";
   check("N13: a control byte in the note text is refused",
     codeOf(function () { pki.tlog.parseNote(withControl); }) === "tlog/bad-note");
+  /* The UTF-8 half of that same clause. A lossy conversion turns a malformed byte into U+FFFD, so the note
+     verified and the origin it reported did not encode back to the bytes signed. The bytes are built here
+     rather than written as a string, because a string cannot hold a lone 0xFF. */
+  var goodNote = Buffer.from("example.com/log\n5\nAAA\n\n" + EM_DASH + " k " + Buffer.alloc(8).toString("base64") + "\n", "utf8");
+  check("N13a: control -- the same note as valid UTF-8 parses",
+    pki.tlog.parseNote(goodNote).text.indexOf("example.com/log") === 0);
+  /* The verify entry points snapshot their note so the bytes verified are the bytes reported, so they owe
+     the same cap-before-copy as the parsers: an oversized note was copied in full before the 1 MiB limit
+     was read. Measured on `arrayBuffers`, where Buffer data lives. */
+  var oversizeNote = Buffer.alloc(64 * 1024 * 1024);
+  var beforeAb = process.memoryUsage().arrayBuffers;
+  var vnCode = await codeOfAsync(pki.tlog.verifyNote(oversizeNote, []));
+  var vcCode = await codeOfAsync(pki.tlog.verifyCheckpoint(oversizeNote, []));
+  var grewBy = process.memoryUsage().arrayBuffers - beforeAb;
+  check("N13d: verifyNote and verifyCheckpoint refuse an oversized note before copying it (" +
+    vnCode + ", " + vcCode + ", " + Math.round(grewBy / 1024) + " KiB for a 65536 KiB input)",
+    vnCode === "tlog/bad-input" && vcCode === "tlog/bad-input" && grewBy < 8 * 1024 * 1024);
+  var badUtf8 = Buffer.concat([Buffer.from([0xff]), goodNote.subarray(1)]);
+  check("N13b: a note that is not valid UTF-8 is refused rather than decoded lossily",
+    codeOf(function () { return pki.tlog.parseNote(badUtf8); }) === "tlog/bad-note");
+  var badInSig = Buffer.concat([goodNote.subarray(0, goodNote.length - 2), Buffer.from([0xc0]), goodNote.subarray(goodNote.length - 1)]);
+  check("N13c: and a malformed byte in the signature half is refused too, the whole note being checked",
+    codeOf(function () { return pki.tlog.parseNote(badInSig); }) === "tlog/bad-note");
   check("N14: a note with no blank line separating its signatures is refused",
     codeOf(function () { pki.tlog.parseNote("text\n" + EM_DASH + " k AAAA\n"); }) === "tlog/bad-note");
   check("N15: a signature line that is not an em dash, space, name, space, base64 is refused",
@@ -502,6 +601,18 @@ function runTileData() {
     codeOf(function () { pki.tlog.parseTile(Buffer.alloc(33)); }) === "tlog/bad-tile");
   check("F4: a tile wider than 256 hashes is refused",
     codeOf(function () { pki.tlog.parseTile(Buffer.alloc(8192 + 32)); }) === "tlog/bad-tile");
+  /* And refused BEFORE it is copied. The parser snapshots its input, so an oversized one would otherwise
+     cost a second allocation its own size before the limit that rejects it was read. Measured rather than
+     asserted, on `arrayBuffers`, which is where Buffer data lives: `heapUsed` does not move for a large
+     Buffer and would report a pass either way. A 64 MiB input is 8192 times the tile limit. */
+  var oversize = Buffer.alloc(64 * 1024 * 1024);
+  var beforeAb = process.memoryUsage().arrayBuffers;
+  var oversizeCode = codeOf(function () { return pki.tlog.parseTile(oversize); });
+  var grewBy = process.memoryUsage().arrayBuffers - beforeAb;
+  check("F4a: an oversized tile is refused with the tile's own code (" + oversizeCode + ")",
+    oversizeCode === "tlog/bad-tile");
+  check("F4b: and refused before it is copied, the buffer pool growing far less than the input (" +
+    Math.round(grewBy / 1024) + " KiB for a 65536 KiB input)", grewBy < 8 * 1024 * 1024);
   check("F5: an empty tile is refused, since a tile of width 0 is not one the log serves",
     codeOf(function () { pki.tlog.parseTile(Buffer.alloc(0)); }) === "tlog/bad-tile");
   check("F6: a partial tile of width 1 to 255 parses",
@@ -534,6 +645,16 @@ function runTileData() {
     codeOf(function () { pki.tlog.parseEntryBundle(Buffer.concat([bundle, Buffer.alloc(1)])); }) === "tlog/bad-bundle");
   check("E4: an empty bundle is an empty list rather than a fault",
     pki.tlog.parseEntryBundle(Buffer.alloc(0)).length === 0);
+  /* The COUNT is capped, not only the byte length. A zero-length entry costs two bytes on the wire and an
+     object in memory, so a megabyte of zeroes is half a million entries: the byte cap admits an input that
+     allocates hundreds of megabytes. A tile is 256 wide, which is the bound C2SP tlog-tiles states. */
+  var maxEntries = pki.C.LIMITS.TLOG_MAX_ENTRY_BUNDLE_ENTRIES;
+  check("E4a: exactly the cap of zero-length entries is accepted",
+    pki.tlog.parseEntryBundle(Buffer.alloc(maxEntries * 2)).length === maxEntries);
+  check("E4b: one past the cap is refused, though it is far under the byte cap",
+    codeOf(function () { return pki.tlog.parseEntryBundle(Buffer.alloc((maxEntries + 1) * 2)); }) === "tlog/bad-bundle");
+  check("E4c: and a megabyte of zeroes is refused rather than decoded into half a million entries",
+    codeOf(function () { return pki.tlog.parseEntryBundle(Buffer.alloc(1024 * 1024)); }) === "tlog/bad-bundle");
   check("E5: the entries hash to the level-0 tile the log would serve beside them",
     (function () {
       var tile = Buffer.concat(read.map(function (e) { return pki.merkle.leafHash(e); }));
@@ -787,6 +908,39 @@ async function runTileProofs() {
       var w = r.split("/")[2];
       return w === "null" || (Number(w) >= 1 && Number(w) <= 255);
     }));
+
+  /* A `read` callback is the caller's, and a real one may hand back a SCRATCH buffer it reuses between
+     fetches. The hashes a tile is parsed into must be copies, not views into what arrived, or a later fetch
+     overwrites proof nodes already collected and the proof folded is not the proof that was served. The
+     scratch log below returns the same buffer object every time, refilled. */
+  var scratchSrc = tiledLog(70000);
+  var scratch = Buffer.alloc(0);
+  var scratchReads = 0;
+  async function scratchRead(level, index, width) {
+    var served = await scratchSrc.read(level, index, width);
+    scratchReads += 1;
+    if (scratch.length < served.length) scratch = Buffer.alloc(served.length);
+    var view = scratch.subarray(0, served.length);
+    view.fill(0);
+    served.copy(view);
+    return view;
+  }
+  var scratchProof = await pki.tlog.inclusionProof({ index: 0n, size: 70000n, read: scratchRead });
+  check("X4a: the scratch log served more than one tile, so the reuse actually happened (" +
+    scratchReads + " read(s))", scratchReads >= 2);
+  check("X4b: a proof assembled through a read callback that reuses one buffer still folds to the tree head",
+    pki.merkle.verifyInclusion({
+      leafIndex: 0, treeSize: 70000, leafHash: scratchSrc.leaves[0], proof: scratchProof,
+      rootHash: scratchSrc.root,
+    }) === true);
+  /* The control: the same index through a log that returns a fresh buffer each time folds too, so X4b is
+     the copying and not the index being one that needs no second tile. */
+  check("X4c: control -- the same index through fresh buffers folds as well",
+    pki.merkle.verifyInclusion({
+      leafIndex: 0, treeSize: 70000, leafHash: log.leaves[0],
+      proof: await pki.tlog.inclusionProof({ index: 0n, size: 70000n, read: log.read }),
+      rootHash: log.root,
+    }) === true);
 
   /* "Clients MUST NOT fetch arbitrary partial tiles without verifying a
      checkpoint with a size that requires their existence." */
