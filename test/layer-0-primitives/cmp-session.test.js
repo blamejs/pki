@@ -978,6 +978,41 @@ async function run() {
   check("51c3. the other permitted request shape, a zero-length subjectPublicKey, works the same way",
     (await mk([H.ip(0, 0, kgaDelivery.deliveredCert, { privateKey: kgaDelivery.container }), H.pkiconf()],
       { acceptCentralKeyGeneration: true }).session.enroll(H.irCentralRequest(pki, true))).outcome === "issued");
+  /* A delivered key package using RSAES-PKCS1-v1_5 key transport over an AES-CBC content is what
+     deployed authorities send, and `pki.cms.decrypt` refuses that combination unless the caller opts
+     in, because acceptance otherwise tells a submitter of chosen ciphertexts that theirs decoded.
+     `pki.cmp.openKeyPackage` leaves the decision to its caller, taking a container on its own. A
+     SESSION can establish the premise: it reaches the delivery only for a response whose protection
+     verified and whose signer chained to a supplied anchor, so it opts in on the caller's behalf
+     rather than leaving the key delivery unopenable. The container here is assembled, because
+     `pki.cms.encrypt` emits only RSAES-OAEP, and its encryptedKey is not a real ciphertext: what this
+     pins is that the refusal is no longer what stops the delivery. The error moves from the refusal
+     to the unwrap. */
+  var v15Container = (function () {
+    var cp = pki.schema.x509.parse(CLIENT.cert);
+    var ias = B.sequence([B.raw(cp.issuer.bytes), B.integer(BigInt("0x" + cp.serialNumberHex))]);
+    var ktri = B.sequence([B.integer(0n), ias,
+      B.sequence([B.oid(pki.oid.byName("rsaEncryption")), B.raw(Buffer.from([5, 0]))]),
+      B.octetString(Buffer.alloc(128))]);
+    var eci = B.sequence([B.oid(pki.oid.byName("signedData")),
+      B.sequence([B.oid(pki.oid.byName("aes256-CBC")), B.octetString(Buffer.alloc(16))]),
+      B.contextPrimitive(0, Buffer.alloc(16))]);
+    // The wire form is the EnvelopedData itself under [0] IMPLICIT, not a ContentInfo, which is what
+    // `build.implicit` makes of a built SEQUENCE (RFC 9810 sec. 5.2.2).
+    return B.implicit(0, B.sequence([B.integer(0n), B.setOf([ktri]), eci]));
+  })();
+  var v15Cause = await (async function () {
+    try {
+      await mk([H.ip(0, 0, kgaDelivery.deliveredCert, { privateKey: v15Container }), H.pkiconf()],
+        { acceptCentralKeyGeneration: true }).session.enroll(H.irCentralRequest(pki));
+      return "NO-THROW";
+    } catch (e) { return (e && e.cause && e.cause.code) || (e && e.code) || "RAW"; }
+  })();
+  /* Asserted as the code it DOES reach, not as "not the refusal": a negative would pass just as well
+     on a container rejected before the unwrap, which would prove nothing about the opt-in. */
+  check("51c3b. a session opens a v1.5 delivered key package, reaching the unwrap rather than the refusal (" +
+    v15Cause + ")", v15Cause === "cms/decrypt-failed");
+
   check("51c4. a central key generation request without the opt-in is refused before it is sent",
     await codeOf(mk([H.ip(0, 0, certDer)]).session.enroll(H.irCentralRequest(pki))) === "cmp/bad-input");
   check("51c5. and one carrying a proof of possession is refused: there is no key to prove",

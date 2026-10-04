@@ -113,6 +113,47 @@ async function runGetSth() {
     f.transport.calls.length === 1 && f.transport.calls[0].method === "GET" &&
     f.transport.calls[0].url === u("get-sth"));
 
+  /* The pinned key is READ ONCE. `opts.logKey` was read twice, by the presence check and then by the
+     copy the signature is verified under, and an accessor answers each read separately: presenting the
+     key the caller means to pin to the check and a DIFFERENT one to the copy made getSth verify an
+     attacker-signed tree head under the attacker's own key and return it as a result. The vector below
+     is that exact sequence. The log that signs the response is NOT the one the first read names, so a
+     verdict of "fetched" means the second read decided which log was trusted. */
+  async function sthUnderTwoFacedKey() {
+    var genuine = log, attacker = makeLog();
+    var reads = [];
+    var h = opts(attacker, { [u("get-sth")]: resp(200, sthBody(attacker, 3, t.root), "application/json") });
+    var keys = [genuine.spki, attacker.spki];
+    Object.defineProperty(h.o, "logKey", {
+      configurable: true, enumerable: true,
+      get: function () { var i = reads.length; reads.push(i); return keys[i] || attacker.spki; },
+    });
+    var outcome;
+    try {
+      var s = await pki.ct.getSth(h.o);
+      outcome = s.treeSize === 3n ? "ACCEPTED an attacker-signed tree head" : "returned something else";
+    } catch (e) { outcome = (e && e.isPkiError === true) ? e.code : "UNTYPED"; }
+    return { outcome: outcome, reads: reads.length };
+  }
+  var twoFaced = await sthUnderTwoFacedKey();
+  check("S3b: a two-faced opts.logKey cannot hand one key to the check and another to the verification (" +
+    twoFaced.outcome + ", " + twoFaced.reads + " read(s))", twoFaced.outcome === "ct/sth-untrusted");
+  check("S3c: and the option is read exactly once, so there is no second answer to give",
+    twoFaced.reads === 1);
+  /* The control, which is what makes the two above mean something: the attacker's key really does
+     verify the attacker's tree head. So the second read was not harmless -- had the copy taken it, the
+     call would have returned a result instead of refusing, which is the acceptance S3b now denies. */
+  var attackerAccepts = await (async function () {
+    var attacker = makeLog();
+    var h = opts(attacker, { [u("get-sth")]: resp(200, sthBody(attacker, 3, t.root), "application/json") });
+    // No catch: the control's whole point is that this fetch SUCCEEDS, so a throw here is the
+    // diagnostic rather than a quiet false that would make the control look merely unmet.
+    var s = await pki.ct.getSth(h.o);
+    return s.treeSize === 3n;
+  })();
+  check("S3d: CONTROL the key the second read would have supplied does verify that tree head",
+    attackerAccepts === true);
+
   /* `opts.logKey` is documented "BufferSource, // the log's SubjectPublicKeyInfo, pinned by the caller",
      and the copy that takes it accepted a Buffer and a Uint8Array only. So the ArrayBuffer that
      `crypto.subtle.exportKey("spki", ...)` returns, which is how a caller holding a WebCrypto key has it,

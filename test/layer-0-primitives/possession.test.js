@@ -519,6 +519,48 @@ async function testSignatureOnlySubjectKey(w) {
 
 // ---- building the request -------------------------------------------------
 
+// The name comparison runs BEFORE the signature is checked and before the certificate's path is
+// validated, and both lists it walks come from the request: the names it asks for, and the names in
+// the certificate it embeds. Unbounded, the work is their product, so a request repeating one name
+// made a CA scan every certificate name for each repetition inside a single synchronous call, with
+// nothing yet authenticated. One large input, and the assertion is the REFUSAL rather than a timing
+// ratio: a machine fast enough to absorb this input is not a machine where the bound is unnecessary.
+async function testSanComparisonIsBounded() {
+  // The certificate carries many names and the request asks for the LAST one, repeatedly. Both halves
+  // are load-bearing: with no certificate names the inner scan finds nothing and `_every` stops at the
+  // first requested name, and with the FIRST name asked for the scan matches immediately. Only a late
+  // match makes every repetition walk the whole list, which is the product this bounds.
+  var certNames = [];
+  for (var k = 0; k < 200; k++) certNames.push({ dNSName: "pad" + k + ".example" });
+  certNames.push({ dNSName: "last.example" });
+  var w = await world({ caSubject: "Flood CA", caSerial: 7, sigSerial: 0x77,
+    sigExts: { keyUsage: ["digitalSignature"], subjectAltName: certNames } });
+
+  function askFor(n) {
+    var many = [];
+    for (var i = 0; i < n; i++) many.push({ dNSName: "last.example" });
+    return pki.csr.sign({
+      subject: "kem.example", subjectPublicKey: w.kemSpki,
+      privateKeyPossessionStatement: { signer: w.signer, certificate: w.sigCertDer },
+      extensionRequest: { subjectAltName: many },
+    }, { key: w.sigKp.key });
+  }
+
+  var flood = await askFor(4000);
+  check("DOS1: the flood request is built and large, so a refusal below is about the comparison",
+    Buffer.isBuffer(flood) && flood.length > 40000);
+  var t0 = Date.now();
+  var outcome = await codeAsync(pki.possession.verifyRequest(flood, { trustAnchors: [w.caDer], time: AT }));
+  var elapsed = Date.now() - t0;
+  check("DOS2: the comparison is bounded and the request is refused by the cap (" + outcome + ", " +
+    elapsed + "ms)", outcome === "possession/too-many-names");
+  // The control: the same shape asking for ONE name walks 201 pairs, under the cap, so DOS2 is the
+  // bound biting rather than this fixture being refused for an unrelated reason.
+  check("DOS3: CONTROL one requested name stays under the cap and reaches a verdict",
+    (await codeAsync(pki.possession.verifyRequest(await askFor(1),
+      { trustAnchors: [w.caDer], time: AT }))) !== "possession/too-many-names");
+}
+
 async function testBuild(w) {
   // A KEM subject key, which cannot sign, and a signature key that can. Before this release the
   // builder refused both halves of that: the scheme resolved from the subject key.
@@ -965,6 +1007,7 @@ async function run() {
   testSurface();
   var w = await world();
   await testDecode(w);
+  await testSanComparisonIsBounded();
   var built = await testBuild(w);
   await testVerify(w, built);
   await testNameComparison(w);
