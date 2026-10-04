@@ -352,13 +352,26 @@ async function buildSctChainBundle(o) {
   var caExts = [synExt("basicConstraints", true, B.sequence([B.boolean(true)])), synExt("keyUsage", true, synKuVal([5, 6]))];
   var rootDer = synCert({ serial: 1n, issuer: "syn-root", subject: "syn-root", notBefore: NB, notAfter: NA,
     subjectKey: rootKp.publicKey, signerKey: rootKp.privateKey, extensions: caExts });
+  // `keyIds` gives the real intermediate a subjectKeyIdentifier and the leaf the matching
+  // authorityKeyIdentifier, which is what a real Fulcio chain carries and what names ONE of several
+  // certificates sharing a subject DN. The decoys carry no identifier, so only the real one is named.
+  // It is a SEPARATE option from the decoys so the same bundle can be driven with the identifiers and
+  // without them: without them nothing distinguishes the candidates and the cap decides the verdict,
+  // which is the behavior the identifier ordering replaces.
+  var interKeyId = Buffer.alloc(20, 0xA7);
+  var interExts = o.keyIds
+    ? caExts.concat([synExt("subjectKeyIdentifier", false, B.octetString(interKeyId))])
+    : caExts;
   var interDer = synCert({ serial: 2n, issuer: "syn-root", subject: "syn-inter", notBefore: NB, notAfter: NA,
-    subjectKey: interKp.publicKey, signerKey: rootKp.privateKey, extensions: caExts });
+    subjectKey: interKp.publicKey, signerKey: rootKp.privateKey, extensions: interExts });
 
   // The receipt covers the certificate as it stood before the receipt was added, so the leaf is built
   // twice: once without the extension, to sign over, and once with it, to ship (RFC 6962 sec. 3.2).
   var leafExts = [synExt("keyUsage", true, synKuVal([0])), synExt("extKeyUsage", false, B.sequence([synOid("codeSigning")])),
     synExt("subjectAltName", false, B.sequence([gnUriDer("https://github.com/synthetic/repo")]))];
+  if (o.keyIds) {
+    leafExts.push(synExt("authorityKeyIdentifier", false, B.sequence([B.contextPrimitive(0, interKeyId)])));
+  }
   function mkLeaf(exts) {
     return synCert({ serial: 3n, issuer: "syn-inter", subject: "syn-leaf", notBefore: NB, notAfter: NA,
       subjectKey: leafKp.publicKey, signerKey: interKp.privateKey, extensions: exts });
@@ -399,6 +412,16 @@ async function buildSctChainBundle(o) {
   // `cyclicDecoys` prepends N intermediates whose subject AND issuer are both the real one's subject, so
   // every one of them is a candidate at every depth of the walk. They are what exhausts a step budget, and
   // they sit BEFORE the real intermediate so the search must still reach it.
+  // `anchorIssuedDecoys` prepends N intermediates carrying the real one's subject AND issued by the
+  // ANCHOR, so every one of them COMPLETES a path and the completion ordering cannot tell them apart.
+  // They consume the candidate cap, and the real intermediate sits behind them: the identifier the leaf
+  // names is the only thing that distinguishes it.
+  for (var kd = 0; kd < (o.anchorIssuedDecoys || 0); kd += 1) {
+    var kdKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+    chainCerts.push({ rawBytes: synCert({ serial: BigInt(300 + kd), issuer: "syn-root", subject: "syn-inter",
+      notBefore: NB, notAfter: NA, subjectKey: kdKp.publicKey, signerKey: rootKp.privateKey,
+      extensions: caExts }).toString("base64") });
+  }
   for (var cd = 0; cd < (o.cyclicDecoys || 0); cd += 1) {
     var cycKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
     chainCerts.push({ rawBytes: synCert({ serial: BigInt(200 + cd), issuer: "syn-inter", subject: "syn-inter",
@@ -573,6 +596,26 @@ async function run() {
   var vCyc = await pki.sigstore.verifyBundle(cyc.bundle, Object.assign({}, cyc.trust, { ctLogs: cyc.ctLogs }));
   check("SCT-4e eight same-subject intermediates ahead of the real one do not exhaust the search (" +
     (Date.now() - tCyc) + "ms)", vCyc.verified === true && vCyc.validScts === 1);
+
+  // The cap itself must not be spent by certificate ORDER. Eight intermediates sharing the real one's
+  // subject and each issued directly by the anchor all COMPLETE a path, so the completion ordering above
+  // cannot separate them: the first eight became the only eight paths considered and the real
+  // intermediate behind them was never validated, reporting sigstore/chain-invalid for a bundle that
+  // holds a valid path. A rotated or reissued CA is exactly what produces same-DN siblings, and the
+  // authority key identifier is what names which of them signed the leaf.
+  var kid = await buildSctChainBundle({ anchorIssuedDecoys: 8, keyIds: true });
+  var vKid = await pki.sigstore.verifyBundle(kid.bundle, Object.assign({}, kid.trust, { ctLogs: kid.ctLogs }));
+  check("SCT-4f eight anchor-issued same-subject intermediates do not spend the candidate cap on decoys",
+    vKid.verified === true && vKid.validScts === 1);
+  /* The control for it: the SAME eight decoys with no key identifiers anywhere. Nothing then names
+   * which same-subject certificate signed the leaf, every candidate completes a path, and the cap is
+   * spent on the eight the bundle listed first. The refusal here is what SCT-4f looked like before the
+   * identifier ordering, so it shows that vector is carried by the identifier and not by something
+   * else in the fixture. */
+  var kidNone = await buildSctChainBundle({ anchorIssuedDecoys: 8 });
+  check("SCT-4g and with no identifier to name the issuer, the cap is what decides the verdict",
+    (await codeOf(pki.sigstore.verifyBundle(kidNone.bundle,
+      Object.assign({}, kidNone.trust, { ctLogs: kidNone.ctLogs })))) === "sigstore/chain-invalid");
 
   check("SCT-5 an empty ctLogs array is refused rather than read as no policy",
     (await codeOf(pki.sigstore.verifyBundle(BUNDLE, Object.assign({}, TM, { ctLogs: [] })))) === "sigstore/bad-input");
