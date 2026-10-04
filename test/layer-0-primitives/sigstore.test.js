@@ -309,9 +309,13 @@ async function buildV2Bundle(opts) {
   var te = {
     logId: { keyId: logIdFull.toString("base64") },
     integratedTime: 0,                       // always zero on a v2 entry, and ignored
-    logIndex: opts.logIndex === undefined ? 4242 : opts.logIndex,
+    // On a v2 entry the top-level index IS the leaf index, so a conforming bundle for a tree of size
+    // one states 0 here. The duplicate inside inclusionProof is a field clients are told to ignore, so
+    // the fixture writes a number no proof could establish into it: a bundle that verifies with 4242
+    // sitting there is a bundle whose verification did not read it.
+    logIndex: opts.logIndex === undefined ? 0 : opts.logIndex,
     inclusionProof: {
-      logIndex: opts.proofLogIndex === undefined ? 0 : opts.proofLogIndex,
+      logIndex: opts.proofLogIndex === undefined ? 4242 : opts.proofLogIndex,
       treeSize: 1, hashes: [], rootHash: rootHash.toString("base64"),
       checkpoint: { envelope: cpEnvelope } },
     canonicalizedBody: canonBuf.toString("base64"),
@@ -1631,44 +1635,51 @@ async function runRekorV2() {
   check("V3: the instant is the timestamp token's, not the entry's zero",
     ok.timestampSource === "rfc3161" && ok.integratedTime === null);
 
-  // The reported index is the one the INCLUSION PROOF established, not the one the bundle wrote beside
-  // it. A v1 entry's signed entry timestamp covers `logIndex`, so there it is attested; a v2 entry has
-  // no such signature, and the only index anything authenticates is the leaf index the proof folds
-  // against the checkpoint-attested root. The fixture writes 4242 in the entry and proves index 0, so
-  // the two disagree and a verdict reporting 4242 is reporting a number nothing signed.
+  // WHICH field positions the leaf depends on the log's generation. Rekor v2 states the index once, at
+  // the top level: its client guidance says the log index "should be read from the top-level
+  // TransparencyLogEntry.log_index", and that `inclusion_proof.log_index` is one of the fields "repeated
+  // elsewhere and should be ignored", with the proof's own `root_hash` and `tree_size` beside it, which
+  // the checkpoint already supplies. A v1 entry carries two different numbers, a global index and a
+  // shard-relative one, and the proof folds against the shard its checkpoint covers, so there the
+  // proof's field positions the leaf and the entry's is what the signed entry timestamp covers.
   //
-  // THEY ARE TWO DIFFERENT QUANTITIES AND MUST NOT BE COMPARED. The entry's index is the log's own
-  // counter; the proof's is the leaf index folded against the checkpoint root. Requiring them to agree
-  // refuses the v1 fixtures below, whose signed entry timestamp covers 1234 while the proof establishes
-  // 0, and would refuse sound bundles in the same shape. What differs between the paths is which of the
-  // two is SIGNED, not which is correct.
-  check("V3a: CONTROL the fixture's entry index and proof index really do differ",
-    v2.bundle.verificationMaterial.tlogEntries[0].logIndex === 4242 &&
-    v2.bundle.verificationMaterial.tlogEntries[0].inclusionProof.logIndex === 0);
-  check("V3b: the verdict reports the index the inclusion proof established", ok.logIndex === 0);
+  // ON v1 THE TWO MUST NOT BE COMPARED, for that reason: the v1 fixtures below carry 1234 in the entry
+  // while the proof establishes 0, and requiring agreement would refuse sound bundles.
+  check("V3a: CONTROL the fixture's entry index and its ignored duplicate really do differ",
+    v2.bundle.verificationMaterial.tlogEntries[0].logIndex === 0 &&
+    v2.bundle.verificationMaterial.tlogEntries[0].inclusionProof.logIndex === 4242);
+  check("V3b: the verdict reports the entry's own index, which is what the proof folded at",
+    ok.logIndex === 0);
+  // The duplicate is ignored, which is what V3a's 4242 is there to show: a number no proof could
+  // establish sits in that field on every bundle above, and every one of them verified.
+  var otherDup = await buildV2Bundle({ proofLogIndex: 99999 });
+  var otherDupRes = await pki.sigstore.verifyBundle(otherDup.bundle, otherDup.trust);
+  check("V3b2: and a different value in the ignored duplicate changes nothing",
+    otherDupRes && otherDupRes.verified === true && otherDupRes.logIndex === 0);
 
-  // And a forged entry index cannot reach the verdict at all. These are values no proof could have
-  // established, so a verdict carrying one would be attesting to the bundle's own claim.
+  // A FORGED top-level index is now refused rather than ignored, because it is the index the fold runs
+  // at: no proof reconstructs the attested root from a leaf position the log never put this entry at.
+  // These are values a tree of size one has no leaf for, or no integer at all.
   var forgeries = [-20, "1.5", 99999, null];
-  var forged = [];
+  var forgedCodes = [];
   for (var fi = 0; fi < forgeries.length; fi++) {
     var bad = await buildV2Bundle({ logIndex: forgeries[fi] });
-    var r = await pki.sigstore.verifyBundle(bad.bundle, bad.trust);
-    forged.push(r && r.verified === true && r.logIndex === 0);
+    forgedCodes.push(await codeOf(pki.sigstore.verifyBundle(bad.bundle, bad.trust)));
   }
-  check("V3c: a forged entry index never becomes the reported index",
-    forged.length === forgeries.length && forged.every(function (x) { return x === true; }));
+  check("V3c: a forged entry index is refused, the fold running at it (" + forgedCodes.join(", ") + ")",
+    forgedCodes.length === forgeries.length &&
+    forgedCodes.every(function (c) { return c === "sigstore/bad-inclusion-proof"; }));
 
-  // The reported index comes from the reading the PROOF used, not from a second look at the field, and
+  // The reported index comes from the reading the FOLD used, not from a second look at the field, and
   // these two conversions do not agree on every shape. `BigInt` reads a single-element array through its
-  // string form, so `["1"]` folds as leaf 1 and the proof verifies, while the numeric conversion the
+  // string form, so `["0"]` folds as leaf 0 and the proof verifies, while the numeric conversion the
   // verdict used type-guards arrays to NaN and said the entry had no index at all. One conversion, bound
   // once, or a verified proof can be reported as unverified metadata.
   check("V3d: CONTROL the two conversions really disagree on this shape",
     BigInt(["1"]) === 1n && typeof ["1"] === "object");
-  var arrIdx = await buildV2Bundle({ proofLogIndex: ["0"] });
+  var arrIdx = await buildV2Bundle({ logIndex: ["0"] });
   var arrRes = await pki.sigstore.verifyBundle(arrIdx.bundle, arrIdx.trust);
-  check("V3e: a proof index the fold accepted is reported as the number it folded",
+  check("V3e: an index the fold accepted is reported as the number it folded",
     arrRes && arrRes.verified === true && arrRes.logIndex === 0);
 
   // A signature that is re-timestamped while it is archived carries more than one token, and the one a
