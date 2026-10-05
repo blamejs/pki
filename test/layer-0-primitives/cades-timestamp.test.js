@@ -575,6 +575,28 @@ async function run() {
   check("CT-49 CONTROL a v1 identifier that does bind is not reported as a mismatch",
     v1Codes.indexOf("cms/cades-signing-certificate-mismatch") === -1 &&
     v1Codes.indexOf("cms/cades-weak-certificate-binding") !== -1);
+  // A digest identifier carries absent or NULL parameters and nothing else (RFC 5754 clause 2), so
+  // one naming sha256 beside arbitrary bytes is not a well-formed binding, whatever the hash is.
+  var oddParams = b.sequence([b.sequence([b.sequence([
+    b.sequence([b.oid(pki.oid.byName("sha256")), b.integer(7n)]),
+    b.octetString(crypto.createHash("sha256").update(signer.cert).digest())])])]);
+  var vOddParams = await pki.cms.verify(await pki.cms.sign(CONTENT, { cert: signer.cert, key: signer.key },
+    { additionalSignedAttributes: [{ type: "signingCertificateV2", values: [oddParams] }] }),
+  { certs: [signer.cert], content: CONTENT });
+  check("CT-49 a digest identifier carrying parameters other than NULL is not a readable binding, " +
+    "even where the hash it states agrees",
+  vOddParams.signers[0].cadesBaseline.conformant === false &&
+    vOddParams.signers[0].cadesBaseline.findings.some(function (f) {
+      return f.code === "cms/cades-signing-certificate-unreadable" && f.level === "shall";
+    }));
+  var nullParams = b.sequence([b.sequence([b.sequence([
+    b.sequence([b.oid(pki.oid.byName("sha256")), b.nullValue()]),
+    b.octetString(crypto.createHash("sha256").update(signer.cert).digest())])])]);
+  var vNullParams = await pki.cms.verify(await pki.cms.sign(CONTENT, { cert: signer.cert, key: signer.key },
+    { additionalSignedAttributes: [{ type: "signingCertificateV2", values: [nullParams] }] }),
+  { certs: [signer.cert], content: CONTENT });
+  check("CT-49 CONTROL the explicit NULL parameters form is accepted (RFC 5754 clause 2)",
+    vNullParams.signers[0].cadesBaseline.conformant === true);
   var junkEss = b.sequence([b.oid(pki.oid.byName("sha256"))]);
   var vJunkEss = await pki.cms.verify(await pki.cms.sign(CONTENT, { cert: signer.cert, key: signer.key },
     { additionalSignedAttributes: [{ type: "signingCertificateV2", values: [junkEss] }] }),
