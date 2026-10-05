@@ -2213,8 +2213,145 @@ async function main() {
   await testMicrosoftEnrollmentSpec();
   await testSiaSdaNoCheckSpec();
   await testKeyIdentifierDefaults();
+  await testTlsFeatureSpec();
   await testExtensionEncoder();
   console.log("CHECKS " + helpers.getChecks());
+}
+
+// ---- RFC 7633 TLS Feature (must-staple): the authoring side ---------------------------------------
+//
+// The decode side shipped in v0.8.11. These drive the encoder: the named door, the object form, the
+// criticality knob, and what the value may hold. RFC 7633 sec. 4 fixes the syntax as
+// `Features ::= SEQUENCE OF INTEGER` and sec. 4.1 binds the values to the IANA TLS ExtensionType
+// registry, which is the clause a refusal cites. The type carries no range, so a value outside the
+// registry's width ENCODES and the linter is what grades it.
+async function testTlsFeatureSpec() {
+  var s = makeSigner("ec-p256");
+  var b = asn1.build;
+  function codeSync(fn) { try { fn(); return "NO-THROW"; } catch (e) { return e.code; } }
+  function msgSync(fn) { try { fn(); return ""; } catch (e) { return e.message; } }
+  // The extnValue of a one-extension Extension TLV, as hex, read without assuming a child count.
+  function valueHex(extDer) {
+    var node = asn1.decode(extDer);
+    return asn1.read.octetString(node.children[node.children.length - 1]).toString("hex");
+  }
+  function critOf(extDer) {
+    var node = asn1.decode(extDer);
+    return node.children.length === 3 ? asn1.read.boolean(node.children[1]) : false;
+  }
+
+  // A5 / A6: the registry NAME and the number reach the same bytes, which are the bytes
+  // lib/schema-c509.js already builds for its DER arm.
+  check("A5: the registry name encodes as SEQUENCE { 5 }",
+    valueHex(pki.x509.extension("tlsFeature", ["status_request"])) === "3003020105");
+  check("A6: two numbers encode in the order given",
+    valueHex(pki.x509.extension("tlsFeature", [5, 17])) === "3006020105020111");
+  check("A6b: a bigint is accepted beside a number",
+    valueHex(pki.x509.extension("tlsFeature", [5n, 17n])) === "3006020105020111");
+
+  // A7: through the signer and back out of the parser.
+  var signed = await pki.x509.sign({
+    subject: "must-staple.example", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA,
+    extensions: [pki.x509.extension("tlsFeature", [5, 17])],
+  }, { key: s.key });
+  var row = pki.schema.x509.decodeExtensions(pki.schema.x509.parse(signed))
+    .filter(function (r) { return r.name === "tlsFeature"; })[0];
+  check("A7: the signed certificate's tlsFeature decodes to the features it was given",
+    !!row && row.state === "decoded" && row.decoded.features.length === 2 &&
+    row.decoded.features[0] === 5n && row.decoded.features[1] === 17n);
+
+  // A8: the object form, non-critical by default.
+  var objSigned = await pki.x509.sign({
+    subject: "obj.example", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA,
+    extensions: { tlsFeature: [5] },
+  }, { key: s.key });
+  var objRow = pki.schema.x509.decodeExtensions(pki.schema.x509.parse(objSigned))
+    .filter(function (r) { return r.name === "tlsFeature"; })[0];
+  check("A8: the object form emits one non-critical tlsFeature",
+    !!objRow && objRow.critical === false && objRow.decoded.features[0] === 5n);
+
+  // A9: registering the name makes the dotted form behave as every other registered extension does.
+  // MEASURED before the row landed: the dotted OID with pre-encoded bytes was accepted and produced
+  // 301106082b0601050507011804053003020105. keyUsage, basicConstraints and extendedKeyUsage all
+  // refuse that shape with this message, so the change is this name joining them.
+  check("A9: the dotted OID with pre-encoded bytes is refused, as for every other registered name",
+    codeSync(function () { pki.x509.extension("1.3.6.1.5.5.7.1.24", b.sequence([b.integer(5n)])); }) === "x509/bad-input");
+  check("A9b: and the refusal names the plain form to use instead",
+    msgSync(function () { pki.x509.extension("1.3.6.1.5.5.7.1.24", b.sequence([b.integer(5n)])); }).indexOf("spec.extensions") > 0);
+  // The escape hatch for a caller holding bytes: a hand-built Extension TLV in the array form.
+  var handBuilt = b.sequence([b.oid("1.3.6.1.5.5.7.1.24"), b.octetString(b.sequence([b.integer(5n)]))]);
+  check("A9c: a hand-built pre-encoded Extension still reaches the array form",
+    codeSync(function () {
+      return pki.x509.sign({ subject: "hand.example", subjectPublicKey: s.spki, notBefore: NB,
+        notAfter: NA, extensions: [handBuilt] }, { key: s.key });
+    }) === "NO-THROW");
+
+  // B5: an empty Features advertises nothing, so authoring one is a caller error even though the
+  // decoder accepts it on the wire. The two tiers answer different questions.
+  check("B5: an empty feature list is refused at the authoring door",
+    codeSync(function () { pki.x509.extension("tlsFeature", []); }) === "x509/bad-input");
+  check("B5b: and the refusal says why rather than only that it is empty",
+    msgSync(function () { pki.x509.extension("tlsFeature", []); }).indexOf("RFC 7633") > 0);
+
+  // C5 / C6: sec. 4 says SHOULD NOT be marked critical and names the case where critical is what the
+  // caller wants, so the knob exists and the default is the form that stays compatible.
+  check("C6: the default is non-critical", critOf(pki.x509.extension("tlsFeature", [5])) === false);
+  check("C5: the knob reaches the critical form",
+    critOf(pki.x509.extension("tlsFeature", [5], { critical: true })) === true);
+  var critObj = await pki.x509.sign({
+    subject: "crit.example", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA,
+    extensions: { tlsFeature: [5], tlsFeatureCritical: true },
+  }, { key: s.key });
+  var critRow = pki.schema.x509.decodeExtensions(pki.schema.x509.parse(critObj))
+    .filter(function (r) { return r.name === "tlsFeature"; })[0];
+  check("C5b: and the object form carries the same knob", !!critRow && critRow.critical === true);
+
+  // D13 through D17: what the value may hold.
+  check("D13: a repeated feature encodes twice, so the encoder does not hide what the linter grades",
+    valueHex(pki.x509.extension("tlsFeature", [5, 5])) === "3006020105020105");
+  check("D14: an unknown registry name is refused",
+    codeSync(function () { pki.x509.extension("tlsFeature", ["nope"]); }) === "x509/bad-input");
+  check("D14b: and the refusal names the value it could not resolve",
+    msgSync(function () { pki.x509.extension("tlsFeature", ["nope"]); }).indexOf("nope") > 0);
+  var badValues = [1.5, null, true, {}, [], Buffer.alloc(1)];
+  var badRefused = 0;
+  for (var i = 0; i < badValues.length; i++) {
+    if (codeSync((function (v) { return function () { pki.x509.extension("tlsFeature", [v]); }; })(badValues[i])) === "x509/bad-input") badRefused++;
+  }
+  check("D15: a non-integer, non-name element is refused (" + badValues.length + " shapes)",
+    badRefused === badValues.length);
+  check("D15b: a numeric STRING is not a number", codeSync(function () { pki.x509.extension("tlsFeature", ["5"]); }) === "x509/bad-input");
+  var holed = [5];
+  holed[2] = 17;
+  check("D16: a sparse list is refused", codeSync(function () { pki.x509.extension("tlsFeature", holed); }) === "x509/bad-input");
+  var reads = 0;
+  var moving = [];
+  Object.defineProperty(moving, "0", {
+    enumerable: true, configurable: true,
+    get: function () { reads += 1; return reads > 1 ? 17 : 5; },
+  });
+  moving.length = 1;
+  check("D17: an accessor-backed element is refused, so the list cannot answer two reads differently",
+    codeSync(function () { pki.x509.extension("tlsFeature", moving); }) === "x509/bad-input");
+  // The type carries no range: these ENCODE, and the linter is what grades them.
+  check("D3b: a value above the registry's width encodes",
+    valueHex(pki.x509.extension("tlsFeature", [65536])) === "30050203010000");
+  check("D4b: a negative value encodes",
+    valueHex(pki.x509.extension("tlsFeature", [-1])) === "30030201ff");
+
+  // E3 / E4: the encoder does not sort, because SEQUENCE OF fixes no order.
+  check("E3: the order given is the order emitted",
+    valueHex(pki.x509.extension("tlsFeature", [17, 5])) === "3006020111020105");
+
+  // F3: two tlsFeature extensions in the array form are refused rather than both emitted, which is
+  // the array arm's duplicate guard reaching a name it now recognizes.
+  var dupOutcome = "NO-THROW";
+  try {
+    await pki.x509.sign({ subject: "dup.example", subjectPublicKey: s.spki, notBefore: NB,
+      notAfter: NA, extensions: [pki.x509.extension("tlsFeature", [5]), handBuilt] }, { key: s.key });
+  } catch (e) { dupOutcome = e.code; }
+  check("F3: two tlsFeature extensions in one certificate are refused (" + dupOutcome + ")",
+    dupOutcome === "x509/bad-input");
 }
 
 // ---- pki.x509.extension: one Extension DER for the pre-encoded array form -------------------------

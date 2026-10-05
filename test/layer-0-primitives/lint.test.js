@@ -1769,6 +1769,101 @@ function testCrlProfile() {
   check("pki.lint.crl honors the severity threshold",
     pki.lint.crl(makeCrl({ exts: [crlNumber(1)] }), { severity: "error" }).findings
       .every(function (f) { return f.severity === "error" || f.severity === "fatal"; }));
+
+  // ---- RFC 7633 TLS Feature: criticality in the default set, values in the named profile ----
+  //
+  // sec. 4 reads "The TLS feature extension SHOULD NOT be marked critical" and closes "not
+  // recommended unless this is the desired behavior", so a critical one is graded and not refused.
+  // The value rows live in a named profile because RFC 7633 states no range, no ordering and no
+  // prohibition on repeats, and what sec. 4.1 does state is that the values come from the IANA TLS
+  // Extensions registry.
+  function tlsFeature(features, critical) {
+    return extByOid("1.3.6.1.5.5.7.1.24", critical === true,
+      b.sequence(features.map(function (f) { return b.integer(BigInt(f)); })));
+  }
+  var tfPlain = pki.lint.certificate(makeCert({ exts: [tlsFeature([5])] }));
+  check("C1 CONTROL. a non-critical tlsFeature draws no criticality finding",
+    !has(tfPlain, "lint/rfc5280/recommended-criticality"));
+  var tfCrit = pki.lint.certificate(makeCert({ exts: [tlsFeature([5], true)] }));
+  check("C2. a critical tlsFeature draws the criticality finding in the DEFAULT set, at warn",
+    has(tfCrit, "lint/rfc5280/recommended-criticality") &&
+    sevOf(tfCrit, "lint/rfc5280/recommended-criticality") === "warn");
+  check("C2b. and the finding carries the RFC 7633 clause rather than an RFC 5280 one",
+    tfCrit.findings.filter(function (f) { return f.id === "lint/rfc5280/recommended-criticality"; })
+      .some(function (f) { return f.context && f.context.citation === "RFC 7633 sec. 4"; }));
+  check("C3 PIN. the unknown-critical verdict is still reported beside it",
+    has(tfCrit, "lint/rfc5280/unknown-critical-extension") &&
+    sevOf(tfCrit, "lint/rfc5280/unknown-critical-extension") === "error");
+
+  // D5 / D6 / D7: the registry's width, inclusive at the boundary.
+  var over = pki.lint.certificate(makeCert({ exts: [tlsFeature([65536])] }), { profile: "rfc7633" });
+  check("D5. a value above the registry width is reported at warn",
+    has(over, "lint/rfc7633/feature-outside-registry-width") &&
+    sevOf(over, "lint/rfc7633/feature-outside-registry-width") === "warn");
+  var neg = pki.lint.certificate(makeCert({ exts: [tlsFeature([-1])] }), { profile: "rfc7633" });
+  check("D6. a negative value is the same finding",
+    has(neg, "lint/rfc7633/feature-outside-registry-width"));
+  var edge = pki.lint.certificate(makeCert({ exts: [tlsFeature([65535])] }), { profile: "rfc7633" });
+  check("D7. the boundary itself is inside the width",
+    !has(edge, "lint/rfc7633/feature-outside-registry-width"));
+
+  // D11: a repeat is conforming and carries no meaning, so it is a notice.
+  var rep = pki.lint.certificate(makeCert({ exts: [tlsFeature([5, 5])] }), { profile: "rfc7633" });
+  check("D11. a repeated feature is reported at notice",
+    has(rep, "lint/rfc7633/feature-repeated") && sevOf(rep, "lint/rfc7633/feature-repeated") === "notice");
+  var noRep = pki.lint.certificate(makeCert({ exts: [tlsFeature([5, 17])] }), { profile: "rfc7633" });
+  check("D11b CONTROL. two different features are not a repeat",
+    !has(noRep, "lint/rfc7633/feature-repeated"));
+
+  // D12: RFC 9162 sec. 7.2, the only clause outside RFC 7633 over this field.
+  var ti = pki.lint.certificate(makeCert({ exts: [tlsFeature([52])] }), { profile: "rfc7633" });
+  check("D12. naming transparency_info (52) is reported at warn, citing RFC 9162",
+    has(ti, "lint/rfc7633/transparency-info-feature") &&
+    sevOf(ti, "lint/rfc7633/transparency-info-feature") === "warn" &&
+    ti.findings.filter(function (f) { return f.id === "lint/rfc7633/transparency-info-feature"; })[0].citation === "RFC 9162 7.2");
+  check("D12b CONTROL. status_request (5) draws no such finding",
+    !has(pki.lint.certificate(makeCert({ exts: [tlsFeature([5])] }), { profile: "rfc7633" }),
+      "lint/rfc7633/transparency-info-feature"));
+
+  // Feature 17: reported for what IS verifiable, at notice, with no claim of deprecation.
+  var v2 = pki.lint.certificate(makeCert({ exts: [tlsFeature([17])] }), { profile: "rfc7633" });
+  check("D8. naming status_request_v2 (17) is reported at notice, citing RFC 9846 sec. 4.3",
+    has(v2, "lint/rfc7633/feature-undefined-in-tls13") &&
+    sevOf(v2, "lint/rfc7633/feature-undefined-in-tls13") === "notice" &&
+    v2.findings.filter(function (f) { return f.id === "lint/rfc7633/feature-undefined-in-tls13"; })[0].citation === "RFC 9846 4.3");
+  check("D8b. the message does not call it deprecated, because no document does",
+    v2.findings.filter(function (f) { return f.id === "lint/rfc7633/feature-undefined-in-tls13"; })[0]
+      .message.toLowerCase().indexOf("deprecat") === -1);
+  check("D9 CONTROL. status_request (5) draws no TLS 1.3 finding",
+    !has(pki.lint.certificate(makeCert({ exts: [tlsFeature([5])] }), { profile: "rfc7633" }),
+      "lint/rfc7633/feature-undefined-in-tls13"));
+
+  // B2: a certificate without the extension draws none of these rows.
+  var none = pki.lint.certificate(makeCert({ exts: [] }), { profile: "rfc7633" });
+  check("B2. a certificate carrying no tlsFeature draws no RFC 7633 finding",
+    ids(none).every(function (id) { return id.indexOf("lint/rfc7633/") !== 0; }));
+
+  // The repeated-value rule is in the DEFAULT set and the certificate reaching it is unauthenticated,
+  // so its cost is work the input chooses. One large input, not a ratio, and the SIZE is chosen so the
+  // two forms separate: at 60000 distinct features in a 267 KiB certificate the one-pass form was
+  // measured at 351 ms and the rescan-every-preceding-value form at about 3100 ms. A smaller input
+  // does not work here, since at 20000 the quadratic form still came in at 355 ms and would have
+  // passed any bound a slow machine could also meet.
+  var manyFeatures = [];
+  for (var mf = 0; mf < 60000; mf++) manyFeatures.push(mf);
+  var bigTf = makeCert({ exts: [tlsFeature(manyFeatures)] });
+  var tfStart = Date.now();
+  var bigReport = pki.lint.certificate(bigTf);
+  var tfMs = Date.now() - tfStart;
+  check("60000 distinct TLS features lint in linear time (" + tfMs + " ms, " + bigTf.length + " bytes)",
+    tfMs < 1500);
+  check("...and the report is still the right one",
+    !has(bigReport, "lint/rfc7633/feature-repeated"));
+
+  // The profile is nameable and the rows are enumerable, which are two different tables.
+  check("the rfc7633 profile is selectable", pki.lint.profiles().indexOf("rfc7633") !== -1);
+  check("and its rows are in the registry rules() enumerates",
+    pki.lint.rules().some(function (r) { return r.id === "lint/rfc7633/feature-outside-registry-width"; }));
 }
 
 module.exports = { run: run };

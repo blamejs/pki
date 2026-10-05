@@ -115,6 +115,109 @@ async function testEmptySubjectAndAttrs() {
   check("subject omitted -> empty subject", pki.schema.csr.parse(await pki.csr.sign({ subjectPublicKey: s.spki }, { key: s.key }, { profile: "none" })).subject.dn === "");
 }
 
+// ---- RFC 7633 TLS Feature in a certification request ----------------------
+//
+// sec. 4.2.1 lets a request state the features the server supports and sec. 4.3.2 asks a server to
+// generate it, so the declaration is the requester's wish. sec. 4.2.1 names only "a CSR Attribute as
+// defined in Section 4.1 of [RFC2986]" and never says extensionRequest, so the placement rests on
+// what a real producer writes: OpenSSL's `req -addext "tlsfeature=status_request"` puts it in the
+// RFC 2985 sec. 5.4.2 extensionRequest attribute, which is the form this writes.
+async function testTlsFeatureRequest() {
+  var s = makeSigner("ec-p256");
+  function codeOf(fn) { return fn().then(function () { return "NO-THROW"; }, function (e) { return e.code; }); }
+  function rowOf(der) {
+    return pki.schema.csr.decodeExtensions(pki.schema.csr.parse(der))
+      .filter(function (r) { return r.name === "tlsFeature"; })[0];
+  }
+
+  // H1 is the passing control: a name this table already took still works.
+  var ctlDer = await pki.csr.sign({ subject: "ctl.example", subjectPublicKey: s.spki,
+    extensionRequest: { keyUsage: ["digitalSignature"] } }, { key: s.key });
+  check("H1 CONTROL: a name the request table already took still succeeds",
+    pki.schema.csr.parse(ctlDer).attributes.length === 1);
+
+  // H2: the named key reaches the extensionRequest attribute.
+  var der = await pki.csr.sign({ subject: "staple.example", subjectPublicKey: s.spki,
+    extensionRequest: { tlsFeature: ["status_request"] } }, { key: s.key });
+  var parsed = pki.schema.csr.parse(der);
+  check("H2: the request carries one extensionRequest attribute, type 1.2.840.113549.1.9.14",
+    parsed.attributes.length === 1 && parsed.attributes[0].name === "extensionRequest" &&
+    pki.oid.byName(parsed.attributes[0].name) === "1.2.840.113549.1.9.14");
+
+  // H3: and it decodes as the requested extension it is.
+  var r = rowOf(der);
+  check("H3: the row is a requested tlsFeature with the feature it named",
+    !!r && r.scope === "csr-requested" && r.state === "decoded" &&
+    r.decoded.features.length === 1 && r.decoded.features[0] === 5n &&
+    r.critical === false && r.profile === null);
+
+  // The knob is here too, because the request carries the whole Extension shape.
+  var critDer = await pki.csr.sign({ subject: "crit.example", subjectPublicKey: s.spki,
+    extensionRequest: { tlsFeature: [5], tlsFeatureCritical: true } }, { key: s.key });
+  check("H3b: a request may state the critical form", rowOf(critDer).critical === true);
+
+  // H5: a pre-encoded value the decoder refuses is refused by the signer, under the csr namespace.
+  var badDer = pki.asn1.build.sequence([
+    pki.asn1.build.oid(pki.oid.byName("tlsFeature")),
+    pki.asn1.build.octetString(pki.asn1.build.sequence([pki.asn1.build.utf8("five")])),
+  ]);
+  check("H5: a pre-encoded Features whose element is not an INTEGER is refused as csr/bad-tls-feature",
+    (await codeOf(function () {
+      return pki.csr.sign({ subject: "bad.example", subjectPublicKey: s.spki,
+        extensionRequest: [badDer] }, { key: s.key });
+    })) === "csr/bad-tls-feature");
+
+  // H4: and the pre-encoded escape hatch stays open for a valid one.
+  var okDer = pki.asn1.build.sequence([
+    pki.asn1.build.oid(pki.oid.byName("tlsFeature")),
+    pki.asn1.build.octetString(pki.asn1.build.sequence([pki.asn1.build.integer(5n)])),
+  ]);
+  check("H4: a valid pre-encoded tlsFeature still reaches the array form",
+    (await codeOf(function () {
+      return pki.csr.sign({ subject: "pre.example", subjectPublicKey: s.spki,
+        extensionRequest: [okDer] }, { key: s.key });
+    })) === "NO-THROW");
+
+  // H9: the two doors agree. The named form's bytes equal the hand-built ones.
+  var namedRow = rowOf(await pki.csr.sign({ subject: "eq.example", subjectPublicKey: s.spki,
+    extensionRequest: { tlsFeature: [5] } }, { key: s.key }));
+  check("H9: the named form emits the extnValue the hand-built one carries",
+    namedRow.value.toString("hex") === pki.asn1.build.sequence([pki.asn1.build.integer(5n)]).toString("hex"));
+
+  // H8: the independent producer. RFC 7633 sec. 4.2.1 says only "as a CSR Attribute as defined in
+  // Section 4.1 of [RFC2986]" and never names extensionRequest, so where the extension goes rests on
+  // what a real producer writes. OpenSSL's `-addext "tlsfeature=status_request"` puts it in the
+  // RFC 2985 sec. 5.4.2 extensionRequest attribute, and the fixture pins those bytes with their
+  // digest so a regenerated one cannot quietly become a different request.
+  var fx = require("../fixtures/tls-feature-openssl-csr.json");
+  var opensslDer = Buffer.from(fx.csrDerBase64, "base64");
+  check("H8 the fixture is the bytes it claims",
+    require("node:crypto").createHash("sha256").update(opensslDer).digest("hex") === fx.sha256);
+  var opensslParsed = pki.schema.csr.parse(opensslDer);
+  check("H8 OpenSSL carries it in the extensionRequest attribute",
+    opensslParsed.attributes.length === 1 && opensslParsed.attributes[0].name === "extensionRequest");
+  var opensslRow = pki.schema.csr.decodeExtensions(opensslParsed)
+    .filter(function (r) { return r.name === "tlsFeature"; })[0];
+  check("H8 and it decodes as a requested, non-critical status_request",
+    !!opensslRow && opensslRow.scope === "csr-requested" && opensslRow.critical === false &&
+    opensslRow.decoded.features.length === 1 && opensslRow.decoded.features[0] === 5n);
+  check("H8 the extnValue OpenSSL wrote is the one this builds (" + fx.extnValueHex + ")",
+    opensslRow.value.toString("hex") === fx.extnValueHex &&
+    namedRow.value.toString("hex") === fx.extnValueHex);
+
+  // The authoring refusals are the same ones the certificate door makes, through this door.
+  check("an empty list is refused here too",
+    (await codeOf(function () {
+      return pki.csr.sign({ subject: "e.example", subjectPublicKey: s.spki,
+        extensionRequest: { tlsFeature: [] } }, { key: s.key });
+    })) === "csr/bad-input");
+  check("an unknown feature name is refused here too",
+    (await codeOf(function () {
+      return pki.csr.sign({ subject: "u.example", subjectPublicKey: s.spki,
+        extensionRequest: { tlsFeature: ["nope"] } }, { key: s.key });
+    })) === "csr/bad-input");
+}
+
 // ---- extensionRequest carrying a SAN + a CA copying it ---------------------
 
 async function testExtensionRequest() {
@@ -422,6 +525,7 @@ async function main() {
   await testCompositeArm();
   await testEmptySubjectAndAttrs();
   await testExtensionRequest();
+  await testTlsFeatureRequest();
   await testChallengePassword();
   await testProofOfPossession();
   await testFailClosed();
