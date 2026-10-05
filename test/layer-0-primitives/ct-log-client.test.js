@@ -136,10 +136,15 @@ async function runGetSth() {
     return { outcome: outcome, reads: reads.length };
   }
   var twoFaced = await sthUnderTwoFacedKey();
+  /* The refusal moved earlier and got stronger. Reading the option once was enough to stop the second
+     answer deciding anything, and the client's door now declines the whole bag instead: an options
+     object whose properties are not plain values is a shape no set of checks can answer for, which is
+     the rule `signSct` in this module already applied. So the outcome is a refusal at the door rather
+     than a fetch that ends in `ct/sth-untrusted`, and the option is never read at all. */
   check("S3b: a two-faced opts.logKey cannot hand one key to the check and another to the verification (" +
-    twoFaced.outcome + ", " + twoFaced.reads + " read(s))", twoFaced.outcome === "ct/sth-untrusted");
-  check("S3c: and the option is read exactly once, so there is no second answer to give",
-    twoFaced.reads === 1);
+    twoFaced.outcome + ", " + twoFaced.reads + " read(s))", twoFaced.outcome === "ct/bad-input");
+  check("S3c: and it is refused before the option is read, so there is no answer to give at all",
+    twoFaced.reads === 0);
   /* The control, which is what makes the two above mean something: the attacker's key really does
      verify the attacker's tree head. So the second read was not harmless -- had the copy taken it, the
      call would have returned a result instead of refusing, which is the acceptance S3b now denies. */
@@ -654,6 +659,162 @@ async function runShared() {
   var sth = await pki.ct.getSth(f.o);
   check("X7: a base URL already carrying the ct/v1 prefix reaches the same path",
     sth.treeSize === 1n && f.transport.calls[0].url === u("get-sth"));
+
+  /* The option the client CHECKED has to be the option it then USES. `opts.url` was read once for the
+     presence check and again to build the endpoint, so an accessor answered the two separately: the
+     check saw a URL the caller meant and the request went to another host entirely. The caller's bag
+     is the caller's, and an object that answers differently on a second read is a value this code has
+     no business trusting twice, so every declared option is taken once into a plain record and read
+     from there. The assertion is on what crossed the seam, because that is the server contacted. */
+  var EVIL = "https://attacker.example/";
+  function readsDifferently(name, first, rest, base) {
+    var n = 0, o = {};
+    Object.keys(base).forEach(function (k) { o[k] = base[k]; });
+    Object.defineProperty(o, name, {
+      get: function () { n += 1; return n === 1 ? first : rest; },
+      enumerable: true, configurable: true,
+    });
+    return o;
+  }
+  var divert = routeByUrl({ [u("get-sth")]: resp(200, sthBody(log, 1, t.root), "application/json") });
+  var oDivert = readsDifferently("url", BASE, EVIL, { logKey: log.spki, transport: divert });
+  var divertCode = await code(function () { return pki.ct.getSth(oDivert); });
+  var contacted = divert.calls.map(function (c) { return c.url; });
+  check("X8: an options bag whose url answers a second read differently is refused at the door " +
+    "(outcome " + divertCode + ")", divertCode === "ct/bad-input");
+  check("X8b: and the refusal happens before the wire, so no request is sent anywhere (contacted " +
+    JSON.stringify(contacted) + ")", divert.calls.length === 0);
+
+  /* The same door covers every option, so the anchor pin cannot be approved on one object and the
+     socket opened under another. */
+  var tlsT = routeByUrl({});
+  var oTls = { url: BASE, logKey: log.spki, transport: tlsT };
+  Object.defineProperty(oTls, "tls", {
+    get: function () { return { anchors: [Buffer.alloc(1)] }; },
+    enumerable: true, configurable: true,
+  });
+  check("X9: an accessor-backed tls is refused rather than read twice",
+    (await code(function () { return pki.ct.getSth(oTls); })) === "ct/bad-input");
+  check("X9b: and nothing was fetched under it", tlsT.calls.length === 0);
+
+  /* A bag that gains or loses an option while the door reads it cannot be checked at all. */
+  var shifty = { url: BASE, logKey: log.spki, transport: routeByUrl({}) };
+  var hits = 0;
+  Object.defineProperty(shifty, "timeout", {
+    get: function () { hits += 1; if (hits === 1) { delete shifty.logKey; } return 1000; },
+    enumerable: true, configurable: true,
+  });
+  check("X10: a bag that changes which options it carries while they are read is refused",
+    (await code(function () { return pki.ct.getSth(shifty); })) === "ct/bad-input");
+
+  /* Refusing an accessor ON THE BAG is not the whole rule, because the door is handed the caller's own
+     object: a getter nested in one of the VALUES is never inspected by it, and a header name whose
+     getter rewrote `url` as a side effect moved the request after the presence check had approved the
+     original. The door copies the options it accepts, so nothing the caller does afterwards is visible.
+     The control matters here: a plain header must still reach the URL the caller named, or the vector
+     would pass for the wrong reason. */
+  var plainT = routeByUrl({ [u("get-sth")]: resp(200, sthBody(log, 1, t.root), "application/json") });
+  await code(function () {
+    return pki.ct.getSth({ url: BASE, logKey: log.spki, transport: plainT, headers: { "x-a": "1" } });
+  });
+  check("X11 CONTROL: a plain header still reaches the URL the caller named",
+    plainT.calls.length === 1 && plainT.calls[0].url === u("get-sth"));
+
+  var nestedT = routeByUrl({ [u("get-sth")]: resp(200, sthBody(log, 1, t.root), "application/json") });
+  var liveBag = { logKey: log.spki, transport: nestedT };
+  liveBag.url = BASE;
+  var trap = {};
+  Object.defineProperty(trap, "x-trigger", {
+    enumerable: true, configurable: true,
+    get: function () { liveBag.url = EVIL; return "1"; },
+  });
+  liveBag.headers = trap;
+  await code(function () { return pki.ct.getSth(liveBag); });
+  var nestedHits = nestedT.calls.map(function (c) { return c.url; });
+  check("X11: a getter nested in opts.headers cannot move the request off the checked URL by " +
+    "rewriting the caller's bag mid-request (contacted " + JSON.stringify(nestedHits) + ")",
+    nestedHits.every(function (hit) { return hit.indexOf("attacker.example") === -1; }));
+
+  /* The trust anchors are the sharper case. `opts.tls` is the caller's object and its members were read
+     later than the check that approves them, so a header getter emptied the pinned anchor list and
+     rewrote the servername after the check had passed: the anchors checked were not the anchors the
+     connection used. The settings are flattened once, with the anchor LIST copied, before any caller
+     getter can run. The transport records what it was handed, because that is what a socket would use. */
+  function tlsRecorder(seen) {
+    return function (req) {
+      var tls = req.tls || {};
+      seen.push({ anchors: Array.isArray(tls.anchors) ? tls.anchors.length : null,
+        servername: tls.servername });
+      return Promise.resolve({ status: 500, headers: { "content-type": "application/json" }, body: Buffer.from("{}") });
+    };
+  }
+
+  var pinOk = [];
+  await code(function () {
+    return pki.ct.getSth({ url: BASE, logKey: log.spki, transport: tlsRecorder(pinOk),
+      tls: { anchors: [Buffer.alloc(1)], servername: "ct.example" }, headers: { "x-a": "1" } });
+  });
+  check("X12 CONTROL: a plain bag hands the connection the anchors the caller pinned (" +
+    JSON.stringify(pinOk) + ")",
+    pinOk.length === 1 && pinOk[0].anchors === 1 && pinOk[0].servername === "ct.example");
+
+  var pinSeen = [];
+  var sharedTls = { anchors: [Buffer.alloc(1)], servername: "ct.example" };
+  var pinTrap = {};
+  Object.defineProperty(pinTrap, "x-trigger", {
+    enumerable: true, configurable: true,
+    get: function () { sharedTls.anchors.length = 0; sharedTls.servername = EVIL; return "1"; },
+  });
+  await code(function () {
+    return pki.ct.getSth({ url: BASE, logKey: log.spki, transport: tlsRecorder(pinSeen),
+      tls: sharedTls, headers: pinTrap });
+  });
+  check("X12: a header getter cannot empty the pinned anchor list or rewrite the servername after " +
+    "the trust-anchor check approved them (" + JSON.stringify(pinSeen) + ")",
+    pinSeen.length === 1 && pinSeen[0].anchors === 1 && pinSeen[0].servername === "ct.example");
+
+  /* An option supplied through a caller's defaults object is reached along the prototype chain, and the
+     door has always accepted that. It is worth a vector because the obvious way to make the repeated
+     reads safe, copying the bag, cannot reproduce it: the enumeration a copy would use omits an
+     inherited FUNCTION member, since that is how `Object.prototype.toString` is kept from counting as an
+     option. Copying therefore dropped an inherited `transport` and fell through to opening a real
+     connection, which is the opposite of what the caller asked for. */
+  var inheritedCalls = [];
+  var inheritedBag = Object.create({
+    url: BASE,
+    transport: function (req) {
+      inheritedCalls.push(String(req.url));
+      return Promise.resolve({ status: 500, headers: { "content-type": "application/json" }, body: Buffer.from("{}") });
+    },
+  });
+  inheritedBag.logKey = log.spki;
+  await code(function () { return pki.ct.getRoots(inheritedBag); });
+  check("X13: options supplied through a caller's defaults object are still used, the transport " +
+    "among them, rather than being dropped in favor of a real connection (contacted " +
+    JSON.stringify(inheritedCalls) + ")",
+    inheritedCalls.length === 1 && inheritedCalls[0] === u("get-roots"));
+
+  /* Holding the url VALUE is not enough when the value is an object, because the text form is what
+     names the host and converting asks the object for it. A header getter that rewrote an
+     object-valued url's `href` moved the request just as a second read would have: the conversion is
+     the last reader, so it happens where the value is taken. */
+  var convCalls = [];
+  var urlObj = { href: BASE, toString: function () { return this.href; } };
+  var convTrap = {};
+  Object.defineProperty(convTrap, "x-trigger", {
+    enumerable: true, configurable: true,
+    get: function () { urlObj.href = EVIL; return "1"; },
+  });
+  await code(function () {
+    return pki.ct.getSth({ url: urlObj, logKey: log.spki, headers: convTrap,
+      transport: function (req) {
+        convCalls.push(String(req.url));
+        return Promise.resolve({ status: 500, headers: { "content-type": "application/json" }, body: Buffer.from("{}") });
+      } });
+  });
+  check("X14: an object-valued url is converted where it is taken, so a header getter cannot change " +
+    "the host by rewriting it later (contacted " + JSON.stringify(convCalls) + ")",
+    convCalls.every(function (hit) { return hit.indexOf("attacker.example") === -1; }));
 }
 
 // Every refusal the shared readers make, and the RSA log-key arm. A guard that

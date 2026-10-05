@@ -284,6 +284,32 @@ async function testLoopback(fx) {
     });
     check("19. a stalled server -> ct/timeout (the wall-clock budget, socket destroyed)", c === "ct/timeout");
   } finally { stall.srv.close(); }
+
+  // ==== 20. the options door ========================================================================
+  /* Checking which option NAMES a bag carries leaves every VALUE still to be read from the caller's
+     object, and this verb read `url` twice, once to parse and once to fetch, so an accessor sent the
+     request to a host the parse never saw. The verb enters the same door the sec. 4 verbs do now: an
+     options object whose properties are not plain values is refused, and the options it accepts are
+     copied, so nothing the caller does afterwards is visible. The control is the point: a plain bag
+     must still fetch. */
+  var okCalls = [];
+  var okT = function (req) { okCalls.push(String(req.url)); return ctx.okRoutes(fx)[String(req.url)] ? Promise.resolve(ctx.okRoutes(fx)[String(req.url)]) : Promise.resolve({ status: 404, headers: {}, body: Buffer.alloc(0) }); };
+  await got(function () { return pki.ct.fetchLogList({ url: JSON_URL, signerKey: fx.signerKey, transport: okT }); }).then(null, function () {});
+  check("20. CONTROL a plain options bag still reaches the URL it names",
+    okCalls.length > 0 && okCalls[0] === JSON_URL);
+
+  var evilCalls = [];
+  var reads = 0;
+  var bag = { signerKey: fx.signerKey, transport: function (req) { evilCalls.push(String(req.url)); return Promise.resolve({ status: 500, headers: {}, body: Buffer.alloc(0) }); } };
+  Object.defineProperty(bag, "url", {
+    enumerable: true, configurable: true,
+    get: function () { reads += 1; return reads === 1 ? JSON_URL : "https://attacker.example/log_list.json"; },
+  });
+  var evilCode = await code(function () { return pki.ct.fetchLogList(bag); });
+  check("20. an options bag whose url answers a second read differently is refused (" + evilCode + ")",
+    evilCode === "ct/bad-input");
+  check("20. and nothing was fetched under it (contacted " + JSON.stringify(evilCalls) + ")",
+    evilCalls.length === 0);
 }
 
 run().then(null, function (e) { console.error(helpers.formatErr ? helpers.formatErr(e) : (e && e.stack || e)); process.exit(1); });
