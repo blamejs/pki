@@ -220,6 +220,32 @@ function scanFile(file, suppressed) {
 // Prove the scanner can still see a finding before trusting a clean report.
 // A word list is one edit away from matching nothing, and a spelling gate that
 // silently matches nothing reports exactly what a clean tree reports.
+/** @internal Removes a probe file over a wall-clock budget, used by the sweep and by the cleanup.
+ *  `expect` is the body the file must hold for the removal to be allowed, or `null` for a file this
+ *  run wrote itself. A sync-and-scan client or an indexer can hold a lock on a file this new, and
+ *  such a lock is measured in tens of milliseconds, so the attempts are spread over time rather
+ *  than spun through in one instant. Returns whether the file is gone. */
+function _removeProbeDebris(target, expect) {
+  var slot = new Int32Array(new SharedArrayBuffer(4));
+  for (var waited = 0; waited <= 5000; waited += 25) {
+    if (!fs.existsSync(target)) return true;
+    var body = null, readFailed = false;
+    if (expect !== null) {
+      try { body = fs.readFileSync(target, "utf8"); }
+      catch (_e) { readFailed = true; }
+      if (!readFailed && body !== expect) return false;
+    }
+    if (!readFailed) {
+      try { fs.rmSync(target, { force: true }); } catch (_e2) { /* retried by the loop */ }
+      if (!fs.existsSync(target)) return true;
+    }
+    // A synchronous wait, because this gate is synchronous throughout and a timer would need the
+    // loop it is not running under. Waiting on a slot no one ever wakes runs the timeout.
+    Atomics.wait(slot, 0, 0, 25);
+  }
+  return !fs.existsSync(target);
+}
+
 function canary() {
   var dir = fs.mkdtempSync(path.join(os.tmpdir(), "pki-spell-"));
   var probe = path.join(dir, "probe.md");
@@ -364,10 +390,13 @@ function canary() {
         if (alive) return;
       }
       var stale = path.resolve(__dirname, "..", entry);
-      try {
-        if (fs.readFileSync(stale, "utf8") !== PROBE_BODY) return;
-        fs.rmSync(stale, { force: true });
-      } catch (_e) { /* unreadable or already gone: left for the check below to report */ }
+      // Read and removed over a wall-clock budget, for the reason the cleanup below retries: a
+      // file this new can be held briefly by a sync-and-scan client or an indexer. A single
+      // attempt reads such a hold as "not this gate's debris", keeps the file, and then every run
+      // in that checkout refuses to overwrite it until somebody deletes it by hand, which is the
+      // deadlock this sweep exists to prevent. A read that fails for the whole budget still keeps
+      // the file: erring toward keeping one is the safe direction, and the check below reports it.
+      _removeProbeDebris(stale, PROBE_BODY);
     });
     if (fs.existsSync(untracked)) {
       throw new Error("canary: " + probeName + " already exists and does not hold what this gate " +
@@ -394,14 +423,7 @@ function canary() {
       //
       // Recorded rather than thrown from here, because a throw inside a finally replaces whatever
       // the block was already failing with, and the canary's own verdict is the more useful one.
-      var slot = new Int32Array(new SharedArrayBuffer(4));
-      for (var waited = 0; waited < 5000 && fs.existsSync(untracked); waited += 25) {
-        try { fs.rmSync(untracked, { force: true }); } catch (_e) { /* retried by the loop */ }
-        // A synchronous wait, because this gate is synchronous throughout and a timer would need
-        // the loop it is not running under. Waiting on a slot no one ever wakes runs the timeout.
-        if (fs.existsSync(untracked)) Atomics.wait(slot, 0, 0, 25);
-      }
-      if (fs.existsSync(untracked)) probeLeft = probeName;
+      if (!_removeProbeDebris(untracked, null)) probeLeft = probeName;
     }
     if (probeLeft) {
       throw new Error("canary: could not remove its own probe " + probeLeft + "; delete it " +

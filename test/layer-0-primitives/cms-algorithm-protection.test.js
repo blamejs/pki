@@ -41,6 +41,11 @@ async function codeOf(p) {
 function codeOfSync(fn) {
   try { fn(); return "NO-THROW"; } catch (e) { return e.code || e.constructor.name; }
 }
+// Two refusals carrying one code are told apart by what each says, which is how a vector asserts
+// WHICH of them a verb reached first.
+async function messageOf(p) {
+  try { await p; return "NO-THROW"; } catch (e) { return String(e.message || ""); }
+}
 function algId(name, params) {
   return params === undefined ? b.sequence([b.oid(pki.oid.byName(name))])
     : b.sequence([b.oid(pki.oid.byName(name)), params]);
@@ -178,6 +183,65 @@ async function run() {
   check("AP-3 an RSASSA-PSS signature carrying the attribute verifies",
     vPss.signers[0].ok === true && vPss.signers[0].algorithmProtection.compared.length === 2);
 
+  // AP-3b: RFC 6211 sec. 3 on how the two identifiers are compared: "A field with a default value
+  // MUST compare as identical, independently of whether the value is defaulted or is explicitly
+  // provided.  This implies that a binary compare of the encoded bytes is insufficient." RSASSA-PSS
+  // is where that bites, since RFC 4055 sec. 3.1 gives each of its four parameter fields a default.
+  // The SignerInfo's own signatureAlgorithm is spliced, not the attribute: the signature covers the
+  // signed attributes and not that field, which is the exposure the attribute exists to close, so
+  // the fixture stays cryptographically valid and the only difference is the encoding of a
+  // defaulted field.
+  function withExplicitTrailerField(cmsDer) {
+    var root = pki.asn1.decode(cmsDer);
+    var sd = root.children[1].children[0];
+    var siSet = sd.children[sd.children.length - 1];
+    var si = siSet.children[0];
+    var algIdx = si.children.length - 2;                     // ..., signatureAlgorithm, signature
+    var sigAlg = si.children[algIdx];
+    var params = pki.asn1.decode(sigAlg.children[1].bytes);
+    var fields = params.children.map(function (f) { return f.bytes; });
+    fields.push(b.contextConstructed(3, b.integer(1)));      // trailerField, explicitly its DEFAULT
+    var spliced = b.sequence([sigAlg.children[0].bytes, b.sequence(fields)]);
+    var siKids = si.children.map(function (k, i) { return i === algIdx ? spliced : k.bytes; });
+    var sdKids = sd.children.map(function (k, i) {
+      return i === sd.children.length - 1 ? b.set([b.sequence(siKids)]) : k.bytes;
+    });
+    return b.sequence([root.children[0].bytes, b.explicit(0, b.sequence(sdKids))]);
+  }
+  var pssDefaulted = withExplicitTrailerField(pssSigned);
+  var vPssDefaulted = await pki.cms.verify(pssDefaulted, { certs: [pssSigner.cert] });
+  check("AP-3b a defaulted field compares the same written out as omitted",
+    vPssDefaulted.signers[0].ok === true &&
+    vPssDefaulted.signers[0].algorithmProtection.mismatch === null &&
+    vPssDefaulted.signers[0].algorithmProtection.compared.indexOf("signatureAlgorithm") !== -1);
+  check("AP-3b CONTROL the splice really changed the bytes the comparison reads",
+    !pssDefaulted.equals(pssSigned));
+  // The leniency is for the defaulted VALUE alone: a field carrying anything else is the
+  // substitution this attribute exists to catch.
+  function withSaltLength(cmsDer, len) {
+    var root = pki.asn1.decode(cmsDer);
+    var sd = root.children[1].children[0];
+    var si = sd.children[sd.children.length - 1].children[0];
+    var algIdx = si.children.length - 2;
+    var sigAlg = si.children[algIdx];
+    var params = pki.asn1.decode(sigAlg.children[1].bytes);
+    var fields = params.children.map(function (f) {
+      return (f.tagClass === "context" && f.tagNumber === 2) ? b.contextConstructed(2, b.integer(len)) : f.bytes;
+    });
+    var spliced = b.sequence([sigAlg.children[0].bytes, b.sequence(fields)]);
+    var siKids = si.children.map(function (k, i) { return i === algIdx ? spliced : k.bytes; });
+    var sdKids = sd.children.map(function (k, i) {
+      return i === sd.children.length - 1 ? b.set([b.sequence(siKids)]) : k.bytes;
+    });
+    return b.sequence([root.children[0].bytes, b.explicit(0, b.sequence(sdKids))]);
+  }
+  var vPssSalt = await pki.cms.verify(withSaltLength(pssSigned, 48), { certs: [pssSigner.cert] });
+  check("AP-3b and a non-default value in the same field is still a mismatch",
+    vPssSalt.signers[0].ok === false &&
+    vPssSalt.signers[0].algorithmProtection.mismatch !== null &&
+    vPssSalt.signers[0].algorithmProtection.mismatch.code === "cms/algorithm-protection-mismatch" &&
+    vPssSalt.signers[0].algorithmProtection.compared.indexOf("signatureAlgorithm") === -1);
+
   // AP-4: a countersignature is its own SignerInfo and inherits the check.
   var countersigned = await pki.cms.countersign(signed, SIGNER, { algorithmProtection: true });
   var vCs = await pki.cms.verify(countersigned, { certs: [signer.cert] });
@@ -229,6 +293,23 @@ async function run() {
   // The registry reads a row's source as a selectable profile name, so RFC 8933 updating RFC 5652
   // means its own profile: asking for "rfc8933" runs this row, and asking for "rfc5652" does not
   // claim a requirement that document does not state.
+  // RFC 8933 sec. 4.1 states the requirement twice, and the second sentence is the authenticated
+  // data one: "Likewise, the originator of an authenticated-data content type that includes
+  // authenticated attributes SHOULD include the CMSAlgorithmProtection attribute [RFC6211] as one
+  // of the authenticated attributes." That is the content type whose algorithm fields nothing else
+  // covers, so a row reading only signed-data would miss the widest exposure.
+  var apKek = Buffer.alloc(32, 0x5a);
+  var apAuthRecipient = [{ kek: apKek, kekId: Buffer.from("k") }];
+  var authNoAp = await pki.cms.authenticate(CONTENT, apAuthRecipient);
+  var authWithAp = await pki.cms.authenticate(CONTENT, apAuthRecipient, { algorithmProtection: true });
+  var authNoAttrs = await pki.cms.authenticate(CONTENT, apAuthRecipient, { authenticatedAttributes: false });
+  check("AP-10 an AuthenticatedData with authenticated attributes and no such attribute draws the notice",
+    apIds(pki.lint.cms(authNoAp)).length === 1 &&
+    apIds(pki.lint.cms(authNoAp))[0].severity === "notice" &&
+    apIds(pki.lint.cms(authNoAp, { profile: "rfc8933" })).length === 1);
+  check("AP-10 CONTROL one carrying it draws none, and one with no authenticated attributes draws none",
+    apIds(pki.lint.cms(authWithAp)).length === 0 &&
+    apIds(pki.lint.cms(authNoAttrs)).length === 0);
   check("AP-10 the row is registered against the document that states the requirement",
     pki.lint.rules().filter(function (r) {
       return r.id === "lint/rfc8933/algorithm-protection-absent";
@@ -272,6 +353,46 @@ async function run() {
       { signedAttributes: false, algorithmProtection: offJunk[oj] }))) !== "cms/bad-input") offRefusedBare = false;
   }
   check("AP-6b a falsy value other than false is refused rather than read as absence", offRefused);
+  // The value is read at the door, before the content is. A streamed content is consumed and hashed
+  // to build the attributes, so an option read only where the attributes are built is a refusal
+  // that arrives after the stream has been drained: for one that cannot be replayed the caller
+  // cannot act on it, and for one that never ends it never arrives at all.
+  var drawn = 0;
+  var countingStream = (async function* () { drawn += 1; yield CONTENT; })();
+  var streamRefusal = await codeOf(pki.cms.sign(countingStream, SIGNER,
+    { detached: true, algorithmProtection: "typo" }));
+  check("AP-6b and a streamed content is not read before the option is (" +
+    streamRefusal + ", chunks drawn " + drawn + ")",
+    streamRefusal === "cms/bad-input" && drawn === 0);
+  check("AP-6b CONTROL the same stream signs when the option is one of the two documented values",
+    (await codeOf(pki.cms.sign((async function* () { yield CONTENT; })(), SIGNER,
+      { detached: true, algorithmProtection: "registry" }))) === "NO-THROW");
+  // The authenticate verb reads it at its own door too, ahead of hashing the content and wrapping
+  // each recipient's key. Observed through two refusals that cannot both be reported: a key-encryption
+  // key of an unusable length is refused where the recipients are built, so an option read after
+  // that point would answer with the key's message instead of its own.
+  var unusableKek = [{ kek: Buffer.alloc(7, 0x01), kekId: Buffer.from("k") }];
+  var kekFirst = await messageOf(pki.cms.authenticate(CONTENT, unusableKek));
+  var optionFirst = await messageOf(pki.cms.authenticate(CONTENT, unusableKek, { algorithmProtection: "typo" }));
+  check("AP-6b and the authenticate verb reads the option before it reaches the recipients",
+    kekFirst.indexOf("key-encryption key") !== -1 &&
+    optionFirst.indexOf("algorithmProtection is true for the identifier") === 0);
+  // The door resolves the option and the emitter reads it again, which is only sound because an
+  // option supplied through an accessor never arrives: the options door refuses one, own or
+  // inherited, before any value is read. Two reads of a plain field answer the same.
+  var accessorReads = 0;
+  var accessorOpts = {};
+  Object.defineProperty(accessorOpts, "algorithmProtection", {
+    enumerable: true, configurable: true,
+    get: function () { accessorReads += 1; return accessorReads === 1 ? true : "registry"; },
+  });
+  var inheritedOpts = Object.create(accessorOpts);
+  check("AP-6b an option supplied through an accessor is refused before it is read at all",
+    (await codeOf(pki.cms.sign(CONTENT, SIGNER, accessorOpts))) === "cms/bad-input" &&
+    (await codeOf(pki.cms.sign(CONTENT, SIGNER, inheritedOpts))) === "cms/bad-input" &&
+    (await codeOf(pki.cms.authenticate(CONTENT, [{ kek: Buffer.alloc(32, 0x11), kekId: Buffer.from("k") }],
+      accessorOpts))) === "cms/bad-input" &&
+    accessorReads === 0);
   check("AP-6b and on the route that signs the content directly", offRefusedBare);
   check("AP-6b CONTROL signedAttributes: false with the attribute asked for names the conflict",
     (await codeOf(pki.cms.sign(CONTENT, SIGNER, { signedAttributes: false, algorithmProtection: true }))) === "cms/bad-input");

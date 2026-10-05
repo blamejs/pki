@@ -451,6 +451,33 @@ function testSpellingCanarySweepsARecycledPid() {
   check("and the gate never reports the file as one it will not overwrite",
         !/already exists and does not hold/.test(both));
 
+  // The sweep reads the file before removing it, and now retries that read over a budget, because a
+  // sync-and-scan client can hold a brand-new file for tens of milliseconds and a single failed
+  // attempt kept it -- after which every run in that checkout refused to overwrite it. The budget
+  // must not cost the safety rule the read exists for: a file parked at that path by a developer
+  // holds something else, and is kept and reported rather than deleted.
+  // Planted from INSIDE the process that then loads the gate, like the sweep case above: the name
+  // has to carry the gate's own pid for the sweep to reach the content test at all.
+  var PARKED_BODY = "module.exports = 'a developer parked this here';\n";
+  var parkedChild = [
+    "var fs=require('fs');",
+    "var parked=" + JSON.stringify(ROOT.replace(/\\/g, "/")) +
+      "+'/check-spelling-canary-'+process.pid+'.js';",
+    "fs.writeFileSync(parked, " + JSON.stringify(PARKED_BODY) + ");",
+    "process.stderr.write('PARKED '+parked+'\\n');",
+    "require(" + JSON.stringify(gate) + ");"
+  ].join("");
+  var kept = cp.spawnSync(process.execPath, ["-e", parkedChild], { cwd: ROOT, encoding: "utf8" });
+  var keptOut = String(kept.stderr || "") + String(kept.stdout || "");
+  var parked = ((keptOut.match(/PARKED (.+)/) || [])[1] || "").trim();
+  var stillThere = parked ? fs.existsSync(parked) : false;
+  var keptBody = stillThere ? fs.readFileSync(parked, "utf8") : "";
+  if (parked) fs.rmSync(parked, { force: true });
+  check("a file parked at the probe path holding something else is kept, with its bytes untouched",
+        stillThere && keptBody === PARKED_BODY);
+  check("and the gate says so rather than running on",
+        /already exists and does not hold/.test(keptOut) && kept.status !== 0);
+
   runCodexVerdict();
 }
 
