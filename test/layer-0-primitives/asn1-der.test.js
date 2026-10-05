@@ -134,6 +134,31 @@ function testRejects() {
   check("rejects indefinite length", code(function () { pki.asn1.decode(Buffer.from("30800000", "hex")); }) === "asn1/indefinite-length");
   // Non-minimal long-form length: 02 81 01 00 (should be 02 01 00).
   check("rejects non-minimal length", code(function () { pki.asn1.decode(Buffer.from("02810100", "hex")); }) === "asn1/non-minimal-length");
+  /* UNIVERSAL tag 0 is reserved: X.690 sec. 8.1.5 gives the `00 00` octet pair one meaning, the
+     terminator of an indefinite-length encoding, and this decoder refuses indefinite length outright.
+     So a universal tag-0 element can never be a legitimate part of anything it accepts, and it was
+     being handed back as an ordinary zero-length element instead. `guard.der.element` already refused
+     the same node, so the rule was known in the tree and enforced only where a reader happened to
+     route through that guard. It belongs at the TLV level, where every reader inherits it. */
+  check("rejects a reserved universal tag-0 element inside a SEQUENCE",
+    code(function () { pki.asn1.decode(Buffer.from("30020000", "hex")); }) === "asn1/reserved-tag");
+  check("rejects a bare end-of-contents pair as a top-level value",
+    code(function () { pki.asn1.decode(Buffer.from("0000", "hex")); }) === "asn1/reserved-tag");
+  check("rejects it inside a SET as well",
+    code(function () { pki.asn1.decode(Buffer.from("31020000", "hex")); }) === "asn1/reserved-tag");
+  check("rejects it beside a legitimate element, wherever it sits",
+    code(function () { pki.asn1.decode(Buffer.from("30040000" + "0500", "hex")); }) === "asn1/reserved-tag" &&
+    code(function () { pki.asn1.decode(Buffer.from("30040500" + "0000", "hex")); }) === "asn1/reserved-tag");
+  /* The rule is UNIVERSAL-class only. A context-specific [0] is how most of X.509 and CMS write an
+     optional field, so a rule that caught tag 0 in every class would refuse nearly every structure
+     this toolkit parses. These two controls are what separate the reserved encoding from the ordinary
+     one, and a fix that refuses either of them is refusing the wrong thing. */
+  check("CONTROL a context-specific [0] is untouched, bare and nested, zero-length and carrying a value",
+    code(function () { pki.asn1.decode(Buffer.from("a000", "hex")); }) === "NO-THROW" &&
+    code(function () { pki.asn1.decode(Buffer.from("30028000", "hex")); }) === "NO-THROW" &&
+    code(function () { pki.asn1.decode(Buffer.from("a0020500", "hex")); }) === "NO-THROW");
+  check("CONTROL a SEQUENCE carrying a NULL still decodes",
+    code(function () { pki.asn1.decode(Buffer.from("30020500", "hex")); }) === "NO-THROW");
   // Non-minimal INTEGER: 02 02 00 01 (leading zero not needed).
   check("rejects non-minimal integer", code(function () { pki.asn1.read.integer(pki.asn1.decode(Buffer.from("02020001", "hex"))); }) === "asn1/non-minimal-integer");
   // Non-minimal NEGATIVE INTEGER: 02 02 FF 80 -- a leading 0xFF is redundant when the next
