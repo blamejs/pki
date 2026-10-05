@@ -1667,6 +1667,52 @@ async function testPolicyMachinery() {
     res19off.valid !== res19.valid);
   check("CVE-2023-0466 and the failure it adds is the policy one, not a side effect",
     failCodes(res19off).length === 0 && failCodes(res19).indexOf("path/policy-required") !== -1);
+  // The policy state is built from the value the door typed, not from a second read of the options
+  // object. Normalizing an anchor reads its name, key and algorithm, and those reads run caller
+  // code when the anchor carries accessors, so an options object the caller still holds can say
+  // something different by the time the state is built. The getter below turns the requirement off
+  // the way a careless caller sharing one options object would, and the verdict must be the one
+  // the call asked for.
+  var flipAnchor = { name: anchor.name, algorithm: anchor.algorithm };
+  var flipOpts = { time: T2027, trustAnchors: [flipAnchor], initialExplicitPolicy: true };
+  var flipReads = 0;
+  Object.defineProperty(flipAnchor, "publicKey", {
+    get: function () { flipReads += 1; flipOpts.initialExplicitPolicy = false; return anchor.publicKey; },
+    enumerable: true, configurable: true,
+  });
+  var resFlip = await run([interA, leafB], flipOpts);
+  check("the policy requirement is the one the call was made with, not what an anchor accessor left behind",
+    flipReads > 0 && resFlip.valid === false && failCodes(resFlip).indexOf("path/policy-required") !== -1);
+  // Two anchors whose names both match is a retry: the first attempt reads the first anchor, and
+  // that read runs the accessor. Each attempt is handed a copy of the options, so a copy that read
+  // the caller's object again would carry what the first attempt's accessor left there and the
+  // second attempt would run without the requirement.
+  var twoFlipReads = 0;
+  var flipFirst = { name: anchor.name, algorithm: anchor.algorithm };
+  var twoOpts = { time: T2027, initialExplicitPolicy: true };
+  Object.defineProperty(flipFirst, "publicKey", {
+    get: function () { twoFlipReads += 1; twoOpts.initialExplicitPolicy = false; return anchor.publicKey; },
+    enumerable: true, configurable: true,
+  });
+  twoOpts.trustAnchors = [flipFirst, { name: anchor.name, publicKey: anchor.publicKey, algorithm: anchor.algorithm }];
+  var resTwoFlip = await run([interA, leafB], twoOpts);
+  check("and every anchor attempt applies it, not just the one made before the accessor ran",
+    twoFlipReads > 0 && resTwoFlip.valid === false &&
+    failCodes(resTwoFlip).indexOf("path/policy-required") !== -1);
+  // The same question for the revocation requirement, which is read in the same prologue: with no
+  // checker the determination cannot be made, so an attempt that applies it fails closed.
+  var revFlipReads = 0;
+  var revFlipFirst = { name: anchor.name, algorithm: anchor.algorithm };
+  var revOpts = { time: T2027, requireRevocation: true };
+  Object.defineProperty(revFlipFirst, "publicKey", {
+    get: function () { revFlipReads += 1; revOpts.requireRevocation = false; return anchor.publicKey; },
+    enumerable: true, configurable: true,
+  });
+  revOpts.trustAnchors = [revFlipFirst, { name: anchor.name, publicKey: anchor.publicKey, algorithm: anchor.algorithm }];
+  var resRevFlip = await run([interA, leafB], revOpts);
+  check("the revocation requirement survives the same anchor retry",
+    revFlipReads > 0 && resRevFlip.valid === false &&
+    failCodes(resRevFlip).indexOf("path/revocation-undetermined") !== -1);
 
   // mapping to/from anyPolicy is prohibited (§6.1.4(a)).
   var interMapAny = await mkCert({ subject: "MapAny", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([cpExt([P1]), pmExt([[P1, ANY_POLICY]])]) });
@@ -3018,6 +3064,34 @@ async function testRfc5280ConformanceMusts() {
   var goodChecker = { check: function () { return Promise.resolve({ status: "good" }); } };
   var resReqGood = await run([leafReq], { time: T2027, trustAnchors: anchor, requireRevocation: true, revocationChecker: goodChecker });
   check("control: requireRevocation + good status validates", resReqGood.valid === true);
+  // The switch is read as the boolean it documents. "true" out of a config file is truthy to
+  // JavaScript and unequal to true, so a boundary comparing against true validates the path with
+  // revocation optional while the caller believes it mandatory.
+  check("a non-boolean requireRevocation is refused rather than read as off",
+    (await codeOf(run([leafReq], { time: T2027, trustAnchors: anchor, requireRevocation: "true" }))) === "path/bad-input" &&
+    (await codeOf(run([leafReq], { time: T2027, trustAnchors: anchor, requireRevocation: 1 }))) === "path/bad-input");
+  check("control: the two documented off forms still validate",
+    (await run([leafReq], { time: T2027, trustAnchors: anchor, requireRevocation: false })).valid === true &&
+    (await run([leafReq], { time: T2027, trustAnchors: anchor, requireRevocation: null })).valid === true);
+  // The three sec. 6.1.1 policy inputs are switches of the same kind, and `_flagSet` compares each
+  // against the anchor's own copy of the flag. The anchor side is typed where it is copied, so a
+  // caller's side that was not would accept at the door what the comparison refuses.
+  var policySwitches = ["initialExplicitPolicy", "initialAnyPolicyInhibit", "initialPolicyMappingInhibit"];
+  var policyRefused = [];
+  for (var ps = 0; ps < policySwitches.length; ps++) {
+    var withJunk = { time: T2027, trustAnchors: anchor };
+    withJunk[policySwitches[ps]] = "false";
+    var withZero = { time: T2027, trustAnchors: anchor };
+    withZero[policySwitches[ps]] = 0;
+    if ((await codeOf(run([leafReq], withJunk))) !== "path/bad-input") policyRefused.push(policySwitches[ps] + ":string");
+    if ((await codeOf(run([leafReq], withZero))) !== "path/bad-input") policyRefused.push(policySwitches[ps] + ":zero");
+  }
+  check("a non-boolean policy input is refused rather than read by truthiness (" +
+    (policyRefused.join(",") || "all refused") + ")", policyRefused.length === 0);
+  check("control: the documented booleans still decide the policy inputs",
+    (await run([leafReq], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: false })).valid === true &&
+    (await run([leafReq], { time: T2027, trustAnchors: anchor, initialAnyPolicyInhibit: false })).valid === true &&
+    (await run([leafReq], { time: T2027, trustAnchors: anchor, initialPolicyMappingInhibit: null })).valid === true);
 
   // A partition-scoped CRL (onlySomeReasons or a specific distributionPoint)
   // covers only a shard, so it cannot establish "good" — but a serial it LISTS

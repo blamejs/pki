@@ -226,9 +226,94 @@ async function run() {
     apIds(pki.lint.cms(plain)).length === 1 && apIds(pki.lint.cms(plain))[0].severity === "notice");
   check("AP-10 CONTROL a signature carrying it draws none",
     apIds(pki.lint.cms(signed)).length === 0);
+  // The registry reads a row's source as a selectable profile name, so RFC 8933 updating RFC 5652
+  // means its own profile: asking for "rfc8933" runs this row, and asking for "rfc5652" does not
+  // claim a requirement that document does not state.
+  check("AP-10 the row is registered against the document that states the requirement",
+    pki.lint.rules().filter(function (r) {
+      return r.id === "lint/rfc8933/algorithm-protection-absent";
+    })[0].source === "rfc8933" &&
+    pki.lint.profiles().indexOf("rfc8933") !== -1 &&
+    pki.lint.rules("rfc8933", "cms").map(function (r) { return r.id; }).join() ===
+      "lint/rfc8933/algorithm-protection-absent" &&
+    apIds(pki.lint.cms(plain, { profile: "rfc8933" })).length === 1 &&
+    apIds(pki.lint.cms(plain, { profile: "rfc5652" })).length === 0);
+
+  // AP-6b: only the two documented identifiers are selectable. A truthy value read as the default
+  // would emit the RFC 6211 identifier to a caller who asked for the registry one, and a mismatched
+  // identifier is equivalent to no protection at all, so a misspelling has to be a refusal.
+  var badChoices = ["regsitry", "REGISTRY", 1, {}, "true"];
+  var signRefused = true;
+  var authRefused = true;
+  for (var bc = 0; bc < badChoices.length; bc++) {
+    if ((await codeOf(pki.cms.sign(CONTENT, SIGNER, { algorithmProtection: badChoices[bc] }))) !== "cms/bad-input") signRefused = false;
+    if ((await codeOf(pki.cms.authenticate(CONTENT, [{ kek: Buffer.alloc(32, 0x33), kekId: Buffer.from("k") }],
+      { algorithmProtection: badChoices[bc] }))) !== "cms/bad-input") authRefused = false;
+  }
+  check("AP-6b an algorithmProtection value other than true or \"registry\" is refused by sign",
+    signRefused);
+  check("AP-6b and by authenticate", authRefused);
+  check("AP-6b and by countersign",
+    (await codeOf(pki.cms.countersign(signed, SIGNER, { algorithmProtection: "regsitry" }))) === "cms/bad-input");
+  check("AP-6b CONTROL the documented off forms are absence rather than a bad value",
+    (await codeOf(pki.cms.sign(CONTENT, SIGNER, { algorithmProtection: false }))) === "NO-THROW" &&
+    (await codeOf(pki.cms.sign(CONTENT, SIGNER, { algorithmProtection: null }))) === "NO-THROW" &&
+    (await codeOf(pki.cms.sign(CONTENT, SIGNER, { algorithmProtection: undefined }))) === "NO-THROW");
+  // Any other falsy value is a configuration fault, not an off form: a caller who wrote one asked
+  // for the attribute and would otherwise get a message carrying none, with nothing said. The
+  // resolver owns the whole value domain, so the refusal holds on the route that cannot place the
+  // attribute at all, where the emission branch is never reached.
+  var offJunk = ["", 0, NaN];
+  var offRefused = true;
+  var offRefusedBare = true;
+  for (var oj = 0; oj < offJunk.length; oj++) {
+    if ((await codeOf(pki.cms.sign(CONTENT, SIGNER, { algorithmProtection: offJunk[oj] }))) !== "cms/bad-input") offRefused = false;
+    if ((await codeOf(pki.cms.sign(CONTENT, SIGNER,
+      { signedAttributes: false, algorithmProtection: offJunk[oj] }))) !== "cms/bad-input") offRefusedBare = false;
+  }
+  check("AP-6b a falsy value other than false is refused rather than read as absence", offRefused);
+  check("AP-6b and on the route that signs the content directly", offRefusedBare);
+  check("AP-6b CONTROL signedAttributes: false with the attribute asked for names the conflict",
+    (await codeOf(pki.cms.sign(CONTENT, SIGNER, { signedAttributes: false, algorithmProtection: true }))) === "cms/bad-input");
+
+  // AP-6c: the verifier's and the decrypter's requirement switch is read the same way. This is the
+  // direction that costs the caller the control they asked for: "true" out of a config file is
+  // truthy to JavaScript and unequal to true, so a boundary comparing against true verifies with
+  // the requirement off and reports a signer as ok.
+  var reqJunk = ["true", "false", 1, 0, {}];
+  var verifyRefused = true;
+  for (var rj = 0; rj < reqJunk.length; rj++) {
+    if ((await codeOf(pki.cms.verify(plain, { certs: [signer.cert], requireAlgorithmProtection: reqJunk[rj] }))) !== "cms/bad-input") verifyRefused = false;
+  }
+  check("AP-6c a non-boolean requireAlgorithmProtection is refused by verify", verifyRefused);
+  check("AP-6c CONTROL the documented values still decide the verdict",
+    (await pki.cms.verify(plain, { certs: [signer.cert], requireAlgorithmProtection: true })).signers[0].ok === false &&
+    (await pki.cms.verify(plain, { certs: [signer.cert], requireAlgorithmProtection: false })).signers[0].ok === true &&
+    (await pki.cms.verify(plain, { certs: [signer.cert], requireAlgorithmProtection: null })).signers[0].ok === true);
   check("AP-10 CONTROL and a signer that signs the content directly draws none, the SHOULD being " +
     "conditioned on signed attributes being present",
   apIds(pki.lint.cms(attrless)).length === 0);
+
+  // AP-8e: copying the trust material reads each anchor, and that read runs the caller's code when
+  // an anchor carries accessors. The requirement is read before any of that, so an accessor that
+  // clears it cannot answer for the call: the same message without the attribute still fails.
+  var trustTuple = pki.path.anchorFromCert(signer.cert);
+  var trustFlipReads = 0;
+  var trustAnchorFlip = { name: trustTuple.name, algorithm: trustTuple.algorithm };
+  var trustFlipOpts = { certs: [signer.cert], requireAlgorithmProtection: true };
+  Object.defineProperty(trustAnchorFlip, "publicKey", {
+    get: function () { trustFlipReads += 1; trustFlipOpts.requireAlgorithmProtection = false; return trustTuple.publicKey; },
+    enumerable: true, configurable: true,
+  });
+  trustFlipOpts.trustAnchors = [trustAnchorFlip];
+  var vTrustFlip = await pki.cms.verify(plain, trustFlipOpts);
+  check("AP-8e the requirement is read before the trust material is copied, so an anchor accessor " +
+    "cannot clear it",
+    trustFlipReads > 0 && vTrustFlip.signers[0].ok === false &&
+    vTrustFlip.signers[0].code === "cms/missing-algorithm-protection");
+  check("AP-8e CONTROL the same anchor without the option verifies the signer",
+    (await pki.cms.verify(plain, { certs: [signer.cert],
+      trustAnchors: [{ name: trustTuple.name, publicKey: trustTuple.publicKey, algorithm: trustTuple.algorithm }] })).signers[0].ok === true);
 
   // AP-8c: the policy is the one the call was made with. A streamed detached content is the one
   // place a caller's own code runs while verification is pending, so an option read inside the
@@ -536,6 +621,32 @@ async function run() {
       === "cms/missing-algorithm-protection");
   check("AP-9 CONTROL and it authenticates without the option",
     (await pki.cms.decrypt(bareAuthed, { kek: kek })).authenticated === true);
+  // AP-6c on this content type: the same switch, read the same way. The MAC over authAttrs alone
+  // is what the attribute exists to extend, so a requirement the caller believes is on and is not
+  // is the whole exposure this option closes.
+  check("AP-6c a non-boolean requireAlgorithmProtection is refused by decrypt",
+    (await codeOf(pki.cms.decrypt(plainAuthed, { kek: kek }, { requireAlgorithmProtection: "true" })))
+      === "cms/bad-input" &&
+    (await codeOf(pki.cms.decrypt(plainAuthed, { kek: kek }, { requireAlgorithmProtection: 1 })))
+      === "cms/bad-input");
+  check("AP-6c CONTROL the documented off forms admit the same message",
+    (await pki.cms.decrypt(plainAuthed, { kek: kek }, { requireAlgorithmProtection: false })).authenticated === true &&
+    (await pki.cms.decrypt(plainAuthed, { kek: kek }, { requireAlgorithmProtection: null })).authenticated === true);
+  // AP-6d: the option is read on every content type `decrypt` takes, not only the one that can
+  // satisfy it. RFC 8933 sec. 6 gives the attribute a place in an AuthenticatedData alone, so a
+  // caller asking for it while decrypting an EnvelopedData or an EncryptedData is asking for a
+  // requirement that message cannot meet, and handing back plaintext answers neither question.
+  var envRecipient = { kek: kek, kekId: Buffer.from("k") };
+  var enveloped = await pki.cms.encrypt(CONTENT, [envRecipient], { contentEncryptionAlgorithm: "aes-256-gcm" });
+  check("AP-6d the requirement is refused on a content type that cannot carry the attribute",
+    (await codeOf(pki.cms.decrypt(enveloped, { kek: kek }, { requireAlgorithmProtection: true })))
+      === "cms/bad-input");
+  check("AP-6d and a non-boolean is refused there too, not read as off",
+    (await codeOf(pki.cms.decrypt(enveloped, { kek: kek }, { requireAlgorithmProtection: "true" })))
+      === "cms/bad-input");
+  check("AP-6d CONTROL the same message decrypts with the option off or absent",
+    (await pki.cms.decrypt(enveloped, { kek: kek }, { requireAlgorithmProtection: false })).content.equals(CONTENT) &&
+    (await pki.cms.decrypt(enveloped, { kek: kek })).content.equals(CONTENT));
 
   // AP-26: the producer door on the authenticate verb, the same rule the signing verbs hold. A
   // caller-supplied copy that contradicts the identifiers being emitted would produce a message this

@@ -598,6 +598,17 @@ async function testResponseShapeArms() {
   check("response: a null body reads as empty rather than throwing", nullBody.AES === undefined);
   var stringBody = await pki.scep.getCACaps(BASE, { transport: fakeTransport({ status: 200, headers: { "content-type": "text/plain" }, body: "SHA-256\r\n" }) });
   check("response: a string body is decoded as UTF-8", stringBody["SHA-256"] === true);
+  // Both profile switches are read as the booleans they document. The GetCACaps response is
+  // unauthenticated, so these two are what a caller sets to fail closed on a downgrade; a
+  // coerced read turns one on for "" and 0 and off for "true", and the caller is told neither.
+  var weakSwitch = fakeTransport({ status: 200, headers: { "content-type": "text/plain" }, body: "AES\r\n" });
+  check("response: a non-boolean requireStrongProfile is refused rather than coerced",
+    (await codeOf(pki.scep.getCACaps(BASE, { transport: weakSwitch, requireStrongProfile: "true" }))) === "scep/bad-input");
+  check("response: and a non-boolean expectSCEPStandard the same way",
+    (await codeOf(pki.scep.getCACaps(BASE, { transport: weakSwitch, expectSCEPStandard: 1 }))) === "scep/bad-input");
+  check("response: CONTROL the documented true still fails closed on a CA that advertises neither",
+    (await codeOf(pki.scep.getCACaps(BASE, { transport: weakSwitch, requireStrongProfile: true }))) === "scep/weak-profile" &&
+    (await codeOf(pki.scep.getCACaps(BASE, { transport: weakSwitch, expectSCEPStandard: true }))) === "scep/weak-profile");
   // The media type is matched on the type alone, so a charset parameter does not defeat it.
   var withParams = await pki.scep.getCACaps(BASE, { transport: fakeTransport({ status: 200, headers: { "content-type": "text/plain; charset=utf-8" }, body: "AES\r\n" }) });
   check("response: a content-type parameter is ignored when matching the media type", withParams.AES === true);

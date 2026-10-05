@@ -936,6 +936,7 @@ async function run() {
   testPollutionPlantedBeforeLoad();
   testGlobalScanNoAccessor();
   testAssertCallable();
+  testBooleanOption();
   testOptionsObjectCarriesOnlyWhatTheCallerSet();
   await testConsumersFailClosed();
 }
@@ -1146,6 +1147,42 @@ function testAssertCallable() {
   check("snapshotOptions: an absent options object yields an empty snapshot",
     identifier.snapshotOptions(undefined, KNOWN).alpha === undefined &&
     identifier.snapshotOptions(null, KNOWN).alpha === undefined);
+
+}
+
+// booleanOption: a switch is the boolean it documents. The two off forms are absence and false;
+// every other value is a configuration fault, because a switch read by coercion answers the wrong
+// way in both directions -- a truthy "no" turns a control on, and a "true" out of a config file
+// turns one off with nothing said.
+function testBooleanOption() {
+  function switchCode(v) {
+    try { identifier.booleanOption(v, E, "t/bad", "opts.x"); return "NO-THROW"; }
+    catch (e) { return e.code; }
+  }
+  function switchMessage(v) {
+    try { identifier.booleanOption(v, E, "t/bad", "opts.x"); return "NO-THROW"; }
+    catch (e) { return String(e.message); }
+  }
+  check("booleanOption: true and false are themselves",
+    identifier.booleanOption(true, E, "t/bad", "opts.x") === true &&
+    identifier.booleanOption(false, E, "t/bad", "opts.x") === false);
+  check("booleanOption: an absent value is off",
+    identifier.booleanOption(undefined, E, "t/bad", "opts.x") === false &&
+    identifier.booleanOption(null, E, "t/bad", "opts.x") === false);
+  var switchJunk = ["true", "false", "no", "", 0, 1, NaN, {}, [], Symbol("s"), BigInt(10), function () {}];
+  var switchRefused = [];
+  for (var sj = 0; sj < switchJunk.length; sj++) {
+    var got = switchCode(switchJunk[sj]);
+    if (got !== "t/bad") switchRefused.push(String(sj) + ":" + got);
+  }
+  check("booleanOption: every other value is the caller's typed refusal (" +
+    (switchRefused.join(",") || "all refused") + ")", switchRefused.length === 0);
+  // The message names the value by its own type. Rendering it would call into the value, and a
+  // caller value is where a throwing toString turns a configuration fault into a native error.
+  check("booleanOption: the message shows the value without calling into it",
+    switchMessage("yes").indexOf("opts.x must be true or false, got \"yes\"") === 0 &&
+    switchMessage(7).indexOf("got 7") !== -1 &&
+    switchMessage({ toString: function () { throw new Error("no"); } }).indexOf("got object") !== -1);
 }
 
 module.exports = { run: run };

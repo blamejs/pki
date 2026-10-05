@@ -509,6 +509,59 @@ async function run() {
   check("AIA B1: the fetched intermediate is on the built path (accepted through validate, not a raw insert)", Buffer.from(b1.path[0].subjectPublicKeyInfo.bytes).equals(aInterKp.spki));
   check("AIA B1: aiaFetches counts the single GET and only the caIssuers URL was fetched", b1.aiaFetches === 1 && b1t.calls.length === 1 && b1t.calls[0] === AIA_URL);
   check("AIA B1: WITHOUT fetchAia the same empty-pool build fails path/no-path (the fetch is load-bearing)", (await codeOf(pki.path.build(aLeaf, { candidates: [], trustAnchors: [aRoot], time: T }))) === "path/no-path");
+  // A switch build FORWARDS to validate is typed at build's own door, because build reaches the
+  // network first: a malformed one would otherwise ride along while AIA GETs go out, and a build
+  // that assembles no chain never calls validate, so nothing would ever refuse it. Each is driven
+  // with fetchAia on and a counting transport, so the vector asserts the refusal AND that it
+  // happened before the socket.
+  var fwdSwitches = ["requireRevocation", "initialExplicitPolicy", "initialAnyPolicyInhibit",
+    "initialPolicyMappingInhibit", "validate"];
+  var fwdBad = [];
+  for (var fs = 0; fs < fwdSwitches.length; fs++) {
+    var fwdT = mkTransport(function () { return cert200(aInter); });
+    var fwdOpts = Object.assign({}, aBase, { transport: fwdT });
+    fwdOpts[fwdSwitches[fs]] = "true";
+    if ((await codeOf(pki.path.build(aLeaf, fwdOpts))) !== "path/bad-input") fwdBad.push(fwdSwitches[fs] + ":code");
+    if (fwdT.calls.length !== 0) fwdBad.push(fwdSwitches[fs] + ":fetched");
+  }
+  check("AIA B1: a non-boolean forwarded switch is refused at build's door, before any GET (" +
+    (fwdBad.join(",") || "all refused") + ")", fwdBad.length === 0);
+  check("AIA B1: CONTROL the documented booleans still build through the fetch",
+    (await pki.path.build(aLeaf, Object.assign({}, aBase, { transport: mkTransport(function () { return cert200(aInter); }), requireRevocation: false }))).valid === true &&
+    (await pki.path.build(aLeaf, Object.assign({}, aBase, { transport: mkTransport(function () { return cert200(aInter); }), validate: false }))).path.length === 2);
+  // Pure-builder mode runs no validation, so a requirement asked for beside it is a requirement
+  // nothing applies. Returning the ordered path would answer the build and ignore the requirement
+  // without saying so.
+  var inertBad = [];
+  var inertSwitches = ["requireRevocation", "initialExplicitPolicy", "initialAnyPolicyInhibit",
+    "initialPolicyMappingInhibit"];
+  for (var isw = 0; isw < inertSwitches.length; isw++) {
+    var inertOpts = { candidates: [aInter], trustAnchors: [aRoot], time: T, validate: false };
+    inertOpts[inertSwitches[isw]] = true;
+    if ((await codeOf(pki.path.build(aLeaf, inertOpts))) !== "path/bad-input") inertBad.push(inertSwitches[isw]);
+  }
+  check("AIA B1: a requirement asked for with validate:false is refused, not silently inert (" +
+    (inertBad.join(",") || "all refused") + ")", inertBad.length === 0);
+  check("AIA B1: CONTROL pure building still works with the same switches off",
+    (await pki.path.build(aLeaf, { candidates: [aInter], trustAnchors: [aRoot], time: T, validate: false, requireRevocation: false })).path.length === 2);
+  // An option the caller did not pass is recorded as off at the door, and that recorded answer is
+  // what reaches `validate`. Reading each anchor runs the caller's accessors, so an accessor that
+  // ADDS one of these switches afterwards would otherwise impose a requirement this door never
+  // typed: here it would make the same build fail for an undetermined revocation.
+  var parsedARoot = pki.schema.x509.parse(aRoot);
+  var addAnchor = { name: parsedARoot.subject, algorithm: pki.asn1.read.oid(pki.asn1.decode(parsedARoot.subjectPublicKeyInfo.bytes).children[0].children[0]) };
+  var addOpts = { candidates: [aInter], time: T };
+  var addReads = 0;
+  Object.defineProperty(addAnchor, "publicKey", {
+    get: function () { addReads += 1; addOpts.requireRevocation = true; return parsedARoot.subjectPublicKeyInfo.bytes; },
+    enumerable: true, configurable: true,
+  });
+  addOpts.trustAnchors = [addAnchor];
+  var addRes = await pki.path.build(aLeaf, addOpts);
+  check("AIA B1: a switch an anchor accessor adds after the door does not reach validate",
+    addReads > 0 && addRes.valid === true && addRes.path.length === 2);
+  check("AIA B1: CONTROL the same build with the switch actually passed fails closed on revocation",
+    (await pki.path.build(aLeaf, { candidates: [aInter], trustAnchors: [{ name: addAnchor.name, publicKey: parsedARoot.subjectPublicKeyInfo.bytes, algorithm: addAnchor.algorithm }], time: T, requireRevocation: true })).valid === false);
   // AIA is a best-effort issuer source, so every fetch failure is skipped and the next URL tried.
   // A transport that THROWS is the same failure as one that REJECTS, reported differently, so both
   // leave the build reporting that it found no path rather than one of them ending it early. The

@@ -2120,7 +2120,8 @@ function testNoDuplicateCodeBlocks() {
         "lib/cms-digest.js:digest", "lib/cms-digest.js:verifyDigest", "lib/cms-digest.js:_digestName",
         "lib/cmp-build.js:_resolveProtection", "lib/pkcs12-build.js:_normalizeSpec",
         "lib/identity-match.js:match", "lib/ocsp.js:httpRequest",
-        "lib/cms-sign.js:_attachTimestamp",
+        "lib/cms-sign.js:_attachTimestamp", "lib/cms-sign.js:_timestampImprint",
+        "lib/ocsp.js:_buildRequest",
       ],
       reason: "The options door a public verb opens with: settle the caller's options object, then refuse any key the verb does not accept. Both steps ARE the shared primitives, already factored into guard-identifier, so what repeats is the pair of calls and nothing else; the arguments differ at every site, since each verb has its own accepted-key table and its own label. Settling has to happen at the verb, before it reads anything, so the call cannot move inside the key check. family-subset so any 3+ match as more verbs adopt the door.",
     },
@@ -2821,6 +2822,64 @@ function testNumberNarrowsUnboundedInteger() {
   });
   bad = _filterMarkers(bad, "number-narrows-unbounded-integer");
   _report("no Number() narrows an unbounded ASN.1 integer read (silent-rounding vector, codebase-wide)", bad);
+}
+
+function testRequirementSwitchReadByCoercion() {
+  // class: requirement-switch-read-by-coercion
+  // A CODEBASE-WIDE vector scan: an option named `require*` / `expect*` turns a check ON, so the
+  // two coerced reads of it both answer the wrong way. `opts.requireX === true` reads every
+  // non-boolean as off, which is how a `"true"` out of a config file runs the call with the check
+  // disabled; `!!opts.requireX` and a bare truthiness test read `"false"` and `"no"` as on. Either
+  // way the caller is not told, because the value passed the unknown-key door. Read such an option
+  // through guard.identifier.booleanOption, which admits true, false and absence and refuses the
+  // rest with the module's own typed code.
+  //
+  // Rename-proof: it matches the option-name family and the read shape, never a symbol, a function
+  // or an error code. A module that type-checks the option itself is recognized rather than
+  // flagged, and the recognition is file-wide because that check belongs at the verb's door while
+  // the read sits wherever the decision is made: webauthn validates `requireCtsProfileMatch` in
+  // `verifyAttestation`'s entry block and reads it inside the android-safetynet arm, and the
+  // metadata verb validates a list of flag names before the baseline question. What stays flagged
+  // is a switch no boundary in its own file ever types, which is the silent-disable vector. This
+  // fires on a NEW one ANYWHERE in lib, including a file never yet reviewed.
+  var SWITCH_NAME = "(?:require|expect|enforce|demand|initial|inhibit)[A-Z]\\w*";
+  var SWITCH_OBJ = "(?:opts|options|o|cfg|settings|params)";
+  var SWITCH_READS = [
+    new RegExp("\\b" + SWITCH_OBJ + "\\.(" + SWITCH_NAME + ")\\s*===\\s*true"),
+    new RegExp("!!\\s*" + SWITCH_OBJ + "\\.(" + SWITCH_NAME + ")"),
+    new RegExp("\\bif\\s*\\(\\s*" + SWITCH_OBJ + "\\.(" + SWITCH_NAME + ")\\s*[)&|]"),
+  ];
+  var bad = [];
+  _libFiles().forEach(function (f) {
+    var rel = path.relative(REPO_ROOT, f);
+    var src = fs.readFileSync(f, "utf8");
+    var lines = _lines(src);
+    var typesABoolean = /!==\s*["']boolean["']/.test(src);
+    for (var i = 0; i < lines.length; i++) {
+      if (/^\s*(\/\/|\*)/.test(lines[i])) continue;
+      var name = null;
+      for (var s = 0; s < SWITCH_READS.length && name === null; s++) {
+        var m = lines[i].match(SWITCH_READS[s]);
+        if (m) name = m[1];
+      }
+      if (name === null) continue;
+      var nameRe = name.replace(/[.$]/g, "\\$&");
+      var guarded =
+        new RegExp("booleanOption\\s*\\([^)]*" + nameRe).test(src) ||     // routed through the guard
+        new RegExp("_assertBool\\s*\\([^)]*" + nameRe).test(src) ||       // a module's own assert
+        // Typed by name, or carried in a list of flag names the module walks with a typeof test.
+        // Either way the file has to contain the boolean test itself, so a file that merely
+        // mentions the option does not pass as one that checks it.
+        (typesABoolean && new RegExp("typeof\\s+[\\w$.\\[\\]]*" + nameRe).test(src)) ||
+        (typesABoolean && new RegExp("[\"']" + nameRe + "[\"']").test(src));
+      if (!guarded) {
+        bad.push({ file: rel, line: i + 1,
+          content: "opts." + name + " is a switch that turns a check ON, read here by coercion -- a non-boolean answers the wrong way and the caller is not told; read it through guard.identifier.booleanOption(value, E, code, label)" });
+      }
+    }
+  });
+  bad = _filterMarkers(bad, "requirement-switch-read-by-coercion");
+  _report("no option that turns a check on is read by coercion (silent-disable vector, codebase-wide)", bad);
 }
 
 function testOptionBagReadByEnumerableKey() {
@@ -4782,6 +4841,7 @@ function run() {
   testRegistryTablesCarryNoPrototype();
   testNumberNarrowsUnboundedInteger();
   testNanDateComparisonUnguarded();
+  testRequirementSwitchReadByCoercion();
   testOptionBagReadByEnumerableKey();
   testEddsaVerifyGate();
   testCborMapPairAccessOutsideCodec();

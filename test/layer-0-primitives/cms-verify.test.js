@@ -1524,6 +1524,23 @@ async function testWeakDigestPolicy() {
   var mutated = await pending;
   check("mutating the policy after the call starts does not widen the verdict",
     mutated.valid === false && mutated.signers[0].code === "cms/weak-digest");
+  // Copying the trust material reads each anchor, and an anchor's own field may be an accessor, so
+  // that read is caller code running inside this call. The policy is taken before it, and the one
+  // the accessor writes is not the one the verdict is built from.
+  var policyTuple = pki.path.anchorFromCert(makeSigner("ec-p256").cert);
+  var anchorPolicyReads = 0;
+  var sha1Anchor = { name: policyTuple.name, algorithm: policyTuple.algorithm };
+  var anchorPolicyOpts = { allowWeakDigests: false };
+  Object.defineProperty(sha1Anchor, "publicKey", {
+    enumerable: true, configurable: true,
+    get: function () { anchorPolicyReads += 1; anchorPolicyOpts.allowWeakDigests = true; return policyTuple.publicKey; },
+  });
+  anchorPolicyOpts.trustAnchors = [sha1Anchor];
+  var anchorPolicyRes = await pki.cms.verify(SHA1_CMS, anchorPolicyOpts);
+  check("an anchor accessor cannot widen the digest policy mid-call (" +
+    anchorPolicyRes.signers[0].code + ")",
+    anchorPolicyReads > 0 && anchorPolicyRes.valid === false &&
+    anchorPolicyRes.signers[0].code === "cms/weak-digest");
 
   // The weak set is keyed on the OID, not the registry NAME. MD5 and MD2 are deliberately
   // unregistered, so their name is undefined and a name-keyed set matched SHA-1 while

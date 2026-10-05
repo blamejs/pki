@@ -186,6 +186,33 @@ security-only patches after the next major releases.
   stopped refusing anything. `pki.pkcs12.open` and `pki.pkcs12.verifyMac` read
   the option once and every use reads that one value. The same read-once shape is
   applied to the PBES2 and CMP iteration caps.
+- **A check turned off by the value that asked for it (CWE-20).** An option whose
+  `true` value turns a validation requirement on was compared against `true`, so a
+  value outside the documented domain selected the off branch and the call ran with
+  the requirement disabled. A `"true"` read out of a config file is such a value, and
+  a boundary testing truthiness instead has the mirror fault, turning a requirement
+  on for `"false"` and `0`. `requireAlgorithmProtection` on `pki.cms.verify` and
+  `pki.cms.decrypt`, `requireRevocation` and the RFC 5280 sec. 6.1.1 policy inputs
+  `initialExplicitPolicy`, `initialAnyPolicyInhibit` and `initialPolicyMappingInhibit`
+  on `pki.path.validate`, `requireJsonContentType` on `pki.ct.fetchLogList`, and
+  `expectSCEPStandard` and `requireStrongProfile` on `pki.scep.getCACaps` take `true`,
+  `false`, `null` or an absent option, and refuse anything else with the module's
+  `bad-input` code before the check they govern runs and before any request goes out.
+  A trust anchor's own copies of those three policy flags were already typed where
+  they are copied, and a caller's values are compared against them. `pki.path.build`
+  types the four it forwards at its own door, because a build reaches an AIA fetch
+  before it reaches `pki.path.validate` and a build that assembles no path never
+  calls it, so the request went out while the malformed switch rode along unread. On
+  both verbs the value that passed the door is the value the check uses: normalizing
+  a trust anchor reads its name, key and algorithm, and those reads run caller code
+  when the anchor carries accessors, so an options object the caller still holds
+  could answer the typing and the use differently and the policy state was built from
+  the second answer. `pki.path.build` also refuses a requirement asked for together
+  with `validate: false`, which returns the ordered path without applying any of them.
+  `pki.cms.decrypt` refuses `requireAlgorithmProtection` on a content type that
+  cannot carry the attribute at all: RFC 8933 sec. 6 gives it a place in an
+  `AuthenticatedData` alone, and the plaintext of an `EnvelopedData` came back
+  before with the requirement neither applied nor reported.
 - **A verdict describing a check that ran on a different value (CWE-367).** A
   verify verb reads one option to decide whether a rule applies and reads it again
   for the value the rule uses, so an option supplied through an accessor can

@@ -304,11 +304,16 @@ async function run() {
   var mont2031 = await montgomeryCert(FROM_2031), mont2036 = await montgomeryCert(FROM_2036);
   var LEADING = [0x02, 0x03, 0x04, 0x41];
   var spliced2031 = LEADING.map(function (byte) { return withFirstKeyByte(mont2031, byte); });
+  // The splice has to be load-bearing, so the control asserts the bytes really changed. It counts
+  // how many of the four differ rather than naming one: the generated key opens with one of these
+  // four bytes about once in 64, and setting the byte it already carries changes nothing, so
+  // asserting a named byte differs fails on those draws. At most one of the four can match the
+  // byte the key already has.
   check("N12h. CONTROL: each spliced certificate still parses and carries the same key algorithm",
     spliced2031.every(function (der) {
       return !has(lint(der), "lint/unparseable") &&
         pki.schema.x509.parse(der).subjectPublicKeyInfo.algorithm.name === "X25519";
-    }) && !withFirstKeyByte(mont2031, 0x03).equals(mont2031));
+    }) && spliced2031.filter(function (der) { return !der.equals(mont2031); }).length >= LEADING.length - 1);
   check("N12i. an X25519 key answers the same at 2031 whatever its leading byte",
     !has(lint(mont2031), DEPRECATED) &&
     spliced2031.every(function (der) { return !has(lint(der), DEPRECATED); }));
