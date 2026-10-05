@@ -3668,7 +3668,7 @@ function testGuardReadsRuntimeLive() {
   // scan below therefore never saw 8 of acme.js's parses or 3 of est.js's. Deciding which backtick
   // opens a template by indexing that output was wrong for the same reason, the two strings not sharing
   // an index at all. A gate that reports a count has to scan the file, not a shortened copy of it.
-  function _blankNonCode(raw, keepSubstitutions) {
+  function _blankNonCode(raw) {
     var out = raw.split("");
     var i = 0, n = raw.length, state = "code", tl = [];
     function blank(ix) { if (ix < n && raw[ix] !== "\n") out[ix] = " "; }
@@ -3701,18 +3701,7 @@ function testGuardReadsRuntimeLive() {
       // Inside a template: the static text is blanked, each substitution's code kept or blanked.
       if (c === "\\") { blank(i); blank(i + 1); i += 2; continue; }
       if (c === "`") { blank(i); state = "code"; i += 1; continue; }
-      if (c === "$" && c2 === "{") {
-        blank(i); blank(i + 1);
-        if (keepSubstitutions) { tl.push(0); state = "code"; i += 2; continue; }
-        var depth = 1;
-        i += 2;
-        while (i < n && depth > 0) {
-          if (raw[i] === "{") depth += 1;
-          else if (raw[i] === "}") depth -= 1;
-          blank(i); i += 1;
-        }
-        continue;
-      }
+      if (c === "$" && c2 === "{") { blank(i); blank(i + 1); tl.push(0); state = "code"; i += 2; continue; }
       blank(i); i += 1; continue;
     }
     return out.join("");
@@ -3723,7 +3712,7 @@ function testGuardReadsRuntimeLive() {
     var raw = fs.readFileSync(f, "utf8");
     var rawLines = raw.split("\n");
     // Comments and quoted text blanked, but every template substitution's code kept.
-    var src = _blankNonCode(raw, true);
+    var src = _blankNonCode(raw);
     var lineOf = function (ix) { return src.slice(0, ix).split("\n").length; };
     var m;
     _GLOBAL_INDEX_RE.lastIndex = 0;

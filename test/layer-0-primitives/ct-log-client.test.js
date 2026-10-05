@@ -1253,6 +1253,33 @@ async function runShared() {
   } finally { delete Object.prototype.useSystemStore; }
   check("X31: a useSystemStore installed on Object.prototype cannot answer for a setting the caller " +
     "never gave (" + pollutedOutcome + ")", pollutedOutcome === "ct/no-trust-anchors");
+
+  /* The option list is the union across the messages, so one bag drives several of them and an option
+     a message does not read is ignored by it. Settling the pinned key at every door would make a
+     message that never verifies a signature refuse a bag because of a field it does not consume. The
+     control is the message that DOES consume it, which must still refuse the same bag. */
+  var sharedBagSeen = [];
+  function countCalls(sink) {
+    return function () { sink.push(1); return resp(500, "{}", "application/json"); };
+  }
+  var ignoredOutcome = await code(function () {
+    return pki.ct.getRoots({ url: BASE, transport: countCalls(sharedBagSeen), logKey: 123 });
+  });
+  check("X32: a message that does not read the pinned key ignores it rather than refusing the bag (" +
+    ignoredOutcome + ", " + sharedBagSeen.length + " request(s))",
+  ignoredOutcome === "ct/http-error" && sharedBagSeen.length === 1);
+
+  var consumedOutcome = await code(function () {
+    return pki.ct.getSth({ url: BASE, transport: countCalls([]), logKey: 123 });
+  });
+  check("X32 CONTROL: the message that does read it still refuses the same bag (" + consumedOutcome +
+    ")", consumedOutcome === "ct/bad-input");
+
+  var chainOutcome = await code(function () {
+    return pki.ct.addChain({ url: BASE, transport: countCalls([]), chain: [Buffer.alloc(4)], logKey: 123 });
+  });
+  check("X32 CONTROL: and so does a chain submission (" + chainOutcome + ")",
+    chainOutcome === "ct/bad-input");
 }
 
 // Every refusal the shared readers make, and the RSA log-key arm. A guard that
