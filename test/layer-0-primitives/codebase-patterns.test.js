@@ -3589,35 +3589,50 @@ function testGuardReadsRuntimeLive() {
   // itself, `globalThis["Promise"]`, whose name the stripper removes; the behavioral vector in
   // `captured-operations.test.js` is what answers for that, by substituting the global and asserting
   // the shipped verbs never reach it.
-  var _PROMISE_MEMBER = "(?:\\.\\s*([A-Za-z$][\\w$]*)|\\s*\\[[^\\]]*\\])?\\s*";
-  var _PROMISE_CALL_RE = new RegExp(
-    "(?:^|[^\\w.$])(new\\s+)?" + _PROMISE_QUAL + "Promise" + _PROMISE_MEMBER + "\\(", "g");
-  // The load-time binding of the global itself, which is not a call and so is invisible above. One
+  // Reading the member is the defect, so nothing here requires a call to follow it. Requiring one
+  // missed every indirect invocation: `Promise.all.call(Promise, jobs)` and
+  // `Reflect.apply(Promise.all, Promise, [jobs])` both fetch the replaceable operation and hand it the
+  // replaceable receiver, and neither puts a parenthesis after the member. A member read that is
+  // merely stored is the same exposure one step earlier.
+  var _PROMISE_MEMBER = "(?:\\.\\s*([A-Za-z$][\\w$]*)|\\s*\\[[^\\]]*\\])";
+  var _PROMISE_READ_RE = new RegExp(
+    "(?:^|[^\\w.$])" + _PROMISE_QUAL + "Promise" + _PROMISE_MEMBER, "g");
+  // The constructor, which takes no member.
+  var _PROMISE_NEW_RE = new RegExp(
+    "(?:^|[^\\w.$])new\\s+" + _PROMISE_QUAL + "Promise\\s*\\(", "g");
+  // The load-time binding of the bare global, which names no member and so is invisible above. One
   // capture point is the rule: a module taking its own leaves two places for the capture to be wrong.
   var _PROMISE_BIND_RE = new RegExp(
-    "=\\s*" + _PROMISE_QUAL + "Promise" + _PROMISE_MEMBER + "[;,]", "g");
+    "=\\s*" + _PROMISE_QUAL + "Promise\\s*[;,)]", "g");
   _libFiles().forEach(function (f) {
     var rel = _relPath(f);
     if (/[\\/]guard-intrinsic\.js$/.test(rel)) return;
     var src = _stripCommentsAndLiterals(fs.readFileSync(f, "utf8"));
     var lineOf = function (ix) { return src.slice(0, ix).split("\n").length; };
     var m;
-    _PROMISE_CALL_RE.lastIndex = 0;
-    while ((m = _PROMISE_CALL_RE.exec(src)) !== null) {
+    _PROMISE_READ_RE.lastIndex = 0;
+    while ((m = _PROMISE_READ_RE.exec(src)) !== null) {
       promiseLive.push({ file: rel, line: lineOf(m.index),
-        content: (m[1] ? "constructs with the live global `Promise`"
-          : m[2] ? "reads `Promise." + m[2] + "` from the runtime at call time"
-            : "reads a computed member of the live global `Promise` at call time") +
-          ": take the constructor and the operation from guard-intrinsic at module load, since a " +
-          "replacement builds through whatever the binding holds and the executor or the components " +
-          "this code passed may never run" });
+        content: (m[1] ? "reads `Promise." + m[1] + "`" : "reads a computed member of `Promise`") +
+          " off the live global binding: take the operation from guard-intrinsic at module load, " +
+          "since a replacement builds through whatever the binding holds and decides the verdict " +
+          "this code goes on to report. A call is not required for this to bite: fetching the " +
+          "operation and invoking it through `.call`, `.apply` or `Reflect.apply` reads the same " +
+          "replaceable property" });
+    }
+    _PROMISE_NEW_RE.lastIndex = 0;
+    while ((m = _PROMISE_NEW_RE.exec(src)) !== null) {
+      promiseLive.push({ file: rel, line: lineOf(m.index),
+        content: "constructs with the live global `Promise`: use the constructor captured at module " +
+          "load, since a replacement settles the promise itself and the executor this code passed " +
+          "may never run" });
     }
     _PROMISE_BIND_RE.lastIndex = 0;
     while ((m = _PROMISE_BIND_RE.exec(src)) !== null) {
       promiseLive.push({ file: rel, line: lineOf(m.index),
-        content: "binds the live global `Promise" + (m[1] ? "." + m[1] : "") + "` at module load: " +
-          "take it from guard-intrinsic, which is where the captures are made, so one module cannot " +
-          "hold a capture the rest of the toolkit does not share" });
+        content: "binds the live global `Promise` at module load: take it from guard-intrinsic, " +
+          "which is where the captures are made, so one module cannot hold a capture the rest of " +
+          "the toolkit does not share" });
     }
   });
   _report("no module in lib/ builds a promise from the live global Promise binding", promiseLive);

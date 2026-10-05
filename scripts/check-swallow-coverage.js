@@ -83,7 +83,19 @@ function findSwallows(rel, src) {
   // form carries: it counts only where THIS file binds it from `promiseReject`, so a local that
   // resolves or absorbs the error buys no exemption, and rebinding it makes the match stop rather than
   // widen.
-  var capturedReject = (/\b(_[A-Za-z$][\w$]*)\s*=\s*[A-Za-z$][\w$]*\.uncurry\(\s*[A-Za-z$][\w$]*\.promiseReject\s*\)/.exec(stripped) || [])[1] || null;
+  // The module handle may itself be `_`-prefixed (`_intrinsic`, `_ocspIntrinsic`), so the alias
+  // pattern allows one; requiring a bare identifier there silently withheld the exemption from the
+  // modules that spell it that way.
+  var capturedReject = (/\b(_[A-Za-z$][\w$]*)\s*=\s*[A-Za-z_$][\w$]*\.uncurry\(\s*[A-Za-z_$][\w$]*\.promiseReject\s*\)/.exec(stripped) || [])[1] || null;
+  // The capture must be the ONLY thing that ever binds that name. A matching assignment somewhere in
+  // the file is not enough on its own: reassigning the name later, or shadowing it with a function
+  // that resolves or absorbs the error, would leave every catch returning it still counted as
+  // propagation. So the name is evidence only where it is bound exactly once, and any second binding
+  // withdraws the exemption rather than widening it.
+  if (capturedReject) {
+    var bindRe = new RegExp("\\b" + capturedReject + "\\s*=(?!=)|function\\s+" + capturedReject + "\\b", "g");
+    if ((stripped.match(bindRe) || []).length !== 1) capturedReject = null;
+  }
   var REJECT_FORM = "Promise\\.reject\\b" + (capturedReject ? "|" + capturedReject + "\\s*\\(" : "");
   var rejWraps = new RegExp(
     "function\\s+_rej\\s*\\(\\s*([A-Za-z_$][\\w$]*)\\s*\\)\\s*\\{\\s*return\\s+(?:Promise\\.reject\\(\\s*\\1\\s*\\)" +
