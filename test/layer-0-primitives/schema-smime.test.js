@@ -213,9 +213,79 @@ function testNotAFormat() {
   check("40. schema.parse does not auto-route an ESS attribute value", routed !== "NO-THROW");
 }
 
+// ---- BUILD: SigningCertificateV2 -------------------------------------
+// The attribute value a signer attaches, encoded by the module that owns the ESS domain. The
+// binding digest decides the bytes, so each arm asserts the encoding and not only that it parses.
+function testBuildSigningCertificateV2() {
+  var crypto = require("node:crypto");
+  var certA = Buffer.alloc(40, 0x11);
+  var certB = Buffer.alloc(40, 0x22);
+
+  var av = smime.buildSigningCertificateV2(certA);
+  var got = smime.parseSigningCertificateV2(av);
+  check("41. the SHA-256 form omits the DEFAULT hashAlgorithm field (X.690 sec. 11.5)",
+    got.certs[0].hashAlgorithm.name === "sha256" && got.certs[0].hashAlgorithm.defaulted === true);
+  check("42. certHash is the digest of the certificate DER",
+    got.certs[0].certHash.equals(crypto.createHash("sha256").update(certA).digest()));
+  check("43. the OPTIONAL issuerSerial and policies are omitted (ETSI EN 319 122-1 clause 6.3 " +
+    "requirement g)", got.certs[0].issuerSerial === null && got.policies === null);
+  var essNode = pki.asn1.decode(av).children[0].children[0];
+  check("44. the SHA-256 ESSCertIDv2 is certHash alone", essNode.children.length === 1);
+
+  var av384 = smime.buildSigningCertificateV2([certA], { hashAlgorithm: "sha384" });
+  var got384 = smime.parseSigningCertificateV2(av384);
+  check("45. a non-default digest is emitted with the parameters field ABSENT (RFC 5754 sec. 2, " +
+    "\"implementations MUST generate SHA2 AlgorithmIdentifiers with absent parameters\"); a NULL " +
+    "parameters field reads back as two bytes rather than null",
+  got384.certs[0].hashAlgorithm.name === "sha384" && got384.certs[0].hashAlgorithm.parameters === null &&
+    pki.asn1.decode(av384).children[0].children[0].children[0].children.length === 1);
+  check("46. the certHash follows the named digest",
+    got384.certs[0].certHash.equals(crypto.createHash("sha384").update(certA).digest()));
+  check("47. sha512 is admitted too",
+    smime.parseSigningCertificateV2(smime.buildSigningCertificateV2(certA, { hashAlgorithm: "sha512" }))
+      .certs[0].hashAlgorithm.name === "sha512");
+
+  var two = smime.parseSigningCertificateV2(smime.buildSigningCertificateV2([certA, certB]));
+  check("48. a list becomes one ESSCertIDv2 per certificate, in the order given (RFC 5035 sec. 5.4)",
+    two.certs.length === 2 &&
+    two.certs[0].certHash.equals(crypto.createHash("sha256").update(certA).digest()) &&
+    two.certs[1].certHash.equals(crypto.createHash("sha256").update(certB).digest()));
+
+  check("49. the value is what decodeAttribute dispatches as signingCertificateV2",
+    smime.decodeAttribute({ type: O("signingCertificateV2"), values: [av] }).kind === "signingCertificateV2");
+
+  check("50. SHA-1 is refused: the verifier reads a SHA-1 binding as a weak one",
+    code(function () { smime.buildSigningCertificateV2(certA, { hashAlgorithm: "sha1" }); }) === "smime/unsupported-algorithm");
+  check("51. an unregistered digest name is refused",
+    code(function () { smime.buildSigningCertificateV2(certA, { hashAlgorithm: "whirlpool" }); }) === "smime/unsupported-algorithm");
+  check("52. a digest name read off the prototype is not admitted",
+    code(function () { smime.buildSigningCertificateV2(certA, { hashAlgorithm: "constructor" }); }) === "smime/unsupported-algorithm");
+  check("53. an empty list is refused: a binding with no entries binds nothing",
+    code(function () { smime.buildSigningCertificateV2([]); }) === "smime/bad-input");
+  check("54. an entry that is not a byte source is refused",
+    code(function () { smime.buildSigningCertificateV2([{ der: certA }]); }) === "smime/bad-input");
+  check("55. an unknown option is refused rather than ignored",
+    code(function () { smime.buildSigningCertificateV2(certA, { hashAlgorithmName: "sha384" }); }) === "smime/bad-input");
+
+  // An accessor-backed entry is read ONCE, so the hash covers the value that was read. Measured
+  // both ways: the loop indexes each entry a single time, so this holds with or without the
+  // snapshot the entry list is taken through, and the vector pins the property rather than the
+  // mechanism.
+  var live = [];
+  var reads = 0;
+  Object.defineProperty(live, "0", { configurable: true, enumerable: true,
+    get: function () { reads++; return reads === 1 ? certA : certB; } });
+  live.length = 1;
+  var avLive = smime.buildSigningCertificateV2(live);
+  check("56. an accessor-backed entry is read once and the hash covers what it answered",
+    reads === 1 && smime.parseSigningCertificateV2(avLive).certs[0].certHash
+      .equals(crypto.createHash("sha256").update(certA).digest()));
+}
+
 function run() {
   testSigningCertificate();
   testSigningCertificateV2();
+  testBuildSigningCertificateV2();
   testSmimeCapabilities();
   testDecodeAttribute();
   testReject();

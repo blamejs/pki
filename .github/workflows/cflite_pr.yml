@@ -116,6 +116,7 @@ jobs:
           - crmf-verify
           - attrcert-verify
           - cms-sign
+          - cades-timestamp
           - tsp-sign
           - x509-sign
           - csr-sign

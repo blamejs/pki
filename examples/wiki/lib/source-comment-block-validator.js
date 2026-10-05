@@ -128,6 +128,11 @@ var SPEC_PATTERNS = [
   // corrigenda after it, so a clause reference without an edition names a moving target. _specUrl maps
   // the recommendation to its ITU-T page so the recognized set and the linkable set stay identical.
   new RegExp("^ITU-T X\\.\\d+(?:-\\d+)?(?: \\(\\d{4}\\))?" + _SPEC_OPT + "$"),
+  // An ETSI deliverable, cited with its number and part: EN 319 122-1 is the CAdES signature
+  // format. ETSI publishes every deliverable under a derivable path on its own server, so _specUrl
+  // maps the number and part to that directory and the recognized set stays identical to the
+  // linkable set.
+  new RegExp("^ETSI (?:EN|TS|TR) \\d{3} \\d{3}(?:-\\d+)?" + _SPEC_OPT + "$"),
   new RegExp("^(?:SemVer|semver\\.org)\\b.*$"),
   new RegExp("^internal(?:\\s+\\([^)]*\\))?$"),
 ];

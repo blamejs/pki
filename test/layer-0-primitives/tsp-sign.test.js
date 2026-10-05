@@ -231,6 +231,15 @@ async function testAlgorithms() {
     check("TSA key " + alg + " -> verifies", (await pki.cms.verify(t2)).valid === true);
   }
   // a non-sha256 ESSCertIDv2 hash algorithm (carries an explicit hashAlgorithm).
+  // RFC 5754 sec. 2: "Implementations MUST generate SHA2 AlgorithmIdentifiers with absent
+  // parameters". The imprint identifier is checked on the wire, not through the parser, because the
+  // parser reads both forms and would not tell them apart.
+  var tokAbsent = await pki.tsp.sign(imprint("sha384"), makeTsa("ec-p256"), { policy: "1.2.3", serialNumber: 9 });
+  check("the messageImprint algorithm identifier is emitted with no parameters field",
+    pki.schema.tsp.parseToken(tokAbsent).tstInfo.messageImprint.hashAlgorithm.parameters === null);
+  check("...and so is a request's",
+    pki.schema.tsp.parseRequest(pki.tsp.request(imprint("sha256"), {})).messageImprint.hashAlgorithm.parameters === null);
+
   var t3 = await pki.tsp.sign(imprint("sha256"), makeTsa("ec-p256"), { policy: "1.2.3", serialNumber: 3, certHashAlgorithm: "sha512" });
   check("certHashAlgorithm sha512 -> verifies", (await pki.cms.verify(t3)).valid === true);
 }

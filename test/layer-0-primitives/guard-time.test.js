@@ -185,6 +185,25 @@ function run() {
   check("49. the widest ceiling a DER time can ask for is a real instant",
         plus("9999-12-31T23:59:59.999Z", 135) === "+010011-03-31T23:59:59.999Z");
 
+  // ceilInstantOf -- the instant a GeneralizedTime names, where its fraction is finer than a Date
+  // holds. The first three fraction digits ARE the milliseconds, so only a nonzero digit after them
+  // puts the real instant past the Date, and an upper bound compares against that.
+  var fracBase = new Date("2027-06-01T00:00:00.000Z");
+  var fracAt = guard.instantOf(fracBase);
+  check("50. no fraction leaves the instant alone",
+        guard.ceilInstantOf(fracBase, null) === fracAt &&
+        guard.ceilInstantOf(fracBase, undefined) === fracAt);
+  check("51. a fraction of three digits or fewer is already in the Date",
+        guard.ceilInstantOf(fracBase, "999") === fracAt && guard.ceilInstantOf(fracBase, "5") === fracAt);
+  check("52. a nonzero digit past the third rounds up by one millisecond",
+        guard.ceilInstantOf(fracBase, "000001") === fracAt + 1 &&
+        guard.ceilInstantOf(fracBase, "9990000000001") === fracAt + 1);
+  check("53. trailing zeros past the third digit do not round up",
+        guard.ceilInstantOf(fracBase, "123000") === fracAt &&
+        guard.ceilInstantOf(fracBase, "000000000") === fracAt);
+  check("54. a non-string fraction is read as no fraction rather than coerced",
+        guard.ceilInstantOf(fracBase, 1) === fracAt && guard.ceilInstantOf(fracBase, ["000001"]) === fracAt);
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
