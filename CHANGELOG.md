@@ -18,6 +18,7 @@ Stamp a signature with a time-stamping authority's token, verify the stamp besid
 
 ### Changed
 
+- `pki.cms.verify` selects the signer certificate an ESS signing-certificate attribute names where several certificates match the SignerInfo's identifier. A `subjectKeyIdentifier` names a key, so two certificates holding that key verify the same signature equally and the certificate reported was whichever matched first, taking with it every decision keyed to it: the validity window, the key usage, and the chain built from it. RFC 5035 clause 5.4 makes the attribute's first identifier the certificate used to verify the signature, which is this question; a named candidate must still verify the signature like any other, and a signature carrying no such attribute resolves as before.
 - `pki.cms.attachTimestamp` refuses a token whose message imprint is a weak digest, and `allowWeakDigests: true` admits it. The verifier refuses such a token by default, so the attach verb holds the same posture rather than writing an attribute whose row would then be refused. An archived token needs the option at both ends.
 - A time-stamp token whose `hashedMessage` is not the output length of the digest it names is refused as `tsp/imprint-length` rather than `tsp/imprint-mismatch`. The two are different faults: the first says the token is malformed, the second that it is well formed and stamps other bytes. A caller matching on the old code for a length fault reads the new one.
 

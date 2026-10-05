@@ -636,6 +636,35 @@ async function run() {
       return f.code === "cms/cades-signing-certificate-form";
     }));
 
+  // CT-59: a subjectKeyIdentifier names a KEY, so two certificates holding one key both verify the
+  // same signature and the attribute is what says which of them made it (RFC 5035 clause 5.4). The
+  // certificate reported is the one the attribute names, not whichever candidate came first.
+  var sharedKp = await pki.key.generate({ name: "ECDSA", namedCurve: "P-256" });
+  var sharedSpki = await pki.key.export(sharedKp.publicKey);
+  var sharedKey = await pki.key.export(sharedKp.privateKey);
+  async function siblingCert(cn) {
+    return await pki.x509.sign({ subject: cn, subjectPublicKey: sharedSpki, notBefore: NB, notAfter: NA,
+      extensions: { keyUsage: ["digitalSignature"], subjectKeyIdentifier: true } }, { key: sharedKey });
+  }
+  var siblingA = await siblingCert("Same Key A");
+  var boundB = await siblingCert("Same Key B");
+  var essForB = pki.schema.smime.buildSigningCertificateV2(boundB);
+  var skiSigned = await pki.cms.sign(CONTENT, { cert: boundB, key: sharedKey },
+    { sid: "ski", certificates: false, additionalSignedAttributes: [{ type: "signingCertificateV2", values: [essForB] }] });
+  var vShared = await pki.cms.verify(skiSigned, { certs: [siblingA, boundB], content: CONTENT });
+  check("CT-59 PREMISE both certificates hold one key and one subjectKeyIdentifier, so either " +
+    "verifies the signature",
+  !siblingA.equals(boundB) &&
+    pki.schema.x509.parse(siblingA).subjectPublicKeyInfo.bytes
+      .equals(pki.schema.x509.parse(boundB).subjectPublicKeyInfo.bytes));
+  check("CT-59 the signer resolves to the certificate the attribute names",
+    vShared.signers[0].ok === true && vShared.signers[0].cert.equals(boundB) &&
+    vShared.signers[0].cadesBaseline.conformant === true);
+  var vSharedReversed = await pki.cms.verify(skiSigned, { certs: [boundB, siblingA], content: CONTENT });
+  check("CT-59 and the order the candidates were supplied in does not change that",
+    vSharedReversed.signers[0].cert.equals(boundB) &&
+    vSharedReversed.signers[0].cadesBaseline.conformant === true);
+
   // CT-50: the imprint verb will not produce a request for a token its own attach verb refuses by
   // default. There is no archived case on the producing side: the token does not exist yet.
   check("CT-50 a weak digest is refused by the imprint verb",
