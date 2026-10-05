@@ -4,7 +4,7 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.8.47 — 2026-10-04
+## v0.8.47 — 2026-10-05
 
 Run every signature check through the operation the package captured at load, return the plaintext the recipient's own key unwraps, sign the content a caller passed rather than one substituted after it, and bound the work a TUF document can ask for before anything has authenticated it.
 
