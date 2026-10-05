@@ -3353,7 +3353,15 @@ function testGuardReadsRuntimeLive() {
     "Array\\.isArray", "ArrayBuffer\\.isView", "Reflect\\.(?:ownKeys|apply)",
     "Buffer\\.(?:from|alloc|isBuffer|byteLength|concat|compare)",
     "Number\\.(?:isInteger|isSafeInteger|isNaN)", "String\\.fromCharCode",
-    "JSON\\.stringify", "Math\\.(?:floor|ceil|min|max)", "Promise\\.(?:resolve|reject)",
+    "JSON\\.stringify", "Math\\.(?:floor|ceil|min|max)",
+    // Any member of the live `Promise`, named or not. This entry read `Promise\.(?:resolve|reject)`,
+    // so the budget counted neither the aggregators nor the factory methods: `all` is what assembles a
+    // verdict out of component results, and a replacement resolving a fabricated array never runs the
+    // components and its values become the verdict. That reached `pki.crmf.verifyPop`, which reported
+    // an unverified proof of possession as verified, and the composite arm, which reported `ok` for a
+    // signature whose halves were never checked. A list of names was wrong twice, so this matches the
+    // member rather than naming it.
+    "Promise\\.[A-Za-z$][\\w$]*",
   ];
   // `equals` and `compare` are Buffer.prototype's identity verbs, `toString` and `subarray` its
   // byte-to-text and byte-slice steps. Each decides something on its own: one `equals` answering
@@ -3546,6 +3554,146 @@ function testGuardReadsRuntimeLive() {
   });
   bad = _filterMarkers(bad, "guard-reads-runtime-live");
 
+  // The promise statics are held to ZERO across lib/, ahead of and outside the budget below. Two
+  // separate things hid the verdict aggregators while this gate passed. `all` was not on the list
+  // above at all, so nothing counted it. And the budget counts a module's live reads as one total, so
+  // a change that converts one read and introduces a promise read leaves the figure untouched and the
+  // budget cannot tell the two apart. `resolve`, `reject` and the aggregators all build their promise
+  // from the receiver they are called on, and a promise that carries a refusal or assembles a verdict
+  // out of component results decides that verdict, so there is no module where reading the global
+  // binding at the call is the right thing. Holding the class to zero here means a new one fails
+  // whatever the budget arithmetic says.
+  // Scanned over EVERY file in lib/, independently of the capture-opt-in walk above. Deriving this
+  // from `bad` asked the question only of the modules that already take the captures, so a module that
+  // has not enrolled yet could introduce the same fabricated aggregate or swallowed refusal and pass a
+  // gate advertising zero across lib/. The three spellings are covered together because they are one
+  // defect: the aggregator that assembles a verdict out of component results, the refusal returned as
+  // a rejected promise, and the constructor the whole thing is built with, where a replacement need
+  // not run the executor at all and can settle with a value of its own. The scan runs over the whole
+  // stripped source rather than line by line, since `new` and the name it constructs can sit on
+  // different lines, and it accepts the qualified spellings: a replacement reached through
+  // `globalThis.Promise` is the same replacement.
+  var promiseLive = [];
+  var _PROMISE_QUAL = "(?:(?:globalThis|global)\\s*\\??\\.\\s*)?";
+  // Deliberately NOT a list of method names. Naming them has been wrong twice in one release: the
+  // walk above listed `resolve|reject` and so counted none of the aggregators, and the first version
+  // of this scan listed those six and missed `Promise.try` and `Promise.withResolvers`, both present
+  // on the supported runtime and both building through the receiver exactly as `resolve` does. The
+  // defect is a member call on the live binding, whichever member it is, so the pattern asks for a
+  // member instead of enumerating them and a static the language adds later is caught here without
+  // anyone editing this file.
+  // Either member syntax. Dot access was the only form matched, and `Promise["all"](...)` reaches the
+  // same property through the same binding, so the computed form is matched by its SHAPE: the literal
+  // stripper blanks what is inside the brackets but leaves the brackets, so there is no name to read
+  // there and none is needed.
+  //
+  // `globalThis["Promise"]["all"](jobs)` hides the token from every pattern here for the same reason,
+  // so it is closed from the other end instead: lib/ does not index the global object AT ALL, and any
+  // computed access to it is reported whatever name it would have resolved. That is checkable because
+  // the rule holds today with one declared exception, the module-init TypedArray enumeration in
+  // guard-bytes, which already carries the `allow:guard-reads-runtime-live` marker this honors. A rule
+  // nothing may do is worth more than a pattern listing what it may not spell.
+  // Reading the member is the defect, so nothing here requires a call to follow it. Requiring one
+  // missed every indirect invocation: `Promise.all.call(Promise, jobs)` and
+  // `Reflect.apply(Promise.all, Promise, [jobs])` both fetch the replaceable operation and hand it the
+  // replaceable receiver, and neither puts a parenthesis after the member. A member read that is
+  // merely stored is the same exposure one step earlier.
+  // Optional chaining is part of the member syntax: `Promise?.all(...)` reaches the same property
+  // through the same binding, and the `?` before the dot is enough to miss it otherwise.
+  var _PROMISE_MEMBER = "(?:\\??\\.\\s*([A-Za-z$][\\w$]*)|\\s*\\??\\.?\\s*\\[[^\\]]*\\])";
+  // A parenthesized base reaches the same property: `(Promise).all(jobs)` and
+  // `(globalThis.Promise).all(jobs)` put closing parens between the name and the member, and the
+  // opening ones are already allowed by the leading boundary.
+  var _PROMISE_READ_RE = new RegExp(
+    "(?:^|[^\\w.$])" + _PROMISE_QUAL + "Promise\\s*\\)*" + _PROMISE_MEMBER, "g");
+  // The constructor, which takes no member.
+  var _PROMISE_NEW_RE = new RegExp(
+    "(?:^|[^\\w.$])new\\s+\\(*\\s*" + _PROMISE_QUAL + "Promise\\s*\\)*\\s*\\(", "g");
+  // The load-time binding of the bare global, which names no member and so is invisible above. One
+  // capture point is the rule: a module taking its own leaves two places for the capture to be wrong.
+  var _PROMISE_BIND_RE = new RegExp(
+    "=\\s*" + _PROMISE_QUAL + "Promise\\s*[;,)]", "g");
+  var _GLOBAL_INDEX_RE = new RegExp("(?:^|[^\\w.$])(globalThis|global)\\s*\\??\\.?\\s*\\[", "g");
+  // A template substitution is executable code that the literal stripper blanks along with the quoted
+  // text around it, so `` `${saved = Promise.all(jobs)}` `` would clear every scan below. This rebuilds
+  // a scannable source in which each template's STATIC text is blanked but the interior of every
+  // `${...}` is kept, with newlines preserved so a reported line number still points at the right line.
+  function _withTemplateSubstitutions(raw) {
+    var noComments = _stripCommentsAndLiterals(raw);
+    var out = raw.split("");
+    var i = 0, n = raw.length;
+    while (i < n) {
+      // Only consider a backtick the stripper also saw as code rather than inside a comment.
+      if (raw[i] === "`" && noComments[i] !== undefined) {
+        var j = i + 1, depth = 0, inSub = false;
+        for (; j < n; j++) {
+          if (!inSub && raw[j] === "\\") { j++; continue; }
+          if (!inSub && raw[j] === "$" && raw[j + 1] === "{") { inSub = true; depth = 1; out[j] = " "; out[j + 1] = " "; j++; continue; }
+          if (inSub) {
+            if (raw[j] === "{") depth++;
+            else if (raw[j] === "}") { depth--; if (depth === 0) { inSub = false; out[j] = " "; } }
+            continue;                                      // keep the substitution's code
+          }
+          if (raw[j] === "`") break;
+          if (raw[j] !== "\n") out[j] = " ";                // blank the static text
+        }
+        out[i] = " ";
+        if (j < n) out[j] = " ";
+        i = j + 1;
+        continue;
+      }
+      i++;
+    }
+    return out.join("");
+  }
+  _libFiles().forEach(function (f) {
+    var rel = _relPath(f);
+    if (/[\\/]guard-intrinsic\.js$/.test(rel)) return;
+    var raw = fs.readFileSync(f, "utf8");
+    var rawLines = raw.split("\n");
+    // Comments and quoted text blanked, but every template substitution's code kept.
+    var src = _stripCommentsAndLiterals(_withTemplateSubstitutions(raw));
+    var lineOf = function (ix) { return src.slice(0, ix).split("\n").length; };
+    var m;
+    _GLOBAL_INDEX_RE.lastIndex = 0;
+    while ((m = _GLOBAL_INDEX_RE.exec(src)) !== null) {
+      var gLine = lineOf(m.index);
+      // The same marker the walk above honors, on the line before, for a module-init enumeration.
+      if (/allow:guard-reads-runtime-live/.test(rawLines[gLine - 2] || "")) continue;
+      promiseLive.push({ file: rel, line: gLine,
+        content: "indexes the global object (`" + m[1] + "[...]`): nothing in lib/ reads a global by " +
+          "computed name, and one that does can resolve to `Promise` with the name hidden from every " +
+          "scan here, so the operation would come from the live binding with nothing to report it. " +
+          "Name the intrinsic and take it from guard-intrinsic, or mark a module-init enumeration " +
+          "with `allow:guard-reads-runtime-live` on the line above" });
+    }
+    _PROMISE_READ_RE.lastIndex = 0;
+    while ((m = _PROMISE_READ_RE.exec(src)) !== null) {
+      promiseLive.push({ file: rel, line: lineOf(m.index),
+        content: (m[1] ? "reads `Promise." + m[1] + "`" : "reads a computed member of `Promise`") +
+          " off the live global binding: take the operation from guard-intrinsic at module load, " +
+          "since a replacement builds through whatever the binding holds and decides the verdict " +
+          "this code goes on to report. A call is not required for this to bite: fetching the " +
+          "operation and invoking it through `.call`, `.apply` or `Reflect.apply` reads the same " +
+          "replaceable property" });
+    }
+    _PROMISE_NEW_RE.lastIndex = 0;
+    while ((m = _PROMISE_NEW_RE.exec(src)) !== null) {
+      promiseLive.push({ file: rel, line: lineOf(m.index),
+        content: "constructs with the live global `Promise`: use the constructor captured at module " +
+          "load, since a replacement settles the promise itself and the executor this code passed " +
+          "may never run" });
+    }
+    _PROMISE_BIND_RE.lastIndex = 0;
+    while ((m = _PROMISE_BIND_RE.exec(src)) !== null) {
+      promiseLive.push({ file: rel, line: lineOf(m.index),
+        content: "binds the live global `Promise` at module load: take it from guard-intrinsic, " +
+          "which is where the captures are made, so one module cannot hold a capture the rest of " +
+          "the toolkit does not share" });
+    }
+  });
+  _report("no module in lib/ builds a promise from the live global Promise binding", promiseLive);
+
   // MIGRATING, a per-module budget rather than a skip list. A module enters the scope above the
   // moment it takes the captures, which arms the whole file at once while its reads are converted a
   // module at a time. A budget is not an exemption: it names an exact number, so a NEW live read in
@@ -3557,36 +3705,46 @@ function testGuardReadsRuntimeLive() {
   // budget nobody tightens is a number that stops meaning anything, and the next reader would take
   // it for the real count. A module reaching zero is deleted from the map and held to zero forever.
   var MIGRATING = {
-    "lib/acme.js": 186,
-    "lib/est.js": 159,
-    "lib/cmp-build.js": 130,
-    "lib/crmf-sign.js": 35,
+    "lib/acme.js": 177,
+    "lib/est.js": 152,
+    "lib/cmp-build.js": 127,
+    "lib/crmf-sign.js": 31,
     "lib/path-validate.js": 86,
-    "lib/webauthn.js": 158,
+    "lib/webauthn.js": 138,
     "lib/asn1-der.js": 101,
     "lib/schema-engine.js": 39,
     "lib/trust.js": 100,
-    "lib/cms-sign.js": 56,
-    "lib/webauthn-mds.js": 88,
-    "lib/attrcert-sign.js": 69,
+    "lib/cms-sign.js": 54,
+    "lib/webauthn-mds.js": 87,
+    "lib/attrcert-sign.js": 67,
     "lib/tsp-sign.js": 42,
     "lib/http-digest.js": 73,
     "lib/pkcs12-build.js": 63,
-    "lib/ct.js": 70,
+    "lib/ct.js": 69,
     "lib/cms-verify.js": 14,
     "lib/cms-encrypt.js": 66,
-    "lib/crl-sign.js": 62,
+    "lib/crl-sign.js": 61,
     "lib/cmc-build.js": 57,
     "lib/pki-build.js": 33,
     "lib/hpke.js": 32,
     "lib/cms-decrypt.js": 45,
-    "lib/composite-sig.js": 36,
-    "lib/cmc-verify.js": 34,
-    "lib/x509-sign.js": 25,
+    "lib/composite-sig.js": 29,
+    "lib/cmc-verify.js": 32,
+    "lib/x509-sign.js": 24,
+    /** Entered scope when they took the captures for the promise-construction fix. A module is armed
+     *  whole the moment it requires guard-intrinsic, so these are the reads that were always there and
+     *  are now counted. Both ratchet DOWN only, like the rest. */
+    "lib/ocsp.js": 92,
+    "lib/csr-sign.js": 26,
     "lib/schema-attrcert.js": 26,
     "lib/tls-cert-compress.js": 18,
     "lib/schema-crl.js": 7,
     "lib/schema-ocsp.js": 9,
+    /** Entered scope when they took the captures so their promise statics could be converted. Arming a
+     *  module arms it whole, so these are the reads that were always there and are now counted. Both
+     *  ratchet DOWN only, like the rest. */
+    "lib/composite-kem.js": 45,
+    "lib/http-transport.js": 118,
   };
   var counts = {};
   bad.forEach(function (b) { counts[b.file] = (counts[b.file] || 0) + 1; });
