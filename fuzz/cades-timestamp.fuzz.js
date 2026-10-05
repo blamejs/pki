@@ -31,8 +31,7 @@ function ready() {
   if (_ready === null) {
     _ready = (async function () {
       var base = await pki.cms.sign(CONTENT, { cert: SIGNER.cert, key: SIGNER.key });
-      var imprint = await pki.cms.timestampImprint(base);
-      var token = await pki.tsp.sign({ hashAlgorithm: imprint.hashAlgorithm, hashedMessage: imprint.hashedMessage },
+      var token = await pki.tsp.sign((await pki.cms.timestampImprint(base)).imprint,
         TSA, { policy: "1.2.3.4.1", serialNumber: 3 });
       return { base: base, token: token, stamped: await pki.cms.attachTimestamp(base, token) };
     })();

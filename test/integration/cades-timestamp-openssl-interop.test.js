@@ -95,10 +95,9 @@ async function run() {
     var base = await pki.cms.sign(CONTENT, signer, { additionalSignedAttributes: [
       { type: "signingCertificateV2", values: [pki.schema.smime.buildSigningCertificateV2(signer.cert)] },
     ] });
-    var imprint = await pki.cms.timestampImprint(base);
-    var token = await pki.tsp.sign({ hashAlgorithm: imprint.hashAlgorithm, hashedMessage: imprint.hashedMessage },
-      tsa, { policy: "1.2.3.4.1", serialNumber: 11 });
-    var bT = await pki.cms.attachTimestamp(base, token);
+    var taken = await pki.cms.timestampImprint(base);
+    var token = await pki.tsp.sign(taken.imprint, tsa, { policy: "1.2.3.4.1", serialNumber: 11 });
+    var bT = await pki.cms.attachTimestamp(base, token, { signerIndex: taken.signerIndex });
 
     // ---- Gate A: openssl reads the attribute where CAdES puts it --------------------------------
     var bTPath = T(bT, "cades-bt.der");

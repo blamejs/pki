@@ -204,6 +204,39 @@ function run() {
   check("54. a non-string fraction is read as no fraction rather than coerced",
         guard.ceilInstantOf(fracBase, 1) === fracAt && guard.ceilInstantOf(fracBase, ["000001"]) === fracAt);
 
+  // latestInstantOf -- the ceiling plus the accuracy a timestamp states, which RFC 3161 clause
+  // 2.4.2 makes a window around genTime rather than a point. Each field is read, since a bound that
+  // drops one is not a bound; `seconds` arrives as a BigInt and the other two as numbers.
+  check("55. no accuracy leaves the ceiling where it was",
+        guard.latestInstantOf(fracBase, null, null) === fracAt &&
+        guard.latestInstantOf(fracBase, null, undefined) === fracAt &&
+        guard.latestInstantOf(fracBase, "000001", null) === fracAt + 1);
+  check("56. each accuracy field widens the bound, seconds as a BigInt",
+        guard.latestInstantOf(fracBase, null, { seconds: 2n }) === fracAt + 2000 &&
+        guard.latestInstantOf(fracBase, null, { seconds: 2 }) === fracAt + 2000 &&
+        guard.latestInstantOf(fracBase, null, { millis: 100 }) === fracAt + 100 &&
+        guard.latestInstantOf(fracBase, null, { seconds: 1n, millis: 250 }) === fracAt + 1250);
+  check("57. a micros remainder rounds the bound up, a bound being a bound only if unexceeded",
+        guard.latestInstantOf(fracBase, null, { micros: 1 }) === fracAt + 1 &&
+        guard.latestInstantOf(fracBase, null, { micros: 1000 }) === fracAt + 1 &&
+        guard.latestInstantOf(fracBase, null, { micros: 1001 }) === fracAt + 2);
+  check("58. the fraction and the accuracy are both counted",
+        guard.latestInstantOf(fracBase, "000001", { millis: 5 }) === fracAt + 6);
+  // The sub-millisecond parts are summed and rounded ONCE. Rounding each up on its own overstates
+  // the bound by a millisecond when both carry one, which refuses a token whose real window ends
+  // before the instant it is compared against.
+  check("59. a fraction and a microsecond accuracy that together stay inside one millisecond " +
+        "round up once",
+  guard.latestInstantOf(fracBase, "999001", { micros: 998 }) === fracAt + 1 &&
+        guard.latestInstantOf(fracBase, "999001", null) === fracAt + 1 &&
+        guard.latestInstantOf(fracBase, null, { micros: 998 }) === fracAt + 1);
+  check("60. and one that crosses it rounds up twice",
+        guard.latestInstantOf(fracBase, "999999", { micros: 2 }) === fracAt + 2);
+  check("61. the fourth to sixth fraction digits are microseconds, finer than that counts as one",
+        guard.latestInstantOf(fracBase, "000100", null) === fracAt + 1 &&
+        guard.latestInstantOf(fracBase, "0000001", null) === fracAt + 1 &&
+        guard.latestInstantOf(fracBase, "000000", null) === fracAt);
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

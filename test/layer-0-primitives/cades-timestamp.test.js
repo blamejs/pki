@@ -61,6 +61,13 @@ async function mintToken(tsa, imprintBytes, o) {
     b.integer(BigInt(o.serialNumber == null ? 7 : o.serialNumber)),
     b.generalizedTime(o.genTime || GENTIME)];
   if (o.genTimeRaw) fields[4] = o.genTimeRaw;
+  if (o.accuracy) {
+    var parts = [];
+    if (o.accuracy.seconds != null) parts.push(b.integer(BigInt(o.accuracy.seconds)));
+    if (o.accuracy.millis != null) parts.push(b.contextPrimitive(0, _derInt(o.accuracy.millis)));
+    if (o.accuracy.micros != null) parts.push(b.contextPrimitive(1, _derInt(o.accuracy.micros)));
+    fields.push(b.sequence(parts));
+  }
   if (o.extensions) fields.push(b.contextConstructed(1, Buffer.concat(o.extensions)));
   var attrs = [];
   if (o.ess !== null) {
@@ -71,6 +78,12 @@ async function mintToken(tsa, imprintBytes, o) {
   return await pki.cms.sign(b.sequence(fields), signers,
     { eContentType: o.eContentType === undefined ? "tSTInfo" : o.eContentType,
       detached: o.detached === true, additionalSignedAttributes: attrs });
+}
+
+// The content octets of a DER INTEGER, for the [0] / [1] IMPLICIT millis and micros of an Accuracy.
+function _derInt(n) {
+  var tlv = b.integer(BigInt(n));
+  return tlv.slice(2);
 }
 
 // The signature octets of one SignerInfo, read through the shipped parser rather than by hand.
@@ -86,13 +99,20 @@ async function run() {
 
   // ---- the imprint verb: what an operator sends a third-party TSA ----------------------------
   // CT-2: the imprint is the hash of the signature contents octets, computed here independently.
-  var imprint = await pki.cms.timestampImprint(base);
+  var taken = await pki.cms.timestampImprint(base);
+  var imprint = taken.imprint;
   var sigOctets = signatureOctetsOf(base);
   check("CT-2 the imprint names the digest asked for", imprint.hashAlgorithm === "sha256");
   check("CT-2 the imprint is the hash of SignerInfo.signature's contents octets",
     imprint.hashedMessage.equals(crypto.createHash("sha256").update(sigOctets).digest()));
-  check("CT-2 and it names the signer it was taken for", imprint.signerIndex === 0);
-  var imprint384 = await pki.cms.timestampImprint(base, { digestAlgorithm: "sha384" });
+  check("CT-2 and it names the signer it was taken for", taken.signerIndex === 0);
+  // The imprint is the argument the TSP verbs take, with nothing else in it: their own door refuses
+  // an unknown field, so a result carrying the signer index beside the digest would not be passable.
+  check("CT-2 the imprint object is what pki.tsp.request takes, with no field it refuses",
+    Object.keys(imprint).length === 2 &&
+    pki.schema.tsp.parseRequest(pki.tsp.request(imprint, {})).messageImprint.hashedMessage
+      .equals(imprint.hashedMessage));
+  var imprint384 = (await pki.cms.timestampImprint(base, { digestAlgorithm: "sha384" })).imprint;
   check("CT-2b another digest is taken on request",
     imprint384.hashAlgorithm === "sha384" &&
     imprint384.hashedMessage.equals(crypto.createHash("sha384").update(sigOctets).digest()));
@@ -667,6 +687,34 @@ async function run() {
   { certs: [expShort.cert], content: CONTENT, time: new Date("2027-01-01T00:00:00Z") });
   check("CT-57 CONTROL a genTime ON the notAfter instant is not after it",
     vOnTheBoundary.signers[0].signatureTimeStamps[0].valid === true);
+
+  // CT-57b: the accuracy a token states is a window around genTime (RFC 3161 clause 2.4.2), not a
+  // point, so a genTime half a second inside the certificate's window with two seconds of accuracy
+  // does not establish that the token was created before the certificate expired.
+  var insideByHalfASecond = new Date("2027-05-31T23:59:59.500Z");
+  var vAccuracy = await pki.cms.verify(await pki.cms.attachTimestamp(boundaryBase,
+    await mintToken(tsa, signatureOctetsOf(boundaryBase),
+      { genTime: insideByHalfASecond, accuracy: { seconds: 2 } })),
+  { certs: [expShort.cert], content: CONTENT, time: new Date("2027-01-01T00:00:00Z") });
+  check("CT-57b a genTime inside the window whose accuracy reaches past notAfter is refused",
+    vAccuracy.signers[0].signatureTimeStamps[0].valid === false &&
+    vAccuracy.signers[0].signatureTimeStamps[0].code === "cms/timestamp-after-signer-expiry");
+  var vAccuracyInside = await pki.cms.verify(await pki.cms.attachTimestamp(boundaryBase,
+    await mintToken(tsa, signatureOctetsOf(boundaryBase),
+      { genTime: insideByHalfASecond, accuracy: { millis: 100 } })),
+  { certs: [expShort.cert], content: CONTENT, time: new Date("2027-01-01T00:00:00Z") });
+  check("CT-57b CONTROL an accuracy window that stays inside notAfter verifies",
+    vAccuracyInside.signers[0].signatureTimeStamps[0].valid === true);
+  // CT-57c: the fraction and the accuracy are one bound, not two. A genTime of ...59.999001Z with
+  // 998 microseconds of accuracy ends at ...59.999999Z, inside a notAfter of 00:00:00Z, and reading
+  // each part up to its own millisecond would put the bound a millisecond past it.
+  var subMsInside = Buffer.concat([Buffer.from([0x18, 22]), Buffer.from("20270531235959.999001Z", "ascii")]);
+  var vBothParts = await pki.cms.verify(await pki.cms.attachTimestamp(boundaryBase,
+    await mintToken(tsa, signatureOctetsOf(boundaryBase),
+      { genTimeRaw: subMsInside, accuracy: { micros: 998 } })),
+  { certs: [expShort.cert], content: CONTENT, time: new Date("2027-01-01T00:00:00Z") });
+  check("CT-57c a fraction and an accuracy that together stay inside notAfter verify",
+    vBothParts.signers[0].signatureTimeStamps[0].valid === true);
 
   // CT-55 CONTROL: the ordering rule reads the signing-time attribute without a guard around the
   // read, because the parser holds that value to a Time first. This pins the guarantee it leans on:
