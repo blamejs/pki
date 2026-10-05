@@ -1120,6 +1120,31 @@ security-only patches after the next major releases.
   names signature octets rather than a signer, which is what clause 5.3 specifies:
   two certificates holding one key produce one signature value over one content,
   and a token over that value answers for either of them.
+- **CMS algorithm substitution.** The algorithm identifiers a CMS message names are
+  protected only indirectly, and on an authenticated-data message not at all. RFC
+  5652 sec. 9.2 makes the MAC input the DER encoding of `authAttrs` alone, so
+  `AuthenticatedData.digestAlgorithm` and `macAlgorithm` sit outside it: an attacker
+  rewrites the digest algorithm, touches nothing else, and the MAC still verifies
+  while the recipient recomputes the content digest under the algorithm the attacker
+  chose. That attack needs no key. On a signature the exposure is the parameters: RFC
+  8933 sec. 6 notes that RSASSA-PKCS1-v1_5 pins the digest identifier inside the
+  signature while RSASSA-PSS does not, and ECDSA, EdDSA, ML-DSA and SLH-DSA carry no
+  such identifier either, so the hash, mask generator, salt length and trailer field
+  are attacker-selectable fields. `pki.cms.sign`, `pki.cms.countersign` and
+  `pki.cms.authenticate` emit the RFC 6211 `CMSAlgorithmProtection` attribute on
+  request, which places a copy of those identifiers inside the signed or
+  authenticated attributes, and `pki.cms.verify` and `pki.cms.decrypt` compare every
+  copy they find against the fields it protects. A disagreement is a refusal with
+  `cms/algorithm-protection-mismatch`, never a flag on a verdict, and there is no
+  option to turn the comparison off: RFC 6211 sec. 3.1 makes it a MUST for any
+  verifier that reads the attribute. Both identifiers the attribute is assigned are
+  read, the one RFC 6211 states and the one the IANA registry gives it, because a
+  verifier recognizing a single spelling checks nothing on a message that uses the
+  other. Emission is off by default and absence is not a failure, since RFC 8933
+  sec. 4.1 makes including it a SHOULD and most CMS in the field carries none;
+  `requireAlgorithmProtection` makes absence a failure for a profile that needs one.
+  A caller-supplied copy that contradicts the identifiers being emitted is refused at
+  the signing door, so this toolkit cannot produce a message its own verifier rejects.
 - **Merkle proof forgery.** `pki.merkle` verifies RFC 6962 / RFC 9162 inclusion
   and consistency proofs fail-closed. The leaf (`0x00`) and node (`0x01`)
   domain-separation prefixes stop the second-preimage swap, a proof whose node
