@@ -149,6 +149,32 @@ async function run() {
   var tamperHeader = rebuild([bk[0].bytes, ak[1].bytes, ak[2].bytes, ak[3].bytes]);
   var th = await pki.cmp.verify(tamperHeader, { signerCert: s.cert });
   check("5a. a swapped header (protection covers the original) -> cmp/protection-failed", th.valid === false && th.code === "cmp/protection-failed");
+  /* Fixing the options reads eleven members off the caller's object, and that read happens before the
+     message is coerced, because an argument expression runs before the call it is an argument to. An
+     accessor on any option would therefore run while the caller's message buffer is still the caller's
+     and could replace the message the verdict is about. What closes it is upstream: an options bag
+     carrying an accessor field is refused outright, before any value is read. This drives that, with a
+     getter that WOULD substitute the message so the vector fails loudly if the refusal is ever dropped
+     rather than passing on a technicality. */
+  var swapTarget = Buffer.from(tamperHeader);
+  var validBytes = Buffer.from(a);
+  var optGetterFired = false;
+  var substituteOpts = {};
+  Object.defineProperty(substituteOpts, "signerCert", {
+    enumerable: true,
+    get: function () {
+      if (!optGetterFired) { optGetterFired = true; validBytes.copy(swapTarget); }
+      return s.cert;
+    },
+  });
+  var subbed;
+  try { subbed = await pki.cmp.verify(swapTarget, substituteOpts); }
+  catch (e) { subbed = { valid: false, code: (e && e.code) || "NO-CODE" }; }
+  check("5a1. CONTROL the valid message and the swapped-header one are the same length, so one could replace the other",
+    swapTarget.length === validBytes.length);
+  check("5a2. an accessor-backed option is refused, so it never runs to substitute the message (" +
+    (optGetterFired ? "ran" : "never-read") + ", " + subbed.code + ")",
+    optGetterFired === false && subbed.valid === false && subbed.code === "cmp/bad-input");
   var aBody = await buildSig({}, IRBODY);
   var bBody = await buildSig({}, { ir: { certTemplate: { subject: [{ commonName: "OTHER" }], publicKey: s.spki } } });
   var abk = msgKids(aBody), bbk = msgKids(bBody);
@@ -1059,12 +1085,14 @@ async function run() {
   // Array.prototype.map is a replaceable global, and the anchor list becomes path-builder input
   // AFTER verification suspends. A caller who swaps it during that window must not end up trusted.
   //
-  // What this vector establishes, precisely: the swap is live and is reached, and the verdict is
-  // still untrusted. It does NOT isolate cmp-verify's explicit loops as the cause -- a global map
-  // replacement also corrupts path building's own internals, so the refusal cannot be attributed to
-  // one change. The loops in _certList and the pool assembly are kept on principle, because a trust
-  // decision should not dispatch through a replaceable global at all, and they are honestly recorded
-  // here as unproven by this vector rather than credited with a result they may not produce.
+  // What this vector establishes, precisely: the verdict is still untrusted with the swap installed
+  // mid-call, AND the anchor path no longer dispatches through the replaced operation at all. The
+  // second half used to read the other way: path building coerced its candidate pool with a live
+  // `poolInput.map(...)`, so the swap was reached and the vector could only record that the refusal
+  // was not attributable to one change. That read is captured now, so nothing on the route from the
+  // anchor list to a trust decision reaches a replaceable `map`, which is the stronger statement and
+  // the one asserted below. It also keeps the pair from going vacuous: if a live `map` returns to
+  // this route, the reach assertion fails rather than the verdict quietly depending on it again.
   var realMap = Array.prototype.map;
   var swapped = false;
   var pendingSwap = pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: [s.cert], time: T });
@@ -1073,13 +1101,11 @@ async function run() {
   try { swapVerdict = await pendingSwap; } finally { Array.prototype.map = realMap; }
   check("23y. replacing Array.prototype.map mid-call does not decide the anchor set",
     swapVerdict.trusted === false);
-  // The replacement really was live and really was reached during the window -- without this the
-  // vector above would pass on a call that simply never touched it. What the fix changes is that
-  // nothing on the ANCHOR path dispatches through it: cmp-verify builds its lists with explicit
-  // loops, so the swap cannot answer the question "which certificates are trusted". Code deeper in
-  // path building still calls it, which is why this asserts the swap fired rather than claiming the
-  // whole call is free of it.
-  check("23z. the replacement was installed and reached while the call was pending", swapped === true);
+  // And it was never reached: cmp-verify builds its lists with explicit loops, and the candidate-pool
+  // coercion inside path building takes `map` from the load-time captures, so no step between the
+  // anchor list and the trust decision asks a replaceable operation which certificates are trusted.
+  // A live `map` reappearing anywhere on that route fails this.
+  check("23z. and the replacement is never reached on the route to a trust decision", swapped === false);
 
   // An Array.prototype index SETTER is the sharper form of the same idea: a fresh array has no own
   // slot at 0, so `out[0] = cert` is a [[Set]] that walks the prototype chain and lands in caller
@@ -1297,6 +1323,39 @@ async function run() {
     anchored({ key: kgaEeKt.key }));
   check("26e. every key in the package is surfaced, in the order it was packaged",
     two.keys.length === 2 && two.keys[0].equals(deliveredPkcs8) && two.keys[1].equals(deliveredSecond));
+
+  // RSAES-PKCS1-v1_5 key transport over a content with no integrity tag is the combination
+  // pki.cms.decrypt refuses, because acceptance tells an attacker submitting chosen containers that
+  // theirs decoded. openKeyPackage takes the container directly, so it cannot establish that one
+  // arrived inside an authenticated exchange, and the decision belongs to the caller. Assembled
+  // rather than built: pki.cms.encrypt emits only RSAES-OAEP, so this shape comes from another
+  // implementation.
+  function v15Container(recipientCert) {
+    var NL = b.raw(Buffer.from([5, 0]));
+    var rp = pki.schema.x509.parse(recipientCert);
+    var ias = b.sequence([b.raw(rp.issuer.bytes), b.integer(BigInt("0x" + rp.serialNumberHex))]);
+    var ktri = b.sequence([b.integer(0n), ias,
+      b.sequence([b.oid(pki.oid.byName("rsaEncryption")), NL]), b.octetString(Buffer.alloc(128))]);
+    var eci = b.sequence([b.oid(pki.oid.byName("signedData")),
+      b.sequence([b.oid(pki.oid.byName("aes256-CBC")), b.octetString(Buffer.alloc(16))]),
+      b.contextPrimitive(0, Buffer.alloc(16))]);
+    return b.sequence([b.oid(pki.oid.byName("envelopedData")),
+      b.explicit(0, b.sequence([b.integer(0n), b.setOf([ktri]), eci]))]);
+  }
+  var v15Cont = v15Container(kgaEeKt.cert);
+  var v15Refused = null;
+  try { await pki.cmp.openKeyPackage(v15Cont, anchored({ key: kgaEeKt.key })); }
+  catch (e) { v15Refused = e; }
+  check("26f1. a v1.5 container over an unauthenticated content is refused without the caller's opt-in",
+    v15Refused !== null && v15Refused.code === "cmp/bad-key-package" &&
+    v15Refused.cause != null && v15Refused.cause.code === "cms/unauthenticated-rsa-v15");
+  var v15OptedIn = null;
+  try {
+    await pki.cmp.openKeyPackage(v15Cont, anchored({ key: kgaEeKt.key, allowUnauthenticatedRsa15: true }));
+  } catch (e) { v15OptedIn = e; }
+  check("26f2. and the caller's opt-in carries through to the unwrap",
+    v15OptedIn !== null && v15OptedIn.code === "cmp/bad-key-package" &&
+    v15OptedIn.cause != null && v15OptedIn.cause.code === "cms/decrypt-failed");
 
   // "recipientInfos MUST contain a sequence of one RecipientInfo": a second recipient is a second
   // party able to open a key generated for this entity.

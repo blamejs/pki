@@ -122,7 +122,54 @@ security-only patches after the next major releases.
   conformance corpus carries exactly one. `pki.sigstore.verifyBundle` caps the
   count at `C.LIMITS.TLOG_MAX_COUNT` (32) and refuses before reading any entry.
   The ceiling is a local resource bound, not a rule the bundle specification
-  states.
+  states. Within that ceiling the artifact is read once per digest algorithm. The
+  comparison against the digest an entry records runs per attempt, and an attempt
+  that failed it sent the next one over the same bytes again, so a 100 MB artifact
+  was hashed 32 times; the same bytes under the same algorithm are the same digest.
+  The comparison against the `messageDigest` the bundle itself carries reads
+  through the same answer, that claim naming its own algorithm and an attempt
+  having already hashed the artifact under it.
+- **Repeated-identifier work amplification in TUF metadata (CWE-834).** A root
+  states a key list per role and a document carries a signature list, and both
+  were walked per occurrence rather than per distinct member. Each repetition of
+  one key identifier canonicalized and hashed the whole key, imported it, and
+  derived its material identity again; in the signature list each repetition of
+  one failing signature re-ran the signature check as well, because an identifier
+  is skipped only once a signature under it has succeeded. A document that meets
+  no threshold is therefore the most expensive case rather than the cheapest.
+  A verify's own role is a third list of the same kind: its identifiers were
+  resolved to keys one occurrence at a time, each resolution deep-copying the key
+  and hashing its canonical form. Measured, a 588 KB candidate repeating one
+  identifier 2000 times per role spent 12.6 seconds inside the role walk, 1000
+  repetitions of a single all-zero signature over a 414 KB body cost 2000 key
+  imports, 1000 signature checks and 1.6 seconds, and 7500 repetitions of one
+  identifier in a role beside a 500 KB key spent 10.2 seconds resolving it, all
+  inside the metadata size cap and all before anything had authenticated the
+  document. Memos alone left the document choosing how much work it asked for.
+  Distinct signatures for one authorized key share no memo, and each hashes the
+  whole signed body, so a 500 KB body under 2400 signatures made with a key
+  nobody authorized bought 2400 checks and about a second, synchronously, in a
+  1,013,726-byte document. `pki.tuf.verifySignatures` reads the keys the ROLE
+  names and looks up the one signature each is listed with, so the signature list
+  decides which signature each key offers and no longer how many checks run: 1000
+  distinct signatures under one key cost one check, and 40 keys the role names cost
+  40. The work follows the document's own size rather than the product of its body
+  and its signature list. The role is the caller's argument, and a root rotation
+  verifies a candidate against the root role it states itself as well as against
+  the trusted one, that being the check the specification requires of a new root,
+  so the count of that one call is the candidate's to state.
+  `pki.tuf.updateRoot` decides each identifier once per walk.
+  The same documents answer in 11, 36, 5 and 6 milliseconds. A key is
+  also imported once per identifier rather than once for the identity a threshold
+  counts it under and again for the signature check, which both halves the work
+  and makes the key counted and the key verified with the same key.
+  A key identifier listed more than once is where the two authorities differ, and
+  the first signature it carries is the one asked. The specification caps the
+  count at one verified signature from a key identifier and leaves the document
+  readable; the reference implementation refuses the document. A second entry
+  cannot raise a count already capped at one, so what it could do is cost another
+  pass over the body. A document listing a wrong signature for a key ahead of a
+  right one therefore reads as that key not having signed.
 - **A DSSE envelope signature the verdict never covered.** The Sigstore bundle
   specification states that an envelope in a bundle carries exactly one
   signature, and that a verifier rejects an envelope whose signature count is
@@ -263,7 +310,17 @@ security-only patches after the next major releases.
   of the captured function, so a permission check, a canonical serialization,
   the binding of a transparency-log entry to a bundle's signature, or the split
   between a ciphertext and its authentication tag concludes the same thing
-  whenever it runs. Asking whether a registry carries a
+  whenever it runs. Every SIGNATURE CHECK is held the same way: certification
+  path validation, `pki.ct`'s signed tree heads, log lists and SCTs, all five
+  signature families in `pki.cms.verify`, both key routes in `pki.jose.verify`,
+  WebAuthn assertions and attestations, the FIDO metadata BLOB, each half of a
+  composite signature and the AuthenticatedData MAC take the WebCrypto verify
+  and the key import they use at load. Held as a method on an object instead,
+  one replaced afterwards decides the verdict: reproduced on a signed tree head,
+  where it turned another log's signature from refused into accepted. The
+  comparator that orders a DER SET OF and answers whether two byte strings are
+  equal is captured for the same reason, since it decides emitted bytes at one
+  end and a verdict at the other. Asking whether a registry carries a
   name has the same shape, since written out it reads a membership test and the
   call that applies it, and either answering the wrong way admits a name the
   registry never held: an undefined OCSP response status, a reserved CRL reason
@@ -448,7 +505,49 @@ security-only patches after the next major releases.
   handing over the file that holds the private one. A key path on a command line
   is visible in the process table to every user on the machine while the process
   runs; the help text says that too, since a reader who does not know it cannot
-  work around it.
+  work around it. `--out` and `--pub` naming one file is refused before a key is
+  generated, since the private key would go where the public half was asked for.
+  A run that fails after creating a file removes only the files it created, and it
+  identifies them by what the creating descriptor reported rather than by what the
+  path holds once that descriptor has closed. The identity is recorded before any
+  content, so a run whose write failed can still tell its own file from one that
+  replaced it; recorded only on a completed write, such a record had no identity
+  at all and the path was cleared of whatever occupied it. A file that replaced the
+  one this run created, changed since, or gained a second link to its content, is
+  left where it is and named on stderr, as is one the platform cannot identify
+  after a failed write and one the cleanup could not examine at all. The link test
+  asks what is on disk rather than comparing against a recorded count, a name
+  added before the record was taken and removed afterwards having made the count
+  fall. A report naming a path keeps to one line, a newline in a name having ended
+  the line early and put what followed it where the tool's own output is read.
+  Every file the CLI writes is covered, not only the keys: `csr`, `issue`, `fetch`
+  and `sign` with `--out` create a path that does not exist through an exclusive
+  descriptor and remove it if the write fails, while a path that already exists is
+  overwritten as those verbs have always done and is never one the run removes.
+  That overwrite opens the path without permission to create, so a path that stops
+  existing between the two calls is retried as the exclusive create it has become
+  rather than written by name into a file nothing is tracking.
+  Two residuals: where a filesystem reports no inode, a replacement whose size and
+  timestamp match the original cannot be told from it, and the path is removed by
+  name, so a replacement arriving between the comparison and the unlink is
+  removed. Node offers no unlink by descriptor to close that.
+- **A certificate issued carrying less, or more, than the request asked for.** A
+  certification request asks for extensions through the RFC 2985 section 5.4.2
+  extensionRequest attribute, and that clause leaves to the issuing CA which of
+  them to honor. Both answers are unsafe taken by default. Copying what a request
+  asks for lets the requester write its own names, and its own basic constraints,
+  into the certificate. Dropping them issues a certificate that does not carry
+  what was asked for while reporting success: `pki issue --csr` built its
+  extensions from `--san` alone, so a request carrying a subjectAltName produced a
+  leaf with none, which matches no host name. `pki issue` now refuses a request
+  that asks for extensions until the operator says what to do with them, naming
+  what was asked. `--copy-requested-san` writes the requested subjectAltName,
+  converting each name through the same builder that validates one given on the
+  command line, so a name the builder refuses stops the issuance. A requested name
+  of a form that copy does not write is named and refuses the issuance rather than
+  being left out of it. `--ignore-requested-extensions` issues without what the
+  request asked for. Nothing else a request asks for is copied, so a request
+  asking to be certified as a CA is refused rather than honored.
 - **Untyped faults escaping the key boundary.** A `CryptoKey` is opaque, and one
   created by a different WebCrypto implementation is indistinguishable from one
   of this engine's by type, algorithm, and usages while holding its material
@@ -673,7 +772,35 @@ security-only patches after the next major releases.
   applies the RFC 3218 §2.3.2 implicit-rejection countermeasure: on any v1.5
   fault it substitutes a fresh random content-encryption key and proceeds, so the
   failure surfaces later and uniformly, exactly like every other bad key. v1.5 is
-  never emitted. Integrity is verified before any plaintext is released, and a
+  never emitted. **A candidate the implicit rejection substituted for never
+  becomes the answer.** The substitute exists to make the failure cost the same
+  work and the same time as a success, not to decide the recipient, so the
+  decrypt runs and its result is then discarded. Before this, the content decrypt
+  decided it, and a random substitute key leaves a final CBC block that is valid
+  PKCS#7 padding about one time in 256, so a known-bad recipient won that often
+  and the verb returned the wrong plaintext while naming that recipient as the
+  one it used. Padding is the only check a non-AEAD content offers, which is the
+  argument for the AEAD default: AES-GCM rejects a wrong content key on the tag,
+  at a probability no attacker can ride.
+
+  **RSAES-PKCS1-v1_5 over a content with no integrity tag is refused, and the
+  refusal is why the two paragraphs above do not contradict each other.** Those
+  two requirements cannot both hold for that combination: discarding a
+  substituted candidate's result keeps the plaintext correct and makes acceptance
+  depend on whether the unwrap conformed, while letting it stand keeps the arms
+  indistinguishable and can return the wrong plaintext. Measured against an
+  `openssl cms -encrypt -aes-256-cbc` message, 256 chosen ciphertexts per arm,
+  the first gives one acceptance where the unwrap conformed and none where it did
+  not. So `pki.cms.decrypt` and `pki.smime.decrypt` refuse the combination with
+  `cms/unauthenticated-rsa-v15` **before the unwrap**, which leaves no decision
+  for it to influence: zero acceptances on both arms. `allowUnauthenticatedRsa15`
+  accepts it knowingly, and reading an `openssl cms -encrypt` or
+  `openssl smime -encrypt` message needs that option, since OpenSSL emits exactly
+  this combination when no algorithm is named and reports
+  `ossl_cipher_unpadblock: bad decrypt` on a wrong key, leaking the same signal
+  more loudly. An AEAD content or an RSAES-OAEP recipient needs no option, each
+  carrying its own integrity check. Re-encrypting to `aes-256-gcm` removes the
+  question. Integrity is verified before any plaintext is released, and a
   CBC EnvelopedData (unauthenticated content) surfaces `authenticated: false` in
   the verdict rather than silently, with AES-GCM AuthEnvelopedData the encrypt
   default. The declared content cipher's mode is bound to the container carrying
@@ -1625,21 +1752,24 @@ security-only patches after the next major releases.
   question would be inventing a policy the operator owns.
 - **An alternative signature is rebuilt from original bytes, not re-serialized
   (CWE-347).** ITU-T X.509 (2019) clause 7.2.2 requires a verifier to reconstruct
-  an encoding that never appears on the wire: the certificate with its outer
-  signature component and its `altSignatureValue` extension removed, "re-DER-encoded"
-  after those modifications. Everywhere else this toolkit surfaces a raw byte range
+  an encoding that never appears on the wire, "re-DER-encoded" after the signature
+  component and the `altSignatureValue` extension are removed. The structure it
+  names is the `PreTBSCertificate` of
+  `draft-truskovsky-lamps-pq-hybrid-x509` section 4, the `tbsCertificate` without
+  its `signature` field, and the `PreTBSCertList` of section 5 for a CRL.
+  Everywhere else this toolkit surfaces a raw byte range
   rather than rebuilding what it parsed, because rebuilding is how a verifier comes
   to accept something altered in a byte it did not reproduce. Here the specification
   leaves no choice, so `pki.altSig.signedData` keeps the bytes of every component it
-  retains and recomputes only the three SEQUENCE headers whose lengths change.
+  retains and recomputes only the two SEQUENCE headers whose lengths change.
   Nothing is written out of a decoded model: a model that normalized any byte would
   either fail every verification, or accept an encoding the issuer never signed. The
   vectors compare the result against bytes built independently of the implementation,
   field by field, and assert that the extensions block loses that one extension and
   no other.
 - **Two signatures, and the native one still covers both (CWE-347).** Clause 7.2.2
-  fixes an order: the alternative signature is generated over the certificate without
-  it, and the native signature is then generated over the certificate with it.
+  fixes an order: the alternative signature is generated over the structure without
+  it, and the native signature is then generated over the structure with it.
   Reversing that leaves a native signature that does not cover the alternative
   signature or the alternative key, so a party reading only the native signature
   would accept a certificate whose alternative half had been substituted.

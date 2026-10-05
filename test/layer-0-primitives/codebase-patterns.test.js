@@ -309,12 +309,42 @@ function _scanComments(src) {
 //
 // guard-all deliberately does not re-export the captures, so a DIRECT require is the only way to
 // reach them, and a direct require is exactly what shows up here as a child.
-// The exported object literal of a module, whether or not it is handed to Object.freeze on the way
-// out. The guard family freezes, so a pattern anchored on a bare `{` right after the `=` reads a
-// frozen module as exporting nothing -- and a meta-check that then walks an empty list reports no
-// findings while checking nothing, which is the one failure this file cannot afford. Every walk that
-// reads a module's exported names off its source shares this one definition.
-var EXPORT_LITERAL_RE = /module\.exports\s*=\s*(?:Object\.freeze\s*\(\s*)?\{([\s\S]*?)\}/;
+// The exported object literal of a module, whether or not it is handed to a freeze on the way out. A
+// pattern anchored on a bare `{` right after the `=` reads a frozen module as exporting nothing -- and a
+// meta-check that then walks an empty list reports no findings while checking nothing, which is the one
+// failure this file cannot afford. Naming ONE freeze spelling is the same failure: the guard family
+// freezes through `intrinsic.freeze`, `_intrinsic.freeze`, `_freeze` and `_freezeExports`, not through
+// `Object.freeze`, so a pattern naming only the last read 18 of the 19 guard modules as exporting nothing
+// and testEveryGuardEnforced passed over all of them. The wrapper is matched as any callee, and as any
+// NUMBER of them: one wrapper was the same mistake one spelling was, since `Object.freeze(_freeze({...}))`
+// defeated a pattern allowing exactly one. Every walk that reads a module's exported names off its source
+// shares this one definition.
+var EXPORT_LITERAL_RE = /module\.exports\s*=\s*(?:[\w$.]+\s*\(\s*)*\{([\s\S]*?)\}/;
+
+// This file's own source with its COMMENT LINES removed, for the checks that ask whether a detector class
+// really exists. They look for `_filterMarkers(bad, "<class>")`, and a plain search over the whole file
+// accepted a tag naming a class that appears only in prose: every paragraph here that writes the call out
+// to explain it would vouch for any class a tag named, including a stale or misspelled one. The string
+// LITERALS are kept, since the class name lives inside one, so this removes comment lines rather than
+// using the strip that also blanks literals.
+function _detectorClassSource() {
+  var src = fs.readFileSync(path.join(REPO_ROOT, "test/layer-0-primitives/codebase-patterns.test.js"), "utf8");
+  var lines = src.split(/\r?\n/), out = [], inBlock = false;
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i], trimmed = line.replace(/^\s+/, "");
+    if (inBlock) {
+      if (trimmed.indexOf("*/") !== -1) inBlock = false;
+      continue;
+    }
+    if (trimmed.indexOf("/*") === 0) {
+      if (trimmed.indexOf("*/") === -1) inBlock = true;
+      continue;
+    }
+    if (trimmed.indexOf("//") === 0) continue;
+    out.push(line);
+  }
+  return out.join("\n");
+}
 
 function _takesCaptures(absPath) {
   var entry = require.cache[absPath];
@@ -1699,6 +1729,50 @@ var KNOWN_ANTIPATTERNS = [
     ],
     reason: "Every format's matches() detector re-inlined the root-SEQUENCE guard `!root || root.tagClass !== \"universal\" || root.tagNumber !== TAGS.SEQUENCE` and the per-node `x.tagClass === class && x.tagNumber === TAGS.Y` probe, with one module hand-rolling a local tag predicate twice. Centralized as pkix.rootSequenceChildren + the schema.is{Universal,Context}[OneOf|InRange] predicates so a detector composes them; a new detector re-inlining the root guard (a `.tagClass !== \"universal\"` test that returns false) must route through the shared helper. This replaces the KNOWN_CLUSTERS matches() whitelist — after extraction the seq/probe shingle dissolves.",
   },
+  {
+    // A caller's array walked with its OWN `map` / `forEach` / `filter` / `slice` where the `isArray`
+    // test and the walk stand on DIFFERENT lines. The armed `caller-array-copied-live` check matches
+    // only the single-expression form, so this shape reached none of it: `extSpec.map(cb)` on a
+    // caller-supplied array let an own `map` hand the callback a list it had never seen, and every
+    // per-element rule the callback carries was bypassed at once -- the duplicate check, the
+    // criticality rule, the value decoders and the reserved-extension refusal among them. The verb
+    // then emitted and natively signed a certificate carrying extensions nothing had validated.
+    //
+    // Scoped to the modules that SIGN, where the tree is clean and the cost of a bypass is a signed
+    // artifact. The same shape is still being converted elsewhere in `lib/`, which is a budget rather
+    // than a gate: 103 sites measured outside this layer.
+    id: "signer-walks-caller-array-live",
+    primitive: "guard.list.copyMap(list, fn) / guard.list.snapshot(list) -- they read `length` once and write each element as an own data property, so neither an own method nor a prototype replacement is consulted",
+    regex: /\b(?:spec|extSpec|attrSpec|ext|names|targets|locations|list|values)(?:\.[\w$]+)*\.(?:map|forEach|filter|slice)\s*\(/,
+    skipCommentLines: true,
+    onlyFiles: /^lib[\\/](?:x509-sign|crl-sign|attrcert-sign|csr-sign)\.js$/,
+    reportEvery: true,
+    allowClass: "signer-walks-caller-array-live",
+    allowlist: [],
+    reason: "a signing verb that walks a caller's array through that array's own method lets the caller decide which elements the per-element rules ever see, so every check inside the callback is bypassed together and the verb signs content nothing validated",
+  },
+  {
+    // A verdict returned as a bare object literal. Resolving a promise reads `then` off the value it
+    // settles with, and an object that does not own one hands that lookup to Object.prototype, where
+    // an accessor runs with the verdict as its receiver and can hand the caller a different object
+    // entirely: an unsigned document reported as verified, carrying a signer it does not name.
+    // guard.verdict.of builds the verdict with an own, non-enumerable `then` that ends the lookup;
+    // guard.verdict.shield adds it to a result whose shape or identity must survive.
+    //
+    // Anchored on the decision fields rather than on any symbol: these names are the public verdict
+    // contract, so the shape holds through a rename and fires on a verdict built in a module that
+    // does not exist yet. The window is every promise resolution, not only a public return: a
+    // signature check that answered `{ ok: false }` from inside a `.then` callback was read as
+    // `ok: true` by the caller that awaited it, so an internal result counts the same as a returned one.
+    id: "unshielded-verdict-literal",
+    primitive: "guard.verdict.of({...}) for a verdict assembled here, or guard.verdict.shield(existing) when the result's shape or identity must survive -- both give it the own `then` that ends the prototype lookup promise resolution performs",
+    regex: /return\s*\{(?:(?!;|\breturn\b)[\s\S]){0,4000}?\b(?:verified|signatureValid|trusted|valid|ok|matched|status)\s*:/,
+    skipCommentLines: true,
+    reportEvery: true,
+    allowClass: "unshielded-verdict",
+    allowlist: [],
+    reason: "a verdict with no own `then` is a thenable: promise resolution reads `then` off it, an inherited accessor answers with the verdict as its receiver, and the caller is resolved with whatever that accessor chooses, so a refusal reaches the caller as an acceptance",
+  },
 ];
 
 function testKnownAntipatterns() {
@@ -1874,6 +1948,50 @@ function _isBoilerplate(slice) {
   // prefix is exactly this 3-instantiation window; a format with more sub-schemas
   // has 4+.)
   if (factoryDecls >= 3) return true;
+  // Module-load CAPTURE runs — `var _pop = intrinsic.pop;` — are the sibling of the factory run above
+  // with a property read where that one has a call. Every module that opts into the captured-intrinsic
+  // discipline opens with one, so the run is identical across modules by construction, and the thing it
+  // would factor out is `guard-intrinsic`, which is where the captures already live. Taking one more
+  // capture is the prescribed fix for a live read, so without this the fix for one finding manufactures
+  // another. A run of plain aliases has no logic in it to extract.
+  // A capture has two spellings and a window holds a MIX of them: a plain alias of a module handle's
+  // property, `var _pop = intrinsic.pop;`, and an uncurried prototype method,
+  // `var _charAt = intrinsic.uncurry(String.prototype.charAt);`, which is the factory shape above. The
+  // window that fired held two of each, so neither count reached three on its own. Only an identifier
+  // that is a JS keyword survives normalization, so `uncurry` itself is indistinguishable from any other
+  // name and cannot be counted directly; the two declaration shapes can.
+  //
+  // The test is COVERAGE rather than a count, and that distinction is the whole rule. Counting three
+  // declarations anywhere in the window suppressed 2072 windows, MEASURED, and 53 of them in one module
+  // alone carried `if (!check(x)) throw E(...)` guard clauses with two aliases between them: a repeated
+  // validation shape, exactly what this class exists to find, excused because three `var`s sat near it.
+  // Requiring the declarations to account for most of the window admits the capture run, which is
+  // nothing else, and keeps a window that merely contains some.
+  // The test is what the window CONTAINS, not how much of it a pattern can match. Two attempts at a
+  // coverage ratio both failed on the same thing: a shingle starts and ends wherever its offset lands,
+  // so a window over a pure declaration run loses both edge declarations to clipping and measured 70 of
+  // 50 tokens' worth at best. A count alone is no good either, since three `var`s sitting beside an
+  // `if (!check(x)) throw E(...)` pair excused 2072 windows, 53 of them that exact guard-clause shape.
+  // What separates the two is that a declaration run holds no statement keyword but `var`: no branch, no
+  // call-and-return, no function body. A window that holds one is code, whatever else is in it.
+  // The rule is an ALLOWLIST of the tokens a capture run can be built from, not a blocklist of the ones
+  // it cannot. A blocklist of statement keywords was beaten by arithmetic: five declarations of
+  // `var total = net * rate + fee;` followed by `charge(total);` holds no statement keyword, is exactly
+  // fifty tokens, and is executable pricing logic that would merit extraction. The initializer has to be
+  // constrained, and the honest way is to say what a capture run contains: declarations, member access,
+  // a call, and nothing else. No operator, no literal, no bracket, no object, so no expression.
+  // FOUR declarations, measured against the two clusters that fired: one held two plain aliases and two
+  // uncurried captures, the other five plain aliases, and a shingle starts wherever its offset lands so
+  // the edge declarations are clipped and uncountable.
+  // `require` and the string it takes are in the allowlist because a module header interleaves the two:
+  // a window at the boundary holds one or two `var X = require("./y");` lines among the captures, and
+  // without them the run the recognizer exists for goes unrecognized at exactly that offset. They add no
+  // room for logic: with no operator, no bracket, no comma and no statement keyword, a window of four or
+  // more declarations over member accesses, calls and strings has nothing in it to extract.
+  var declStarts = (joined.match(/\bvar\s+_ID\s+=\s+/g) || []).length;
+  var CAPTURE_TOKENS = /^(?:var|_ID|_STR|require|=|\.|\(|\)|;|[A-Z][\w$]*)$/;
+  var captureShaped = declStarts >= 4 && toks.every(function (t) { return CAPTURE_TOKENS.test(t); });
+  if (captureShaped) return true;
   // The module-header TRANSITION: a slice that mixes a top-of-file require with a
   // factory-instantiation run is the header every format module shares (the 5
   // requires flow into `var NS = pkix.makeNS(...)` + `var X = pkix.factory(NS)`).
@@ -3245,7 +3363,15 @@ function testGuardReadsRuntimeLive() {
   // a mailbox separator sits, which substring is the domain, whether a local-part is well-formed,
   // how a URI splits into scheme and authority. Each is one replaceable call, and moving any one of
   // them moves the boundary, so the name the verb ends up comparing is not the one on the wire.
-  var LIVE_METHODS = "(?:forEach|map|filter|every|some|indexOf|sort|push|concat|join|" +
+  // The MUTATORS are here because a list is what a rule is enforced OVER, and one that drops an
+  // element drops the rule applied to it. A replaced `pop` that pops twice removed a note's final
+  // signature line along with the empty tail element the trailing newline leaves, so a forged
+  // signature under a known key was never checked and the note verified. That shipped in a module held
+  // to zero live reads, because this list is an ENUMERATION of names and `pop` was never in it: the
+  // read was never counted, so no budget was ever exceeded. `shift`, `unshift` and `splice` move the
+  // same boundary from the other end and are added with it.
+  var LIVE_METHODS = "(?:forEach|map|filter|every|some|indexOf|sort|push|pop|shift|unshift|splice|" +
+    "reverse|copyWithin|concat|join|" +
     "toLowerCase|toUpperCase|charAt|charCodeAt|fill|getTime|equals|compare|toString|subarray|" +
     "slice|lastIndexOf|search|test|exec|replace|split|trim|substring|substr|startsWith|endsWith|" +
     "includes|hasOwnProperty)";
@@ -3279,6 +3405,46 @@ function testGuardReadsRuntimeLive() {
   // a replacement the sentinel is a different object and every comparison against it is false.
   // A `uncurry(X.prototype.m)` capture is a call-time-free read taken at load, so it is excluded.
   var protoRe = /(?:^|[^\w.$])(Object|Buffer|Array|Function|Promise)\.prototype(?!\s*\.\s*\w+\s*\))/g;
+  // A capture handed a LIVE GLOBAL as its receiver, which the patterns above do not reach: the
+  // operation is captured correctly and then called with the replaceable global in the receiver
+  // position, which puts the decision straight back under a replacement.
+  // `Promise.resolve` BUILDS through its receiver, so `_promiseResolve(Promise, p)` constructs with
+  // whatever `globalThis.Promise` is at call time. A constructor whose executor settles with
+  // `{ valid: true }` instead of the real value made `pki.possession.verifyRequest` read a validated
+  // certification path where there was none, and report the RFC 9883 sec. 4 MUST as satisfied; the
+  // same shape sat on the alternative-signature paths of `x509.sign` and `crl.sign` and on three
+  // `acme` sites, eight in all.
+  // It keys on the GLOBAL's name in the receiver position rather than on what the capture is called,
+  // and the CALLEE is deliberately unconstrained. A first version required a `_`-prefixed local and
+  // missed six spellings of the same defect, measured: a capture named without the underscore (the
+  // prefix is a convention here, not a guarantee), a receiver written `globalThis.Promise` or
+  // `global.Promise`, one reached through a local alias, one handed through `.call`/`.apply` as the
+  // thisArg, and -- the one that matters most in this codebase -- `intrinsic.promiseResolve(Promise,
+  // ...)`, since reaching the captures through the module handle is how most modules spell it. A
+  // detector that only sees one spelling of a call is a detector one rename away from silence.
+  // The global may be bare or qualified, and must be followed by a comma or a close paren: that is
+  // what separates `_f(Object, ...)` from `_f(Object.keys(x))`, where the global is the start of a
+  // member expression rather than the receiver being handed over.
+  var LIVE_GLOBAL_RECEIVER =
+    "(?:globalThis\\.|global\\.)?(Promise|Object|Array|Buffer|Function|Reflect|JSON|Math|Number|String|Date)";
+  var liveReceiverRe = new RegExp(
+    "(?:^|[^\\w.$])(?:_[\\w$]*|[A-Za-z$][\\w$]*(?:\\.[A-Za-z$][\\w$]*)*)\\(\\s*" +
+    LIVE_GLOBAL_RECEIVER + "\\s*[,)]", "g");
+  // The same receiver handed through `.call`/`.apply`, where the thisArg IS the receiver.
+  var liveThisArgRe = new RegExp("\\.(?:call|apply)\\(\\s*" + LIVE_GLOBAL_RECEIVER + "\\s*[,)]", "g");
+  // And an `apply`-shaped HELPER, where the thisArg is the SECOND argument rather than the first:
+  // `intrinsic.apply(fn, Promise, [v])` is the live-receiver defect with the global one position
+  // further along, and both patterns above look at the first argument only. This is not hypothetical:
+  // `cms-verify` invokes its captured `Promise.resolve` exactly this way in the path that builds a
+  // signature verdict, so the one-character regression from `_Promise` to `Promise` there is a
+  // verification bypass that neither of the above would have named.
+  // The first argument may itself be a CALL, so it is matched as a run of plain characters or one
+  // parenthesized group rather than as "anything without parens": written the narrow way,
+  // `apply(pick(x), Promise, ...)` slipped through. The `{1,120}` is a ReDoS backstop set far above
+  // any real argument, not the precision mechanism.
+  var liveApplyThisArgRe = new RegExp(
+    "(?:^|[^\\w.$])[\\w$.]*[aA]pply\\(\\s*(?:[^,()]|\\([^()]*\\)){1,120},\\s*" +
+    LIVE_GLOBAL_RECEIVER + "\\s*[,)]", "g");
   // SCOPE, chosen so it needs no list to maintain. A module is IN once it takes the captures:
   // that is how it opts into the discipline, and once opted in it is held to it completely rather
   // than at the one site somebody happened to change. A module that has not opted in is out of
@@ -3355,6 +3521,27 @@ function testGuardReadsRuntimeLive() {
           content: "converts through the live global `" + m[1] + "` — take it from guard-intrinsic, " +
             "so a replacement cannot decide what this value converts to" });
       }
+      liveReceiverRe.lastIndex = 0;
+      while ((m = liveReceiverRe.exec(code)) !== null) {
+        bad.push({ file: rel, line: i + 1,
+          content: "hands the live global `" + m[1] + "` to a capture as its receiver: pass the " +
+            "captured `intrinsic." + m[1] + "`, since an operation called on a replaceable receiver " +
+            "builds through whatever replaced it and decides the value this guard goes on to read" });
+      }
+      liveThisArgRe.lastIndex = 0;
+      while ((m = liveThisArgRe.exec(code)) !== null) {
+        bad.push({ file: rel, line: i + 1,
+          content: "hands the live global `" + m[1] + "` through `.call`/`.apply` as the receiver: " +
+            "pass the captured `intrinsic." + m[1] + "`, since the thisArg is what the operation " +
+            "builds through and a replacement decides the value this guard goes on to read" });
+      }
+      liveApplyThisArgRe.lastIndex = 0;
+      while ((m = liveApplyThisArgRe.exec(code)) !== null) {
+        bad.push({ file: rel, line: i + 1,
+          content: "hands the live global `" + m[1] + "` to an apply-shaped helper as the thisArg: " +
+            "pass the captured `intrinsic." + m[1] + "`, since that argument is the receiver the " +
+            "operation builds through and a replacement decides the value this guard goes on to read" });
+      }
     }
   });
   bad = _filterMarkers(bad, "guard-reads-runtime-live");
@@ -3370,31 +3557,32 @@ function testGuardReadsRuntimeLive() {
   // budget nobody tightens is a number that stops meaning anything, and the next reader would take
   // it for the real count. A module reaching zero is deleted from the map and held to zero forever.
   var MIGRATING = {
-    "lib/acme.js": 187,
+    "lib/acme.js": 186,
     "lib/est.js": 159,
     "lib/cmp-build.js": 130,
     "lib/crmf-sign.js": 35,
-    "lib/path-validate.js": 95,
-    "lib/webauthn.js": 163,
-    "lib/asn1-der.js": 105,
-    "lib/schema-engine.js": 45,
+    "lib/path-validate.js": 86,
+    "lib/webauthn.js": 158,
+    "lib/asn1-der.js": 101,
+    "lib/schema-engine.js": 39,
     "lib/trust.js": 100,
-    "lib/cms-sign.js": 57,
-    "lib/webauthn-mds.js": 89,
-    "lib/attrcert-sign.js": 76,
-    "lib/tsp-sign.js": 49,
+    "lib/cms-sign.js": 56,
+    "lib/webauthn-mds.js": 88,
+    "lib/attrcert-sign.js": 69,
+    "lib/tsp-sign.js": 42,
     "lib/http-digest.js": 73,
     "lib/pkcs12-build.js": 63,
     "lib/ct.js": 70,
-    "lib/cms-verify.js": 16,
+    "lib/cms-verify.js": 14,
     "lib/cms-encrypt.js": 66,
-    "lib/crl-sign.js": 65,
+    "lib/crl-sign.js": 62,
     "lib/cmc-build.js": 57,
     "lib/pki-build.js": 33,
-    "lib/hpke.js": 34,
-    "lib/cms-decrypt.js": 49,
+    "lib/hpke.js": 32,
+    "lib/cms-decrypt.js": 45,
+    "lib/composite-sig.js": 36,
     "lib/cmc-verify.js": 34,
-    "lib/x509-sign.js": 26,
+    "lib/x509-sign.js": 25,
     "lib/schema-attrcert.js": 26,
     "lib/tls-cert-compress.js": 18,
     "lib/schema-crl.js": 7,
@@ -3436,7 +3624,8 @@ function testEveryGuardEnforced() {
   // must be REAL -- reported by a `_filterMarkers(bad, "<class>")` detector in this
   // file -- so the tag cannot reference a detector that does not exist. This is why
   // adding guard-range / guard-name / ... cannot silently skip its enforcement.
-  var selfSrc = fs.readFileSync(path.join(REPO_ROOT, "test/layer-0-primitives/codebase-patterns.test.js"), "utf8");
+  //
+  var selfSrc = _detectorClassSource();
   var bad = [];
   var guardFiles = _libFiles().filter(function (f) {
     var rel = _relPath(f);
@@ -3590,7 +3779,7 @@ function testEveryValidatorEnforced() {
   // A validator function with NO such tag is DRIFT: a fresh validator could ship whose
   // rule set a boundary re-derives inline with nothing catching it. A NAMED detector-class
   // must be REAL -- reported by a `_filterMarkers(bad, "<class>")` detector in this file.
-  var selfSrc = fs.readFileSync(path.join(REPO_ROOT, "test/layer-0-primitives/codebase-patterns.test.js"), "utf8");
+  var selfSrc = _detectorClassSource();
   var bad = [];
   var validatorFiles = _libFiles().filter(function (f) {
     var rel = _relPath(f);
@@ -4323,8 +4512,41 @@ function testNoPartialByteAcceptance() {
   _report("no partial two-form byte-source acceptance outside the key/secret ownership paths (route byte doors through guard.bytes.isByteSource + source/snapshotSource, or tag a key/secret door allow:byte-source-narrow)", matches);
 }
 
+function testNoOptionNamedThen() {
+  // class: option-named-then
+  // No public option may be called `then`. Every value the toolkit hands back carries a non-thenable
+  // mask, a non-enumerable own `then` holding `undefined`, so that resolving a promise with it cannot
+  // reach a replacement installed on `Object.prototype`; and the doors that enumerate option names pass
+  // over a name of that exact shape, because counting it had the toolkit refuse its own parse results as
+  // option bags. An option genuinely NAMED `then` collides with both halves: the copy a verb makes of a
+  // caller's bag would drop it, and a bag carrying it would make the bag itself a thenable, which an
+  // `await` anywhere above would unwrap. The name is reserved, and the place a new option is declared is
+  // its `@opts` block, so that is where the reservation is enforced. Rename-proof: it matches the
+  // declaration SHAPE in the wiki comment block, not any symbol.
+  var files = _libFiles(), matches = [];
+  for (var i = 0; i < files.length; i++) {
+    var rel = _relPath(files[i]);
+    var content;
+    try { content = fs.readFileSync(files[i], "utf8"); }
+    catch (_e) { continue; }
+    var lines = _lines(content), inOpts = false;
+    for (var j = 0; j < lines.length; j++) {
+      var line = lines[j];
+      if (/@opts\b/.test(line)) { inOpts = true; continue; }
+      if (inOpts && /@[a-z]+\b/.test(line)) inOpts = false;
+      if (!inOpts) continue;
+      if (/^\s*\*?\s*then\s*:/.test(line)) {
+        matches.push({ file: rel, line: j + 1, content: line.trim() });
+      }
+    }
+  }
+  _report("no public option is named `then` (it collides with the non-thenable mask every returned " +
+    "value carries and with the name-enumerating doors that pass over it; pick another name)", matches);
+}
+
 function run() {
   _allViolations = [];
+  testNoOptionNamedThen();
   testSourceHeaders();
   testShippedSourceIsAscii();
   testTopOfFileRequires();

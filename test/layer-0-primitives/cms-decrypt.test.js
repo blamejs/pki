@@ -121,12 +121,29 @@ async function run() {
   // garbage) -- the same distribution regardless of which byte was broken, so a padding error is not
   // distinguishable from a content error. (The uniform hard verdict is separately pinned by the AEAD /
   // AES-KW / PWRI / kemri cases above, whose failures DO authenticate.)
+  // These drive the v1.5 path, which `openssl cms -encrypt` produces by default and which the verb now
+  // refuses unless the caller opts in, so each passes the opt-in to reach the implicit rejection it is
+  // about. The refusal itself is a separate property, pinned below: it comes BEFORE the unwrap, so under
+  // the default nothing in the verdict depends on whether the RSA decode conformed.
+  var V15_OPTS = { allowUnauthenticatedRsa15: true };
   var v15a = _osslV15(rsa, MSG);
   if (v15a) {
-    check("v1.5 MMA corrupt-padding input never recovers the plaintext (RFC 3218)", await noPlaintext(function () { return pki.cms.decrypt(_flipByte(v15a, _encKeyOffset(v15a)), { key: rsa.key, cert: rsa.cert }); }));
-    check("v1.5 MMA corrupt-mid input never recovers the plaintext (RFC 3218)", await noPlaintext(function () { return pki.cms.decrypt(_flipByte(v15a, _encKeyOffset(v15a) + 5), { key: rsa.key, cert: rsa.cert }); }));
-    check("v1.5 MMA valid-padding wrong-key never recovers the plaintext (RFC 3218 implicit rejection)", await noPlaintext(function () { return pki.cms.decrypt(v15a, { key: makeRecipient("rsa").key, cert: rsa.cert }); }));
-    check("v1.5: the correct key still round-trips (implicit rejection does not break the good path)", Buffer.compare((await pki.cms.decrypt(v15a, { key: rsa.key, cert: rsa.cert })).content, MSG) === 0);
+    check("v1.5 MMA corrupt-padding input never recovers the plaintext (RFC 3218)", await noPlaintext(function () { return pki.cms.decrypt(_flipByte(v15a, _encKeyOffset(v15a)), { key: rsa.key, cert: rsa.cert }, V15_OPTS); }));
+    check("v1.5 MMA corrupt-mid input never recovers the plaintext (RFC 3218)", await noPlaintext(function () { return pki.cms.decrypt(_flipByte(v15a, _encKeyOffset(v15a) + 5), { key: rsa.key, cert: rsa.cert }, V15_OPTS); }));
+    check("v1.5 MMA valid-padding wrong-key never recovers the plaintext (RFC 3218 implicit rejection)", await noPlaintext(function () { return pki.cms.decrypt(v15a, { key: makeRecipient("rsa").key, cert: rsa.cert }, V15_OPTS); }));
+    check("v1.5: the correct key still round-trips (implicit rejection does not break the good path)", Buffer.compare((await pki.cms.decrypt(v15a, { key: rsa.key, cert: rsa.cert }, V15_OPTS)).content, MSG) === 0);
+    // The DEFAULT, on the same openssl message: refused on the combination, before any unwrap. This is the
+    // behavior an operator meets, and it is the one that carries no oracle at all.
+    var v15Default = "NO-THROW";
+    try { await pki.cms.decrypt(v15a, { key: rsa.key, cert: rsa.cert }); }
+    catch (e) { v15Default = e.code || e.name; }
+    check("v1.5 over a CBC content is refused by default, an openssl cms -encrypt message being exactly that (" +
+      v15Default + ")", v15Default === "cms/unauthenticated-rsa-v15");
+    var v15WrongDefault = "NO-THROW";
+    try { await pki.cms.decrypt(v15a, { key: makeRecipient("rsa").key, cert: rsa.cert }); }
+    catch (e2) { v15WrongDefault = e2.code || e2.name; }
+    check("and the refusal is the same for a key whose unwrap would fail, so it precedes the unwrap",
+      v15WrongDefault === v15Default);
   } else { helpers.skip && helpers.skip("openssl v1.5 fixture unavailable"); }
 
   // ---- kemri: wrong-length ct rejected before decap; ML-KEM implicit rejection folds in ----
@@ -392,7 +409,25 @@ async function run() {
   // guaranteed to THROW -- PKCS#7 padding is coincidentally valid ~1/256 of the time -- hence the
   // deterministic property is noPlaintext (uniform cms/decrypt-failed OR non-plaintext garbage), never
   // a distinguishable padding error (RFC 3218 sec. 2.3.2).
-  check("v1.5 ktri with a decode fault -> no plaintext (implicit rejection, no oracle)", await noPlaintext(function () { return pki.cms.decrypt(v15EnvNoSsl, { key: rsa.key, cert: rsa.cert }, { recipientIndex: 0 }); }));
+  check("v1.5 ktri with a decode fault -> no plaintext (implicit rejection, no oracle)", await noPlaintext(function () { return pki.cms.decrypt(v15EnvNoSsl, { key: rsa.key, cert: rsa.cert }, { recipientIndex: 0, allowUnauthenticatedRsa15: true }); }));
+
+  // The combination itself is refused BEFORE the unwrap unless the caller opts in, and the refusal being
+  // before the unwrap is the point: nothing about the verdict then depends on whether the RSA decode
+  // conformed. Implicit rejection alone cannot settle this, because with a non-AEAD content the padding
+  // check is the only integrity signal: either a failed unwrap's substituted key can win it, which returns
+  // the wrong plaintext, or it cannot, which tells an attacker submitting chosen ciphertexts that theirs
+  // decoded. MEASURED against an `openssl cms -encrypt -aes-256-cbc` message, which is v1.5 by default:
+  // with the opt-in, 1 acceptance in 256 where the unwrap conformed against 0 where it did not; under the
+  // default, 0 and 0.
+  check("CB1: v1.5 key transport over a non-AEAD content is refused by default",
+    (await codeOf(function () { return pki.cms.decrypt(v15EnvNoSsl, { key: rsa.key, cert: rsa.cert }, { recipientIndex: 0 }); })) === "cms/unauthenticated-rsa-v15");
+  check("CB2: CONTROL and the opt-in is what the vector above passes to reach the unwrap at all",
+    (await codeOf(function () { return pki.cms.decrypt(v15EnvNoSsl, { key: rsa.key, cert: rsa.cert }, { recipientIndex: 0, allowUnauthenticatedRsa15: true }); })) !== "cms/unauthenticated-rsa-v15");
+  // OAEP needs no opt-in: its own padding check is the integrity signal, so a failed unwrap throws rather
+  // than substituting. The CONTROL above already drives an OAEP message over the same CBC content and gets
+  // `cms/decrypt-failed` rather than this refusal, which is what says the gate is scoped to v1.5.
+  check("CB3: and an OAEP recipient over the same CBC content is not refused on this ground",
+    (await codeOf(function () { return pki.cms.decrypt(oaepDefaultedBoth, { key: rsa.key, cert: rsa.cert }, { recipientIndex: 0 }); })) === "cms/decrypt-failed");
 
   // ---- EncryptedData + PBES2 distinct-code reject arms ----
   function encData3(algNode, hasContent) {
@@ -600,10 +635,132 @@ async function run() {
     if (surgery.isAlgId(node, "1.2.840.113549.1.1.7")) { ds8seen++; if (ds8seen === 1) return pki.asn1.build.sequence([pki.asn1.build.oid("1.2.840.113549.1.1.1"), pki.asn1.build.raw(Buffer.from([5, 0]))]); }
     return undefined;
   });
-  var ds8buf = await pki.cms.decrypt(ds8bad, { key: ds8rsa.key, cert: ds8rsa.cert });
-  var ds8str = await _collectChunks((await pki.cms.decrypt(ds8bad, { key: ds8rsa.key, cert: ds8rsa.cert }, { stream: true })).content);
+  // The downgraded candidate is v1.5 over a CBC content, which the verb refuses unless the caller opts in,
+  // and what this vector is about is the FALLBACK across candidates, so it opts in to reach it.
+  var ds8bufRes = await pki.cms.decrypt(ds8bad, { key: ds8rsa.key, cert: ds8rsa.cert }, { allowUnauthenticatedRsa15: true });
+  var ds8strRes = await pki.cms.decrypt(ds8bad, { key: ds8rsa.key, cert: ds8rsa.cert }, { stream: true, allowUnauthenticatedRsa15: true });
+  var ds8buf = ds8bufRes;
+  var ds8str = await _collectChunks(ds8strRes.content);
   check("DS8. a streamed CBC decrypt falls back across ambiguous recipients (a v1.5 garbage-key candidate does not shadow the correct one)",
     Buffer.compare(ds8buf.content, MSG) === 0 && Buffer.compare(ds8str, MSG) === 0);
+  // The recipient REPORTED matters as much as the plaintext, and it is what used to be wrong. A candidate
+  // whose unwrap yields a key of the wrong length has failed, and the decrypt under a random substitute
+  // runs only to keep the work and the timing of a failure indistinguishable from a success. Its result
+  // used to decide the candidate all the same, and a random key leaves a final CBC block that is valid
+  // PKCS#7 padding about one time in 256, so the known-bad recipient won that often: measured 2 in 400
+  // streamed runs, returning wrong plaintext while naming recipient 0 as the one used. Now it cannot win,
+  // measured 400 of 400 on both paths
+  // (`.references/tools/measure-ds8-flake.js` has the before, this the after).
+  check("DS8a. and both paths report the recipient they actually used, never the rejected candidate",
+    ds8buf.recipientIndex === 1 && ds8strRes.recipientIndex === 1);
+
+  // The same rule with a LONE candidate: there is nothing to fall back to. The verdict that holds on
+  // every draw and on every platform is the DEFAULT one, where the combination is refused before any
+  // unwrap runs, so nothing random has happened yet when the answer is decided.
+  //
+  // Under the OPT-IN the outcome rests on OpenSSL's implicit rejection, which returns a synthetic key
+  // of pseudorandom length rather than throwing, and the CBC padding check is then the only signal a
+  // content with no integrity tag offers. MEASURED over 200000 random AES-256-CBC keys against one
+  // ciphertext: padding accepts 832 of them, 1 in 240, so a 128-draw assertion that every draw fails
+  // holds only 59 percent of the time. An earlier form of this vector asserted exactly that and failed
+  // on CI while passing here, which is the shape the note on refusal vectors drawn from random bytes
+  // warns about: measure the mechanism rather than re-running until it passes. So the opt-in arm
+  // asserts the outcome SET, which is the security property, and carries the distribution in its label.
+  var ds9rsa = makeRecipient("rsa");
+  var ds9default = {}, ds9optedIn = {};
+  for (var ds9i = 0; ds9i < 64; ds9i++) {
+    var ds9env = await pki.cms.encrypt(MSG, [{ cert: ds9rsa.cert }], { contentEncryptionAlgorithm: "aes-256-cbc" });
+    var ds9bad = surgery.patch(ds9env, function (node) {
+      if (surgery.isAlgId(node, "1.2.840.113549.1.1.7")) {
+        return pki.asn1.build.sequence([pki.asn1.build.oid("1.2.840.113549.1.1.1"), pki.asn1.build.raw(Buffer.from([5, 0]))]);
+      }
+      return undefined;
+    });
+    var ds9code;
+    try { await pki.cms.decrypt(ds9bad, { key: ds9rsa.key, cert: ds9rsa.cert }); ds9code = "NO-THROW"; }
+    catch (e) { ds9code = e.code || e.constructor.name; }
+    ds9default[ds9code] = (ds9default[ds9code] || 0) + 1;
+    var ds9opt;
+    try { await pki.cms.decrypt(ds9bad, { key: ds9rsa.key, cert: ds9rsa.cert }, { allowUnauthenticatedRsa15: true }); ds9opt = "NO-THROW"; }
+    catch (e) { ds9opt = e.code || e.constructor.name; }
+    ds9optedIn[ds9opt] = (ds9optedIn[ds9opt] || 0) + 1;
+  }
+  check("DS9. a lone implicitly-rejected recipient is refused before any unwrap by default, on every " +
+    "draw (" + JSON.stringify(ds9default) + ")",
+    ds9default["cms/unauthenticated-rsa-v15"] === 64 && Object.keys(ds9default).length === 1);
+  // The security property under the opt-in is that NO outcome distinguishes a conforming unwrap from a
+  // rejected one. A third code would be that distinction, whatever it said. The padding failure must
+  // still be the common answer, since the alternative needs the 1-in-240 draw.
+  var ds9codes = Object.keys(ds9optedIn).sort();
+  check("DS9a. and under the opt-in no third outcome appears to distinguish a conforming unwrap from a " +
+    "rejected one (" + JSON.stringify(ds9optedIn) + ")",
+    ds9codes.length >= 1 && ds9codes.length <= 2 && (ds9optedIn["cms/decrypt-failed"] || 0) >= 1 &&
+    ds9codes.every(function (k) { return k === "cms/decrypt-failed" || k === "NO-THROW"; }));
+
+  // And it is indistinguishable from any other wrong key on the lazy stream path in all three of the
+  // ways an attacker can watch: the CODE, the STAGE, and the BYTES DELIVERED before the failure. A key of
+  // the RIGHT length but the wrong value yields its garbage chunks and only then fails the padding check,
+  // so a substituted candidate that refused at the call, or that yielded nothing first, would say whether
+  // the v1.5 padding was valid, which is the one thing the substitute exists to hide. Counting the bytes
+  // is the part a code-and-stage comparison misses.
+  async function ds10stage(run) {
+    var bytes = 0;
+    try {
+      var res = await run();
+      try { for await (var c of res.content) { bytes += c.length; } return "consumption-ok:" + bytes; }
+      catch (e) { return "consumption:" + (e.code || e.constructor.name) + ":" + bytes; }
+    } catch (e) { return "call:" + (e.code || e.constructor.name) + ":" + bytes; }
+  }
+  // A CBC stream withholds its final block until the padding check, so a failing stream delivers the
+  // padded length minus one block. The 1-in-240 draw where the garbage plaintext's last byte happens
+  // to spell a valid padding length instead SUCCEEDS, delivering between padded-16 and padded-1 bytes.
+  // Both sides of the comparison draw from that same two-outcome space, so the assertion is on the
+  // SPACE and on the sides agreeing about it, never on one draw: a single-draw form of this vector is
+  // the shape the note on refusal vectors drawn from random bytes warns about, and it failed on one
+  // smoke run in roughly the expected proportion.
+  var ds10padded = Math.ceil((MSG.length + 1) / 16) * 16;
+  var DS10_FAILED = "consumption:cms/decrypt-failed:" + (ds10padded - 16);
+  function ds10classify(outcome) {
+    if (outcome === DS10_FAILED) return "failed";
+    if (outcome.indexOf("consumption-ok:") !== 0) return outcome;
+    var n = Number(outcome.slice("consumption-ok:".length));
+    return (n >= ds10padded - 16 && n <= ds10padded - 1) ? "accepted" : outcome;
+  }
+  var ds10sub = {}, ds10wrong = {};
+  for (var ds10i = 0; ds10i < 24; ds10i++) {
+    var ds10env = surgery.patch(await pki.cms.encrypt(MSG, [{ cert: ds9rsa.cert }], { contentEncryptionAlgorithm: "aes-256-cbc" }),
+      function (node) {
+        if (surgery.isAlgId(node, "1.2.840.113549.1.1.7")) {
+          return pki.asn1.build.sequence([pki.asn1.build.oid("1.2.840.113549.1.1.1"), pki.asn1.build.raw(Buffer.from([5, 0]))]);
+        }
+        return undefined;
+      });
+    var subOne = ds10classify(await ds10stage(function () {
+      return pki.cms.decrypt(ds10env, { key: ds9rsa.key, cert: ds9rsa.cert }, { stream: true, allowUnauthenticatedRsa15: true });
+    }));
+    ds10sub[subOne] = (ds10sub[subOne] || 0) + 1;
+    // The stage to match: an explicit cek of the right length and the wrong value, which reaches the
+    // same lazy stream with no substitute involved, over a fresh ciphertext each draw.
+    var ds10edOne = await pki.cms.encrypt(MSG, { cek: Buffer.alloc(32, 0x11) }, { contentEncryptionAlgorithm: "aes-256-cbc" });
+    var wrongOne = ds10classify(await ds10stage(function () {
+      return pki.cms.decrypt(ds10edOne, { cek: Buffer.alloc(32, 0x22) }, { stream: true });
+    }));
+    ds10wrong[wrongOne] = (ds10wrong[wrongOne] || 0) + 1;
+  }
+  function ds10onlyKnown(dist) {
+    return Object.keys(dist).every(function (k) { return k === "failed" || k === "accepted"; }) &&
+      (dist.failed || 0) >= 1;
+  }
+  check("DS10. CONTROL a right-length wrong key on the lazy stream path delivers its chunks, then fails " +
+    "on all but the padding-accepting draw (" + JSON.stringify(ds10wrong) + ")", ds10onlyKnown(ds10wrong));
+  check("DS10a. and an implicitly-rejected one produces no outcome an ordinary wrong key does not, in " +
+    "code, stage and bytes delivered (" + JSON.stringify(ds10sub) + ")", ds10onlyKnown(ds10sub));
+  var ds10ed = await pki.cms.encrypt(MSG, { cek: Buffer.alloc(32, 0x11) }, { contentEncryptionAlgorithm: "aes-256-cbc" });
+  // CONTROL for both: the right key streams the content through to the end on that same path.
+  check("DS10b. CONTROL the right key streams the whole content",
+    (await ds10stage(function () {
+      return pki.cms.decrypt(ds10ed, { cek: Buffer.alloc(32, 0x11) }, { stream: true });
+    })) === "consumption-ok:" + MSG.length);
 
   console.log("CHECKS " + helpers.getChecks());
 }

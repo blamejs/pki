@@ -342,6 +342,138 @@ function testProducerSnapshotsItsInput() {
   var produced = m.root(sneaky);
   check("a leaf slot is read exactly once (" + reads + ")", reads === 1);
   check("the fold uses the leaf that was checked", produced.toString("hex") === R4);
+
+  // The slot count is the other half of the same question, and it was read once for the cap and again
+  // on every loop iteration. A getter that SHORTENS the array between those reads made the cap approve
+  // four leaves and the loop collect one, so the root committed to a tree the caller never supplied and
+  // nothing reported it. The count is captured before any slot is touched, so an array that shrinks
+  // under the walk is refused rather than silently folded short.
+  function shrinking(n) {
+    var a = [H(L0), H(L1), H(L2), H(L3)];
+    Object.defineProperty(a, "0", {
+      configurable: true,
+      get: function () { a.length = n; return H(L0); },
+    });
+    return a;
+  }
+  var fourLeafRoot = m.root([H(L0), H(L1), H(L2), H(L3)]).toString("hex");
+  check("CONTROL the four-leaf root of the same leaves, for comparison", fourLeafRoot === R4);
+  var shrunkCode = "NO-THROW", shrunkRoot = null;
+  try { shrunkRoot = m.root(shrinking(1)).toString("hex"); }
+  catch (e) { shrunkCode = e.code || e.constructor.name; }
+  check("an array a leaf getter shortens is refused rather than folded short (" + shrunkCode + ")",
+    shrunkRoot === null && shrunkCode !== "NO-THROW" && shrunkCode.indexOf("merkle/") === 0);
+  var ipCode = "NO-THROW";
+  try { m.inclusionProof({ leafHashes: shrinking(1), leafIndex: 3 }); }
+  catch (e2) { ipCode = e2.code || e2.constructor.name; }
+  check("and the inclusion-proof producer refuses it on the same ground (" + ipCode + ")",
+    ipCode.indexOf("merkle/") === 0);
+  var cpCode = "NO-THROW";
+  try { m.consistencyProof({ leafHashes: shrinking(1), oldSize: 3 }); }
+  catch (e3) { cpCode = e3.code || e3.constructor.name; }
+  check("and so does the consistency-proof producer (" + cpCode + ")",
+    cpCode.indexOf("merkle/") === 0);
+
+  // The verifiers take a caller's proof array through the same shape, and MEASURED they were never
+  // exposed by it: a proof the walk collects short folds to a root that does not match the one supplied,
+  // so the comparison refuses it either way. This pins that fail-closed property rather than the fix;
+  // reverting the producer's guard leaves it passing, which is what says so.
+  var okProof = m.inclusionProof({ leafHashes: [H(L0), H(L1), H(L2), H(L3)], leafIndex: 0 });
+  check("CONTROL a four-leaf inclusion proof verifies",
+    m.verifyInclusion({ leafHash: H(L0), leafIndex: 0, treeSize: 4, proof: okProof, rootHash: Buffer.from(R4, "hex") }) === true);
+  function shrinkingProof() {
+    var p = okProof.slice();
+    Object.defineProperty(p, "0", {
+      configurable: true,
+      get: function () { p.length = 1; return okProof[0]; },
+    });
+    return p;
+  }
+  var viCode = "NO-THROW", viResult = null;
+  try {
+    viResult = m.verifyInclusion({ leafHash: H(L0), leafIndex: 0, treeSize: 4,
+      proof: shrinkingProof(), rootHash: Buffer.from(R4, "hex") });
+  } catch (e4) { viCode = e4.code || e4.constructor.name; }
+  check("a proof array a node getter shortens never verifies, the root comparison catching it (" +
+    viCode + ", result " + viResult + ")",
+    viResult !== true);
+
+  // The COUNT itself was read twice, once for the cap and once for the walk, and the two can disagree
+  // without any slot accessor at all: Array.isArray is true for a Proxy whose target is an array, and a
+  // get trap answers "length" afresh on each read. So a cap that saw 0 passed while the walk saw 1, and
+  // the root returned was a one-leaf tree's. The count is read once now, and whichever value the proxy
+  // hands over is the one the cap judges AND the one the fold uses.
+  function varyingLength(target, lengths) {
+    var k = 0;
+    return new Proxy(target, {
+      get: function (t, prop, recv) {
+        if (prop === "length") { var v = k < lengths.length ? lengths[k] : t.length; k++; return v; }
+        return Reflect.get(t, prop, recv);
+      },
+    });
+  }
+  var FOUR = [H(L0), H(L1), H(L2), H(L3)];
+  var emptyRoot = m.emptyRootHash().toString("hex");
+  var oneRoot = m.root([H(L0)]).toString("hex");
+  var fourRoot = m.root(FOUR).toString("hex");
+  check("CONTROL the empty, one-leaf and four-leaf roots are three different values",
+    emptyRoot !== oneRoot && oneRoot !== fourRoot);
+  check("a length answering 0 then 1 yields the tree for 0, the cap and the fold reading one count",
+    m.root(varyingLength(FOUR, [0, 1])).toString("hex") === emptyRoot);
+  check("a length answering 1 then 4 yields the tree for 1, on the same ground",
+    m.root(varyingLength(FOUR, [1, 4])).toString("hex") === oneRoot);
+
+  // Reading the count ONCE is not enough if what is read is not a NUMBER. A get trap may answer
+  // `length` with an object, and capturing an object captures no value: the cap coerces it, each
+  // comparison in the walk coerces it again, and a `valueOf` answering 0 and then 4 had the cap approve
+  // an empty list while the fold produced four leaves. The same lever cleared the leaf cap. The count
+  // is narrowed to a non-negative integer where it is taken, so a length that is not one is refused
+  // rather than coerced.
+  function objectLength(target, values) {
+    var k = 0;
+    return new Proxy(target, {
+      get: function (t, prop, recv) {
+        if (prop === "length") {
+          return { valueOf: function () { var v = k < values.length ? values[k] : t.length; k++; return v; } };
+        }
+        return Reflect.get(t, prop, recv);
+      },
+    });
+  }
+  var objCode = "NO-THROW", objRoot = null;
+  try { objRoot = m.root(objectLength(FOUR, [0, 4, 4, 4, 4])).toString("hex"); }
+  catch (e5) { objCode = e5.code || e5.constructor.name; }
+  check("a length that is an object whose valueOf answers 0 then 4 is refused rather than coerced (" +
+    objCode + ", root " + objRoot + ")",
+  objCode === "TypeError" && objRoot === null);
+  var capCode = "NO-THROW";
+  try { m.root(objectLength(FOUR, [1e9, 4, 4, 4, 4])); }
+  catch (e6) { capCode = e6.code || e6.constructor.name; }
+  check("and one answering above the leaf cap first does not clear it either (" + capCode + ")",
+    capCode === "TypeError" || capCode === "merkle/too-many-leaves");
+
+  // Reading each slot once is not enough if what is read is a VIEW of the caller's store. A getter that
+  // hands out one scratch buffer per leaf satisfies the read-once rule and still leaves every collected
+  // leaf pointing at the same bytes, so collecting the second leaf overwrote the first: the root of
+  // [A, B] came out as the root of [B, B], with nothing reporting it. Each leaf is copied as it is
+  // collected now.
+  var A = H(L0), B = H(L1);
+  var rootAB = m.root([A, B]).toString("hex");
+  var rootBB = m.root([B, B]).toString("hex");
+  check("CONTROL the roots of [A,B] and [B,B] are different values", rootAB !== rootBB);
+  function sharedScratch() {
+    var scratch = Buffer.alloc(32);
+    A.copy(scratch);
+    var a = [];
+    Object.defineProperty(a, "0", { configurable: true, enumerable: true,
+      get: function () { return scratch; } });
+    Object.defineProperty(a, "1", { configurable: true, enumerable: true,
+      get: function () { B.copy(scratch); return scratch; } });
+    a.length = 2;
+    return a;
+  }
+  check("leaves handed out through one reused buffer still fold as the leaves they were",
+    m.root(sharedScratch()).toString("hex") === rootAB);
 }
 
 // Advertised-surface exercise: every primitive reachable by its full path.
@@ -356,7 +488,30 @@ function testSurface() {
   check("pki.merkle.consistencyProof is exposed", typeof pki.merkle.consistencyProof === "function");
 }
 
+/* A node is exactly 32 bytes, and the check enforcing that ran on the COPY, so a value handed where a
+ * hash belongs was duplicated in full and only then refused: measured, one 64 MiB leaf allocated
+ * another 64 MiB to reject it. MEASURED by allocation, `arrayBuffers` counting exactly the pool a
+ * Buffer copy comes from, because the copy is far too fast for a time budget to separate. */
+function testHashWidthPrecedesTheCopy() {
+  var oversize = Buffer.alloc(64 * 1024 * 1024, 0x41);
+  var before = process.memoryUsage().arrayBuffers;
+  var code;
+  try { pki.merkle.root([oversize]); code = "NO-THROW"; } catch (e) { code = e.code || e.name; }
+  var grewMiB = (process.memoryUsage().arrayBuffers - before) / (1024 * 1024);
+  check("a leaf far wider than a hash is refused before it is copied (" + code + ", " +
+    grewMiB.toFixed(1) + " MiB)", code === "merkle/bad-hash-length" && grewMiB < 1);
+  /* CONTROL: a valid pair still folds, and a merely WRONG width is still refused with the same code,
+     so the bound did not narrow what the verb accepts. */
+  var folded = pki.merkle.root([Buffer.alloc(32, 1), Buffer.alloc(32, 2)]);
+  var wrongWidth;
+  try { pki.merkle.root([Buffer.alloc(31, 1)]); wrongWidth = "NO-THROW"; }
+  catch (e2) { wrongWidth = e2.code; }
+  check("CONTROL valid leaves still fold and a 31-byte leaf is still refused",
+    Buffer.isBuffer(folded) && folded.length === 32 && wrongWidth === "merkle/bad-hash-length");
+}
+
 function run() {
+  testHashWidthPrecedesTheCopy();
   testSurface();
   testHashKats();
   testInclusionAccept();

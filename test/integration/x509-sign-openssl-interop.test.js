@@ -388,9 +388,16 @@ async function run() {
     check("openssl renders the user notice explicit text and its notice reference",
       /Interop test policy\./.test(pqT.stdout) && /InteropCA/.test(pqT.stdout));
     // The serial OpenSSL prints is the issuing certificate's own, which is what the pair identifies.
-    var pqCaSerial = pki.schema.x509.parse(pqCaDer).serialNumberHex.toUpperCase().replace(/(..)(?=.)/g, "$1:");
+    // OpenSSL 3.x prints it as colon-separated byte pairs and OpenSSL 4.0 as one 0x-prefixed string,
+    // so the oracle's `serial:` line is reduced to its hex digits and compared for equality with the
+    // issuer's own serial. Comparing the digits pins the VALUE across both renderings, where matching
+    // either printed form pins the formatting of whichever OpenSSL happens to be on PATH.
+    var pqCaSerial = pki.schema.x509.parse(pqCaDer).serialNumberHex.toUpperCase().replace(/^0+(?=..)/, "");
+    var pqSerialLines = pqT.stdout.split("\n").filter(function (l) { return /^\s*serial:/i.test(l); });
+    var pqAkiSerial = (pqSerialLines[0] || "").replace(/^\s*serial:\s*/i, "")
+      .replace(/^0x/i, "").replace(/[^0-9A-Fa-f]/g, "").toUpperCase().replace(/^0+(?=..)/, "");
     check("openssl renders the authority key identifier issuer name and the issuing certificate's serial",
-      /DirName:/i.test(pqT.stdout) && pqT.stdout.toUpperCase().indexOf(pqCaSerial) >= 0);
+      /DirName:/i.test(pqT.stdout) && pqSerialLines.length === 1 && pqAkiSerial === pqCaSerial);
 
     // RFC 6962. OpenSSL names the poison and, for the SCT list, decodes the TLS structure itself
     // (log id, timestamp, signature), so it is an independent oracle for the encoding rather than

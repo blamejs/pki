@@ -109,8 +109,12 @@ async function run() {
       a1.stdout.indexOf("IA5STRING         :" + rcUris[1]) >= 0 &&
       a1.stdout.indexOf(rcUris[0]) < a1.stdout.indexOf(rcUris[1]));
   });
+  // The freshness window is the certification authority's policy and the verb requires one (RFC 9763
+  // sec. 3.2), so this names five minutes judged against the fixture's own instant: what is being proved
+  // here is that the proof openssl accepted verifies, not what window a CA should choose.
   check("the proof in the request openssl accepted verifies here too",
-    (await pki.relatedCert.verifyRequest(rcAttr.relatedCertRequest, rcHeld.cert)) === true);
+    (await pki.relatedCert.verifyRequest(rcAttr.relatedCertRequest, rcHeld.cert,
+      { maxAge: 300, at: new Date(rcWhen * 1000) })) === true);
 
   // RFC 9883: a request for a key that cannot sign, signed by another key. The most important thing an
   // independent implementation confirms here is a NEGATIVE: `openssl req -verify` FAILS on such a

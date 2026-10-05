@@ -268,10 +268,19 @@ async function testPlacementReject() {
       unsignedAttributes: [{ type: t, values: [b.octetString(Buffer.from("x"))] }],
     }))) === "cms/bad-input");
   }
-  // A duplicate unsigned-attribute type is rejected.
-  check("#13 duplicate unsigned-attribute type rejected", (await codeOf(pki.cms.sign(CONTENT, { cert: s.cert, key: s.key }, {
+  // A repeated unsigned-attribute type is ACCEPTED, and the RFC is the authority for that. This vector
+  // asserted the refusal with no clause behind it, and it chose the one type that makes the refusal
+  // wrong in practice: a signature re-timestamped by several authorities carries one timeStampToken
+  // attribute per authority. `UnsignedAttributes ::= SET SIZE (1..MAX) OF Attribute` imposes no per-type
+  // uniqueness, clause 5.3 states none, and clause 11.4's countersignature type "specifies one or more
+  // signatures". The per-type rules that DO have a clause are the loop above, and they still refuse.
+  var twoTs = await pki.cms.sign(CONTENT, { cert: s.cert, key: s.key }, {
     unsignedAttributes: [{ type: "timeStampToken", values: [b.octetString(Buffer.from("a"))] }, { type: "timeStampToken", values: [b.octetString(Buffer.from("b"))] }],
-  }))) === "cms/bad-input");
+  });
+  var rows = (pki.schema.cms.parse(twoTs).signerInfos[0].unsignedAttrs || [])
+    .filter(function (a) { return a.type === pki.oid.byName("timeStampToken"); });
+  check("#13 a repeated unsigned-attribute type is emitted, both instances", rows.length === 2);
+  check("#13 and the message still verifies", (await pki.cms.verify(twoTs)).valid === true);
 }
 
 // ---- 14 DIGEST-ALGORITHM INDEPENDENCE --------------------------------------

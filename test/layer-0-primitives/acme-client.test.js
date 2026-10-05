@@ -985,6 +985,42 @@ async function testRenewalWindow() {
   var r2 = await clientAt(s2, T).renewalWindow(certDer, { random: function () { return 0.5; } });
   check("#15 RW-2 a past window forces renewNow", r2.renewNow === true);
 
+  /* RW-2a `opts.previous` is the prior result the stickiness decision compares against, and it is the
+     CALLER's object. It was validated as an object before the renewalInfo fetch and then read three more
+     times after it: `previous.suggestedWindow` twice in one expression and `previous.selectedTime` once
+     for its string test and again for the parse. The fetch is the window in which an accessor changes its
+     answer, so the prior window compared against need not be the one validated, and a non-object arriving
+     after the await reached `.start` and raised a bare TypeError with no code.
+     The option is read once, before the fetch, and the comparison reads that reading. */
+  var sPrev = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) });
+  var prevReads = 0;
+  var honestPrev = {
+    suggestedWindow: { start: new Date(T + 10 * DAY).toISOString(), end: new Date(T + 20 * DAY).toISOString() },
+    selectedTime: new Date(T + 15 * DAY).toISOString(),
+  };
+  var sneakyPrev = {};
+  Object.defineProperty(sneakyPrev, "suggestedWindow", {
+    enumerable: true,
+    get: function () { prevReads += 1; return prevReads === 1 ? honestPrev.suggestedWindow : 7; },
+  });
+  Object.defineProperty(sneakyPrev, "selectedTime", {
+    enumerable: true, get: function () { return honestPrev.selectedTime; },
+  });
+  var sneakyOutcome = await codeOf(clientAt(sPrev, T).renewalWindow(certDer, {
+    random: function () { return 0.5; }, previous: sneakyPrev,
+  }));
+  check("#15 RW-2a an accessor-backed previous cannot become a non-object across the fetch (" +
+    prevReads + " read(s), " + sneakyOutcome + ")",
+    prevReads <= 1 && sneakyOutcome.indexOf("RAW:") !== 0);
+  /* CONTROL: a plain prior result still sticks, so reading it once did not break the stickiness this
+     option exists for. The selected time must come back unchanged when the window has not moved. */
+  var sStick = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) });
+  var stuck = await clientAt(sStick, T).renewalWindow(certDer, {
+    random: function () { return 0.5; }, previous: honestPrev,
+  });
+  check("#15 RW-2b CONTROL an unchanged window still keeps the previously selected time",
+    stuck.selectedTime === honestPrev.selectedTime);
+
   // RW-23 a random callback that throws is surfaced as a typed caller error, not the raw exception.
   var sRw23 = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) });
   check("#15 RW-23 a throwing random is rejected as a typed acme/bad-input", (await codeOf(clientAt(sRw23, T).renewalWindow(certDer, { random: function () { throw new Error("entropy failed"); } }))) === "acme/bad-input");

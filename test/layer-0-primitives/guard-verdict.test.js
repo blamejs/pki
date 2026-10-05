@@ -156,6 +156,58 @@ function run() {
         return hasOwn.call(e2, "measured") && e2.measured === 2;
       }));
 
+    // `shield` adds the sentinel to a result whose shape has to survive, which is the form for a
+    // parse result or a row inside an array a caller indexes.
+    var keep = { status: "good" };
+    check("31. shield returns the same object and adds an own non-enumerable then",
+      verdict.shield(keep) === keep && hasOwn.call(keep, "then") && keep.then === undefined &&
+      Object.keys(keep).indexOf("then") === -1);
+    check("32. shield leaves a non-object alone", verdict.shield(null) === null &&
+      verdict.shield(7) === 7 && verdict.shield("s") === "s" && verdict.shield(undefined) === undefined);
+
+    /* A member the document itself carries is DATA, and replacing it would delete it: a parsed
+       `{"then":42,"other":1}` came back as `{"other":1}`. A non-callable value already ends the lookup
+       promise resolution performs, so it is kept as it is. */
+    var carriesThen = verdict.shield({ then: 42, other: 1 });
+    check("33. a non-callable own then the object already carries is kept",
+      carriesThen.then === 42 && carriesThen.other === 1 &&
+      JSON.stringify(carriesThen) === "{\"then\":42,\"other\":1}");
+    check("34. and so is one that is null or an object",
+      verdict.shield({ then: null }).then === null &&
+      verdict.shield({ then: [1] }).then.length === 1);
+
+    /* A CALLABLE own `then` is the thenable itself rather than data, so it is replaced. */
+    var callable = verdict.shield({ then: function (resolve) { resolve({ status: "forged" }); } });
+    check("35. a callable own then is replaced with the sentinel", callable.then === undefined);
+    var forged;
+    try { forged = await Promise.resolve(verdict.shield({ status: "good", then: function (r) { r({ status: "forged" }); } })); }
+    catch (_pe) { forged = { status: "threw" }; }
+    check("36. so awaiting the shielded object yields the object itself (" +
+      (forged && forged.status) + ")", forged !== null && forged.status === "good");
+
+    /* An own ACCESSOR is replaced without being read: it answers each read separately, so one that
+       returns a non-function when asked can return a function when the promise machinery looks. */
+    var getterReads = 0;
+    var withGetter = {};
+    Object.defineProperty(withGetter, "then", { configurable: true, enumerable: true,
+      get: function () { getterReads++; return getterReads > 1 ? function (r) { r({ status: "forged" }); } : 7; } });
+    var shieldedGetter = verdict.shield(withGetter);
+    check("37. an own accessor then is replaced and never read to decide (" + getterReads + " read(s))",
+      getterReads === 0 && shieldedGetter.then === undefined);
+
+    /* `set` leaves its target carrying the sentinel too. A field set on an object is the same kind of
+       value a verdict is, and a target reaching a promise resolution without one hands the lookup to
+       Object.prototype however it was assembled. */
+    var setTarget = verdict.set({ valid: false }, "reason", "mismatch");
+    check("38. set leaves its target owning the sentinel",
+      hasOwn.call(setTarget, "then") && setTarget.then === undefined &&
+      setTarget.valid === false && setTarget.reason === "mismatch" &&
+      Object.keys(setTarget).sort().join(",") === "reason,valid");
+    var setErr = verdict.set(new Error("carrier two"), "measured", 5);
+    check("39. and so does an Error it is used on, which stays an Error",
+      hasOwn.call(setErr, "then") && setErr.then === undefined &&
+      setErr instanceof Error && setErr.message === "carrier two" && setErr.measured === 5);
+
     console.log("CHECKS " + helpers.getChecks());
   })();
 }

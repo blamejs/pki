@@ -174,9 +174,48 @@ async function runOwnPropertyOptionVectors() {
   }, "initialExplicitPolicy", true);
 }
 
+/* The options DOOR is what makes a multi-read of an option harmless, so it is pinned behaviorally
+   rather than reasoned about. `pki.cms.verify` reads `opts.content`, `opts.time` and `opts.requiredEku`
+   more than once each, and an accessor on any of them could answer differently across those reads: a
+   `content` reporting the embedded value to the agreement check and something else afterwards would
+   have the verdict describe a check that ran on a value the caller never supplied. None of them is
+   reachable, because the door refuses an accessor-backed option before the first read. Asserted with a
+   COUNTING getter, so a door that stopped refusing would show as a read rather than as a silent pass. */
+async function runOptionAccessorDoor() {
+  var names = ["content", "time", "requiredEku", "certs", "trustAnchors"];
+  var leaked = [], accepted = [];
+  for (var i = 0; i < names.length; i++) {
+    var reads = 0;
+    var bag = {};
+    (function (n) {
+      Object.defineProperty(bag, n, {
+        enumerable: true, configurable: true,
+        get: function () { reads++; return Buffer.from("x"); },
+      });
+    })(names[i]);
+    var code = "NO-THROW";
+    try { await pki.cms.verify(Buffer.alloc(4), bag); }
+    catch (e) { code = e.code || e.constructor.name; }
+    if (code !== "cms/bad-input") accepted.push(names[i] + " -> " + code);
+    if (reads !== 0) leaked.push(names[i] + " read " + reads + " time(s)");
+  }
+  check("pki.cms.verify refuses an accessor-backed option before reading it (" +
+    (accepted.length ? accepted.join(", ") : names.length + " refused") +
+    (leaked.length ? "; " + leaked.join(", ") : "; 0 reads") + ")",
+  accepted.length === 0 && leaked.length === 0);
+  /* CONTROL: the same options carried as plain values reach the verb and fail for the document, not
+     for the option, so the refusal above is about the accessor. */
+  var plainCode = "NO-THROW";
+  try { await pki.cms.verify(Buffer.alloc(4), { content: Buffer.from("x") }); }
+  catch (e2) { plainCode = e2.code || e2.constructor.name; }
+  check("CONTROL the same option as a plain value is read and the document is what fails (" +
+    plainCode + ")", plainCode !== "cms/bad-input");
+}
+
 async function run() {
   var buf32 = Buffer.alloc(32);
   var sct = { logId: buf32, timestamp: 0n, signature: buf32, hashAlg: "sha256", sigAlg: "ecdsa" };
+  await runOptionAccessorDoor();
 
   // ---- property-key coercion -> guard.text.keyOf ----
   check("tsp.request hashAlgorithm=Object.create(null) -> typed", (await typed(function () { return pki.tsp.request({ hashAlgorithm: nullProto(), hashedMessage: buf32 }, {}); })) === true);

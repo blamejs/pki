@@ -43,6 +43,7 @@
 var fs           = require("node:fs");
 var path         = require("node:path");
 var childProcess = require("node:child_process");
+var codexVerdict = require("./codex-verdict.js");
 
 var ROOT = path.resolve(__dirname, "..");
 
@@ -777,17 +778,11 @@ function _codexReviewedHead(prNum) {
            r.commit && r.commit.oid === head;
   })) return true;
 
-  // (2) Clean-verdict issue comment citing the current head's commit sha. The abbreviation length is
-  // Codex's to choose: the prose verdict prints ten characters and the status table prints seven, so a
-  // fixed-width prefix search matches one shape and blocks forever on the other. Read the hex runs the
-  // comment carries and accept one that is a prefix of THIS head, which an unrelated sha cannot be.
+  // (2) A comment of Codex's own reporting a FINISHED review of this head. The rule lives in
+  // scripts/codex-verdict.js, which says why a comment naming the head is not by itself a verdict.
   var cv = _capture("gh", ["pr", "view", prNum, "--json", "comments", "--jq", ".comments"]);
   var comments = _ghJson(cv, "PR #" + prNum + " comment list");
-  return (comments || []).some(function (c) {
-    if (!c || !c.author || !_isCodexLogin(c.author.login) || typeof c.body !== "string") return false;
-    var runs = c.body.match(/[0-9a-f]{7,40}/g) || [];
-    return runs.some(function (r) { return head.indexOf(r) === 0; });
-  });
+  return codexVerdict.anyCommentReportsFinishedReview(comments, head, _isCodexLogin);
 }
 
 // Block until Codex has reviewed the current head (fail-closed on timeout).

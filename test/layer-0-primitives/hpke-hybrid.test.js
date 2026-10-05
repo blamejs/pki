@@ -180,6 +180,32 @@ function testSealOpen() {
     var ps = pki.hpke.seal(ids, kp.publicKey, psk, aad, pt);
     check("E" + (i + 1) + ".5: the psk mode composes with a hybrid KEM",
       Buffer.compare(pki.hpke.open(ids, ps.enc, { skm: kp.privateKey }, psk, aad, ps.ct), pt) === 0);
+    /* The combiner hashes `concat([ssPQ, ssT, ctT, ekT, label])`, and that concatenation reached
+       `Buffer.concat` through the live static. A replacement answering a FIVE-part array with a
+       constant makes both sides hash the same public value instead of combining the two secrets, so
+       the HPKE keys that follow are predictable and the ciphertext's confidentiality is gone. The
+       replacement is selective on purpose: the other call sites pass other lengths, so a vector that
+       broke every concatenation would prove nothing about this one. */
+    var realBufferConcat = Buffer.concat;
+    var enc1 = pki.hpke.encap(su.kem, kp.publicKey);
+    var baseSecret = pki.hpke.decap(su.kem, enc1.enc, { skm: kp.privateKey, pkm: kp.publicKey });
+    var underReplaced, concatReplacementLive;
+    try {
+      Buffer.concat = function (arr) {
+        if (Array.isArray(arr) && arr.length === 5) return Buffer.alloc(32, 0x11);
+        return realBufferConcat.apply(Buffer, arguments);
+      };
+      concatReplacementLive = Buffer.concat([Buffer.alloc(1), Buffer.alloc(1), Buffer.alloc(1),
+        Buffer.alloc(1), Buffer.alloc(1)])[0] === 0x11;
+      underReplaced = pki.hpke.decap(su.kem, enc1.enc, { skm: kp.privateKey, pkm: kp.publicKey });
+    } finally {
+      Buffer.concat = realBufferConcat;
+    }
+    check("E" + (i + 1) + ".6a: CONTROL the replaced Buffer.concat is live, so the next check uses it",
+      concatReplacementLive === true);
+    check("E" + (i + 1) + ".6b: the hybrid combiner does not dispatch through a live Buffer.concat",
+      Buffer.isBuffer(underReplaced) && baseSecret.length > 0 &&
+      Buffer.compare(underReplaced, baseSecret) === 0);
     check("E" + (i + 1) + ".6: the auth mode is refused, a hybrid KEM defining no AuthEncap",
       code(function () {
         return pki.hpke.seal(ids, kp.publicKey,

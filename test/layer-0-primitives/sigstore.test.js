@@ -172,7 +172,12 @@ function buildSynBundle(opts) {
   var entries = [te];
   if (opts.decoyArtifact !== undefined) {
     var decoyBody = JSON.parse(JSON.stringify(body));
-    decoyBody.spec.data.hash.value = crypto.createHash(hashAlg).update(opts.decoyArtifact).digest("hex");
+    // `decoyHashAlgorithm` lets the decoy record its artifact under a DIFFERENT algorithm from the
+    // entry that is selected, which is the only way a vector can put one algorithm in a failing
+    // attempt and the same one in the messageDigest claim the verdict checks last.
+    var decoyAlg = opts.decoyHashAlgorithm || hashAlg;
+    decoyBody.spec.data.hash.algorithm = decoyAlg;
+    decoyBody.spec.data.hash.value = crypto.createHash(decoyAlg).update(opts.decoyArtifact).digest("hex");
     entries = [makeEntry(decoyBody), te];
   } else if (opts.decoyIntegratedTime !== undefined) {
     // The same body, authentically logged, attesting an instant the leaf certificate does not cover.
@@ -304,8 +309,14 @@ async function buildV2Bundle(opts) {
   var te = {
     logId: { keyId: logIdFull.toString("base64") },
     integratedTime: 0,                       // always zero on a v2 entry, and ignored
-    logIndex: opts.logIndex === undefined ? 4242 : opts.logIndex,
-    inclusionProof: { logIndex: 0, treeSize: 1, hashes: [], rootHash: rootHash.toString("base64"),
+    // On a v2 entry the top-level index IS the leaf index, so a conforming bundle for a tree of size
+    // one states 0 here. The duplicate inside inclusionProof is a field clients are told to ignore, so
+    // the fixture writes a number no proof could establish into it: a bundle that verifies with 4242
+    // sitting there is a bundle whose verification did not read it.
+    logIndex: opts.logIndex === undefined ? 0 : opts.logIndex,
+    inclusionProof: {
+      logIndex: opts.proofLogIndex === undefined ? 4242 : opts.proofLogIndex,
+      treeSize: 1, hashes: [], rootHash: rootHash.toString("base64"),
       checkpoint: { envelope: cpEnvelope } },
     canonicalizedBody: canonBuf.toString("base64"),
   };
@@ -345,13 +356,26 @@ async function buildSctChainBundle(o) {
   var caExts = [synExt("basicConstraints", true, B.sequence([B.boolean(true)])), synExt("keyUsage", true, synKuVal([5, 6]))];
   var rootDer = synCert({ serial: 1n, issuer: "syn-root", subject: "syn-root", notBefore: NB, notAfter: NA,
     subjectKey: rootKp.publicKey, signerKey: rootKp.privateKey, extensions: caExts });
+  // `keyIds` gives the real intermediate a subjectKeyIdentifier and the leaf the matching
+  // authorityKeyIdentifier, which is what a real Fulcio chain carries and what names ONE of several
+  // certificates sharing a subject DN. The decoys carry no identifier, so only the real one is named.
+  // It is a SEPARATE option from the decoys so the same bundle can be driven with the identifiers and
+  // without them: without them nothing distinguishes the candidates and the cap decides the verdict,
+  // which is the behavior the identifier ordering replaces.
+  var interKeyId = Buffer.alloc(20, 0xA7);
+  var interExts = o.keyIds
+    ? caExts.concat([synExt("subjectKeyIdentifier", false, B.octetString(interKeyId))])
+    : caExts;
   var interDer = synCert({ serial: 2n, issuer: "syn-root", subject: "syn-inter", notBefore: NB, notAfter: NA,
-    subjectKey: interKp.publicKey, signerKey: rootKp.privateKey, extensions: caExts });
+    subjectKey: interKp.publicKey, signerKey: rootKp.privateKey, extensions: interExts });
 
   // The receipt covers the certificate as it stood before the receipt was added, so the leaf is built
   // twice: once without the extension, to sign over, and once with it, to ship (RFC 6962 sec. 3.2).
   var leafExts = [synExt("keyUsage", true, synKuVal([0])), synExt("extKeyUsage", false, B.sequence([synOid("codeSigning")])),
     synExt("subjectAltName", false, B.sequence([gnUriDer("https://github.com/synthetic/repo")]))];
+  if (o.keyIds) {
+    leafExts.push(synExt("authorityKeyIdentifier", false, B.sequence([B.contextPrimitive(0, interKeyId)])));
+  }
   function mkLeaf(exts) {
     return synCert({ serial: 3n, issuer: "syn-inter", subject: "syn-leaf", notBefore: NB, notAfter: NA,
       subjectKey: leafKp.publicKey, signerKey: interKp.privateKey, extensions: exts });
@@ -385,9 +409,39 @@ async function buildSctChainBundle(o) {
     inclusionPromise: { signedEntryTimestamp: setSig.toString("base64") },
     inclusionProof: { logIndex: 0, treeSize: 1, hashes: [], rootHash: rootHash.toString("base64"), checkpoint: { envelope: cpEnvelope } },
     canonicalizedBody: canonBuf.toString("base64") };
+  // `decoyInter` prepends an intermediate carrying the SAME subject and the SAME issuer as the real one but
+  // a different key, so it did not sign the leaf. It is what a CA key rotation leaves in a bundle, and it
+  // assembles by NAME while failing validation: the real sibling behind it must still be reached.
+  var chainCerts = [{ rawBytes: leafDer.toString("base64") }];
+  // `cyclicDecoys` prepends N intermediates whose subject AND issuer are both the real one's subject, so
+  // every one of them is a candidate at every depth of the walk. They are what exhausts a step budget, and
+  // they sit BEFORE the real intermediate so the search must still reach it.
+  // `anchorIssuedDecoys` prepends N intermediates carrying the real one's subject AND issued by the
+  // ANCHOR, so every one of them COMPLETES a path and the completion ordering cannot tell them apart.
+  // They consume the candidate cap, and the real intermediate sits behind them: the identifier the leaf
+  // names is the only thing that distinguishes it.
+  for (var kd = 0; kd < (o.anchorIssuedDecoys || 0); kd += 1) {
+    var kdKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+    chainCerts.push({ rawBytes: synCert({ serial: BigInt(300 + kd), issuer: "syn-root", subject: "syn-inter",
+      notBefore: NB, notAfter: NA, subjectKey: kdKp.publicKey, signerKey: rootKp.privateKey,
+      extensions: caExts }).toString("base64") });
+  }
+  for (var cd = 0; cd < (o.cyclicDecoys || 0); cd += 1) {
+    var cycKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+    chainCerts.push({ rawBytes: synCert({ serial: BigInt(200 + cd), issuer: "syn-inter", subject: "syn-inter",
+      notBefore: NB, notAfter: NA, subjectKey: cycKp.publicKey, signerKey: cycKp.privateKey,
+      extensions: caExts }).toString("base64") });
+  }
+  if (o.decoyInter === true) {
+    var decoyKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+    var decoyDer = synCert({ serial: 22n, issuer: "syn-root", subject: "syn-inter", notBefore: NB, notAfter: NA,
+      subjectKey: decoyKp.publicKey, signerKey: rootKp.privateKey, extensions: caExts });
+    chainCerts.push({ rawBytes: decoyDer.toString("base64") });
+  }
+  chainCerts.push({ rawBytes: interDer.toString("base64") });
   var bundle = { mediaType: "application/vnd.dev.sigstore.bundle.v0.3+json",
     verificationMaterial: { tlogEntries: [te],
-      x509CertificateChain: { certificates: [{ rawBytes: leafDer.toString("base64") }, { rawBytes: interDer.toString("base64") }] } },
+      x509CertificateChain: { certificates: chainCerts } },
     dsseEnvelope: env };
   return {
     bundle: bundle,
@@ -430,6 +484,37 @@ async function run() {
   var v = await pki.sigstore.verifyBundle(BUNDLE, TM);
   check("verifyBundle: the real bundle verifies (all legs)", v && v.verified === true);
   check("#78 valid aliases verified on the sigstore verdict", v.valid === true && v.valid === v.verified);
+
+  // The pinned trust lists are byte options, and the set the door admits has to be the set it handles.
+  // `guard.bytes.isByteSource` admits a DataView and an ArrayBuffer; the snapshot that copies these keys
+  // took neither, so a caller holding a key as the ArrayBuffer `Response.arrayBuffer()` returned had the
+  // bundle refused for its container rather than its content. This runs on the REAL bundle, so the
+  // narrow operation is actually reached: a probe on a malformed bundle never gets this far and its
+  // silence says nothing.
+  async function verifyWithKeyAs(convert) {
+    var tm = trustMaterial();
+    tm.rekorKeys = tm.rekorKeys.map(function (k) {
+      return { keyId: convert(k.keyId), spki: convert(k.spki), validFor: k.validFor };
+    });
+    try {
+      var r = await pki.sigstore.verifyBundle(BUNDLE, tm);
+      return r && r.verified === true ? "verified" : "unverified";
+    } catch (e) { return (e && e.isPkiError === true) ? "throw:" + e.code : "UNTYPED:" + ((e && e.message) || e); }
+  }
+  function asBuffer(b) { return Buffer.from(b); }
+  function asUint8(b) { return new Uint8Array(Buffer.from(b)); }
+  function asDataView(b) { var u = new Uint8Array(Buffer.from(b)); return new DataView(u.buffer); }
+  function asArrayBuffer(b) { return new Uint8Array(Buffer.from(b)).buffer; }
+  var repOutcomes = [];
+  repOutcomes.push(["Buffer", await verifyWithKeyAs(asBuffer)]);
+  repOutcomes.push(["Uint8Array", await verifyWithKeyAs(asUint8)]);
+  repOutcomes.push(["DataView", await verifyWithKeyAs(asDataView)]);
+  repOutcomes.push(["ArrayBuffer", await verifyWithKeyAs(asArrayBuffer)]);
+  var repBase = repOutcomes[0][1];
+  var repBad = repOutcomes.slice(1).filter(function (r) { return r[1] !== repBase; });
+  check("BS1: a pinned rekor key verifies the same whichever byte representation holds it (" +
+    repBase + (repBad.length ? "; diverged: " + repBad.map(function (r) { return r[0] + " -> " + r[1]; }).join(" | ") : "") + ")",
+    repBase === "verified" && repBad.length === 0);
 
   // An entry is tried until one passes every entry-dependent check, and those include a path
   // validation. The count is bounded so a bundle that fits the byte budget cannot multiply that
@@ -495,6 +580,48 @@ async function run() {
     vChain.verified === true && vChain.sctChecked === true && vChain.validScts === 1);
   check("SCT-4c the same bundle without ctLogs verifies and reports the receipt unchecked",
     (await pki.sigstore.verifyBundle(sctChain.bundle, sctChain.trust)).sctChecked === false);
+
+  // A path that assembles by NAME can still fail validation, and the sibling that would have validated must
+  // not be lost because a same-named one was tried first. The decoy here carries the real intermediate's
+  // subject AND issuer with a different key, so it did not sign the leaf: assembling stops at it, validation
+  // rejects it, and the search has to resume rather than move on to the next anchor.
+  var decoyChain = await buildSctChainBundle({ decoyInter: true });
+  var vDecoy = await pki.sigstore.verifyBundle(decoyChain.bundle,
+    Object.assign({}, decoyChain.trust, { ctLogs: decoyChain.ctLogs }));
+  check("SCT-4d an intermediate that assembles by name but fails validation does not hide the one that validates",
+    vDecoy.verified === true && vDecoy.sctChecked === true && vDecoy.validScts === 1);
+
+  // And the search's own bound must not become the denial. Eight intermediates sharing the real one's
+  // subject AND issuer are candidates at every depth, which is what exhausts a step budget, and they sit
+  // ahead of the real one. A bundle a rotated CA produced is not required to list its certificates in any
+  // helpful order, so the verdict must not depend on it.
+  var cyc = await buildSctChainBundle({ cyclicDecoys: 8 });
+  var tCyc = Date.now();
+  var vCyc = await pki.sigstore.verifyBundle(cyc.bundle, Object.assign({}, cyc.trust, { ctLogs: cyc.ctLogs }));
+  check("SCT-4e eight same-subject intermediates ahead of the real one do not exhaust the search (" +
+    (Date.now() - tCyc) + "ms)", vCyc.verified === true && vCyc.validScts === 1);
+
+  // The cap itself must not be spent by certificate ORDER. Eight intermediates sharing the real one's
+  // subject and each issued directly by the anchor all COMPLETE a path, so the completion ordering above
+  // cannot separate them: the first eight became the only eight paths considered and the real
+  // intermediate behind them was never validated, reporting sigstore/chain-invalid for a bundle that
+  // holds a valid path. A rotated or reissued CA is exactly what produces same-DN siblings, and the
+  // authority key identifier is what names which of them signed the leaf.
+  var kid = await buildSctChainBundle({ anchorIssuedDecoys: 8, keyIds: true });
+  var vKid = await pki.sigstore.verifyBundle(kid.bundle, Object.assign({}, kid.trust, { ctLogs: kid.ctLogs }));
+  check("SCT-4f eight anchor-issued same-subject intermediates do not spend the candidate cap on decoys",
+    vKid.verified === true && vKid.validScts === 1);
+  /* And the same eight decoys with NO key identifier anywhere. Both extensions are optional as far as
+   * a parser is concerned, so nothing then names which same-subject certificate signed the leaf and
+   * every candidate completes a path: a search that ranked candidates by the identifier alone still
+   * spent its budget on the eight the bundle listed first. The search is `pki.path.build`, whose bound
+   * is total candidate expansions rather than collected paths, so a later candidate stays reachable and
+   * the order a bundle lists its certificates in decides nothing either way. */
+  var kidNone = await buildSctChainBundle({ anchorIssuedDecoys: 8 });
+  var vNone = await pki.sigstore.verifyBundle(kidNone.bundle,
+    Object.assign({}, kidNone.trust, { ctLogs: kidNone.ctLogs }));
+  check("SCT-4g and the genuine issuer is still reached with no identifier to name it",
+    vNone.verified === true && vNone.validScts === 1);
 
   check("SCT-5 an empty ctLogs array is refused rather than read as no policy",
     (await codeOf(pki.sigstore.verifyBundle(BUNDLE, Object.assign({}, TM, { ctLogs: [] })))) === "sigstore/bad-input");
@@ -1135,6 +1262,46 @@ async function run() {
   var sv = await pki.sigstore.verifyBundle(synGood.bundle, synGood.trust);
   check("synthetic bundle (self-issued trust) fully verifies", sv && sv.verified === true && sv.identity.san.type === "uri");
 
+  /* An in-toto predicate is ARBITRARY JSON by specification, so a fractional number in it is conforming
+     and a bundle carrying one must verify. Holding every number in the document to denoting an integer
+     refuses such an attestation, which no fixture can reveal, because the predicate's shape is open by
+     specification rather than by convention: the rule is named onto the members that are read as
+     integers, `logIndex`, `integratedTime` and `treeSize`, and nothing else is constrained.
+     Both arms are needed. The accepting one proves the predicate is unconstrained; the refusing one
+     proves the named members still are, so the narrowing did not simply remove the rule. */
+  var fracPredicate = buildSynBundle({
+    payload: { _type: "https://in-toto.io/Statement/v1", predicateType: "https://slsa.dev/provenance/v1",
+      subject: [{ name: "pkg", digest: { sha512: "ab".repeat(64) } }],
+      // Values that survive serialization as written. A precision-losing spelling cannot be expressed as
+      // a source literal, because it collapses before `JSON.stringify` ever sees it, which is the same
+      // reason the refusing arm below injects its token as text.
+      //
+      // `integratedTime` and `logIndex` are here DELIBERATELY. They are the names the bundle reads as
+      // integers, and a predicate field is conforming whatever it is called: a rule that followed the
+      // NAME rather than the document would refuse this attestation for a field that merely shares a
+      // name with log metadata, which is the same failure as a document-wide rule wearing a disguise.
+      predicate: { score: 0.5, confidence: 0.001, integratedTime: 0.5, logIndex: 1.25,
+        nested: { ratio: 2.25, treeSize: 0.75 } } },
+  });
+  var fracVerdict = null, fracCode = null;
+  try { fracVerdict = await pki.sigstore.verifyBundle(fracPredicate.bundle, fracPredicate.trust); }
+  catch (e) { fracCode = (e && e.code) || "NO-CODE"; }
+  check("a bundle whose in-toto predicate carries fractional numbers still verifies" +
+    (fracCode ? " (refused " + fracCode + ")" : ""),
+    fracVerdict !== null && fracVerdict.verified === true);
+  /* And the named members are still held to the rule, on the bundle's own log metadata. The token is
+     injected as TEXT, because the value would collapse to an integer before reaching the parser. */
+  var intBundleText = JSON.stringify(synGood.bundle)
+    .replace(/"logIndex":"?(\d+)"?/, "\"logIndex\":1.0000000000000001");
+  var intCode = "NO-THROW";
+  if (intBundleText.indexOf("1.0000000000000001") !== -1) {
+    try { await pki.sigstore.verifyBundle(intBundleText, synGood.trust); }
+    catch (e) { intCode = (e && e.code) || "NO-CODE"; }
+  }
+  check("a logIndex spelled 1.0000000000000001 is still refused, so naming the members kept the rule (" +
+    intCode + ")",
+    intBundleText.indexOf("1.0000000000000001") !== -1 && intCode !== "NO-THROW");
+
   // A low-order (all-zeroes) Ed25519 Fulcio leaf key verifies a FORGED EdDSA signature; node imports it
   // without complaint, so the shared Edwards-point full-order gate must reject it at key-parse (before the
   // DSSE verify), exactly as the webauthn / path-validation EdDSA paths do. Without the gate the bundle
@@ -1266,6 +1433,45 @@ async function run() {
   var synDeep = buildSynBundle({ leafIssuer: "depth-1", extraChain: deep });
   check("synthetic over-deep DN chain -> sigstore/chain-incomplete",
     await codeOf(pki.sigstore.verifyBundle(synDeep.bundle, synDeep.trust)) === "sigstore/chain-incomplete");
+
+  // Two intermediates can share a subject DN, which is what a rotated CA looks like, and only one of them
+  // leads to the anchor. Taking the first match by name and stopping loses a path that exists, so the walk
+  // BACKTRACKS. The observable is which failure comes back: `chain-incomplete` means no path was assembled
+  // at all, `chain-invalid` means one was and then did not validate. These synthetic intermediates are
+  // self-signed, so no assembled path can validate; the point is that one is FOUND.
+  var decoyFirst = buildSynBundle({ leafIssuer: "mid-ca", extraChain: [
+    synChainCert("mid-ca", "nowhere-root"),   // same subject, issuer leads nowhere: tried first
+    synChainCert("mid-ca", "syn-root"),       // same subject, issuer IS the anchor: the real one
+  ] });
+  var decoyCode = await codeOf(pki.sigstore.verifyBundle(decoyFirst.bundle, decoyFirst.trust));
+  check("PATH-BACKTRACK a decoy intermediate sharing the real one's subject does not hide the path (" +
+    decoyCode + ")", decoyCode === "sigstore/chain-invalid");
+  // The control: with ONLY the real intermediate the verdict is the same, so the decoy case now behaves as
+  // though the decoy were not there, which is the property. Without this the check above would also pass
+  // for a walk that assembled some other wrong path.
+  var realOnly = buildSynBundle({ leafIssuer: "mid-ca", extraChain: [synChainCert("mid-ca", "syn-root")] });
+  check("PATH-BACKTRACK control: the same bundle without the decoy reaches the same verdict",
+    (await codeOf(pki.sigstore.verifyBundle(realOnly.bundle, realOnly.trust))) === decoyCode);
+  // And the decoy alone still finds nothing, so `chain-invalid` above came from the real intermediate.
+  var decoyOnly = buildSynBundle({ leafIssuer: "mid-ca", extraChain: [synChainCert("mid-ca", "nowhere-root")] });
+  check("PATH-BACKTRACK control: the decoy alone assembles no path",
+    (await codeOf(pki.sigstore.verifyBundle(decoyOnly.bundle, decoyOnly.trust))) === "sigstore/chain-incomplete");
+
+  // Backtracking needs a STEP bound or a bundle of same-subject decoys makes the search combinatorial,
+  // which is a parser-DoS rather than a longer search. One large input, timed: a chain of decoys that
+  // reaches no anchor must be abandoned promptly rather than explored.
+  // Each decoy carries the SAME subject AND issuer, so every one of them is a candidate at every depth and
+  // the branch factor stays at 40 all the way down. The visited check does not help: they are 40 distinct
+  // certificates, not one revisited. Decoys that merely dead-end would be a linear walk and would prove
+  // nothing, which is what a first version of this vector did.
+  var manyDecoys = [];
+  for (var dd = 0; dd < 40; dd += 1) manyDecoys.push(synChainCert("fan-ca", "fan-ca"));
+  var fanOut = buildSynBundle({ leafIssuer: "fan-ca", extraChain: manyDecoys });
+  var t0 = Date.now();
+  var fanCode = await codeOf(pki.sigstore.verifyBundle(fanOut.bundle, fanOut.trust));
+  var elapsed = Date.now() - t0;
+  check("PATH-BACKTRACK 40 same-subject decoys are abandoned, not explored (" + fanCode + ", " +
+    elapsed + "ms)", fanCode === "sigstore/chain-incomplete" && elapsed < 5000);
 
   await runMessageSignature(TM);
   await runRekorV2();
@@ -1428,6 +1634,53 @@ async function runRekorV2() {
     ok.checkpointKeyId.length === 8);
   check("V3: the instant is the timestamp token's, not the entry's zero",
     ok.timestampSource === "rfc3161" && ok.integratedTime === null);
+
+  // WHICH field positions the leaf depends on the log's generation. Rekor v2 states the index once, at
+  // the top level: its client guidance says the log index "should be read from the top-level
+  // TransparencyLogEntry.log_index", and that `inclusion_proof.log_index` is one of the fields "repeated
+  // elsewhere and should be ignored", with the proof's own `root_hash` and `tree_size` beside it, which
+  // the checkpoint already supplies. A v1 entry carries two different numbers, a global index and a
+  // shard-relative one, and the proof folds against the shard its checkpoint covers, so there the
+  // proof's field positions the leaf and the entry's is what the signed entry timestamp covers.
+  //
+  // ON v1 THE TWO MUST NOT BE COMPARED, for that reason: the v1 fixtures below carry 1234 in the entry
+  // while the proof establishes 0, and requiring agreement would refuse sound bundles.
+  check("V3a: CONTROL the fixture's entry index and its ignored duplicate really do differ",
+    v2.bundle.verificationMaterial.tlogEntries[0].logIndex === 0 &&
+    v2.bundle.verificationMaterial.tlogEntries[0].inclusionProof.logIndex === 4242);
+  check("V3b: the verdict reports the entry's own index, which is what the proof folded at",
+    ok.logIndex === 0);
+  // The duplicate is ignored, which is what V3a's 4242 is there to show: a number no proof could
+  // establish sits in that field on every bundle above, and every one of them verified.
+  var otherDup = await buildV2Bundle({ proofLogIndex: 99999 });
+  var otherDupRes = await pki.sigstore.verifyBundle(otherDup.bundle, otherDup.trust);
+  check("V3b2: and a different value in the ignored duplicate changes nothing",
+    otherDupRes && otherDupRes.verified === true && otherDupRes.logIndex === 0);
+
+  // A FORGED top-level index is now refused rather than ignored, because it is the index the fold runs
+  // at: no proof reconstructs the attested root from a leaf position the log never put this entry at.
+  // These are values a tree of size one has no leaf for, or no integer at all.
+  var forgeries = [-20, "1.5", 99999, null];
+  var forgedCodes = [];
+  for (var fi = 0; fi < forgeries.length; fi++) {
+    var bad = await buildV2Bundle({ logIndex: forgeries[fi] });
+    forgedCodes.push(await codeOf(pki.sigstore.verifyBundle(bad.bundle, bad.trust)));
+  }
+  check("V3c: a forged entry index is refused, the fold running at it (" + forgedCodes.join(", ") + ")",
+    forgedCodes.length === forgeries.length &&
+    forgedCodes.every(function (c) { return c === "sigstore/bad-inclusion-proof"; }));
+
+  // The reported index comes from the reading the FOLD used, not from a second look at the field, and
+  // these two conversions do not agree on every shape. `BigInt` reads a single-element array through its
+  // string form, so `["0"]` folds as leaf 0 and the proof verifies, while the numeric conversion the
+  // verdict used type-guards arrays to NaN and said the entry had no index at all. One conversion, bound
+  // once, or a verified proof can be reported as unverified metadata.
+  check("V3d: CONTROL the two conversions really disagree on this shape",
+    BigInt(["1"]) === 1n && typeof ["1"] === "object");
+  var arrIdx = await buildV2Bundle({ logIndex: ["0"] });
+  var arrRes = await pki.sigstore.verifyBundle(arrIdx.bundle, arrIdx.trust);
+  check("V3e: an index the fold accepted is reported as the number it folded",
+    arrRes && arrRes.verified === true && arrRes.logIndex === 0);
 
   // A signature that is re-timestamped while it is archived carries more than one token, and the one a
   // bundle lists first need not be the one made at signing. The leaf here expires 2030-01-01, so a 2035
@@ -1777,6 +2030,34 @@ async function runMessageSignature(TM) {
     "payload" in v3 && v3.payload === null && v3.statement === null && v3.subjects === null &&
     v3.predicateType === null && v3.predicate === null && v3.predicateTypeChecked === false);
 
+  /* The artifact is compared per ATTEMPT, and an attempt that fails the comparison sends the next one
+     over the same bytes again, so the caller's whole file was hashed once per entry the bundle listed.
+     The count is capped at TLOG_MAX_COUNT, which bounds the factor rather than removing it: a 100 MB
+     artifact was read 32 times. COUNTED, by the difference between one entry and the ceiling, so the
+     digests every other part of the verification takes are not what the vector measures. */
+  function countHashes(bundleObj, artifactBytes) {
+    var realCreate = crypto.createHash, n = 0;
+    crypto.createHash = function () { n++; return realCreate.apply(crypto, arguments); };
+    return pki.sigstore.verifyBundle(bundleObj,
+      { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: artifactBytes })
+      .then(function () { crypto.createHash = realCreate; return n; },
+        function () { crypto.createHash = realCreate; return n; });
+  }
+  function msWithEntries(n) {
+    var b = clone(msBundle("v0.3"));
+    var one = b.verificationMaterial.tlogEntries[0];
+    var list = [one];
+    for (var i = 1; i < n; i++) list.push(clone(one));
+    b.verificationMaterial.tlogEntries = list;
+    return b;
+  }
+  var C_LIMITS = require("../../lib/constants.js").LIMITS;
+  var otherArtifact = Buffer.alloc(ARTIFACT.length, 0x7a);
+  var hashesOne = await countHashes(msWithEntries(1), otherArtifact);
+  var hashesMany = await countHashes(msWithEntries(C_LIMITS.TLOG_MAX_COUNT), otherArtifact);
+  check("a bundle listing " + C_LIMITS.TLOG_MAX_COUNT + " entries reads the artifact the same number " +
+    "of times as one listing a single entry (" + hashesOne + " vs " + hashesMany + " digests)",
+  hashesMany - hashesOne <= 1);
   var v1 = await pki.sigstore.verifyBundle(msBundle("v0.1"), { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: ARTIFACT });
   check("the v0.1 media type and its x509CertificateChain arm verify on this content arm",
     v1.verified === true && v1.integratedTime === 1689177396);
@@ -1896,6 +2177,35 @@ async function runMessageSignature(TM) {
     decoyErr === null && decoyOut !== null && decoyOut.verified === true);
   check("and the verdict reports the digest the matching entry recorded",
     decoyOut !== null && decoyOut.artifactDigest === crypto.createHash("sha256").update(ARTIFACT).digest("hex"));
+  /* The artifact is read once per digest ALGORITHM across the whole call, not once per place that
+     reads it. The attempt loop was memoized and the messageDigest comparison at the end was not, so an
+     algorithm that a failing attempt had already hashed the artifact under was hashed under again when
+     the bundle's own claim named it: a bundle whose first entry records the wrong artifact under
+     SHA-512, whose selected entry records the right one under SHA-256, and whose messageDigest claims
+     SHA-512 read the artifact three times for two algorithms. COUNTED by algorithm, so the vector says
+     which read was the duplicate rather than only that there was one. */
+  var twoAlgBuilt = buildSynBundle({ messageArtifact: ARTIFACT,
+    decoyArtifact: Buffer.from("a different artifact entirely"), decoyHashAlgorithm: "sha512" });
+  twoAlgBuilt.bundle.messageSignature.messageDigest = { algorithm: "SHA2_512",
+    digest: crypto.createHash("sha512").update(ARTIFACT).digest().toString("base64") };
+  var algCounts = Object.create(null);
+  var realCreateHash = crypto.createHash;
+  crypto.createHash = function (name) {
+    algCounts[String(name)] = (algCounts[String(name)] || 0) + 1;
+    return realCreateHash.apply(crypto, arguments);
+  };
+  var twoAlgOut = null, twoAlgErr = null;
+  try {
+    twoAlgOut = await pki.sigstore.verifyBundle(twoAlgBuilt.bundle, {
+      fulcioRoots: twoAlgBuilt.trust.fulcioRoots, rekorKeys: twoAlgBuilt.trust.rekorKeys,
+      artifact: ARTIFACT });
+  } catch (e2) { twoAlgErr = e2; } finally { crypto.createHash = realCreateHash; }
+  check("the two-algorithm bundle verifies and checks the messageDigest the bundle carries (" +
+    (twoAlgErr && twoAlgErr.code) + ")",
+  twoAlgErr === null && twoAlgOut !== null && twoAlgOut.verified === true &&
+    twoAlgOut.messageDigestChecked === true && twoAlgOut.digestAlgorithm === "sha256");
+  check("and SHA-512 is computed once although a failing attempt and the bundle's own claim both " +
+    "name it (sha512=" + algCounts.sha512 + ")", algCounts.sha512 === 1);
   // The artifact still has to be recorded by SOME entry: with neither naming it, the refusal stands.
   check("with no entry naming the artifact the bundle is still refused",
     await codeOf(pki.sigstore.verifyBundle(decoyBuilt.bundle, {
@@ -2528,8 +2838,20 @@ async function runMessageSignature(TM) {
     ["String.prototype.split", String.prototype, "split", function () { return []; }],
     ["String.prototype.indexOf", String.prototype, "indexOf", function () { return -1; }],
     ["Array.prototype.filter", Array.prototype, "filter", function () { return []; }],
-    ["Array.prototype.forEach", Array.prototype, "forEach", function () {}],
     ["Date.parse", Date, "parse", function () { return NaN; }],
+  ];
+  /* The path SEARCH is `pki.path.build`, which owns it, and that module is mid-conversion to the
+   * load-time captures: MEASURED, replacing `Array.prototype.forEach`, `map` or `push` makes a build
+   * raise `path/bad-input` or `path/empty-path`, and converting one site moves the fault to the next
+   * read below it rather than clearing it. Every one of them fails CLOSED, so what a replacement can
+   * do here is DENY a bundle that would verify, never admit one that should not. These three are held
+   * to that: a tampered entry is still refused, and a valid bundle either verifies or is refused with
+   * a `sigstore/` code, never accepted on a changed verdict. The denial half returns when
+   * `lib/path-validate.js` reaches zero live reads, which its MIGRATING budget tracks. */
+  var denialOnlySwaps = [
+    ["Array.prototype.forEach", Array.prototype, "forEach", function () {}],
+    ["Array.prototype.map", Array.prototype, "map", function () { return []; }],
+    ["Array.prototype.push", Array.prototype, "push", function () { return 0; }],
   ];
   // The valid bundle is verified under an identity policy naming its own SAN and issuer, so the
   // identity extraction (a prefix test on each extension OID) and the policy walk (a forEach over
@@ -2550,6 +2872,20 @@ async function runMessageSignature(TM) {
     } finally { vHolder[vName] = vOriginal; }
     check("replacing " + verifySwaps[vs][0] + " after load neither breaks a valid bundle under an identity policy nor admits a tampered entry",
       validUnderSwap === "NO-THROW" && tamperedUnderSwap === "sigstore/entry-mismatch");
+  }
+  for (var ds = 0; ds < denialOnlySwaps.length; ds++) {
+    var dHolder = denialOnlySwaps[ds][1], dName = denialOnlySwaps[ds][2], dOriginal = dHolder[dName];
+    var dValid, dTampered;
+    try {
+      dHolder[dName] = denialOnlySwaps[ds][3];
+      dValid = await codeOf(pki.sigstore.verifyBundle(BUNDLE, TM_ID).then(function (v) {
+        if (v.verified !== true || v.identityChecked.san !== true || v.identityChecked.issuer !== true) throw new Error("not verified under the identity policy");
+      }));
+      dTampered = await codeOf(pki.sigstore.verifyBundle(tamperedEntry, TM_ID));
+    } finally { dHolder[dName] = dOriginal; }
+    check("replacing " + denialOnlySwaps[ds][0] + " after load can only deny a valid bundle, never admit a tampered entry",
+      (dValid === "NO-THROW" || String(dValid).indexOf("sigstore/") === 0) &&
+        String(dTampered).indexOf("sigstore/") === 0);
   }
 
   // A property named __proto__ is copied as a field of that name, never as a prototype. Assigning it

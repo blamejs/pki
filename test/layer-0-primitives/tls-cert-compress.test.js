@@ -75,6 +75,31 @@ function run() {
   check("4a. zlib is the default algorithm", pki.tls.compressCertificate(MSG).readUInt16BE(0) === 1);
   check("4b. a compressed message is smaller than the message it carries", pki.tls.compressCertificate(MSG).length < MSG.length);
 
+  /* The message is COPIED before `opts.algorithm` is read, because reading an option is caller code and
+     an accessor could replace what gets compressed after the message was accepted. The framing limit
+     sat after that copy, so an oversized message was duplicated in full and only then refused:
+     measured, 64 MiB allocated another 64 MiB. Viewing allocates nothing, so the limit can be read
+     first and both orderings hold. MEASURED by allocation, `arrayBuffers` counting the pool a Buffer
+     copy comes from. */
+  var oversize = Buffer.alloc(pki.C.LIMITS.TLS_CERT_MSG_MAX_BYTES * 4, 0x41);
+  var allocBefore = process.memoryUsage().arrayBuffers;
+  var oversizeCode;
+  try { pki.tls.compressCertificate(oversize, { algorithm: "zlib" }); oversizeCode = "NO-THROW"; }
+  catch (e) { oversizeCode = e.code; }
+  var grewMiB = (process.memoryUsage().arrayBuffers - allocBefore) / (1024 * 1024);
+  check("4c. an oversized certificate message is refused before it is copied (" + oversizeCode + ", " +
+    grewMiB.toFixed(1) + " MiB)", oversizeCode === "tls/too-large" && grewMiB < 1);
+  /* CONTROL: the copy still happens before the option is read, so an accessor cannot change what is
+     compressed. The getter swaps the caller's buffer for a different message; the wire result must
+     still carry the one that was handed over. */
+  var mutable = Buffer.from(MSG);
+  var other = certMessage([CA], Buffer.alloc(0));
+  var swapOpts = { get algorithm() { other.copy(mutable, 0, 0, Math.min(other.length, mutable.length)); return "zlib"; } };
+  var fromMutable = pki.tls.compressCertificate(mutable, swapOpts);
+  check("4d. CONTROL an option getter cannot change which message is compressed",
+    pki.tls.decompressCertificate(fromMutable).certificateMessage.equals(MSG));
+
+
   // ==== the Certificate message decode (RFC 8446 sec. 4.4.2) =================================
   var withCtx = certMessage([LEAF], Buffer.from([0xab, 0xcd]));
   var parsed = pki.tls.parseCertificateMessage(withCtx);
@@ -295,6 +320,55 @@ function run() {
   check("10. every decode fault is a typed TlsError with a tls/* code", faults.every(function (f) {
     try { f(); return false; } catch (e) { return e instanceof pki.errors.TlsError && /^tls\//.test(e.code); }
   }));
+
+  // The message is taken before the options are read. `compressCertificate` reads `opts.algorithm`
+  // after it has looked at the certificate message, and reading an option is caller code when it is an
+  // accessor, so over a view of the message it would replace what gets compressed after the verb had
+  // accepted the message it was handed.
+  //
+  // The substitute has to be a WELL-FRAMED message of the same length. Filling the buffer with one byte
+  // is refused by the framing check that runs after the accessor, which would look like the window being
+  // closed when it is only that garbage is caught: the question is whether a message the framing check
+  // ACCEPTS can be swapped in.
+  var msgA = certMessage([Buffer.alloc(900, 0x41)]);
+  var msgB = certMessage([Buffer.alloc(900, 0x43)]);
+  check("11.0 CONTROL the two messages are the same length and both decode",
+    msgA.length === msgB.length &&
+    pki.tls.decompressCertificate(pki.tls.compressCertificate(msgA, { algorithm: "zlib" }))
+      .certificateMessage.equals(msgA) &&
+    pki.tls.decompressCertificate(pki.tls.compressCertificate(msgB, { algorithm: "zlib" }))
+      .certificateMessage.equals(msgB));
+  var live = Buffer.from(msgA);
+  var optReads = 0;
+  var hostile = {};
+  Object.defineProperty(hostile, "algorithm", {
+    get: function () { optReads += 1; msgB.copy(live); return "zlib"; },
+    enumerable: true, configurable: true,
+  });
+  var compressed = pki.tls.compressCertificate(live, hostile);
+  check("11.1 CONTROL the option accessor ran during the call", optReads > 0);
+  check("11.2 the message compressed is the one handed over, not what the accessor substituted",
+    pki.tls.decompressCertificate(compressed).certificateMessage.equals(msgA));
+
+  /* 11.3-11.4: the DECOMPRESS side of the same pair, which the block above left out. It held a VIEW
+     while it read its options, and `_resolveCap` reads `opts`: a `maxOutputBytes` getter that wrote
+     another well-framed message of the same length over the buffer had this verb decompress the
+     REPLACEMENT having framed the one it was handed. The substitute has to be equal-length and
+     well-framed for the same reason as above, or the framing catches it and the window looks closed. */
+  var wireA = Buffer.from(pki.tls.compressCertificate(msgA, { algorithm: "zlib" }));
+  var wireB = pki.tls.compressCertificate(msgB, { algorithm: "zlib" });
+  check("11.3 CONTROL the two compressed wires are the same length, so the swap is not caught by " +
+    "framing (" + wireA.length + " vs " + wireB.length + ")", wireA.length === wireB.length);
+  var capReads = 0;
+  var hostileCap = {};
+  Object.defineProperty(hostileCap, "maxOutputBytes", {
+    get: function () { capReads += 1; wireB.copy(wireA); return undefined; },
+    enumerable: true, configurable: true,
+  });
+  var decompressed = pki.tls.decompressCertificate(wireA, hostileCap);
+  check("11.4 the message decompressed is the one handed over, not what the accessor substituted (" +
+    capReads + " option read(s))",
+  capReads > 0 && decompressed.certificateMessage.equals(msgA));
 }
 
 module.exports = { run: run };

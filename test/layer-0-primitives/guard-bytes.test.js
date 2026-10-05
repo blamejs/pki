@@ -1401,12 +1401,56 @@ async function run() {
   await testInheritedArrayElementIsRefused();
   await testCallerDateCannotAnswerTheInstant();
   testTranslateStreamError();
+  await testDeepCopyWorkBudget();
   await testLargeByteArgumentSnapshot();
 }
 
 // A byte argument's identity is its BYTES. The deep snapshot copied them and then walked the
 // value's named properties, which on a typed array means every index: above 2^24 elements V8
 // refuses to enumerate at all and throws a bare RangeError, so a caller signing 16 MiB got an
+// A deep copy visits every reference independently, so a value that holds the same subobject in two
+// places costs twice and the depth cap bounds nothing about the work: with `v = [v, v]` repeated n times
+// the depth is n and the work is 2 to the n. Measured through `pki.jose.thumbprint`, which copies a JWK
+// before reading its members, an unbudgeted walk took 748 ms at 16 levels, 2.9 seconds at 18, 5.9 at 19
+// and kept doubling to the depth cap of 64. A shared node counter makes the worst case a constant.
+async function testDeepCopyWorkBudget() {
+  function dag(levels) {
+    var v = 0;
+    for (var i = 0; i < levels; i++) v = [v, v];
+    return v;
+  }
+  function anchorList(n) {
+    var a = [];
+    for (var i = 0; i < n; i++) a.push({ name: "a" + i, publicKey: Buffer.alloc(32), algorithm: "ec" });
+    return a;
+  }
+  // PASSING CONTROLS, both of them, because a bound that refuses everything proves nothing: a small graph
+  // still copies with every reference expanded, and a thousand-record anchor list is well inside the
+  // budget.
+  var small = guardBytes.snapshotDeep(dag(3), TestError, "t/bad", "the value");
+  check("a small shared-subobject graph still copies, every reference expanded",
+    Array.isArray(small) && small.length === 2 && small[0][0][0] === 0);
+  var anchors = guardBytes.snapshotDeep(anchorList(1000), TestError, "t/bad", "anchors");
+  check("a thousand-record anchor list is inside the budget", anchors.length === 1000);
+
+  // The refusal is typed, and it is reached at the budget rather than at the shape, so deeper inputs cost
+  // no more than the bound.
+  var deepCode = null;
+  try { guardBytes.snapshotDeep(dag(30), TestError, "t/bad", "the value"); }
+  catch (e) { deepCode = e.code || e.constructor.name; }
+  check("a graph whose expansion exceeds the node budget is refused (" + deepCode + ")",
+    deepCode === "t/bad");
+
+  // And through the shipped door, where it was reachable: a JWK member beside the ones the verb reads.
+  var code40 = null;
+  try { await pki.jose.thumbprint({ kty: "oct", k: "x", extra: dag(40) }); }
+  catch (e2) { code40 = e2.code; }
+  check("pki.jose.thumbprint refuses the same graph in a JWK member (" + code40 + ")",
+    code40 === "jose/bad-key");
+  check("CONTROL and still thumbprints an ordinary JWK",
+    (await pki.jose.thumbprint({ kty: "oct", k: "x" })).length > 0);
+}
+
 // untyped error with no `code` out of a verb whose whole contract is a typed refusal.
 async function testLargeByteArgumentSnapshot() {
   var E = function (c, m, cause) { return new TestError(c, m, cause); };

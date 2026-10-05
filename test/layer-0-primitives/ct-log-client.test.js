@@ -32,6 +32,7 @@ var pki = helpers.pki;
 var crypto = require("crypto");
 var ctx = require("../helpers/ct-fetch-transport");
 var resp = ctx.resp, routeByUrl = ctx.routeByUrl;
+var C = pki.constants;
 
 async function code(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code || e.constructor.name; } }
 
@@ -112,6 +113,73 @@ async function runGetSth() {
     f.transport.calls.length === 1 && f.transport.calls[0].method === "GET" &&
     f.transport.calls[0].url === u("get-sth"));
 
+  /* The pinned key is READ ONCE. `opts.logKey` was read twice, by the presence check and then by the
+     copy the signature is verified under, and an accessor answers each read separately: presenting the
+     key the caller means to pin to the check and a DIFFERENT one to the copy made getSth verify an
+     attacker-signed tree head under the attacker's own key and return it as a result. The vector below
+     is that exact sequence. The log that signs the response is NOT the one the first read names, so a
+     verdict of "fetched" means the second read decided which log was trusted. */
+  async function sthUnderTwoFacedKey() {
+    var genuine = log, attacker = makeLog();
+    var reads = [];
+    var h = opts(attacker, { [u("get-sth")]: resp(200, sthBody(attacker, 3, t.root), "application/json") });
+    var keys = [genuine.spki, attacker.spki];
+    Object.defineProperty(h.o, "logKey", {
+      configurable: true, enumerable: true,
+      get: function () { var i = reads.length; reads.push(i); return keys[i] || attacker.spki; },
+    });
+    var outcome;
+    try {
+      var s = await pki.ct.getSth(h.o);
+      outcome = s.treeSize === 3n ? "ACCEPTED an attacker-signed tree head" : "returned something else";
+    } catch (e) { outcome = (e && e.isPkiError === true) ? e.code : "UNTYPED"; }
+    return { outcome: outcome, reads: reads.length };
+  }
+  var twoFaced = await sthUnderTwoFacedKey();
+  check("S3b: a two-faced opts.logKey cannot hand one key to the check and another to the verification (" +
+    twoFaced.outcome + ", " + twoFaced.reads + " read(s))", twoFaced.outcome === "ct/sth-untrusted");
+  check("S3c: and the option is read exactly once, so there is no second answer to give",
+    twoFaced.reads === 1);
+  /* The control, which is what makes the two above mean something: the attacker's key really does
+     verify the attacker's tree head. So the second read was not harmless -- had the copy taken it, the
+     call would have returned a result instead of refusing, which is the acceptance S3b now denies. */
+  var attackerAccepts = await (async function () {
+    var attacker = makeLog();
+    var h = opts(attacker, { [u("get-sth")]: resp(200, sthBody(attacker, 3, t.root), "application/json") });
+    // No catch: the control's whole point is that this fetch SUCCEEDS, so a throw here is the
+    // diagnostic rather than a quiet false that would make the control look merely unmet.
+    var s = await pki.ct.getSth(h.o);
+    return s.treeSize === 3n;
+  })();
+  check("S3d: CONTROL the key the second read would have supplied does verify that tree head",
+    attackerAccepts === true);
+
+  /* `opts.logKey` is documented "BufferSource, // the log's SubjectPublicKeyInfo, pinned by the caller",
+     and the copy that takes it accepted a Buffer and a Uint8Array only. So the ArrayBuffer that
+     `crypto.subtle.exportKey("spki", ...)` returns, which is how a caller holding a WebCrypto key has it,
+     was refused with `ct/bad-input` before the transport ran, while a Buffer of the identical bytes
+     fetched and verified. The property is that the pinned key verifies the same whichever container holds
+     it, run on a fetch that SUCCEEDS so the copy is actually reached. */
+  async function sthWithKeyAs(convert) {
+    var h = opts(log, { [u("get-sth")]: resp(200, sthBody(log, 3, t.root), "application/json") });
+    h.o.logKey = convert(h.o.logKey);
+    try {
+      var s = await pki.ct.getSth(h.o);
+      return s.treeSize === 3n ? "fetched" : "wrong-tree";
+    } catch (e) { return (e && e.isPkiError === true) ? "throw:" + e.code : "UNTYPED:" + ((e && e.message) || e); }
+  }
+  var keyReps = [
+    ["Buffer", await sthWithKeyAs(function (k) { return Buffer.from(k); })],
+    ["Uint8Array", await sthWithKeyAs(function (k) { return new Uint8Array(Buffer.from(k)); })],
+    ["DataView", await sthWithKeyAs(function (k) { var x = new Uint8Array(Buffer.from(k)); return new DataView(x.buffer); })],
+    ["ArrayBuffer", await sthWithKeyAs(function (k) { return new Uint8Array(Buffer.from(k)).buffer; })],
+  ];
+  var keyBase = keyReps[0][1];
+  var keyBad = keyReps.slice(1).filter(function (r) { return r[1] !== keyBase; });
+  check("S1c: the pinned log key verifies the same whichever byte container holds it (" + keyBase +
+    (keyBad.length ? "; diverged: " + keyBad.map(function (r) { return r[0] + " -> " + r[1]; }).join(" | ") : "") + ")",
+    keyBase === "fetched" && keyBad.length === 0);
+
   /* The signature is the whole point: an STH nobody vouched for is not returned. */
   var other = makeLog();
   var g = opts(other, { [u("get-sth")]: resp(200, sthBody(log, 3, t.root), "application/json") });
@@ -178,9 +246,13 @@ async function runGetSth() {
   /* Shape refusals: each field is required and each is held to its type. */
   // Each shape names the code it must report, so a refusal for the wrong reason
   // is a failure rather than a pass.
+  /* Two layers refuse a bad number, and which one speaks says where the fault is. A token that does not
+     DENOTE an integer is a malformed document for a format that reads it as one, and the JSON reader
+     refuses it while it is still text: `ct/bad-json`. A token that denotes an integer the field cannot
+     take is a bad STH: `ct/bad-sth`, which is why `-1` still reports that. The split is deliberate. */
   var SHAPES = [
     ["no tree_size", { tree_size: undefined }, "ct/bad-sth"],
-    ["a non-integer tree_size", { tree_size: 1.5 }, "ct/bad-sth"],
+    ["a non-integer tree_size", { tree_size: 1.5 }, "ct/bad-json"],
     ["a negative tree_size", { tree_size: -1 }, "ct/bad-sth"],
     ["no timestamp", { timestamp: undefined }, "ct/bad-sth"],
     ["no root hash", { sha256_root_hash: undefined }, "ct/bad-sth"],
@@ -203,6 +275,34 @@ async function runGetSth() {
   check("S8: every malformed STH shape is refused with its own reason (" + shapeOk + "/" +
     SHAPES.length + ")", shapeOk === SHAPES.length);
 
+  /* S8a. The spelling that no check made AFTER conversion can see. `1.0000000000000001` converts to the
+     Number 1, so a tree size written that way passed the integer check as 1 and was folded into the
+     reconstructed binary preimage the tree-head signature is verified over: the rounded spelling
+     verified, and the size the caller was handed was not the one the log sent. It has to be refused on
+     the TOKEN, which is where it still differs from 1.
+     The body is built as TEXT, because `JSON.parse` would already have collapsed it to 1 and the fixture
+     would be testing nothing. */
+  var exactBody = JSON.parse(sthBody(log, 3, t.root));
+  var exactText = JSON.stringify(exactBody).replace("\"tree_size\":3", "\"tree_size\":1.0000000000000001");
+  if (exactText.indexOf("1.0000000000000001") === -1) {
+    exactText = JSON.stringify(exactBody).replace(/"tree_size":\s*3/, "\"tree_size\":1.0000000000000001");
+  }
+  var fxExact = opts(log, { [u("get-sth")]: resp(200, exactText, "application/json") });
+  var exactCode = await code(function () { return pki.ct.getSth(fxExact.o); });
+  check("S8a: a tree_size spelled 1.0000000000000001 is refused on the token, not read as 1 (" +
+    exactCode + ")",
+    Number("1.0000000000000001") === 1 && exactCode === "ct/bad-json");
+  /* CONTROL: exponent form is LEGAL in an RFC 6962 response and still accepted, which is why the policy
+     is "the value must be exactly its own integer" and not "no exponents". A tree size of 3 written
+     `3e0` is the same tree size. */
+  var expText = JSON.stringify(exactBody).replace("\"tree_size\":3", "\"tree_size\":3e0");
+  var fxExp = opts(log, { [u("get-sth")]: resp(200, expText, "application/json") });
+  var expSth = null, expCode = null;
+  try { expSth = await pki.ct.getSth(fxExp.o); } catch (e) { expCode = (e && e.code) || "NO-CODE"; }
+  check("S8b: CONTROL a tree_size written in exponent form is still accepted and reads as that integer" +
+    (expCode ? " (refused " + expCode + ")" : ""),
+    expSth !== null && expSth.treeSize === 3n);
+
   /* The log key is required: there is no baked-in key and no unverified mode. */
   var noKey = opts(log, { [u("get-sth")]: resp(200, sthBody(log, 3, t.root), "application/json") });
   delete noKey.o.logKey;
@@ -218,6 +318,33 @@ async function runGetSth() {
   check("S12: and returns false, not a throw, when it is another log's",
     await pki.ct.verifySth({ treeSize: 3n, timestamp: BigInt(TS), rootHash: t.root,
       signature: Buffer.from(held.tree_head_signature, "base64") }, other.spki) === false);
+  /* The two operations a signature check runs are captured at load. Held as an object whose METHODS are
+     fetched per call, a replacement installed on the SubtleCrypto prototype afterwards decided the
+     verdict: a `verify` answering true accepts a tree head no log signed. The same replacement reaches
+     every signature gate in this module, so this one vector stands for all of them. */
+  var subtleProto = Object.getPrototypeOf(pki.webcrypto.subtle);
+  var realVerify = subtleProto.verify;
+  var wrongLog;
+  try {
+    Object.defineProperty(subtleProto, "verify", {
+      configurable: true, writable: true,
+      value: async function () { return true; },
+    });
+    wrongLog = await pki.ct.verifySth({ treeSize: 3n, timestamp: BigInt(TS), rootHash: t.root,
+      signature: Buffer.from(held.tree_head_signature, "base64") }, other.spki);
+  } finally {
+    Object.defineProperty(subtleProto, "verify", {
+      configurable: true, writable: true, value: realVerify,
+    });
+  }
+  check("S12a: a verify installed on the SubtleCrypto prototype after load does not decide the " +
+    "verdict (" + wrongLog + ")", wrongLog === false);
+  /* CONTROL: the replacement is restored, so the suite below is not running against it, and the
+     genuine signature still verifies. */
+  check("S12b: CONTROL the real operation is back and the log's own STH still verifies",
+    subtleProto.verify === realVerify &&
+    await pki.ct.verifySth({ treeSize: 3n, timestamp: BigInt(TS), rootHash: t.root,
+      signature: Buffer.from(held.tree_head_signature, "base64") }, log.spki) === true);
 
   // The verdict is about the signature supplied at entry. Verification imports the log key with an await,
   // so a signature held as a VIEW onto the caller's buffer could be overwritten in that window and the
@@ -373,6 +500,23 @@ async function runGetEntriesRoots() {
   var rgot = await pki.ct.getRoots(r.o);
   check("E6: the accepted roots are fetched and decoded",
     rgot.certificates.length === 2 && rgot.certificates[0].toString("utf8") === "root-a");
+
+  /* The element COUNT is capped, which it was not: the cap in the shared base64-array reader was keyed on
+     the proof entries' fixed 32-byte width, so the roots path, whose entries have no fixed width, had
+     none. A configured log is trusted for its own signatures and not for its resource use, and a response
+     well under the 4 MiB body cap carries about a million empty strings, each of which became its own
+     Buffer (CWE-770). Measured below by count rather than by heap, since the count is what the cap decides
+     and a heap figure on a 64-bit runtime is noise. */
+  var many = [];
+  for (var mi = 0; mi < C.LIMITS.CT_MAX_ROOTS + 1; mi++) many.push("");
+  var overRoots = opts(log, { [u("get-roots")]: resp(200, JSON.stringify({ certificates: many }), "application/json") });
+  check("E6a: a roots response carrying more entries than the cap is refused",
+    await code(function () { return pki.ct.getRoots(overRoots.o); }) === "ct/bad-roots");
+  var atCap = [];
+  for (var ai = 0; ai < C.LIMITS.CT_MAX_ROOTS; ai++) atCap.push(Buffer.from("r" + ai).toString("base64"));
+  var ok = opts(log, { [u("get-roots")]: resp(200, JSON.stringify({ certificates: atCap }), "application/json") });
+  check("E6b: CONTROL a response exactly at the cap is accepted, so the bound is the count and not the shape",
+    (await pki.ct.getRoots(ok.o)).certificates.length === C.LIMITS.CT_MAX_ROOTS);
 }
 
 // ---------------------------------------------------------------------------
@@ -433,6 +577,15 @@ async function runAddChain() {
     Buffer.isBuffer(pki.ct.encodeSctList([got.sct])));
   check("A2e: which parses back to the same receipt",
     pki.ct.parseSctList(pki.ct.encodeSctList([got.sct])).scts[0].timestamp === BigInt(TS));
+  // The receipt is the shape this module's OTHER consumers read, and the log-list verbs key a log by
+  // `logIdHex` rather than by the raw bytes. Omitting it made a receipt that verified here unusable
+  // there: `verifySctWithLogList` refused it outright and `verifySctList` dropped it and reported a
+  // policy failure, both for a receipt the log had genuinely signed.
+  check("A2f: the receipt carries logIdHex, the field the log-list verbs key a log by",
+    got.sct.logIdHex === log.logId.toString("hex"));
+  // CONTROL: the shape parseSctList produces carries it too, which is the claim the receipt has to meet.
+  check("A2g: CONTROL parseSctList produces that same field",
+    pki.ct.parseSctList(pki.ct.encodeSctList([got.sct])).scts[0].logIdHex === log.logId.toString("hex"));
 
   /* An SCT the log returns that does not verify is not a receipt. */
   var badDer = Buffer.from(der); badDer[badDer.length - 1] ^= 1;

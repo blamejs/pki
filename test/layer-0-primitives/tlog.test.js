@@ -254,6 +254,118 @@ async function runNoteFormat() {
   check("N11c: a key id is derived from the name and the key, so two names never share one",
     Buffer.compare(pki.tlog.keyId("a", alice.raw), pki.tlog.keyId("b", alice.raw)) !== 0);
 
+  /* The signature lines are the list every rule above is enforced over, and the parser drops the empty
+   * tail element the final newline leaves. It dropped it by dispatching through `Array.prototype.pop`,
+   * which is an ordinary writable property: a replacement that pops TWICE removes the tail element and
+   * the last signature line with it, so the line never reaches the loop that checks it. That is the
+   * failing-open direction, because a note whose last line is a forged signature under a known key is
+   * refused only by checking it. The note itself is unchanged, which is what makes it a fixture rather
+   * than a modified input. */
+  var forgedTail = Buffer.concat([pki.tlog.keyId(alice.name, alice.raw), Buffer.alloc(64, 0x5a)]);
+  var withForged = (await makeNote(text, [alice])) +
+    EM_DASH + " " + alice.name + " " + forgedTail.toString("base64") + "\n";
+  var aliceKey = [{ name: alice.name, publicKey: alice.raw }];
+  check("N11d: CONTROL a note whose last line is a forged signature under a known key is refused",
+    await codeOfAsync(pki.tlog.verifyNote(withForged, aliceKey)) === "tlog/bad-signature");
+  var realPop = Array.prototype.pop;
+  var underReplacedPop, replacementLive;
+  try {
+    Object.defineProperty(Array.prototype, "pop", {
+      value: function () { realPop.call(this); return realPop.call(this); },
+      writable: true, configurable: true,
+    });
+    // CONTROL, inside the window: the replacement really is installed, so N11e below is the parser
+    // holding its own capture rather than a probe that never took effect. A double pop leaves one
+    // element of three.
+    var probe = [1, 2, 3];
+    probe.pop();
+    replacementLive = probe.length === 1;
+    underReplacedPop = await codeOfAsync(pki.tlog.verifyNote(withForged, aliceKey));
+  } finally {
+    Object.defineProperty(Array.prototype, "pop", { value: realPop, writable: true, configurable: true });
+  }
+  check("N11e: CONTROL the replaced pop is live, so N11f exercises it", replacementLive === true);
+  check("N11f: and a replaced array pop cannot drop that line past the check (" + underReplacedPop + ")",
+    underReplacedPop === "tlog/bad-signature");
+
+  /* The KEY LIST is caller state too, and its members are read before the note is copied, so an
+   * accessor on one runs while the caller's input buffer is still the caller's. It can replace the
+   * note being verified with a different one: the verdict then reports on a document that was not
+   * the argument. Reading the key once bounds what the key can say about ITSELF and says nothing
+   * about what reading it can do to the subject, so the subject is snapshotted first. Both members
+   * the loop reads are the same door, so both are driven. */
+  var validNote = Buffer.from(await makeNote(text, [alice]), "utf8");
+  var substituted = [];
+  var sameLength = true;
+  for (var m = 0; m < 2; m++) {
+    var member = ["publicKey", "name"][m];
+    var answer = member === "name" ? alice.name : alice.raw;
+    var forgedInput = Buffer.from(alteredText, "utf8");
+    sameLength = sameLength && forgedInput.length === validNote.length;
+    var record = { name: alice.name, publicKey: alice.raw };
+    var ran = { fired: false, target: forgedInput };
+    Object.defineProperty(record, member, {
+      enumerable: true,
+      get: (function (state, reply) {
+        return function () {
+          if (!state.fired) { state.fired = true; validNote.copy(state.target); }
+          return reply;
+        };
+      })(ran, answer),
+    });
+    substituted.push(await codeOfAsync(pki.tlog.verifyNote(forgedInput, [record])) +
+      (ran.fired ? "/ran" : "/never-read"));
+  }
+  check("N11g: CONTROL the valid note and the altered one are the same length, so one replaces the other",
+    sameLength);
+  check("N11h: a key accessor cannot substitute the note before it is snapshotted (" +
+    substituted.join(" | ") + ")",
+    substituted.length === 2 && substituted[0] === "tlog/bad-signature/ran" &&
+    substituted[1] === "tlog/bad-signature/ran");
+
+  /* A verdict returned as a PLAIN object is a thenable the moment something installs
+   * `Object.prototype.then`: resolving a promise reads `then` off the resolution value, and an
+   * inherited one runs with the verdict as its receiver, resolving the caller with a verdict of its
+   * own choosing. Measured, a note signed by a key the caller did not supply reported
+   * `verified: true` carrying a signer the note does not name. The accessor below answers only for
+   * an object with an own `verified`, so the window reaches a verdict and nothing else, and every
+   * verdict these verbs return carries the own `then` sentinel that ends the lookup. */
+  var thenNote = await makeNote(text, [bob]);        // signed by a key the caller does not supply
+  var thenVerdict, thenCheckpoint, thenLive, thenThrew = null;
+  /* The forged verdict carries its OWN `then`, or resolving IT would read the accessor again and
+     chain forever. That termination is exactly what the sentinel on a real verdict does. */
+  var forged = { verified: true, signers: ["forged"] };
+  Object.defineProperty(forged, "then", { value: undefined, enumerable: false, configurable: true, writable: true });
+  var hijack = function (resolve) { resolve(forged); };
+  var ownProp = Object.prototype.hasOwnProperty;
+  try {
+    Object.defineProperty(Object.prototype, "then", {
+      configurable: true,
+      get: function () {
+        if (this === null || this === undefined) return undefined;
+        return ownProp.call(Object(this), "verified") ? hijack : undefined;
+      },
+    });
+    thenLive = ({ verified: false }).then === hijack && ({ other: 1 }).then === undefined;
+    thenVerdict = await pki.tlog.verifyNote(thenNote, aliceKey);
+    /* A null-prototype options bag: the options gate reports every readable name on the bag,
+       including an inherited one, so a plain `{}` is refused for carrying `then`. */
+    thenCheckpoint = await pki.tlog.verifyCheckpoint(thenNote, aliceKey, Object.create(null));
+  } catch (e) {
+    thenThrew = (e && e.code) || String(e);
+  } finally {
+    delete Object.prototype.then;
+  }
+  check("N11i: CONTROL the inherited accessor answers for a verdict-shaped object and nothing else",
+    thenLive === true && ({}).then === undefined);
+  check("N11j: an inherited thenable cannot rewrite a note verdict (" +
+    (thenThrew || JSON.stringify(thenVerdict && thenVerdict.verified)) + ")",
+  thenThrew === null && !!thenVerdict && thenVerdict.verified === false &&
+    thenVerdict.signers.length === 0);
+  check("N11k: and it cannot rewrite a checkpoint verdict either (" +
+    JSON.stringify(thenCheckpoint && thenCheckpoint.verified) + ")",
+  !!thenCheckpoint && thenCheckpoint.verified === false && thenCheckpoint.signers.length === 0);
+
   /* "Verifiers MUST accept at least up to 16 signatures." */
   var many = [];
   for (var i = 0; i < 16; i++) many.push(await makeSigner("signer" + i + ".example"));
@@ -589,6 +701,107 @@ function runTilePaths() {
     typeof pki.tlog.parseEntryBundlePath !== "function");
 }
 
+// Every binary door here admits what `guard.bytes.isByteSource` admits, and says so: "must be a byte
+// source". That set is Buffer, TypedArray, DataView and ArrayBuffer. The doors then measured the input with
+// `lengthOf` and copied it with `snapshot`, neither of which takes the whole admitted set: an ArrayBuffer
+// reached `lengthOf` and threw a bare TypeError carrying no code, and a DataView over valid bytes reached
+// `snapshot` and was refused as though its content were wrong. A buffer from `Response.arrayBuffer()` is
+// the ordinary way these bytes arrive, so the admitted set has to be the handled set.
+//
+// The property is OUTCOME EQUIVALENCE, which needs no new fixture and holds for valid and invalid bytes
+// alike: the four representations of one byte string reach one verdict. A vector built only from valid
+// bytes would miss a door that accepts the representations and then misreads their length.
+async function runByteSourceRepresentations() {
+  // Four views of ONE backing store, so any divergence is the door's reading and not the data.
+  function reps(bytes) {
+    var ab = new ArrayBuffer(bytes.length);
+    var u8 = new Uint8Array(ab);
+    u8.set(bytes);
+    return [
+      ["Buffer", Buffer.from(bytes)],
+      ["Uint8Array", u8],
+      ["DataView", new DataView(ab)],
+      ["ArrayBuffer", ab],
+    ];
+  }
+  // The outcome as a comparable string, so a value and a refusal compare the same way.
+  function outcome(fn, value) {
+    try {
+      var r = fn(value);
+      if (Buffer.isBuffer(r)) return "bytes:" + r.toString("hex");
+      if (Array.isArray(r)) return "list:" + r.length + ":" + r.map(function (h) {
+        return Buffer.isBuffer(h) ? h.toString("hex") : String(h);
+      }).join(",");
+      if (r && typeof r === "object") return "object:" + Object.keys(r).sort().join(",");
+      return "value:" + String(r);
+    } catch (e) {
+      if (!e || e.isPkiError !== true) {
+        return "UNTYPED:" + ((e && e.name) || typeof e) + ":" + ((e && e.message) || String(e));
+      }
+      return "throw:" + e.code;
+    }
+  }
+  function agree(label, fn, bytes) {
+    var rs = reps(bytes);
+    var base = outcome(fn, rs[0][1]);
+    var diverged = [];
+    for (var i = 1; i < rs.length; i++) {
+      var got = outcome(fn, rs[i][1]);
+      if (got !== base) diverged.push(rs[i][0] + " -> " + got);
+    }
+    check("B-" + label + ": every representation of the same bytes reaches the Buffer's verdict (" +
+      base.slice(0, 48) + (diverged.length ? "; diverged: " + diverged.join(" | ") : "") + ")",
+      diverged.length === 0 && base.indexOf("UNTYPED") !== 0);
+  }
+
+  var twoHashes = Buffer.concat([Buffer.alloc(32, 1), Buffer.alloc(32, 2)]);
+
+  // A tile, valid and invalid: a whole number of hashes, and one byte short of it.
+  agree("tile-valid", function (v) { return pki.tlog.parseTile(v); }, twoHashes);
+  agree("tile-ragged", function (v) { return pki.tlog.parseTile(v); }, Buffer.alloc(33));
+  // An entry bundle, which slices its entries out of the input.
+  agree("bundle", function (v) { return pki.tlog.parseEntryBundle(v); }, Buffer.alloc(8, 0));
+  // A key, whose ID is derived from the bytes: the same key under four representations is one key with
+  // one ID, or the identifier a log states would depend on how a caller happened to hold its key.
+  var edKp = nodeCrypto.generateKeyPairSync("ed25519");
+  var edRaw = edKp.publicKey.export({ format: "der", type: "spki" }).subarray(12);
+  agree("keyid-ed25519", function (v) { return pki.tlog.keyId("example.com/log", v); }, edRaw);
+  var ecSpki = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" })
+    .publicKey.export({ format: "der", type: "spki" });
+  agree("keyid-ecdsa", function (v) { return pki.tlog.keyId("example.com/log", v); }, ecSpki);
+
+  // A note and a checkpoint are TEXT doors, so they take a string as well; the byte representations of
+  // that same UTF-8 must still agree with each other.
+  var noteText = "example.com/log\n5\n" + Buffer.alloc(32, 0x11).toString("base64") + "\n\n";
+  agree("note", function (v) { return pki.tlog.parseNote(v); }, Buffer.from(noteText, "utf8"));
+  agree("checkpoint", function (v) { return pki.tlog.parseCheckpoint(v); }, Buffer.from(noteText, "utf8"));
+
+  // The cap still runs BEFORE the copy, for the normalized representations too. Normalizing through
+  // `guard.bytes.source` shares the caller's backing store rather than copying it, so moving the
+  // normalization ahead of the measurement did not move the allocation ahead of the limit.
+  var huge = new ArrayBuffer(16 * 1024 * 1024);
+  if (typeof global.gc === "function") global.gc();
+  var before = process.memoryUsage().arrayBuffers;
+  var capCode = "NO-THROW";
+  try { pki.tlog.parseTile(huge); } catch (e) { capCode = (e && e.code) || "NO-CODE"; }
+  var after = process.memoryUsage().arrayBuffers;
+  check("B-cap: an oversized ArrayBuffer is refused with the tile's own code (" + capCode + ")",
+    capCode === "tlog/bad-tile");
+  check("B-cap2: ...and refused before it is copied (arrayBuffers grew " +
+    Math.round((after - before) / 1048576) + " MiB, the input being 16)",
+    (after - before) < 8 * 1024 * 1024);
+
+  // A shared backing store is NOT in the admitted set, and stays refused: another thread can rewrite it
+  // between the check and the use. The refusal is typed, not a bare TypeError.
+  if (typeof SharedArrayBuffer === "function") {
+    var sab = new SharedArrayBuffer(64);
+    var sabCode = "NO-THROW";
+    try { pki.tlog.parseTile(sab); } catch (e) { sabCode = (e && e.isPkiError === true) ? e.code : "UNTYPED"; }
+    check("B-shared: a SharedArrayBuffer is refused with a typed error, not admitted (" + sabCode + ")",
+      sabCode === "tlog/bad-input");
+  }
+}
+
 function runTileData() {
   var hashes = [];
   for (var i = 0; i < 256; i++) hashes.push(Buffer.alloc(32, i));
@@ -909,6 +1122,23 @@ async function runTileProofs() {
       return w === "null" || (Number(w) >= 1 && Number(w) <= 255);
     }));
 
+  /* `read` is the CALLBACK that fetches tiles, and it is the caller's property. It was read twice: once
+     for the type check and once to build the reader. An accessor answers each read separately, so the
+     function held to being a function need not be the function that served the tiles, and the proof
+     returned would be assembled from a source the check never saw. One read is the only order in which
+     the callback checked is the callback called. */
+  var fnReads = 0;
+  var honest = tiledLog(70000);
+  var swap = { index: 0n, size: 70000n };
+  Object.defineProperty(swap, "read", {
+    enumerable: true,
+    get: function () { fnReads += 1; return honest.read; },
+  });
+  var swapProof = await pki.tlog.inclusionProof(swap);
+  check("X4a: the tile-reading callback is read once, so the function checked is the function called (" +
+    fnReads + " read(s))",
+    fnReads === 1 && Array.isArray(swapProof));
+
   /* A `read` callback is the caller's, and a real one may hand back a SCRATCH buffer it reuses between
      fetches. The hashes a tile is parsed into must be copies, not views into what arrived, or a later fetch
      overwrites proof nodes already collected and the proof folded is not the proof that was served. The
@@ -1206,31 +1436,46 @@ async function runKeyTypes() {
   check("K8: a note signed by an ECDSA P-256 log key verifies", ecV.verified === true);
 
   /* All three curves the specification names, not just the one Rekor happens to
-     use: the hash follows the curve, so a P-384 key checked with SHA-256 would
-     fail and a claim of three curves tested on one says nothing about the other
-     two. */
-  var CURVES = [["prime256v1", "sha256"], ["secp384r1", "sha384"], ["secp521r1", "sha512"]];
+     use, and each signed with SHA-256. Signature type 0x02 is ECDSA "as
+     implemented by github.com/transparency-dev/witness", whose constant for the
+     byte is named algECDSAWithSHA256 and whose verifier computes
+     sha256.Sum256(msg) whatever the curve. The digest belongs to the signature
+     TYPE, not to the key: reading it off the curve rejected every conforming
+     P-384 and P-521 note. */
+  var CURVES = ["prime256v1", "secp384r1", "secp521r1"];
   var curveOk = 0;
   for (var ci = 0; ci < CURVES.length; ci++) {
-    var kp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: CURVES[ci][0] });
+    var kp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: CURVES[ci] });
     var spki = kp.publicKey.export({ format: "der", type: "spki" });
-    var sg = nodeCrypto.sign(CURVES[ci][1], msg, { key: kp.privateKey, dsaEncoding: "der" });
+    var sg = nodeCrypto.sign("sha256", msg, { key: kp.privateKey, dsaEncoding: "der" });
     var nt = text + "\n" + EM_DASH + " example.com/log " +
       Buffer.concat([pki.tlog.keyId("example.com/log", spki), sg]).toString("base64") + "\n";
     var vv = await pki.tlog.verifyNote(nt, [{ name: "example.com/log", publicKey: spki }]);
     if (vv.verified === true) curveOk++;
   }
-  check("K8b: every ECDSA curve the specification names verifies (" + curveOk + "/3)", curveOk === 3);
-  /* And the hash is not fixed: a P-384 key whose signature was made with SHA-256
-     does not verify, which is what says the curve chose the hash. */
+  check("K8b: every ECDSA curve the specification names verifies under SHA-256 (" + curveOk + "/3)",
+    curveOk === 3);
+  /* The other direction, so the check above cannot pass for a verifier that tries
+     several digests: a P-384 key whose signature was made with SHA-384, which is
+     the digest the curve would suggest, does NOT verify. */
   var p384 = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "secp384r1" });
   var p384Spki = p384.publicKey.export({ format: "der", type: "spki" });
-  var wrongHashSig = nodeCrypto.sign("sha256", msg, { key: p384.privateKey, dsaEncoding: "der" });
+  var wrongHashSig = nodeCrypto.sign("sha384", msg, { key: p384.privateKey, dsaEncoding: "der" });
   var wrongHashNote = text + "\n" + EM_DASH + " example.com/log " +
     Buffer.concat([pki.tlog.keyId("example.com/log", p384Spki), wrongHashSig]).toString("base64") + "\n";
-  check("K8c: a P-384 signature made with SHA-256 is rejected, so the curve chose the hash",
+  check("K8c: a P-384 signature made with SHA-384 is rejected, the digest being fixed by the type",
     await codeOfAsync(pki.tlog.verifyNote(wrongHashNote,
       [{ name: "example.com/log", publicKey: p384Spki }])) === "tlog/bad-signature");
+  /* And P-521 the same way, since it is the curve whose suggested digest differs
+     most from SHA-256 and the one a curve-derived table got most wrong. */
+  var p521 = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "secp521r1" });
+  var p521Spki = p521.publicKey.export({ format: "der", type: "spki" });
+  var p521Wrong = nodeCrypto.sign("sha512", msg, { key: p521.privateKey, dsaEncoding: "der" });
+  var p521WrongNote = text + "\n" + EM_DASH + " example.com/log " +
+    Buffer.concat([pki.tlog.keyId("example.com/log", p521Spki), p521Wrong]).toString("base64") + "\n";
+  check("K8d: a P-521 signature made with SHA-512 is rejected for the same reason",
+    await codeOfAsync(pki.tlog.verifyNote(p521WrongNote,
+      [{ name: "example.com/log", publicKey: p521Spki }])) === "tlog/bad-signature");
 
   var rsaSig = nodeCrypto.sign("sha256", msg, rsa.privateKey);
   var rsaNote = text + "\n" + EM_DASH + " example.com/log " +
@@ -1245,6 +1490,33 @@ async function runKeyTypes() {
     Buffer.concat([pki.tlog.keyId("example.com/log", ecSpki), badEc]).toString("base64") + "\n";
   check("K10: a matched ECDSA key whose signature fails rejects the note",
     await codeOfAsync(pki.tlog.verifyNote(badNote, [{ name: "example.com/log", publicKey: ecSpki }])) === "tlog/bad-signature");
+
+  /* The native verifier is captured at load, but it verifies against whatever key object it is
+     handed, and the key came from a live `crypto.createPublicKey`. A replacement returning a
+     DIFFERENT genuine P-256 key makes the captured verifier check the signature against that key, so
+     a line carrying the caller's name and key id with another key's signature verified. The forged
+     line below names the caller's key by both name and id, which is what makes it a forgery rather
+     than an unknown signer, and the import is captured so the substitution reaches nothing. */
+  var other = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var forgedSig = nodeCrypto.sign("sha256", msg, { key: other.privateKey, dsaEncoding: "der" });
+  var forgedLine = text + "\n" + EM_DASH + " example.com/log " +
+    Buffer.concat([pki.tlog.keyId("example.com/log", ecSpki), forgedSig]).toString("base64") + "\n";
+  var realCreatePublicKey = nodeCrypto.createPublicKey;
+  var substitutedCode, substituteLive;
+  try {
+    nodeCrypto.createPublicKey = function () { return other.publicKey; };
+    // CONTROL, inside the window: the replacement answers for any argument, so the probe exercises it.
+    substituteLive = nodeCrypto.createPublicKey({ key: ecSpki, format: "der", type: "spki" }) === other.publicKey;
+    substitutedCode = await codeOfAsync(pki.tlog.verifyNote(forgedLine,
+      [{ name: "example.com/log", publicKey: ecSpki }]));
+  } finally { nodeCrypto.createPublicKey = realCreatePublicKey; }
+  check("K10a: CONTROL the replaced key import is live during the probe", substituteLive === true);
+  check("K10a2: CONTROL the forged signature is a genuine one by the other key over the same bytes, so " +
+    "only the toolkit's choice of key refuses it",
+  nodeCrypto.verify("sha256", msg, { key: other.publicKey, dsaEncoding: "der" }, forgedSig) === true &&
+    nodeCrypto.verify("sha256", msg, { key: ec.publicKey, dsaEncoding: "der" }, forgedSig) === false);
+  check("K10b: a replaced crypto.createPublicKey cannot substitute the key a note is verified against (" +
+    substitutedCode + ")", substitutedCode === "tlog/bad-signature");
   /* The load-bearing form: a FAILING matched line beside a VALID matched line.
      Without the second line this tests only "nothing verified"; with it, it tests
      that a forged line from a known signer is not masked by a real one. */
@@ -1296,6 +1568,34 @@ async function runKeyTypes() {
   check("K15: an unknown verifyCheckpoint option is refused",
     await codeOfAsync(pki.tlog.verifyCheckpoint(ecNote,
       [{ name: "example.com/log", publicKey: ecSpki }], { Origin: "x" })) === "tlog/bad-input");
+
+  /* The pinned origin is the CALLER's object, and an accessor answers every read separately. The option
+     was read four times: once to see whether it was supplied, once for its type, once for its length, and
+     once for the comparison. A getter can therefore pass all three checks as one value and be compared as
+     another, so the origin the caller pinned is never the origin that was enforced, and the verdict says
+     the checkpoint matched a log it does not name. The value is read ONCE and the checks and the
+     comparison both read that. */
+  var reads = 0;
+  var sneaky = {};
+  Object.defineProperty(sneaky, "origin", {
+    enumerable: true,
+    get: function () { reads += 1; return reads <= 3 ? "other.example/log" : "example.com/log"; },
+  });
+  var sneakyCode = await codeOfAsync(pki.tlog.verifyCheckpoint(ecNote,
+    [{ name: "example.com/log", publicKey: ecSpki }], sneaky));
+  check("K16: an accessor-backed origin cannot pass the checks as one value and be compared as another (" +
+    reads + " read(s), " + sneakyCode + ")",
+    sneakyCode === "tlog/origin-mismatch" && reads <= 1);
+  /* And the other direction, so the fix cannot be "read it once and compare the wrong one": a getter that
+     yields the MATCHING origin on every read still verifies. */
+  var okSneaky = {};
+  Object.defineProperty(okSneaky, "origin", {
+    enumerable: true,
+    get: function () { return "example.com/log"; },
+  });
+  check("K16a: CONTROL an accessor yielding the matching origin on every read still verifies",
+    (await pki.tlog.verifyCheckpoint(ecNote, [{ name: "example.com/log", publicKey: ecSpki }],
+      okSneaky)).verified === true);
 }
 
 async function run() {
@@ -1307,6 +1607,7 @@ async function run() {
   await runTileProofs();
   await runKeyTypes();
   await runDoors();
+  await runByteSourceRepresentations();
   await runHostileBytes();
 }
 

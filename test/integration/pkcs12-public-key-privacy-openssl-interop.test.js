@@ -46,7 +46,7 @@ async function run() {
     // ---- Gate A: OURS public-key-privacy envelope -> openssl cms -decrypt ----
     var pfx = await pki.pkcs12.build(scSpec, { password: PW });
     var ci = envelopedContentInfo(pfx);
-    var ourSafeContents = Buffer.from((await pki.cms.decrypt(ci, { key: r.key, cert: r.cert })).content);   // our composed-layer recovery (the byte oracle)
+    var ourSafeContents = Buffer.from((await pki.cms.decrypt(ci, { key: r.key, cert: r.cert })).content);   // our composed-layer recovery (the byte oracle); OAEP, so no opt-in
     var ciFile = path.join(dir, "env.der"); fs.writeFileSync(ciFile, ci);
     var outFile = path.join(dir, "recovered.der");
     var d = ctx.runOpenssl(["cms", "-decrypt", "-inform", "DER", "-in", ciFile, "-recip", rCertFile, "-inkey", rKeyFile, "-binary", "-out", outFile], { allowNonZero: true });
@@ -63,8 +63,17 @@ async function run() {
       // MAC-less PFX (id-data authSafe, no MacData) so no MAC recomputation is needed for the oracle.
       var authSafe = b.sequence([b.raw(fs.readFileSync(encFile))]);
       var pfxB = b.sequence([b.integer(3n), b.sequence([b.oid(O("data")), b.explicit(0, b.octetString(authSafe))])]);
-      var openedB = await pki.pkcs12.open(pfxB, null, { allowUnauthenticated: true, recipientKey: r.key, recipientCert: r.cert });
+      // `openssl cms -encrypt` uses RSAES-PKCS1-v1_5 key transport over an AES-CBC content, which
+      // pki.cms.decrypt refuses by default: that combination's only integrity check is the content
+      // padding. `allowUnauthenticatedRsa15` is what an operator opening such a file passes, and
+      // pki.pkcs12.open forwards it.
+      var openedB = await pki.pkcs12.open(pfxB, null, { allowUnauthenticated: true, allowUnauthenticatedRsa15: true, recipientKey: r.key, recipientCert: r.cert });
       check("Gate B: the openssl-produced envelope opens through pki.pkcs12.open", openedB.keys.length === 1 && openedB.certs.length === 1);
+      var defaultCode = "NO-THROW";
+      try { await pki.pkcs12.open(pfxB, null, { allowUnauthenticated: true, recipientKey: r.key, recipientCert: r.cert }); }
+      catch (err) { defaultCode = err.code || err.name; }
+      check("Gate B: and the default refuses it, the combination being unauthenticated (" + defaultCode + ")",
+        defaultCode === "cms/unauthenticated-rsa-v15");
     }
   } finally {
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }

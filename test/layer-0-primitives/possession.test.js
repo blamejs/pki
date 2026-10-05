@@ -57,6 +57,33 @@ var AT = new Date("2027-06-01T00:00:00Z");
 
 // A CA, and a signature certificate it issued to the requester. The requester holds the private key
 // for that certificate, and that is the key it signs the request with.
+// A copy of a CSR carrying its single extensionRequest attribute TWICE. The builder emits one, so the
+// second is spliced in at the DER level, reassembling the containers around the attribute's own raw bytes
+// rather than re-encoding it. The signature no longer covers the result, which is fine and is asserted:
+// the ambiguity has to be refused BEFORE the signature is checked, so the code that comes back names the
+// ambiguity rather than a bad signature.
+function _duplicateAttribute(csrDer, attrName) {
+  var root = pki.asn1.decode(csrDer);
+  var cri = root.children[0];
+  var attrs = cri.children[cri.children.length - 1];   // [0] IMPLICIT SET OF Attribute
+  if (!attrs || !attrs.children || !attrs.children.length) return null;
+  // The request carries several attributes, so the one to duplicate is found by its own type rather than by
+  // being the only one, and every other attribute is kept as it stands.
+  var wanted = pki.oid.byName(attrName);
+  var parts = [], found = false;
+  for (var a = 0; a < attrs.children.length; a++) {
+    var attr = attrs.children[a];
+    parts.push(attr.bytes);
+    if (pki.asn1.read.oid(attr.children[0]) === wanted) { parts.push(attr.bytes); found = true; }
+  }
+  if (!found) return null;
+  var newAttrs = b.contextConstructed(0, Buffer.concat(parts));
+  var keptCri = [];
+  for (var i = 0; i < cri.children.length - 1; i++) keptCri.push(cri.children[i].bytes);
+  var newCri = b.sequence([b.raw(Buffer.concat(keptCri)), b.raw(newAttrs)]);
+  return b.sequence([b.raw(newCri), b.raw(root.children[1].bytes), b.raw(root.children[2].bytes)]);
+}
+
 async function world(opts) {
   opts = opts || {};
   // A distinct CA name per world. A serial is unique only within an issuer, so two worlds sharing both
@@ -241,9 +268,78 @@ async function testPathThroughAnIntermediate() {
   check("P3: the signature still verifies in that case, so the two verdicts stay separate",
     withoutChain.verified === true);
 
+  /* P3a: the path result is awaited through the promise constructor captured at LOAD, not the live
+     global. `Promise.resolve` builds through its receiver, so handing it `globalThis.Promise` put the
+     capture back under something a replacement installed afterwards could take over: a constructor
+     whose `resolve` hands back `{ valid: true }` made this verb read a validated path where there was
+     none, and the RFC 9883 sec. 4 MUST it exists to apply reported satisfied. Driven on the SAME
+     request P2 uses, whose path genuinely does not validate, so a substituted `true` is the only way
+     the verdict could flip. */
+  /* The substitution has to sit in the CONSTRUCTOR, not in `resolve`. `Promise.resolve.call(C, x)`
+     builds through `new C(executor)` when `x.constructor` is not `C`, so a hostile `C.resolve` is never
+     reached and a vector that puts the substitution there proves nothing. This one hands the executor a
+     `resolve` that discards the real value and settles with `{ valid: true }` instead, which is what a
+     replaced constructor can actually do. */
+  var RealPromise = Promise;
+  function Hostile(executor) {
+    return new RealPromise(function (settle, reject) {
+      executor(function () { settle({ valid: true }); }, reject);
+    });
+  }
+  Hostile.resolve = function (v) { return RealPromise.resolve(v); };
+  Hostile.reject = function (e) { return RealPromise.reject(e); };
+  Hostile.all = function (xs) { return RealPromise.all(xs); };
+  Hostile.prototype = RealPromise.prototype;
+  var underHostile;
+  globalThis.Promise = Hostile;
+  try {
+    underHostile = await RealPromise.resolve(
+      pki.possession.verifyRequest(der, { trustAnchors: [rootDer], time: AT }));
+  } catch (e) {
+    underHostile = { threw: e.code || e.name };
+  } finally {
+    globalThis.Promise = RealPromise;
+  }
+  check("P3a: a promise constructor replaced after load cannot report a path as validated (" +
+    JSON.stringify(underHostile && (underHostile.threw || underHostile.pathValidated)) + ")",
+  underHostile !== undefined && underHostile.threw === undefined &&
+    underHostile.pathValidated === false && underHostile.valid === false);
+  /* CONTROL: the replacement really does substitute when a capture is called with the LIVE global as
+     its receiver, which is the shape the fix removes. Without this the check above could pass because
+     nothing hostile ever happened. */
+  var realResolve = RealPromise.resolve;
+  var throughHostile = await realResolve.call(Hostile, RealPromise.resolve({ valid: false }));
+  check("P3b: CONTROL a capture called with the replaced global as receiver does substitute (" +
+    JSON.stringify(throughHostile) + ")", throughHostile.valid === true);
+
   check("P4: intermediates must be an array of certificates",
     (await codeAsync(pki.possession.verifyRequest(der,
       { trustAnchors: [rootDer], time: AT, intermediates: sigCertDer }))) === "possession/bad-input");
+
+  /* `time` is documented as defaulting to now. Omitted, it reached `pki.path.validate` as `undefined`,
+     whose always-on validity check requires a valid Date and refuses `path/bad-input`, so the default
+     never applied and every caller had to supply a clock to get any verdict at all. What the default
+     must produce is the verdict an explicit now produces, which is the assertion below: these fixtures
+     are valid in 2027 and the real instant is outside that window, so neither says `valid: true`, and
+     the point is that the answer is a PATH verdict rather than a refusal of the input. */
+  var defaultTimeCode = await codeAsync(pki.possession.verifyRequest(der,
+    { trustAnchors: [rootDer], intermediates: [interDer] }));
+  check("P4a: an omitted time defaults to now rather than refusing the call (" + defaultTimeCode + ")",
+    defaultTimeCode === "NO-THROW");
+  var defaulted = await pki.possession.verifyRequest(der,
+    { trustAnchors: [rootDer], intermediates: [interDer] });
+  var explicitNow = await pki.possession.verifyRequest(der,
+    { trustAnchors: [rootDer], intermediates: [interDer], time: new Date() });
+  check("P4b: and it reaches the verdict an explicitly supplied now reaches, field for field",
+    defaulted.verified === explicitNow.verified && defaulted.pathValidated === explicitNow.pathValidated &&
+    defaulted.valid === explicitNow.valid && defaulted.verified === true);
+  // CONTROL: the same request at an instant INSIDE the fixtures' window is valid, so the pair above
+  // agree on a real verdict rather than on a check that stopped running.
+  check("P4c: CONTROL the same request inside the validity window is valid",
+    withChain.valid === true && withChain.pathValidated === true);
+  check("P4d: and a time that is not a Date is refused under this verb's own code",
+    (await codeAsync(pki.possession.verifyRequest(der,
+      { trustAnchors: [rootDer], time: "2026-01-01" }))) === "possession/bad-input");
 
   // A certificate whose keyUsage confines its key to keyAgreement does not authorize a signature over a
   // certification request (RFC 5280 sec. 4.2.1.3), so it must not authorize issuance either. The signature
@@ -281,6 +377,40 @@ async function testPathThroughAnIntermediate() {
   var noKuVerdict = await pki.possession.verifyRequest(noKuCsr, { trustAnchors: [noKu.caDer], time: AT });
   check("P9: CONTROL a certificate with no keyUsage is unconfined and is accepted",
     noKuVerdict.valid === true && noKuVerdict.signerMaySign === true);
+
+  // The prohibition and the name comparisons all read the extensions a request ASKS FOR, and each lookup
+  // took the FIRST attribute whose extension matched. A request carrying two extensionRequest attributes
+  // could therefore ask for keyAgreement in the first and digitalSignature in the second and have only the
+  // first read. Which one a CA should honor is stated nowhere, so the ambiguity is refused, as
+  // pki.schema.csr.decodeExtensions refuses it.
+  var twoAttrs = await world({ caSubject: "Two CA", caSerial: 13, sigSerial: 0x37 });
+  var oneAttrCsr = await pki.csr.sign({
+    subject: "kem.example", subjectPublicKey: twoAttrs.kemSpki,
+    extensionRequest: { keyUsage: ["keyAgreement"] },
+    privateKeyPossessionStatement: { signer: twoAttrs.signer, certificate: twoAttrs.sigCertDer },
+  }, { key: twoAttrs.sigKp.key });
+  check("P11: CONTROL one extensionRequest attribute is read and accepted",
+    (await pki.possession.verifyRequest(oneAttrCsr, { trustAnchors: [twoAttrs.caDer], time: AT })).valid === true);
+  // A second extensionRequest attribute is spliced in at the DER level, because the builder emits one.
+  var dup = _duplicateAttribute(oneAttrCsr, "extensionRequest");
+  check("P11a: the spliced request really carries two extensionRequest attributes",
+    dup !== null && code(function () { return pki.schema.csr.decodeExtensions(dup); }) === "csr/ambiguous-extension-request");
+  check("P11b: a request carrying two extensionRequest attributes is refused rather than half-read",
+    (await codeAsync(pki.possession.verifyRequest(dup, { trustAnchors: [twoAttrs.caDer], time: AT }))) === "possession/bad-request");
+
+  // The same ambiguity for the STATEMENT attribute, which is the one that carries the binding checks. A
+  // request with a sound statement followed by a second one naming a different certificate was accepted on
+  // the strength of the first, the rest never being looked at. The refusal is one helper for both, because
+  // fixing the extensionRequest case alone is how this one survived the first pass.
+  var dupStmt = _duplicateAttribute(oneAttrCsr, "statementOfPossession");
+  check("P12: the spliced request really carries two statement attributes",
+    dupStmt !== null && pki.schema.csr.parse(dupStmt).attributes.filter(function (a) {
+      return a.type === pki.possession.OID_SOP;
+    }).length === 2);
+  check("P12a: a request carrying two possession statements is refused rather than judged on the first",
+    (await codeAsync(pki.possession.verifyRequest(dupStmt, { trustAnchors: [twoAttrs.caDer], time: AT }))) === "possession/bad-request");
+  check("P12b: and pki.possession.parse of the same request is refused too, both doors agreeing",
+    code(function () { return pki.possession.statementOf(pki.schema.csr.parse(dupStmt)); }) !== "NO-THROW");
 }
 
 // A requested extension that will not decode is not an absent one. The two policy comparisons RFC 9883
@@ -330,8 +460,9 @@ async function testUndecodableRequestedExtension(w) {
     verdict === null || verdict.subjectAltNamesMatch !== null || verdict.valid !== true);
 }
 
-// RFC 9883 sec. 4: "The privateKeyPossessionStatement attribute MUST NOT be used to obtain a signature
-// certificate." That was read only off the key usages a request ASKS FOR, so omitting keyUsage entirely
+// RFC 9883 sec. 6: "The privateKeyPossessionStatement attribute MUST NOT be used to obtain a signature
+// certificate", and sec. 4: "the subjectPKInfo MUST contain the public key for the key establishment
+// algorithm." That was read only off the key usages a request ASKS FOR, so omitting keyUsage entirely
 // reported the prohibition as not engaged. The mechanism exists because a key-establishment key cannot
 // sign and so cannot prove possession the PKCS#10 way; a subject key that can ONLY sign has no such
 // problem, and a request for one is the misuse whether or not it names a usage. The discriminator is the
@@ -342,12 +473,14 @@ async function testSignatureOnlySubjectKey(w) {
   // Every signature-only family the toolkit supports, not one example of one. An RSASSA-PSS SPKI is the
   // one that reads like an exception and is not: unlike a bare rsaEncryption key, which can do key
   // transport, an id-RSASSA-PSS key is restricted to signing and so cannot establish a key either.
-  var SIGN_ONLY = ["ed25519", "ed448", "ml-dsa-65", "rsa-pss", "slh-dsa-sha2-128f"];
+  // `dsa` is here because it was the one classical signature-only family this list missed, and a list that
+  // misses one is how the prohibition went unenforced for it.
+  var SIGN_ONLY = ["ed25519", "ed448", "ml-dsa-65", "rsa-pss", "slh-dsa-sha2-128f", "dsa"];
   for (var i = 0; i < SIGN_ONLY.length; i++) {
     var alg = SIGN_ONLY[i];
-    var kp = alg === "rsa-pss"
-      ? crypto.generateKeyPairSync("rsa-pss", { modulusLength: 2048 })
-      : crypto.generateKeyPairSync(alg);
+    var kp = alg === "rsa-pss" ? crypto.generateKeyPairSync("rsa-pss", { modulusLength: 2048 })
+      : alg === "dsa" ? crypto.generateKeyPairSync("dsa", { modulusLength: 2048, divisorLength: 256 })
+        : crypto.generateKeyPairSync(alg);
     var spki = kp.publicKey.export({ format: "der", type: "spki" });
     // No extensionRequest at all, so nothing names a usage.
     var req = await pki.csr.sign({
@@ -385,6 +518,48 @@ async function testSignatureOnlySubjectKey(w) {
 }
 
 // ---- building the request -------------------------------------------------
+
+// The name comparison runs BEFORE the signature is checked and before the certificate's path is
+// validated, and both lists it walks come from the request: the names it asks for, and the names in
+// the certificate it embeds. Unbounded, the work is their product, so a request repeating one name
+// made a CA scan every certificate name for each repetition inside a single synchronous call, with
+// nothing yet authenticated. One large input, and the assertion is the REFUSAL rather than a timing
+// ratio: a machine fast enough to absorb this input is not a machine where the bound is unnecessary.
+async function testSanComparisonIsBounded() {
+  // The certificate carries many names and the request asks for the LAST one, repeatedly. Both halves
+  // are load-bearing: with no certificate names the inner scan finds nothing and `_every` stops at the
+  // first requested name, and with the FIRST name asked for the scan matches immediately. Only a late
+  // match makes every repetition walk the whole list, which is the product this bounds.
+  var certNames = [];
+  for (var k = 0; k < 200; k++) certNames.push({ dNSName: "pad" + k + ".example" });
+  certNames.push({ dNSName: "last.example" });
+  var w = await world({ caSubject: "Flood CA", caSerial: 7, sigSerial: 0x77,
+    sigExts: { keyUsage: ["digitalSignature"], subjectAltName: certNames } });
+
+  function askFor(n) {
+    var many = [];
+    for (var i = 0; i < n; i++) many.push({ dNSName: "last.example" });
+    return pki.csr.sign({
+      subject: "kem.example", subjectPublicKey: w.kemSpki,
+      privateKeyPossessionStatement: { signer: w.signer, certificate: w.sigCertDer },
+      extensionRequest: { subjectAltName: many },
+    }, { key: w.sigKp.key });
+  }
+
+  var flood = await askFor(4000);
+  check("DOS1: the flood request is built and large, so a refusal below is about the comparison",
+    Buffer.isBuffer(flood) && flood.length > 40000);
+  var t0 = Date.now();
+  var outcome = await codeAsync(pki.possession.verifyRequest(flood, { trustAnchors: [w.caDer], time: AT }));
+  var elapsed = Date.now() - t0;
+  check("DOS2: the comparison is bounded and the request is refused by the cap (" + outcome + ", " +
+    elapsed + "ms)", outcome === "possession/too-many-names");
+  // The control: the same shape asking for ONE name walks 201 pairs, under the cap, so DOS2 is the
+  // bound biting rather than this fixture being refused for an unrelated reason.
+  check("DOS3: CONTROL one requested name stays under the cap and reaches a verdict",
+    (await codeAsync(pki.possession.verifyRequest(await askFor(1),
+      { trustAnchors: [w.caDer], time: AT }))) !== "possession/too-many-names");
+}
 
 async function testBuild(w) {
   // A KEM subject key, which cannot sign, and a signature key that can. Before this release the
@@ -576,6 +751,78 @@ async function testNameComparison(w) {
         privateKeyPossessionStatement: { signer: sanW.signer, certificate: sanW.sigCertDer } },
         { key: sanW.sigKp.key }),
       { trustAnchors: [sanW.caDer], time: AT })).subjectAltNamesMatch === null);
+
+  await testSanFormComparisonRules();
+}
+
+// Each GeneralName form has its own comparison rule, and the comparison was made on the rendered value for
+// all of them at once: a dNSName differing only in case read as a second host although RFC 4343 makes DNS
+// case-insensitive, and a directoryName re-encoded to equivalent bytes read as a second name although
+// RFC 5280 sec. 7.1 compares it attribute by attribute. Every form the decoder renders gets a vector, in
+// both directions: the pair that differs only where its rule folds MATCHES, and the pair that differs where
+// its rule is exact does NOT. One arm alone would pass for a comparison that folded case everywhere, which
+// is the opposite defect.
+async function testSanFormComparisonRules() {
+  // certSan is what the signature certificate carries; askSan is what the request asks for.
+  async function compare(certSan, askSan) {
+    var w = await world({ sigExts: { keyUsage: ["digitalSignature"], subjectAltName: certSan } });
+    var der = await pki.csr.sign({
+      subject: "kem.example", subjectPublicKey: w.kemSpki,
+      extensionRequest: { subjectAltName: askSan },
+      privateKeyPossessionStatement: { signer: w.signer, certificate: w.sigCertDer },
+    }, { key: w.sigKp.key });
+    var v = await pki.possession.verifyRequest(der, { trustAnchors: [w.caDer], time: AT });
+    return v.subjectAltNamesMatch;
+  }
+
+  // dNSName: case-insensitive throughout (RFC 4343).
+  check("N7a: a dNSName differing only in case is the same host",
+    (await compare([{ dNSName: "KEM.Example.COM" }], [{ dNSName: "kem.example.com" }])) === true);
+  check("N7b: and a different host is still a different host",
+    (await compare([{ dNSName: "kem.example.com" }], [{ dNSName: "other.example.com" }])) === false);
+
+  // rfc822Name: the host folds, the local part does not (RFC 5280 sec. 7.5).
+  check("N8a: an rfc822Name differing only in the case of its host is the same mailbox",
+    (await compare([{ rfc822Name: "alice@EXAMPLE.com" }], [{ rfc822Name: "alice@example.com" }])) === true);
+  check("N8b: but one differing in the case of its local part is NOT, the local part being case-sensitive",
+    (await compare([{ rfc822Name: "Alice@example.com" }], [{ rfc822Name: "alice@example.com" }])) === false);
+
+  // uniformResourceIdentifier: the scheme and host fold, the path does not (RFC 5280 sec. 7.4).
+  check("N9a: a URI differing only in the case of its scheme and host names the same resource",
+    (await compare([{ uniformResourceIdentifier: "HTTPS://EXAMPLE.com/Path" }],
+      [{ uniformResourceIdentifier: "https://example.com/Path" }])) === true);
+  check("N9b: but one differing in the case of its path does not, the path being case-sensitive",
+    (await compare([{ uniformResourceIdentifier: "https://example.com/PATH" }],
+      [{ uniformResourceIdentifier: "https://example.com/path" }])) === false);
+
+  // directoryName: RFC 5280 sec. 7.1, attribute by attribute, so a value differing in case and
+  // insignificant whitespace is one name where the attribute's own matching rule says so.
+  check("N10a: a directoryName whose attribute values differ only in case is the same name",
+    (await compare([{ directoryName: [{ commonName: "Example Co" }] }],
+      [{ directoryName: [{ commonName: "EXAMPLE CO" }] }])) === true);
+  check("N10b: but a different attribute value is a different name",
+    (await compare([{ directoryName: [{ commonName: "Example Co" }] }],
+      [{ directoryName: [{ commonName: "Other Co" }] }])) === false);
+
+  // iPAddress: bytes, with no case to fold.
+  check("N11a: the same iPAddress matches",
+    (await compare([{ iPAddress: "192.0.2.1" }], [{ iPAddress: "192.0.2.1" }])) === true);
+  check("N11b: and a different one does not",
+    (await compare([{ iPAddress: "192.0.2.1" }], [{ iPAddress: "192.0.2.2" }])) === false);
+
+  // A form the guard has no rule for compares by its encoded bytes, and never folds case into one it
+  // cannot read. Equal bytes match; anything else does not.
+  var on = { typeId: pki.oid.byName("commonName"), value: b.utf8("x") };
+  check("N12a: an otherName matches itself, byte for byte",
+    (await compare([{ otherName: on }], [{ otherName: on }])) === true);
+  check("N12b: and differs from one whose encoded value differs only in case, the form's rule being unknown",
+    (await compare([{ otherName: { typeId: pki.oid.byName("commonName"), value: b.utf8("X") } }],
+      [{ otherName: on }])) === false);
+
+  // Two different FORMS never match, whatever they render to: a dNSName is not a URI.
+  check("N13: two entries of different forms do not match",
+    (await compare([{ dNSName: "kem.example.com" }],
+      [{ uniformResourceIdentifier: "kem.example.com" }])) === false);
 }
 
 // ---- the MUST NOT --------------------------------------------------------
@@ -643,6 +890,68 @@ async function testCrmf(w) {
       certTemplate: { subject: "kem.example", publicKey: w.kemSpki },
       controls: { statementOfPossession: { signer: { issuer: w.signer.issuer, serialNumber: w.signer.serialNumber + 1n },
         certificate: w.sigCertDer } } }, { key: w.sigKp.key }))) === "crmf/bad-controls");
+
+  /* R7. The same ambiguity the PKCS#10 side refuses, on the CRMF route. The controls are a sequence, and
+     the verifier took the FIRST statementOfPossession and returned, so every later statement went
+     unchecked: a request whose first statement is sound and whose second names a different certificate
+     verified on the strength of the first. Which control a CA should honor is stated nowhere, so a
+     request carrying more than one is refused rather than judged on one of them.
+     The second control is spliced in, because the builder emits one and a request carrying two exists
+     only on the wire. */
+  var twoCtl = (function () {
+    var root = pki.asn1.decode(msg);
+    var certReqMsg = root.children[0];
+    var certReq = certReqMsg.children[0];
+    // certReq ::= SEQUENCE { certReqId INTEGER, certTemplate, controls SEQUENCE OF ... }
+    var ctlSeq = certReq.children[2];
+    var dup = null;
+    for (var ci = 0; ci < ctlSeq.children.length; ci++) {
+      if (pki.asn1.read.oid(ctlSeq.children[ci].children[0]) === SOP_OID) { dup = ctlSeq.children[ci]; break; }
+    }
+    if (dup === null) return null;
+    var kept = [];
+    for (var k = 0; k < ctlSeq.children.length; k++) kept.push(ctlSeq.children[k].bytes);
+    kept.push(dup.bytes);
+    var newCtl = b.sequence([b.raw(Buffer.concat(kept))]);
+    var reqKids = [];
+    for (var r = 0; r < 2; r++) reqKids.push(certReq.children[r].bytes);
+    var newReq = b.sequence([b.raw(Buffer.concat(reqKids)), b.raw(newCtl)]);
+    var msgKids = [b.raw(newReq)];
+    for (var m = 1; m < certReqMsg.children.length; m++) msgKids.push(b.raw(certReqMsg.children[m].bytes));
+    return b.sequence([b.raw(b.sequence(msgKids))]);
+  })();
+  var twoCode = twoCtl === null ? "COULD-NOT-SPLICE" : await codeAsync(pki.crmf.verifyPop(twoCtl));
+  check("R7: a request carrying two statementOfPossession controls is refused rather than judged on " +
+    "the first (" + twoCode + ")",
+    twoCode === "crmf/bad-controls");
+  /* CONTROL: the single-control request still verifies, so the refusal above did not reject the shape the
+     mechanism exists for. */
+  check("R7a: CONTROL the request carrying one control still verifies",
+    (await pki.crmf.verifyPop(msg)).verified === true);
+
+  /* R8. The PRE-ENCODED control form is the same control by another spelling, and it was invisible to the
+     builder's key resolution: the signing algorithm came from the REQUESTED key instead of from the
+     signature certificate, so an X25519 request carrying a good encoded statement was refused for an
+     algorithm that cannot sign, while the object form of the same request succeeded. */
+  var encodedCtl = b.sequence([
+    b.oid(SOP_OID),
+    b.raw(pki.possession.build
+      ? pki.possession.build({ signer: w.signer, certificate: w.sigCertDer })
+      : ctl.value),
+  ]);
+  var arrayForm = null, arrayCode = null;
+  try {
+    arrayForm = await pki.crmf.build({
+      certReqId: 1n,
+      certTemplate: { subject: "kem.example", publicKey: w.kemSpki },
+      controls: [encodedCtl],
+    }, { key: w.sigKp.key });
+  } catch (e) { arrayCode = (e && e.code) || "NO-CODE"; }
+  check("R8: the pre-encoded control form resolves the signing key the same way the object form does" +
+    (arrayCode ? " (refused " + arrayCode + ")" : ""),
+    arrayForm !== null);
+  check("R8a: and the request it builds verifies under the statement certificate's key",
+    arrayForm !== null && (await pki.crmf.verifyPop(arrayForm)).verified === true);
 }
 
 // ---- the algorithm matrix -------------------------------------------------
@@ -698,6 +1007,7 @@ async function run() {
   testSurface();
   var w = await world();
   await testDecode(w);
+  await testSanComparisonIsBounded();
   var built = await testBuild(w);
   await testVerify(w, built);
   await testNameComparison(w);

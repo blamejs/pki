@@ -135,6 +135,28 @@ function testRobustness() {
     encGrewMiB.toFixed(1) + " MiB allocated)",
   oversizeEncCode === "hpke/bad-key" && encGrewMiB < 1);
 
+  /* The SENDER's subject is its recipient key, and it has to be taken before the options bag is read,
+     because reading that bag runs caller code. A getter on `opts.info` that copied another recipient's
+     key over the buffer had the setup encapsulate to THAT recipient while the caller had named the
+     first: measured, a sender naming A produced a message only B could open, and every width check
+     passed because both keys are the same width. The verdict is not a refusal, it is a message for the
+     wrong party, so the vector asks WHO can open it rather than whether the call threw. `setupR` takes
+     its ciphertext first for the same reason; this is the sender side of one rule. */
+  var recipA = require("crypto").generateKeyPairSync("x25519");
+  var recipB = require("crypto").generateKeyPairSync("x25519");
+  var pkRecipA = Buffer.from(recipA.publicKey.export({ format: "der", type: "spki" }).subarray(-32));
+  var pkRecipB = recipB.publicKey.export({ format: "der", type: "spki" }).subarray(-32);
+  var swapOpts = { get info() { pkRecipB.copy(pkRecipA); return Buffer.alloc(0); } };
+  var swapped = pki.hpke.setupS(IDS, pkRecipA, swapOpts);
+  var swappedCt = swapped.context.seal(Buffer.alloc(0), Buffer.from("secret"));
+  function opensFor(priv) {
+    try {
+      return pki.hpke.open(IDS, swapped.enc, priv, {}, Buffer.alloc(0), swappedCt).toString();
+    } catch (e) { return e.code || e.name; }
+  }
+  check("an option getter cannot swap the recipient a sender setup encapsulates to",
+    opensFor(recipA.privateKey) === "secret" && opensFor(recipB.privateKey) === "hpke/open-failed");
+
   /* A supplied `pkm` must match the `skm` beside it. That rule was applied to an OWN property only, so
      a key pair carrying `pkm` on its PROTOTYPE had the check skipped rather than applied: the field was
      read as absent. `skm` on the line above it was always read through the prototype, so the two fields
@@ -553,23 +575,35 @@ function testOptionsReadOnce() {
 }
 
 function testExpandFailurePathWipes() {
-  // A KDF block computed before a later block's HMAC fails is wiped on the failing path too.
+  // The KDF accumulator a failing export has already built is wiped on the failing path too. The
+  // failure is injected at `Buffer.prototype.copy`, which the expand reads live where it trims the
+  // accumulator to the requested length, after every block has been computed. The MAC operations
+  // themselves are captured at load and a replacement no longer reaches them.
   var crypto = require("crypto");
   var kp = crypto.generateKeyPairSync("x25519");
   var ctx = pki.hpke.setupS(IDS, kp.publicKey, {}).context;
-  var real = crypto.createHmac, digests = [], calls = 0, threw = false;
-  crypto.createHmac = function (hash, key) {
-    var h = real.call(crypto, hash, key), n = ++calls;
-    return {
-      update: function (d) { if (n === 2) throw new Error("injected engine failure"); h.update(d); return this; },
-      digest: function () { var b = h.digest(); digests.push(b); return b; },
-    };
-  };
-  try { ctx.export(Buffer.from("ctx"), 64); }
-  catch (e) { threw = e.message === "injected engine failure"; }
-  finally { crypto.createHmac = real; }
-  var wiped = digests.length === 1 && digests[0].every(function (b) { return b === 0; });
-  check("a KDF block produced before an expand failure is wiped", threw && wiped);
+  var expCtx = Buffer.from("ctx");
+  var realCopy = Buffer.prototype.copy, seen = [], threw = false, live = false;
+  try {
+    Object.defineProperty(Buffer.prototype, "copy", {
+      value: function () { seen.push(this); throw new Error("injected engine failure"); },
+      writable: true, configurable: true,
+    });
+    // CONTROL, inside the window: the replacement is reached, so the probe below exercises it.
+    try { Buffer.alloc(1).copy(Buffer.alloc(1)); }
+    catch (ce) { live = ce.message === "injected engine failure"; }
+    try { ctx.export(expCtx, 64); }
+    catch (e) { threw = e.message === "injected engine failure"; }
+  } finally {
+    Object.defineProperty(Buffer.prototype, "copy", { value: realCopy, writable: true, configurable: true });
+  }
+  // Two 32-byte blocks make the 64-byte accumulator, so the length pins that the examined buffer is
+  // the accumulator the export built rather than the one-byte buffer the control touched.
+  var held = seen.length ? seen[seen.length - 1] : null;
+  var wiped = held !== null && held.length === 64 && held.every(function (b) { return b === 0; });
+  check("CONTROL the replaced copy is reached, so the expand probe runs against it", live === true);
+  check("the KDF accumulator a failing export had built is wiped (" +
+    (held === null ? "never reached" : "len " + held.length) + ")", threw && wiped);
 }
 
 // The four standalone KEM verbs, asked of EVERY KEM the module registers rather than of a list written
@@ -831,6 +865,16 @@ function testOneStageScheduleWipesEveryCopy() {
   var PSK = Buffer.from("5b7e2a1f0c94d6338ae5f21b47c0d98e6a3f15b2c8074e91da26b3f5081c7a4d", "hex");
   var PSK_ID = Buffer.from("one-stage-wipe");
 
+  /* The module captures `Buffer.concat` at LOAD, so replacing the method afterwards reaches nothing,
+     which is the property `hpke-hybrid.test.js` pins for the combiner. The observation point moves to
+     the capture: a FRESH copy of the guard captures and of the module is taken with the spy already
+     installed, this vector drives that copy, and the original modules are put back afterwards so
+     nothing else in the process sees a second set of error classes. */
+  var nodePath = require("node:path");
+  var LIB_DIR = nodePath.resolve(__dirname, "..", "..", "lib");
+  function _instrumented(k) {
+    return k.indexOf(nodePath.join("lib", "guard-")) >= 0 || k.indexOf(nodePath.join("lib", "hpke.js")) >= 0;
+  }
   function recordConcats(fn) {
     var real = Buffer.concat, seen = [];
     Buffer.concat = function (list, total) {
@@ -838,8 +882,18 @@ function testOneStageScheduleWipesEveryCopy() {
       seen.push({ buf: b, heldPsk: b.indexOf(PSK) >= 0 });
       return b;
     };
+    var saved = {};
+    Object.keys(require.cache).forEach(function (k) {
+      if (_instrumented(k)) { saved[k] = require.cache[k]; delete require.cache[k]; }
+    });
     var code = "NO-THROW";
-    try { fn(); } catch (e) { code = e.code || e.message; } finally { Buffer.concat = real; }
+    try { fn(require(nodePath.join(LIB_DIR, "hpke.js"))); }
+    catch (e) { code = e.code || e.message; }
+    finally {
+      Buffer.concat = real;
+      Object.keys(require.cache).forEach(function (k) { if (_instrumented(k)) delete require.cache[k]; });
+      Object.keys(saved).forEach(function (k) { require.cache[k] = saved[k]; });
+    }
     return { seen: seen, code: code };
   }
   function allZero(b) { for (var i = 0; i < b.length; i += 1) if (b[i] !== 0) return false; return true; }
@@ -848,8 +902,8 @@ function testOneStageScheduleWipesEveryCopy() {
     return { code: r.code, held: held.length, live: held.filter(function (e) { return !allZero(e.buf); }).length };
   }
 
-  var ok = recordConcats(function () {
-    pki.hpke.setupS(SS, kp.publicKey, { mode: S.MODE.PSK, psk: PSK, pskId: PSK_ID });
+  var ok = recordConcats(function (hpke) {
+    hpke.setupS(SS, kp.publicKey, { mode: S.MODE.PSK, psk: PSK, pskId: PSK_ID });
   });
   var okR = report(ok);
   check("a single-stage setup allocates buffers holding the psk, so this is not a vacuous check", okR.held >= 1);
@@ -858,8 +912,8 @@ function testOneStageScheduleWipesEveryCopy() {
 
   // The refused path: an info over the two-byte limit. The psk is a valid length, so a schedule that
   // allocated before checking would leave its concatenation behind.
-  var refused = recordConcats(function () {
-    pki.hpke.setupS(SS, kp.publicKey, { mode: S.MODE.PSK, psk: PSK, pskId: PSK_ID, info: Buffer.alloc(65536) });
+  var refused = recordConcats(function (hpke) {
+    hpke.setupS(SS, kp.publicKey, { mode: S.MODE.PSK, psk: PSK, pskId: PSK_ID, info: Buffer.alloc(65536) });
   });
   var refR = report(refused);
   check("an input refused for its length leaves no live buffer holding the psk (" +
@@ -971,6 +1025,343 @@ function run() {
   testShadowedLengthAtEveryKeyDoor();
   testNoKemSilentlyIgnoresAFixedEphemeralKey();
   testHybridEncapWipesPqSecretOnAnEphemeralFault();
+  testEveryByteSourceRepresentation();
+  testEncapsulationIsTakenBeforeTheKeyRecord();
+}
+
+/* The CIPHERTEXT is the subject, and reading the key record runs caller code: an `skm` accessor fires
+   while the encapsulation is still the caller's buffer. One that copies a DIFFERENT encapsulation over
+   it had the verb return the shared secret for the other ciphertext, which is the whole binding between
+   a ciphertext and the secret it carries. Both routes are driven: the standalone `decap` and the
+   `setupR` the AEAD verbs go through. */
+function testEncapsulationIsTakenBeforeTheKeyRecord() {
+  var kem = S.KEM.DHKEM_X25519_HKDF_SHA256;
+  var kp = pki.hpke.generateKeyPair(kem);
+  var first = pki.hpke.encap(kem, kp.publicKey);
+  var second = pki.hpke.encap(kem, kp.publicKey);
+  check("CONTROL the two encapsulations and their secrets differ",
+    Buffer.compare(first.enc, second.enc) !== 0 &&
+    Buffer.compare(first.sharedSecret, second.sharedSecret) !== 0);
+
+  function swapper(live) {
+    var rec = {};
+    Object.defineProperty(rec, "skm", {
+      enumerable: true, configurable: true,
+      get: function () { second.enc.copy(live); return kp.privateKey; },
+    });
+    return rec;
+  }
+
+  var liveEnc = Buffer.from(first.enc);
+  var got = pki.hpke.decap(kem, liveEnc, swapper(liveEnc));
+  check("the standalone decap answers for the encapsulation it was given, not one an accessor " +
+    "substituted (" + (got.equals(first.sharedSecret) ? "first" : "OTHER") + ")",
+  got.equals(first.sharedSecret) === true);
+
+  /* The same question through the setup the AEAD verbs use: the context derived has to be the one the
+     supplied encapsulation produces, so sealing to `first` and opening it succeeds. */
+  var ids = { kem: kem, kdf: S.KDF.HKDF_SHA256, aead: S.AEAD.AES_256_GCM };
+  var sealed = pki.hpke.seal(ids, kp.publicKey, {}, Buffer.alloc(0), Buffer.from("subject"));
+  var liveSealed = Buffer.from(sealed.enc);
+  var opened = pki.hpke.open(ids, liveSealed, swapper(liveSealed), {}, Buffer.alloc(0), sealed.ct);
+  check("and the recipient setup derives from the encapsulation it was given (" +
+    opened.toString("utf8") + ")", opened.toString("utf8") === "subject");
+
+  /* The PAYLOAD is a subject too. `seal` and `open` ran the whole setup, which reads the identifiers,
+     the options bag and a key record, before copying the plaintext and the additional data, so a getter
+     on any of those could overwrite what the verb went on to encrypt or to authenticate. */
+  var livePt = Buffer.from("intended");
+  var liveAad = Buffer.from("intended-aad");
+  var sealOpts = {};
+  Object.defineProperty(sealOpts, "info", {
+    enumerable: true, configurable: true,
+    get: function () { Buffer.from("SUBSTITUTE").copy(livePt); Buffer.from("SUBSTITUTED!").copy(liveAad); return undefined; },
+  });
+  var sealedPayload = pki.hpke.seal(ids, kp.publicKey, sealOpts, liveAad, livePt);
+  var back = pki.hpke.open(ids, sealedPayload.enc, { skm: kp.privateKey }, {},
+    Buffer.from("intended-aad"), sealedPayload.ct);
+  check("seal encrypts the plaintext and authenticates the data it was given, not ones an options " +
+    "getter substituted (" + back.toString("utf8") + ")", back.toString("utf8") === "intended");
+
+  var openPt = pki.hpke.seal(ids, kp.publicKey, {}, Buffer.from("aad-here"), Buffer.from("payload"));
+  var liveCt = Buffer.from(openPt.ct);
+  var liveOpenAad = Buffer.from("aad-here");
+  var openOpts = {};
+  Object.defineProperty(openOpts, "info", {
+    enumerable: true, configurable: true,
+    get: function () { liveCt.fill(0); liveOpenAad.fill(0x41); return undefined; },
+  });
+  var openedBack = pki.hpke.open(ids, openPt.enc, { skm: kp.privateKey }, openOpts, liveOpenAad, liveCt);
+  check("and open decrypts the ciphertext it was given under the data it was given (" +
+    openedBack.toString("utf8") + ")", openedBack.toString("utf8") === "payload");
+
+  /* And whether a key record carries `skm` is asked ONCE. Written as a presence test and a separate
+     value read, an accessor answering differently chose a branch for one value and ran it on another. */
+  var skmReads = 0;
+  var counted = {};
+  Object.defineProperty(counted, "skm", {
+    enumerable: true, configurable: true,
+    get: function () { skmReads++; return kp.privateKey; },
+  });
+  var withCounted = pki.hpke.decap(kem, Buffer.from(first.enc), counted);
+  check("a private-key record's skm is read exactly once (" + skmReads + " read(s))",
+    skmReads === 1 && withCounted.equals(first.sharedSecret) === true);
+}
+
+// Every byte door here admits what `guard.bytes.isByteSource` admits, and `deriveKeyPair` names that set
+// in its own refusal: "ikm must be a byte source (Buffer / TypedArray / DataView / ArrayBuffer)". It then
+// handed the input to `guard.bytes.snapshot`, which takes Buffer and Uint8Array only, so half the set the
+// message promises was refused with the error that message belongs to. An ArrayBuffer is what
+// `Response.arrayBuffer()` and `crypto.subtle.exportKey("raw", ...)` return, so the rejected half is the
+// half a caller is most likely to be holding.
+//
+// The property is that the four representations of ONE byte string reach ONE result. Asserting equality of
+// the DERIVED OUTPUT, not merely that the call succeeds, is what makes this catch a door that accepts the
+// representation and then reads the wrong length or offset from it.
+function testEveryByteSourceRepresentation() {
+  // Four views of one backing store. The DataView and the ArrayBuffer carry a non-zero byteOffset case
+  // too, since a view into the middle of a buffer is where an offset-unaware normalization goes wrong.
+  function reps(bytes) {
+    var ab = new ArrayBuffer(bytes.length);
+    new Uint8Array(ab).set(bytes);
+    // A second store with the same bytes at offset 8, so a view that ignores its offset reads padding.
+    var padded = new ArrayBuffer(bytes.length + 8);
+    new Uint8Array(padded).set(bytes, 8);
+    return [
+      ["Buffer", Buffer.from(bytes)],
+      ["Uint8Array", new Uint8Array(ab)],
+      ["DataView", new DataView(ab)],
+      ["ArrayBuffer", ab],
+      ["offset Uint8Array", new Uint8Array(padded, 8, bytes.length)],
+      ["offset DataView", new DataView(padded, 8, bytes.length)],
+    ];
+  }
+  function outcome(fn, v) {
+    try {
+      var r = fn(v);
+      if (Buffer.isBuffer(r)) return "bytes:" + r.toString("hex");
+      if (r && r.publicKey !== undefined) {
+        return "kp:" + Buffer.from(r.publicKey).toString("hex") + "/" +
+          Buffer.from(r.privateKey).toString("hex");
+      }
+      return "value:" + String(r);
+    } catch (e) {
+      if (!e || e.isPkiError !== true) return "UNTYPED:" + ((e && e.message) || String(e));
+      return "throw:" + e.code;
+    }
+  }
+  function agree(label, fn, bytes) {
+    var rs = reps(bytes);
+    var base = outcome(fn, rs[0][1]);
+    var bad = [];
+    for (var i = 1; i < rs.length; i++) {
+      var got = outcome(fn, rs[i][1]);
+      if (got !== base) bad.push(rs[i][0] + " -> " + got.slice(0, 40));
+    }
+    check("R-" + label + ": all six representations of one byte string agree (" + base.slice(0, 32) +
+      (bad.length ? "; diverged: " + bad.join(" | ") : "") + ")",
+      bad.length === 0 && base.indexOf("UNTYPED") !== 0 && base.indexOf("throw:") !== 0);
+  }
+
+  var s = pki.hpke.suites;
+  var SUITE = s.KEM.DHKEM_X25519_HKDF_SHA256;
+  var ikm = Buffer.alloc(32, 0x42);
+
+  // deriveKeyPair: the verb whose message names the whole set. The derived PAIR must be identical, since
+  // an ikm read at the wrong offset still derives A key, just not the caller's.
+  agree("derive-ikm", function (v) { return pki.hpke.deriveKeyPair(SUITE, v); }, ikm);
+
+  var kp = pki.hpke.deriveKeyPair(SUITE, ikm);
+  var ids = { kem: SUITE, kdf: s.KDF.HKDF_SHA256, aead: s.AEAD.AES_128_GCM };
+  var pt = Buffer.from("payload", "utf8");
+  // A serialized X25519 private key is named as { skm, pkm } rather than as a bare buffer, which is the
+  // door's own contract and not what is under test here.
+  var sk = { skm: kp.privateKey, pkm: kp.publicKey };
+
+  // opts.info: the recipient only opens what was sealed under the same info, so an info read differently
+  // from one representation to the next is a message that cannot be opened. The sealed bytes are
+  // randomized, so the comparison is on what the RECIPIENT reads back.
+  agree("seal-info", function (v) {
+    var out = pki.hpke.seal(ids, kp.publicKey, { info: v }, Buffer.alloc(0), pt);
+    return pki.hpke.open(ids, out.enc, sk, { info: v }, Buffer.alloc(0), out.ct);
+  }, Buffer.from("shared-context", "utf8"));
+
+  // aad, the other caller-supplied byte input on the same path.
+  agree("seal-aad", function (v) {
+    var out = pki.hpke.seal(ids, kp.publicKey, {}, v, pt);
+    return pki.hpke.open(ids, out.enc, sk, {}, v, out.ct);
+  }, Buffer.from("authenticated", "utf8"));
+
+  // The plaintext itself, which is the byte input every caller passes.
+  agree("seal-pt", function (v) {
+    var out = pki.hpke.seal(ids, kp.publicKey, {}, Buffer.alloc(0), v);
+    return pki.hpke.open(ids, out.enc, sk, {}, Buffer.alloc(0), out.ct);
+  }, Buffer.from("the message", "utf8"));
+
+  // The KEY doors are deliberately NARROWER than the byte-input doors above, and this pins that rather
+  // than widening it: a key is a node KeyObject, a Buffer, or the { pkm } / { skm } wrapper. A bare
+  // TypedArray is not among them, because for a key the alternative to a Buffer is a KeyObject, and a
+  // value that is neither has to be told apart from one that is. The refusal names the forms it takes.
+  function keyCode(fn) {
+    try { fn(); return "NO-THROW"; } catch (e) { return (e && e.isPkiError === true) ? e.code : "UNTYPED"; }
+  }
+  var KEY_REPS = [
+    ["a Uint8Array", new Uint8Array(kp.publicKey)],
+    ["a DataView", new DataView(new Uint8Array(kp.publicKey).buffer)],
+    ["an ArrayBuffer", new Uint8Array(kp.publicKey).buffer],
+  ];
+  var keyRefused = 0, keyNamed = 0;
+  for (var ki = 0; ki < KEY_REPS.length; ki++) {
+    var kv = KEY_REPS[ki][1];
+    var got = "NO-THROW", msg = "";
+    try { pki.hpke.seal(ids, kv, {}, Buffer.alloc(0), pt); }
+    catch (e) { got = (e && e.isPkiError === true) ? e.code : "UNTYPED"; msg = (e && e.message) || ""; }
+    if (got === "hpke/bad-key") keyRefused++;
+    if (msg.indexOf("Buffer") !== -1) keyNamed++;
+  }
+  check("R-key-narrow: a public key given as a bare byte view is refused with hpke/bad-key (" +
+    keyRefused + "/" + KEY_REPS.length + ")", keyRefused === KEY_REPS.length);
+  check("R-key-named: ...and the refusal names Buffer among the forms it takes (" +
+    keyNamed + "/" + KEY_REPS.length + ")", keyNamed === KEY_REPS.length);
+  check("R-key-control: a Buffer public key and a KeyObject-free { pkm } wrapper are both accepted",
+    keyCode(function () { return pki.hpke.seal(ids, Buffer.from(kp.publicKey), {}, Buffer.alloc(0), pt); }) === "NO-THROW" &&
+    keyCode(function () { return pki.hpke.seal(ids, { pkm: Buffer.from(kp.publicKey) }, {}, Buffer.alloc(0), pt); }) === "NO-THROW");
+
+  // The export context. `setupS` draws a fresh ephemeral per call, so the context is built ONCE and only
+  // the exporter-context bytes vary: six contexts would each derive a different exporter secret and the
+  // comparison would report a divergence that is the ephemeral's, not the input's.
+  var oneSender = pki.hpke.setupS(ids, kp.publicKey, {});
+  var oneRecip = pki.hpke.setupR(ids, oneSender.enc, sk, {});
+  agree("export-context", function (v) { return oneRecip.export(v, 32); },
+    Buffer.from("exporter", "utf8"));
+
+  // CONTROL: the cap still precedes the copy, and still reports the single-stage limit, for an
+  // ArrayBuffer too. Normalizing cannot have moved the allocation ahead of the check.
+  var oneStage = { kem: SUITE, kdf: s.KDF.SHAKE128, aead: s.AEAD.AES_128_GCM };
+  var over = new ArrayBuffer(70000);
+  var capCode = "NO-THROW";
+  try { pki.hpke.seal(oneStage, kp.publicKey, { info: over }, Buffer.alloc(0), pt); }
+  catch (e) { capCode = (e && e.code) || "NO-CODE"; }
+  check("R-cap: an oversized ArrayBuffer info still reports the single-stage limit (" + capCode + ")",
+    capCode === "hpke/input-length");
+
+  /* The CONTEXT verbs, which the one-shot `seal`/`open` above are built on, read `aad.length` directly to
+     decide whether to bind the AAD at all. A DataView and an ArrayBuffer have no `length`, so the test was
+     falsy and `setAAD` was never called: the additional data was SILENTLY DROPPED and the tag
+     authenticated nothing. It round-trips with itself, because both sides drop it, so a caller testing
+     their own code sees it work while the binding they are relying on is absent.
+     The vector that catches a dropped AAD is not "does it round-trip" but "does a DIFFERENT aad fail":
+     if the AAD is bound, opening under another one must fail. */
+  function bindsAad(convert) {
+    var sender = pki.hpke.setupS(ids, kp.publicKey, {});
+    var recip = pki.hpke.setupR(ids, sender.enc, sk, {});
+    var aadBytes = Buffer.from("authenticated-data", "utf8");
+    var ctx = sender.context.seal(convert(aadBytes), pt);
+    // Opening under the SAME aad must work, and under a DIFFERENT one must not. Both halves are needed:
+    // dropping the AAD passes the first and fails the second.
+    var sameOk, differentRejected = false;
+    try { sameOk = Buffer.compare(recip.open(convert(aadBytes), ctx), pt) === 0; }
+    catch (e) { void e; sameOk = false; }
+    var sender2 = pki.hpke.setupS(ids, kp.publicKey, {});
+    var recip2 = pki.hpke.setupR(ids, sender2.enc, sk, {});
+    var ct2 = sender2.context.seal(convert(aadBytes), pt);
+    try { recip2.open(convert(Buffer.from("different-data!!!!", "utf8")), ct2); }
+    catch (e) { void e; differentRejected = true; }
+    return sameOk && differentRejected;
+  }
+  var aadBound = [
+    ["Buffer", bindsAad(function (b) { return Buffer.from(b); })],
+    ["Uint8Array", bindsAad(function (b) { return new Uint8Array(Buffer.from(b)); })],
+    ["DataView", bindsAad(function (b) { var u = new Uint8Array(Buffer.from(b)); return new DataView(u.buffer); })],
+    ["ArrayBuffer", bindsAad(function (b) { return new Uint8Array(Buffer.from(b)).buffer; })],
+  ];
+  var aadBad = aadBound.filter(function (r) { return r[1] !== true; });
+  check("R-aad-bound: context seal/open bind the AAD whichever container holds it" +
+    (aadBad.length ? " (not bound for: " + aadBad.map(function (r) { return r[0]; }).join(", ") + ")" : ""),
+    aadBad.length === 0);
+  /* CONTROL: an absent and an empty AAD still mean "no additional data", which is what RFC 9180 uses, so
+     binding the AAD did not turn the empty case into a bound one. */
+  var s3 = pki.hpke.setupS(ids, kp.publicKey, {});
+  var r3 = pki.hpke.setupR(ids, s3.enc, sk, {});
+  var ct3 = s3.context.seal(Buffer.alloc(0), pt);
+  check("R-aad-empty: CONTROL an empty AAD opens under an absent one, both meaning no additional data",
+    Buffer.compare(r3.open(undefined, ct3), pt) === 0);
+
+  /* `update` and `digest` are ordinary writable properties of the hash and MAC prototypes, and a
+     chained `createHash(name).update(b).digest()` reads them off the live prototype, so a replacement
+     decides what a derivation covers. Measured: an `update` that returned its receiver without
+     forwarding made two X25519/SHAKE128 setups with different encapsulations export the same secret,
+     the encapsulation having dropped out of the key schedule entirely. Both operations are captured at
+     load, so a replacement installed afterwards reaches nothing. */
+  var nodeCryptoForProbe = require("crypto");
+  var EMPTY_SHA256 = nodeCryptoForProbe.createHash("sha256").update(Buffer.alloc(0)).digest();
+  var EMPTY_HMAC = nodeCryptoForProbe.createHmac("sha256", "probe-key").update(Buffer.alloc(0)).digest();
+  var PROBE_A = Buffer.from("input one"), PROBE_B = Buffer.from("a different input");
+  /* Each control answers two things from inside the window: the replacement is reached, and the
+     chained form the guard replaces DOES collapse under it -- two different inputs derive the same
+     bytes. The second half is the failure this capture prevents, demonstrated rather than asserted
+     about the module. */
+  function hashUpdateIsLive() {
+    var collapses = nodeCryptoForProbe.createHash("shake128", { outputLength: 32 }).update(PROBE_A).digest()
+      .equals(nodeCryptoForProbe.createHash("shake128", { outputLength: 32 }).update(PROBE_B).digest());
+    return collapses &&
+      nodeCryptoForProbe.createHash("sha256").update(Buffer.from("abc")).digest().equals(EMPTY_SHA256);
+  }
+  function hmacUpdateIsLive() {
+    var collapses = nodeCryptoForProbe.createHmac("sha256", "probe-key").update(PROBE_A).digest()
+      .equals(nodeCryptoForProbe.createHmac("sha256", "probe-key").update(PROBE_B).digest());
+    return collapses &&
+      nodeCryptoForProbe.createHmac("sha256", "probe-key").update(Buffer.from("abc")).digest().equals(EMPTY_HMAC);
+  }
+  function twoExports(ids) {
+    var a = pki.hpke.setupS(ids, kp.publicKey, {});
+    var b = pki.hpke.setupS(ids, kp.publicKey, {});
+    return {
+      differentEnc: Buffer.compare(Buffer.from(a.enc), Buffer.from(b.enc)) !== 0,
+      sameExport: Buffer.compare(a.context.export(Buffer.from("probe"), 32),
+        b.context.export(Buffer.from("probe"), 32)) === 0,
+    };
+  }
+  function underReplacedUpdate(proto, isLive, ids) {
+    var real = proto.update, out = { live: false, threw: null, r: null };
+    try {
+      Object.defineProperty(proto, "update", {
+        value: function () { return this; }, writable: true, configurable: true,
+      });
+      // CONTROL, inside the window: a chained digest now covers nothing, so the probe exercises it.
+      out.live = isLive();
+      out.r = twoExports(ids);
+    } catch (e) {
+      out.threw = (e && e.code) || String(e);
+    } finally {
+      Object.defineProperty(proto, "update", { value: real, writable: true, configurable: true });
+    }
+    return out;
+  }
+  var shakeIds = { kem: S.KEM.DHKEM_X25519_HKDF_SHA256, kdf: S.KDF.SHAKE128, aead: S.AEAD.AES_256_GCM };
+  var hashProto = Object.getPrototypeOf(nodeCryptoForProbe.createHash("sha256"));
+  var hmacProto = Object.getPrototypeOf(nodeCryptoForProbe.createHmac("sha256", "x"));
+  var xofProbe = underReplacedUpdate(hashProto, hashUpdateIsLive, shakeIds);
+  check("R-xof-capture: CONTROL the replacement is reached and the chained XOF form collapses under it",
+    xofProbe.live === true);
+  check("R-xof-capture: two SHAKE128 setups still derive different exports (" +
+    (xofProbe.threw || JSON.stringify(xofProbe.r)) + ")",
+  xofProbe.threw === null && xofProbe.r.differentEnc === true && xofProbe.r.sameExport === false);
+  var macProbe = underReplacedUpdate(hmacProto, hmacUpdateIsLive, IDS);
+  check("R-hmac-capture: CONTROL the replacement is reached and the chained MAC form collapses under it",
+    macProbe.live === true);
+  check("R-hmac-capture: two HKDF-SHA256 setups still derive different exports (" +
+    (macProbe.threw || JSON.stringify(macProbe.r)) + ")",
+  macProbe.threw === null && macProbe.r.differentEnc === true && macProbe.r.sameExport === false);
+
+  // CONTROL: shared memory is outside the admitted set and stays refused, typed.
+  if (typeof SharedArrayBuffer === "function") {
+    var sabCode = "NO-THROW";
+    try { pki.hpke.deriveKeyPair(SUITE, new SharedArrayBuffer(32)); }
+    catch (e) { sabCode = (e && e.isPkiError === true) ? e.code : "UNTYPED"; }
+    check("R-shared: a SharedArrayBuffer ikm is refused with a typed error (" + sabCode + ")",
+      sabCode === "hpke/bad-input");
+  }
 }
 
 module.exports = { run: run };

@@ -385,11 +385,140 @@ async function run() {
   check("SE8. a content Symbol.asyncIterator getter that mutates opts at probe time cannot change the output (options copied before the probe)",
     Buffer.isBuffer(sneakOut) && Buffer.compare((await pki.cms.decrypt(sneakOut, { key: sr.key, cert: sr.cert })).content, whole) === 0);
 
+  // The plaintext is the plaintext the verb was handed. `encrypt` binds the caller's content, then
+  // builds a RecipientInfo for each recipient, and only then encrypts. Building one READS the caller's
+  // recipient object, so a property on it is caller code that runs in between; over a view of the
+  // content rather than a copy, that accessor replaces what gets encrypted after the verb has accepted
+  // what it was given. No race is involved: the getter runs at a fixed point in the verb. It matters for
+  // a caller holding content it trusts and a recipient descriptor it does not, a peer's or a stored one.
+  var _kek = Buffer.alloc(32, 0x6b);
+  var _orig = Buffer.alloc(64, 0x41);
+  // CONTROL: a plain recipient over the same buffer round-trips the bytes as given.
+  check("SE9.0 CONTROL a plain kek recipient round-trips the content as handed over",
+    Buffer.compare((await pki.cms.decrypt(
+      await pki.cms.encrypt(Buffer.from(_orig), [{ kek: _kek, kekId: Buffer.from("k") }],
+        { contentEncryptionAlgorithm: "aes-256-cbc" }), { kek: _kek })).content, _orig) === 0);
+  for (var _ai = 0; _ai < 2; _ai++) {
+    var _alg = _ai === 0 ? "aes-256-cbc" : "aes-256-gcm";
+    var _live = Buffer.from(_orig);
+    var _reads = 0;
+    var _hostile = { kek: _kek, get kekId() { _reads += 1; _live.fill(0x42); return Buffer.from("k"); } };
+    var _out = await pki.cms.encrypt(_live, [_hostile], { contentEncryptionAlgorithm: _alg });
+    check("SE9." + (_ai * 2 + 1) + " CONTROL the recipient accessor ran during the " + _alg + " call", _reads > 0);
+    check("SE9." + (_ai * 2 + 2) + " " + _alg + " encrypts the content handed over, not what the accessor substituted",
+      Buffer.compare((await pki.cms.decrypt(_out, { kek: _kek })).content, _orig) === 0);
+  }
+  // The options are the other caller object, and the verb reads them before anything else. One supplied
+  // through an accessor is refused outright rather than read carefully, which is the same answer
+  // pki.cms.authenticate gives: a field whose value can differ between the check and the read is not
+  // something to accept. Both routes are closed, or the rule holds for the argument that was looked at.
+  var _liveOpt = Buffer.from(_orig);
+  var _optReads = 0;
+  check("SE9.5 an option supplied through an accessor is refused",
+    (await codeOf(function () {
+      return pki.cms.encrypt(_liveOpt, [{ kek: _kek, kekId: Buffer.from("k") }], {
+        get contentEncryptionAlgorithm() { _optReads += 1; _liveOpt.fill(0x42); return "aes-256-cbc"; },
+      });
+    })) === "cms/bad-input");
+  check("SE9.6 CONTROL and refused without the accessor ever being called",
+    _optReads === 0 && Buffer.compare(_liveOpt, _orig) === 0);
+
   // Dense caller-array hardening: a sparse/nullish authAttrs array is a typed cms/bad-input, caught before
   // b.setOf reaches the hole as a native concat error.
   var _spAttrs = [b.sequence([b.oid(O("contentType")), b.set([b.oid(O("data"))])])]; _spAttrs[2] = b.sequence([b.oid(O("signingTime")), b.set([b.utcTime(new Date("2026-01-01T00:00:00Z"))])]);   // distinct types, hole at 1
   check("sparse authAttrs -> typed cms/bad-input (not a native setOf error)",
     (await codeOf(function () { return pki.cms.encrypt(MSG, [{ cert: rsa.cert }], { contentEncryptionAlgorithm: "aes-256-gcm", authAttrs: _spAttrs }); })) === "cms/bad-input");
+
+  /* The argument list a fixed call fixes was ASSEMBLED with a live `Array.prototype.concat`, so a
+     replacement chose it: returning a tuple that keeps the caller's recipients and options while
+     putting other bytes in the content slot made `encrypt` encrypt those bytes instead, and
+     `authenticate` gave them a valid MAC. The content is the one thing these verbs exist to protect,
+     and the list is built by a literal now, which nothing can replace. */
+  var realConcat = Array.prototype.concat;
+  var FORGED = Buffer.from("forged");
+  var encryptedUnder, authedUnder, replacementLive;
+  try {
+    Object.defineProperty(Array.prototype, "concat", {
+      value: function (tail) {
+        var out = realConcat.call(this, tail);
+        if (out.length === 3 && out[0] && out[0][1] === "content") out[0] = [FORGED, "content"];
+        return out;
+      },
+      writable: true, configurable: true,
+    });
+    // CONTROL, inside the window: the replacement really is installed, so a pass below is the verb
+    // holding its own construction rather than a probe that never took effect.
+    replacementLive = [[MSG, "content"]].concat([["a", "x"], ["b", "y"]])[0][0] === FORGED;
+    encryptedUnder = await pki.cms.encrypt(MSG, [{ cert: rsa.cert }],
+      { contentEncryptionAlgorithm: "aes-256-cbc" });
+    authedUnder = await pki.cms.authenticate(MSG, [{ cert: rsa.cert }], {});
+  } catch (e) {
+    encryptedUnder = encryptedUnder || e;
+    authedUnder = authedUnder || e;
+  } finally {
+    Object.defineProperty(Array.prototype, "concat",
+      { value: realConcat, writable: true, configurable: true });
+  }
+  check("CF1: CONTROL the replaced concat is live, so CF2 and CF3 exercise it", replacementLive === true);
+  /* Read back through the shipped decrypt: what the recipient's own key unwraps is what was
+     encrypted, which is the question a substituted content changes. */
+  var backEnc = Buffer.isBuffer(encryptedUnder)
+    ? (await pki.cms.decrypt(encryptedUnder, { key: rsa.key, cert: rsa.cert })).content
+    : null;
+  check("CF2: a replaced array concat cannot choose the content encrypt protects (" +
+    (backEnc ? JSON.stringify(backEnc.toString("utf8")) : "threw " + (encryptedUnder && encryptedUnder.code)) + ")",
+    backEnc !== null && Buffer.compare(backEnc, MSG) === 0);
+  var backAuth = Buffer.isBuffer(authedUnder)
+    ? (await pki.cms.decrypt(authedUnder, { key: rsa.key, cert: rsa.cert })).content
+    : null;
+  check("CF3: nor the content authenticate puts a MAC over (" +
+    (backAuth ? JSON.stringify(backAuth.toString("utf8")) : "threw " + (authedUnder && authedUnder.code)) + ")",
+    backAuth !== null && Buffer.compare(backAuth, MSG) === 0);
+
+  /* The messageDigest attribute an AuthenticatedData carries is computed with `createHash(name)
+     .update(content).digest()`, and `update` is an ordinary writable property of the hash prototype.
+     A replacement that fills the content buffer before forwarding it put the digest of OTHER bytes
+     into the attribute set, and the MAC then covered that set: the message authenticates a digest of
+     content it does not hold. The digest goes through the captured operations now. */
+  var realUpdate = Object.getPrototypeOf(require("node:crypto").createHash("sha256")).update;
+  var hashProto = Object.getPrototypeOf(require("node:crypto").createHash("sha256"));
+  var MSGLEN = MSG.length;
+  var authedUnderHash, hashReplacementLive;
+  try {
+    Object.defineProperty(hashProto, "update", {
+      value: function (data) {
+        if (Buffer.isBuffer(data) && data.length === MSGLEN) {
+          var other = Buffer.alloc(MSGLEN, 0x42);
+          return realUpdate.call(this, other);
+        }
+        return realUpdate.apply(this, arguments);
+      },
+      writable: true, configurable: true,
+    });
+    // CONTROL, inside the window: the replacement really is installed.
+    hashReplacementLive = require("node:crypto").createHash("sha256").update(Buffer.alloc(MSGLEN, 0x41))
+      .digest().equals(require("node:crypto").createHash("sha256").update(Buffer.alloc(MSGLEN, 0x42))
+        .digest());
+    authedUnderHash = await pki.cms.authenticate(MSG, [{ cert: rsa.cert }], {});
+  } catch (e) {
+    authedUnderHash = e;
+  } finally {
+    Object.defineProperty(hashProto, "update", { value: realUpdate, writable: true, configurable: true });
+  }
+  check("CF4: CONTROL the replaced hash update is live, so CF5 exercises it", hashReplacementLive === true);
+  /* The decrypt verifies the MAC and the messageDigest attribute together, so a digest taken over
+     other bytes is what it reports on. */
+  var hashVerdict;
+  if (Buffer.isBuffer(authedUnderHash)) {
+    try {
+      var opened = await pki.cms.decrypt(authedUnderHash, { key: rsa.key, cert: rsa.cert });
+      hashVerdict = Buffer.compare(opened.content, MSG) === 0 ? "content-intact" : "content-substituted";
+    } catch (e2) { hashVerdict = (e2 && e2.code) || "NO-CODE"; }
+  } else {
+    hashVerdict = "authenticate threw " + (authedUnderHash && authedUnderHash.code);
+  }
+  check("CF5: a replaced hash update cannot choose the content the message digest covers (" +
+    hashVerdict + ")", hashVerdict === "content-intact");
 
   console.log("CHECKS " + helpers.getChecks());
 }

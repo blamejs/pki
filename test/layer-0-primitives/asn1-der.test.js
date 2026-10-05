@@ -93,6 +93,40 @@ function testOidContent() {
     check("encodeOidContent " + t[0], hex(pki.asn1.encodeOidContent(t[0])) === t[1]);
     check("decodeOidContent " + t[1], pki.asn1.decodeOidContent(Buffer.from(t[1], "hex")) === t[0]);
   });
+
+  // A Buffer accepts an own `length` property that differs from its real byte count, and this verb is
+  // exported, so `buf` can be a caller's object. Indexing and `subarray` use the authoritative count, so a
+  // shadowed length cannot redirect the bytes; what it can do is change the DECISION, and here the decision
+  // IS the value. Read from `.length`, a buffer whose bytes encode 1.2.840.3 decoded as 1.2.840, handing
+  // the caller an OID its own bytes do not encode while an OID selects an algorithm and an extension
+  // decoder. The count is taken through the guard, which reads the prototype getter an own property cannot
+  // shadow.
+  var full = Buffer.from([0x2a, 0x86, 0x48, 0x03]);
+  check("OID-SHADOW control: the honest four bytes decode to 1.2.840.3",
+    pki.asn1.decodeOidContent(full) === "1.2.840.3");
+  check("OID-SHADOW control: the honest three bytes decode to 1.2.840",
+    pki.asn1.decodeOidContent(Buffer.from([0x2a, 0x86, 0x48])) === "1.2.840");
+  var lying = Buffer.from([0x2a, 0x86, 0x48, 0x03]);
+  Object.defineProperty(lying, "length", { value: 3 });
+  check("OID-SHADOW the bytes decide the OID, not an own length property claiming fewer",
+    lying.length === 3 && pki.asn1.decodeOidContent(lying) === "1.2.840.3");
+  // And the other direction: a length claiming MORE must not read past the real bytes.
+  var overclaim = Buffer.from([0x2a, 0x86, 0x48]);
+  Object.defineProperty(overclaim, "length", { value: 8 });
+  check("OID-SHADOW an own length claiming more bytes than exist does not read past them",
+    pki.asn1.decodeOidContent(overclaim) === "1.2.840");
+  // Taking the count authoritatively means taking it from a view whose BYTES are reachable by the same
+  // thing. A DataView has a byteLength but no indexed elements, so measuring one and then indexing it read
+  // undefined at every position, which bitwise coercion turns into zero: `2a 86 48 03` would decode as
+  // 0.0.0.0.0. The input is normalized to a byte view first, which refuses a DataView by name rather than
+  // decoding zeros from it.
+  var full2 = Buffer.from([0x2a, 0x86, 0x48, 0x03]);
+  check("OID-VIEW a DataView is refused by name, never decoded as zeros",
+    code(function () {
+      return pki.asn1.decodeOidContent(new DataView(full2.buffer, full2.byteOffset, full2.length));
+    }) === "oid/bad-input");
+  check("OID-VIEW control: a Uint8Array over the same bytes decodes to the same OID",
+    pki.asn1.decodeOidContent(new Uint8Array([0x2a, 0x86, 0x48, 0x03])) === "1.2.840.3");
 }
 
 function testRejects() {
@@ -681,6 +715,56 @@ function testSetSorted() {
   // Known-answer: SET tag 0x31, length 6, members in ascending order.
   check("build.setOf emits a SET (0x31) with ascending members",
     hex(b.setOf([tlvB, tlvA])) === "3106020101020102");
+
+  /* The ordering is what makes a SET canonical, and it was taken through `Array.prototype`'s own
+     `slice` and `sort`: a replacement of either decides the bytes every SET OF in the toolkit emits,
+     after whatever validated the members, on content a caller goes on to sign. Measured on a request's
+     attribute set, replacing either made it encode a member other than the one just validated. The
+     copy and the ordering go through operations captured at load. */
+  var want = hex(b.setOf([tlvA, tlvB]));
+  var realSort = Array.prototype.sort, realSlice = Array.prototype.slice;
+  var tlvC = b.integer(3n);
+  var sortLive, sliceLive, underSort, underSlice;
+  try {
+    Object.defineProperty(Array.prototype, "sort", {
+      value: function () { return [tlvC, tlvC]; }, writable: true, configurable: true,
+    });
+    sortLive = [tlvB, tlvA].sort(Buffer.compare)[0] === tlvC;
+    underSort = hex(b.setOf([tlvB, tlvA]));
+  } finally {
+    Object.defineProperty(Array.prototype, "sort", { value: realSort, writable: true, configurable: true });
+  }
+  check("CONTROL the replaced sort is live, so the next check exercises it", sortLive === true);
+  check("a replaced Array.prototype.sort cannot change the members a SET encodes", underSort === want);
+
+  try {
+    Object.defineProperty(Array.prototype, "slice", {
+      value: function () { return [tlvC, tlvC]; }, writable: true, configurable: true,
+    });
+    sliceLive = [tlvB, tlvA].slice()[0] === tlvC;
+    underSlice = hex(b.setOf([tlvB, tlvA]));
+  } finally {
+    Object.defineProperty(Array.prototype, "slice", { value: realSlice, writable: true, configurable: true });
+  }
+  check("CONTROL the replaced slice is live too", sliceLive === true);
+  check("and a replaced Array.prototype.slice cannot either", underSlice === want);
+
+  /* The COMPARATOR is the third operation in that sentence and the one that answers "before". The copy
+     and the sort were captured while `Buffer.compare` was still read at the call, so a replacement
+     reversing the answer reversed the SET's order. */
+  var realCompare = Buffer.compare;
+  var compareLive, underCompare;
+  try {
+    Object.defineProperty(Buffer, "compare", {
+      value: function (x, y) { return -realCompare(x, y); }, writable: true, configurable: true,
+    });
+    compareLive = Buffer.compare(tlvA, tlvB) > 0;
+    underCompare = hex(b.setOf([tlvB, tlvA]));
+  } finally {
+    Object.defineProperty(Buffer, "compare", { value: realCompare, writable: true, configurable: true });
+  }
+  check("CONTROL the replaced comparator is live and reverses the answer", compareLive === true);
+  check("and a replaced Buffer.compare cannot change the order a SET encodes", underCompare === want);
 }
 
 function testIntegerBufferMinimal() {
