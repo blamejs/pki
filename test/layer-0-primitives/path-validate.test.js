@@ -5457,6 +5457,7 @@ async function runSuite() {
   await testNameConstraintFormScope();
   await testFetchingChecker();
   await testFetchingCheckerEdges();
+  await testTlsFeatureChainConstraint();
 }
 
 // pki.path.fetchingChecker reads the revocation locations out of the certificate and asks for
@@ -7058,6 +7059,168 @@ async function testFetchingCheckerEdges() {
     pki.schema.x509.parse(unrelated), T2027, { requestNonce: NONCE_A });
   check("E30. a verdict reached before the response is read still reports the nonce outcome",
     unboundVerdict.status === "unknown" && "nonceMatched" in unboundVerdict);
+}
+
+// ---------------------------------------------------------------------------
+// RFC 7633 sec. 4.2.2, the TLS feature chain constraint.
+//
+// "When present in a Certificate Signing Certificate (i.e., Certification Authority certificate with
+// the key usage extension value set to keyCertSign), the TLS feature extension specifies a constraint
+// on valid certificate chains." and "Specifically, a certificate that is signed by a Certificate
+// Signing Certificate that contains a TLS feature extension MUST contain a TLS feature extension that
+// offers the same set or a superset of the features advertised in the signing certificate."
+//
+// Set semantics, so neither order nor multiplicity may be assumed, and the gate is the issuer's
+// keyCertSign rather than its cA bit. A subject carrying nothing under an issuer that advertises is a
+// failure, because the clause says the subject MUST contain one.
+// ---------------------------------------------------------------------------
+function tfExt(features, critical) {
+  return ext("1.3.6.1.5.5.7.1.24", critical === true,
+    b.sequence(features.map(function (f) { return b.integer(BigInt(f)); })));
+}
+
+async function testTlsFeatureChainConstraint() {
+  var anchor = await mkAnchor("ed25519", "TF Anchor");
+  var T = new Date("2027-01-01T00:00:00Z");
+  // A CA signed by the anchor, then a leaf signed by that CA. `caFeatures` / `leafFeatures` are null
+  // for "carries no extension at all", which is the case the MUST distinguishes from an empty set.
+  async function chain(caFeatures, leafFeatures, opts) {
+    var o = opts || {};
+    var caExts = [bcExt(true, 5), kuExt(o.caKeyUsage || [KU_KEY_CERT_SIGN])];
+    if (caFeatures) caExts.push(tfExt(caFeatures, o.caCritical));
+    var caDer = await mkCert({ subject: "TF CA", issuer: "TF Anchor", signWith: "ed25519",
+      subjectKeys: "p256", extensions: caExts });
+    var leafExts = [];
+    if (leafFeatures) leafExts.push(tfExt(leafFeatures, o.leafCritical));
+    var leafDer = await mkCert({ subject: "TF Leaf", issuer: "TF CA", signWith: "p256",
+      subjectKeys: "ed25519", extensions: leafExts.length ? leafExts : undefined });
+    return await run([caDer, leafDer], { time: T, trustAnchors: anchor });
+  }
+  function rowOf(res, idx) {
+    var entry = res.results && res.results[idx];
+    var rows = (entry && entry.checks) || [];
+    return rows.filter(function (r) { return r.name === "tlsFeatureChain"; })[0];
+  }
+
+  // J1: the same set satisfies it, and the check reports that it ran.
+  var j1 = await chain([5], [5]);
+  check("J1. issuer {5} over subject {5} validates, with a tlsFeatureChain row",
+    j1.valid === true && !!rowOf(j1, 1) && rowOf(j1, 1).ok === true);
+
+  // J2: a superset satisfies it.
+  var j2 = await chain([5], [5, 17]);
+  check("J2. a superset satisfies the constraint", j2.valid === true);
+
+  // J3: a subset does not.
+  var j3 = await chain([5, 17], [5]);
+  check("J3. a subset fails (" + failCodes(j3).join(",") + ")",
+    j3.valid === false && failCodes(j3).indexOf("path/tls-feature-not-offered") !== -1);
+
+  // J4: carrying none under an issuer that advertises is the same failure, for one MUST.
+  var j4 = await chain([5], null);
+  check("J4. a subject carrying no extension fails with the same code",
+    j4.valid === false && failCodes(j4).indexOf("path/tls-feature-not-offered") !== -1);
+
+  // J5: the gate is keyCertSign. An issuer advertising without it constrains nothing.
+  var j5 = await chain([5, 17], [5], { caKeyUsage: [KU_KEY_CERT_SIGN, KU_CRL_SIGN] });
+  check("J5 CONTROL: keyCertSign beside another bit still gates", j5.valid === false);
+
+  // J6: the constraint is one-directional.
+  var j6 = await chain(null, [5]);
+  check("J6. an issuer carrying none does not constrain a subject that advertises",
+    j6.valid === true && !rowOf(j6, 1));
+
+  // B3: neither side advertises, so no row is reported at all. A check that did not run must not
+  // report a passing row.
+  var b3 = await chain(null, null);
+  check("B3. neither side advertising reports no tlsFeatureChain row",
+    b3.valid === true && !rowOf(b3, 1));
+
+  // The clause is TWO requirements and the first does not mention the set: a certificate signed by a
+  // signing certificate that CONTAINS the extension MUST CONTAIN one, and what it contains must then
+  // cover the issuer's features. An empty SEQUENCE is a conforming Features, the syntax carrying no
+  // SIZE constraint, so an issuer advertising nothing still requires the subject to carry one.
+  var emptyOverNone = await chain([], null);
+  check("an issuer whose Features list is EMPTY still requires the subject to carry one (" +
+    failCodes(emptyOverNone).join(",") + ")",
+  emptyOverNone.valid === false && failCodes(emptyOverNone).indexOf("path/tls-feature-not-offered") !== -1);
+  var emptyOverSome = await chain([], [5]);
+  check("CONTROL: and an empty issuer set over a subject that carries one passes, since an empty set " +
+    "is a subset of anything", emptyOverSome.valid === true);
+  // Under that same empty issuer, a malformed subject value is still decoded rather than skipped.
+  var emptyCa = await mkCert({ subject: "TF CA", issuer: "TF Anchor", signWith: "ed25519",
+    subjectKeys: "p256",
+    extensions: [bcExt(true, 5), kuExt([KU_KEY_CERT_SIGN]), tfExt([])] });
+  var badLeaf = await mkCert({ subject: "TF Leaf", issuer: "TF CA", signWith: "p256",
+    subjectKeys: "ed25519",
+    extensions: [ext("1.3.6.1.5.5.7.1.24", false, b.sequence([b.utf8("five")]))] });
+  var emptyBad = await run([emptyCa, badLeaf], { time: T, trustAnchors: anchor });
+  check("and a malformed subject value under an empty issuer set is still reached (" +
+    failCodes(emptyBad).join(",") + ")",
+  emptyBad.valid === false && failCodes(emptyBad).indexOf("path/bad-tls-feature") !== -1);
+
+  // E5: set semantics, so a different order is the same set.
+  var e5 = await chain([17, 5], [5, 17]);
+  check("E5. order does not decide the comparison", e5.valid === true);
+  // and multiplicity does not either: a repeat on either side names the same set.
+  var e5b = await chain([5, 5], [5]);
+  check("E5b. a repeated feature on the issuer is still the set {5}", e5b.valid === true);
+  var e5c = await chain([5], [5, 5]);
+  check("E5c. a repeated feature on the subject is still the set {5}", e5c.valid === true);
+
+  // J9: a malformed NON-critical issuer value draws the verdict rather than a skipped check. A
+  // critical one is already decoded by the critical-extension structure check.
+  var badCa = await mkCert({ subject: "TF CA", issuer: "TF Anchor", signWith: "ed25519",
+    subjectKeys: "p256",
+    extensions: [bcExt(true, 5), kuExt([KU_KEY_CERT_SIGN]),
+      ext("1.3.6.1.5.5.7.1.24", false, b.sequence([b.utf8("five")]))] });
+  var leafUnder = await mkCert({ subject: "TF Leaf", issuer: "TF CA", signWith: "p256",
+    subjectKeys: "ed25519", extensions: [tfExt([5])] });
+  var j9 = await run([badCa, leafUnder], { time: T, trustAnchors: anchor });
+  check("J9. a malformed non-critical issuer value fails rather than being skipped (" +
+    failCodes(j9).join(",") + ")",
+  j9.valid === false && failCodes(j9).indexOf("path/bad-tls-feature") !== -1);
+
+  // J7 / J8: applied at EVERY boundary, which is what catches a check placed in the target-only arm.
+  var upperDer = await mkCert({ subject: "TF Upper", issuer: "TF Anchor", signWith: "ed25519",
+    subjectKeys: "p256", extensions: [bcExt(true, 5), kuExt([KU_KEY_CERT_SIGN]), tfExt([5])] });
+  var midOk = await mkCert({ subject: "TF Mid", issuer: "TF Upper", signWith: "p256",
+    subjectKeys: "rsa", extensions: [bcExt(true, 5), kuExt([KU_KEY_CERT_SIGN]), tfExt([5, 17])] });
+  var leafOk = await mkCert({ subject: "TF Leaf", issuer: "TF Mid", signWith: "rsa",
+    subjectKeys: "ed25519", extensions: [tfExt([5, 17])] });
+  var j7 = await run([upperDer, midOk, leafOk], { time: T, trustAnchors: anchor });
+  check("J7. the rule holds at every boundary of a three-certificate path", j7.valid === true);
+  var leafShort = await mkCert({ subject: "TF Leaf", issuer: "TF Mid", signWith: "rsa",
+    subjectKeys: "ed25519", extensions: [tfExt([5])] });
+  var j8 = await run([upperDer, midOk, leafShort], { time: T, trustAnchors: anchor });
+  check("J8. a leaf dropping a feature its issuer advertises fails (" + failCodes(j8).join(",") + ")",
+    j8.valid === false && failCodes(j8).indexOf("path/tls-feature-not-offered") !== -1);
+  check("J8b. and the failing row sits on the leaf's own entry",
+    !!rowOf(j8, 2) && rowOf(j8, 2).ok === false);
+
+  // J13: both lists come off untrusted certificates and the syntax bounds neither, so a pairwise
+  // comparison is work an issuer and a subject choose together. One large input, not a ratio, and the
+  // SIZE is chosen where the two forms actually separate: measured in isolation on the same bigint
+  // lists, the pairwise form runs 121 ms at 10000 per side, 484 ms at 20000 and about 4.3 s at 60000,
+  // against 1 to 6 ms for the set form at any of them. 10000 would therefore have passed a bound a
+  // slow machine could also meet, so this uses 60000 and a bound below the pairwise figure.
+  var many = [];
+  for (var mi = 0; mi < 60000; mi++) many.push(mi);
+  var bigStart = Date.now();
+  var j13 = await chain(many, many);
+  var bigMs = Date.now() - bigStart;
+  check("J13. a 60000-feature set on both sides compares in linear time (" + bigMs + " ms)",
+    j13.valid === true && bigMs < 2500);
+
+  // J12: adding this rule must not delete the unknown-critical verdict a critical one draws.
+  var critCa = await mkCert({ subject: "TF CA", issuer: "TF Anchor", signWith: "ed25519",
+    subjectKeys: "p256", extensions: [bcExt(true, 5), kuExt([KU_KEY_CERT_SIGN])] });
+  var critLeaf = await mkCert({ subject: "TF Leaf", issuer: "TF CA", signWith: "p256",
+    subjectKeys: "ed25519", extensions: [tfExt([5], true)] });
+  var j12 = await run([critCa, critLeaf], { time: T, trustAnchors: anchor });
+  check("J12 PIN. a critical tlsFeature is still an unrecognized critical extension (" +
+    failCodes(j12).join(",") + ")",
+  j12.valid === false && failCodes(j12).indexOf("path/unrecognized-critical-extension") !== -1);
 }
 
 module.exports = { run: runSuite };

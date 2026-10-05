@@ -1,0 +1,9 @@
+{
+  "description": "A certification request produced by OpenSSL carrying the RFC 7633 TLS Feature extension, used as the independent producer for where that extension is placed in a request.",
+  "producedBy": "OpenSSL 3.5.7 9 Jun 2026",
+  "command": "openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout tf.key -out tf.csr -outform DER -subj \"/CN=must-staple.example\" -addext \"tlsfeature=status_request\"",
+  "sha256": "7696823e48a6364a2818bb7deec0ef83414c55818319c3222104dee69ce459b3",
+  "placement": "the RFC 2985 sec. 5.4.2 extensionRequest attribute, 1.2.840.113549.1.9.14",
+  "extnValueHex": "3003020105",
+  "csrDerBase64": "MIH+MIGkAgEAMB4xHDAaBgNVBAMME211c3Qtc3RhcGxlLmV4YW1wbGUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATYs34Yfmqs0LivnC9YQRm1f8064IoH6CZUIfJn2PH+LSQyPW+tB5fcPdsJQmX0occxAGY0VtQniohnyd9nKLzFoCQwIgYJKoZIhvcNAQkOMRUwEzARBggrBgEFBQcBGAQFMAMCAQUwCgYIKoZIzj0EAwIDSQAwRgIhAMs7DAG7NzVQ+jxBdgh3wbLITstV1YtnWGnjkJqiD4RaAiEA8acMfSoFHCCU+ssOSnWh7Dt4hZB1M51lQowggpH+byQ="
+}
