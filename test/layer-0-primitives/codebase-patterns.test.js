@@ -3582,13 +3582,20 @@ function testGuardReadsRuntimeLive() {
   // defect is a member call on the live binding, whichever member it is, so the pattern asks for a
   // member instead of enumerating them and a static the language adds later is caught here without
   // anyone editing this file.
-  var _PROMISE_MEMBER = "(?:\\.\\s*([A-Za-z$][\\w$]*)\\s*)?";
+  // Either member syntax. Dot access was the only form matched, and `Promise["all"](...)` reaches the
+  // same property through the same binding, so the computed form is matched by its SHAPE: the literal
+  // stripper blanks what is inside the brackets but leaves the brackets, so there is no name to read
+  // there and none is needed. What a lexical gate cannot see is a computed access to the BINDING
+  // itself, `globalThis["Promise"]`, whose name the stripper removes; the behavioral vector in
+  // `captured-operations.test.js` is what answers for that, by substituting the global and asserting
+  // the shipped verbs never reach it.
+  var _PROMISE_MEMBER = "(?:\\.\\s*([A-Za-z$][\\w$]*)|\\s*\\[[^\\]]*\\])?\\s*";
   var _PROMISE_CALL_RE = new RegExp(
-    "(?:^|[^\\w.$])(new\\s+)?" + _PROMISE_QUAL + "Promise\\s*" + _PROMISE_MEMBER + "\\(", "g");
+    "(?:^|[^\\w.$])(new\\s+)?" + _PROMISE_QUAL + "Promise" + _PROMISE_MEMBER + "\\(", "g");
   // The load-time binding of the global itself, which is not a call and so is invisible above. One
   // capture point is the rule: a module taking its own leaves two places for the capture to be wrong.
   var _PROMISE_BIND_RE = new RegExp(
-    "=\\s*" + _PROMISE_QUAL + "Promise\\s*(?:\\.\\s*([A-Za-z$][\\w$]*))?\\s*[;,]", "g");
+    "=\\s*" + _PROMISE_QUAL + "Promise" + _PROMISE_MEMBER + "[;,]", "g");
   _libFiles().forEach(function (f) {
     var rel = _relPath(f);
     if (/[\\/]guard-intrinsic\.js$/.test(rel)) return;
@@ -3599,7 +3606,8 @@ function testGuardReadsRuntimeLive() {
     while ((m = _PROMISE_CALL_RE.exec(src)) !== null) {
       promiseLive.push({ file: rel, line: lineOf(m.index),
         content: (m[1] ? "constructs with the live global `Promise`"
-          : "reads `Promise." + (m[2] || "") + "` from the runtime at call time") +
+          : m[2] ? "reads `Promise." + m[2] + "` from the runtime at call time"
+            : "reads a computed member of the live global `Promise` at call time") +
           ": take the constructor and the operation from guard-intrinsic at module load, since a " +
           "replacement builds through whatever the binding holds and the executor or the components " +
           "this code passed may never run" });

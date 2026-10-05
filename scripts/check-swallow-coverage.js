@@ -76,7 +76,19 @@ function findSwallows(rel, src) {
   // name to resolve, log, or otherwise absorb the error, or that never defines it at all, gets
   // no exemption: the name alone can never buy a catch past this gate, and redefining it to
   // swallow makes the pattern stop matching rather than silently widening the exemption.
-  var rejWraps = /function\s+_rej\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*\{\s*return\s+Promise\.reject\(\s*\1\s*\)\s*;?\s*\}/.test(stripped);
+  // `Promise.reject` builds its promise from the receiver it is called on, so every call site in lib/
+  // takes the operation from guard-intrinsic instead of reading the global. The propagation forms below
+  // have to recognize that spelling, or a module whose refusals were converted reads as swallowing
+  // every one of them. The local name is not trusted on sight, which is the same condition the `_rej`
+  // form carries: it counts only where THIS file binds it from `promiseReject`, so a local that
+  // resolves or absorbs the error buys no exemption, and rebinding it makes the match stop rather than
+  // widen.
+  var capturedReject = (/\b(_[A-Za-z$][\w$]*)\s*=\s*[A-Za-z$][\w$]*\.uncurry\(\s*[A-Za-z$][\w$]*\.promiseReject\s*\)/.exec(stripped) || [])[1] || null;
+  var REJECT_FORM = "Promise\\.reject\\b" + (capturedReject ? "|" + capturedReject + "\\s*\\(" : "");
+  var rejWraps = new RegExp(
+    "function\\s+_rej\\s*\\(\\s*([A-Za-z_$][\\w$]*)\\s*\\)\\s*\\{\\s*return\\s+(?:Promise\\.reject\\(\\s*\\1\\s*\\)" +
+    (capturedReject ? "|" + capturedReject + "\\(\\s*[\\w$]+\\s*,\\s*\\1\\s*\\)" : "") +
+    ")\\s*;?\\s*\\}").test(stripped);
   var out = [];
   var re = /catch\s*\(([^)]*)\)\s*\{/g, m;
   while ((m = re.exec(stripped))) {
@@ -94,13 +106,10 @@ function findSwallows(rel, src) {
     // the one-line `_rej(e)` helper, which is defined as `return Promise.reject(e)`: an async
     // entry point rejects rather than throws, and returning that rejection propagates the
     // fault exactly as a throw does.
-    var noValueReturn = rejWraps
-      ? !/\breturn\s+(?!Promise\.reject\b|_rej\s*\()/.test(body)
-      : !/\breturn\s+(?!Promise\.reject\b)/.test(body);
+    var retForms = REJECT_FORM + (rejWraps ? "|_rej\\s*\\(" : "");
+    var noValueReturn = !new RegExp("\\breturn\\s+(?!" + retForms + ")").test(body);
     var reThrows = /\bthrow\b/.test(body) && noValueReturn;
-    var rejectsOnly = (rejWraps
-      ? /return\s+(?:Promise\.reject\b|_rej\s*\()/.test(body)
-      : /return\s+Promise\.reject\b/.test(body)) && noValueReturn;
+    var rejectsOnly = new RegExp("return\\s+(?:" + retForms + ")").test(body) && noValueReturn;
     var throwsViaHelper = /\bfail\s*\(/.test(body) && noValueReturn;
     if (reThrows || rejectsOnly || throwsViaHelper) continue;   // safe: propagates the fault
     // Otherwise it is a swallow: it must be exercised (covered) or explicitly marked.
