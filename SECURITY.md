@@ -1094,6 +1094,32 @@ security-only patches after the next major releases.
   undetermined status leaves the authority untrusted rather than trusted-
   unchecked; this verb has no `softFail`, so "the responder could not be reached"
   cannot become a trusted timestamp.
+- **Signature-timestamp substitution.** A CAdES signature timestamp lives in
+  `unsignedAttrs`, which no signature covers, so an attacker reaches it without
+  touching a signature. `pki.cms.verify` recomputes the imprint from the signature
+  octets it just verified for that signer. A token stamping other bytes (a
+  different signer of the same message, an earlier version of it, a signature from
+  elsewhere) is a fail-closed row verdict rather than a time the message gets to
+  claim. The row carries the authority's trust state separately from the signer's:
+  `timestampTrustAnchors` is what makes a timestamp's `trusted` answerable, and
+  without it the row reports `valid` with `trusted: false`, which is not evidence
+  of when anything happened. Two incoherences are refused as well, both decided
+  from the signature the attribute hangs on rather than from the token alone: a
+  `genTime` earlier than the `signing-time` the signature itself asserts, and one
+  later than the signing certificate's `notAfter`, which is the half of ETSI EN 319
+  122-1 clause 6.3 requirement m that certificate bytes can decide. A `genTime`
+  that is not a usable instant is refused rather than compared, since an ordering
+  test against one answers false in both directions and would pass both rules by
+  being uncomparable. A weak-digest imprint is refused by default at both ends, so
+  `pki.cms.attachTimestamp` will not write an attribute whose row the verifier
+  would then refuse, and the archived-token opt-in is needed at each.
+  What a `valid: true` row establishes is narrower than it looks: the token was
+  issued over the signature octets that SignerInfo carries. Whether that signature
+  is sound is `signers[i].ok`, and the rows are reported beside a failed signature
+  rather than withheld, so acting on a timestamp means reading both. The imprint
+  names signature octets rather than a signer, which is what clause 5.3 specifies:
+  two certificates holding one key produce one signature value over one content,
+  and a token over that value answers for either of them.
 - **Merkle proof forgery.** `pki.merkle` verifies RFC 6962 / RFC 9162 inclusion
   and consistency proofs fail-closed. The leaf (`0x00`) and node (`0x01`)
   domain-separation prefixes stop the second-preimage swap, a proof whose node

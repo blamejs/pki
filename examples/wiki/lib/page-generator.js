@@ -269,6 +269,14 @@ function _specUrl(ref) {
   if (/^FIDO Metadata Service v3\.0/.test(r))            return "https://fidoalliance.org/specs/mds/fido-metadata-service-v3.0-ps-20210518.html";
   if ((m = r.match(/^C2SP ([a-z][a-z0-9-]*)/)))          return "https://c2sp.org/" + m[1];
   if (/^TUF\b/.test(r))                                  return "https://theupdateframework.github.io/specification/latest/";
+  if ((m = r.match(/^ETSI (EN|TS|TR) (\d{3}) (\d{3})(?:-(\d+))?/))) {
+    // Every ETSI deliverable sits under /deliver/etsi_<series>/<hundred-block>/<number><part>/, the
+    // part padded to two digits and absent for a deliverable published in one piece.
+    var etsiNum = m[2] + m[3];
+    var block = String(Math.floor(Number(etsiNum) / 100) * 100);
+    return "https://www.etsi.org/deliver/etsi_" + m[1].toLowerCase() + "/" + block + "_" +
+      String(Number(block) + 99) + "/" + etsiNum + (m[4] ? (m[4].length < 2 ? "0" + m[4] : m[4]) : "") + "/";
+  }
   if ((m = r.match(/^CVE-(\d{4}-\d+)/)))                 return "https://www.cve.org/CVERecord?id=CVE-" + m[1];
   if ((m = r.match(/^CWE-(\d+)/)))                       return "https://cwe.mitre.org/data/definitions/" + m[1] + ".html";
   return null;

@@ -116,7 +116,8 @@ module.exports = {
   cms:       { verify: cms.verify, sign: cms.sign, countersign: cms.countersign, encrypt: cms.encrypt,
     authenticate: cms.authenticate, decrypt: cms.decrypt, compress: cms.compress, decompress: cms.decompress,
     digest: cms.digest, verifyDigest: cms.verifyDigest,
-    certsOnly: cms.certsOnly, parseCertsOnly: cms.parseCertsOnly, isCertsOnly: cms.isCertsOnly },
+    certsOnly: cms.certsOnly, parseCertsOnly: cms.parseCertsOnly, isCertsOnly: cms.isCertsOnly,
+    timestampImprint: cms.timestampImprint, attachTimestamp: cms.attachTimestamp },
   smime:     smime,
   // `cmc` interprets an RFC 5272 Full PKI Response into one terminal verdict;
   // `pki.schema.cmc` is the decoder underneath it.

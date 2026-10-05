@@ -496,7 +496,9 @@ async function testTspCoverage() {
   var emptyMi = b.sequence([b.sequence([b.oid(pki.oid.byName("sha256")), b.nullValue()]), b.octetString(Buffer.alloc(0))]);
   var emptyTst = b.sequence([b.integer(1n), b.oid("1.2.3.4.1"), emptyMi, b.integer(41n), b.generalizedTime(GENTIME)]);
   var emptyTok = await pki.cms.sign(emptyTst, { cert: tsa.cert, key: tsa.key }, { eContentType: "tSTInfo", additionalSignedAttributes: [{ type: "signingCertificateV2", values: [scv2] }] });
-  check("empty token imprint + matching empty precomputed imprint -> tsp/imprint-mismatch", (await pki.tsp.verify(emptyTok, { hashAlgorithm: "sha256", hashedMessage: Buffer.alloc(0) }, {})).code === "tsp/imprint-mismatch");
+  check("empty token imprint + matching empty precomputed imprint -> tsp/imprint-length, the fault " +
+    "being the length rather than the bytes covered (RFC 3161 sec. 2.4.2)",
+  (await pki.tsp.verify(emptyTok, { hashAlgorithm: "sha256", hashedMessage: Buffer.alloc(0) }, {})).code === "tsp/imprint-length");
   // a caller precomputed imprint of the wrong length for its algorithm is a config error -> throw.
   await rejects("precomputed imprint wrong length -> tsp/bad-input", function () { return pki.tsp.verify(token, { hashAlgorithm: "sha256", hashedMessage: Buffer.alloc(16) }, {}); }, "tsp/bad-input");
   // a cert-less token (the TSA omits its certificate when certReq was false) fails without the cert,

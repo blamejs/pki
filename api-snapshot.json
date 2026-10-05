@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.8.51",
+  "packageVersion": "0.8.52",
   "surface": {
     "C": {
       "kind": "object",
@@ -792,6 +792,23 @@
                 }
               }
             },
+            "TIMESTAMP_IMPRINT_DIGESTS": {
+              "kind": "object",
+              "members": {
+                "sha1": {
+                  "kind": "string"
+                },
+                "sha256": {
+                  "kind": "string"
+                },
+                "sha384": {
+                  "kind": "string"
+                },
+                "sha512": {
+                  "kind": "string"
+                }
+              }
+            },
             "TLS_FEATURE": {
               "kind": "object",
               "members": {
@@ -799,6 +816,14 @@
                   "kind": "string"
                 },
                 "17": {
+                  "kind": "string"
+                }
+              }
+            },
+            "WEAK_DIGESTS": {
+              "kind": "object",
+              "members": {
+                "sha1": {
                   "kind": "string"
                 }
               }
@@ -1475,6 +1500,10 @@
     "cms": {
       "kind": "object",
       "members": {
+        "attachTimestamp": {
+          "kind": "function",
+          "arity": 3
+        },
         "authenticate": {
           "kind": "function",
           "arity": 3
@@ -1518,6 +1547,10 @@
         "sign": {
           "kind": "function",
           "arity": 3
+        },
+        "timestampImprint": {
+          "kind": "function",
+          "arity": 2
         },
         "verify": {
           "kind": "function",
@@ -2319,6 +2352,23 @@
                 }
               }
             },
+            "TIMESTAMP_IMPRINT_DIGESTS": {
+              "kind": "object",
+              "members": {
+                "sha1": {
+                  "kind": "string"
+                },
+                "sha256": {
+                  "kind": "string"
+                },
+                "sha384": {
+                  "kind": "string"
+                },
+                "sha512": {
+                  "kind": "string"
+                }
+              }
+            },
             "TLS_FEATURE": {
               "kind": "object",
               "members": {
@@ -2326,6 +2376,14 @@
                   "kind": "string"
                 },
                 "17": {
+                  "kind": "string"
+                }
+              }
+            },
+            "WEAK_DIGESTS": {
+              "kind": "object",
+              "members": {
+                "sha1": {
                   "kind": "string"
                 }
               }
@@ -4057,6 +4115,10 @@
         "smime": {
           "kind": "object",
           "members": {
+            "buildSigningCertificateV2": {
+              "kind": "function",
+              "arity": 2
+            },
             "decodeAttribute": {
               "kind": "function",
               "arity": 1
@@ -4561,6 +4623,8 @@
     "pki.cmp.verify": "0.3.26",
     "pki.cms.digest": "0.8.1",
     "pki.cms.verifyDigest": "0.8.1",
+    "pki.cms.timestampImprint": "0.8.52",
+    "pki.cms.attachTimestamp": "0.8.52",
     "pki.cms.verify": "0.2.14",
     "pki.cms.sign": "0.2.15",
     "pki.cms.countersign": "0.3.13",
@@ -4773,6 +4837,7 @@
     "pki.schema.smime.parseSigningCertificate": "0.1.22",
     "pki.schema.smime.parseSigningCertificateV2": "0.1.22",
     "pki.schema.smime.parseSmimeCapabilities": "0.1.22",
+    "pki.schema.smime.buildSigningCertificateV2": "0.8.52",
     "pki.schema.smime.decodeAttribute": "0.1.22",
     "pki.schema.trustanchor.parse": "0.8.13",
     "pki.schema.trustanchor.parseInfo": "0.8.13",

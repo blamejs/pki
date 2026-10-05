@@ -413,6 +413,7 @@ async function run() {
       { ref: "C2SP tlog-checkpoint", linked: true },
       { ref: "TUF", linked: true },
       { ref: "ITU-T X.509 (2019) clause 9.8", linked: true },
+      { ref: "ETSI EN 319 122-1 clause 5.3", linked: true },
     ];
     SPEC_SAMPLES.forEach(function (s) {
       check("@spec '" + s.ref + "' is recognized by the validator", engine.isValidSpecRef(s.ref) === true);
