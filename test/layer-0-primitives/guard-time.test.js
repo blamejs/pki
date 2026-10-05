@@ -232,6 +232,14 @@ function run() {
         guard.latestInstantOf(fracBase, null, { micros: 998 }) === fracAt + 1);
   check("60. and one that crosses it rounds up twice",
         guard.latestInstantOf(fracBase, "999999", { micros: 2 }) === fracAt + 2);
+  // An Accuracy's seconds field is an arbitrary-size INTEGER, so it is bounded before it is scaled:
+  // the scale helper refuses a result outside the safe-integer range, and that refusal would escape
+  // the verdict the caller is building.
+  check("62. an accuracy wider than the DER year range saturates instead of throwing",
+        guard.latestInstantOf(fracBase, null, { seconds: 10n ** 40n }) === Number.MAX_SAFE_INTEGER &&
+        guard.latestInstantOf(fracBase, null, { seconds: 10n ** 40n }) > fracAt);
+  check("63. and one inside it is still counted exactly",
+        guard.latestInstantOf(fracBase, null, { seconds: 1000n }) === fracAt + 1000000);
   check("61. the fourth to sixth fraction digits are microseconds, finer than that counts as one",
         guard.latestInstantOf(fracBase, "000100", null) === fracAt + 1 &&
         guard.latestInstantOf(fracBase, "0000001", null) === fracAt + 1 &&

@@ -715,6 +715,17 @@ async function run() {
   { certs: [expShort.cert], content: CONTENT, time: new Date("2027-01-01T00:00:00Z") });
   check("CT-57c a fraction and an accuracy that together stay inside notAfter verify",
     vBothParts.signers[0].signatureTimeStamps[0].valid === true);
+  // CT-57d: an Accuracy's seconds field is an arbitrary-size INTEGER. One too wide to scale is a
+  // row verdict like any other token fault, not a throw out of the whole verify call: what such a
+  // token establishes is nothing about which side of the certificate's expiry it falls on.
+  var vHugeAccuracy = await pki.cms.verify(await pki.cms.attachTimestamp(base,
+    await mintToken(tsa, sigOctets, { accuracy: { seconds: 10n ** 40n } })),
+  { certs: [signer.cert], content: CONTENT });
+  check("CT-57d an accuracy too wide to scale is a row verdict rather than a throw",
+    vHugeAccuracy.signers[0].ok === true &&
+    vHugeAccuracy.signers[0].signatureTimeStamps.length === 1 &&
+    vHugeAccuracy.signers[0].signatureTimeStamps[0].valid === false &&
+    vHugeAccuracy.signers[0].signatureTimeStamps[0].code === "cms/timestamp-after-signer-expiry");
 
   // CT-55 CONTROL: the ordering rule reads the signing-time attribute without a guard around the
   // read, because the parser holds that value to a Time first. This pins the guarantee it leans on:
