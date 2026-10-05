@@ -3354,13 +3354,14 @@ function testGuardReadsRuntimeLive() {
     "Buffer\\.(?:from|alloc|isBuffer|byteLength|concat|compare)",
     "Number\\.(?:isInteger|isSafeInteger|isNaN)", "String\\.fromCharCode",
     "JSON\\.stringify", "Math\\.(?:floor|ceil|min|max)",
-    // The aggregators are here for the same reason `resolve` and `reject` are, and they were the
-    // missing entries: `all` is what assembles a verdict out of component results, so a replacement
-    // resolving a fabricated array never runs the components and its values become the verdict. That
-    // reached `pki.crmf.verifyPop`, which reported an unverified proof of possession as verified, and
-    // the composite arm, which reported `ok` for a signature whose halves were never checked. Listing
-    // only `resolve|reject` meant the budget counted neither site, so the gate was silent on both.
-    "Promise\\.(?:resolve|reject|all|allSettled|race|any)",
+    // Any member of the live `Promise`, named or not. This entry read `Promise\.(?:resolve|reject)`,
+    // so the budget counted neither the aggregators nor the factory methods: `all` is what assembles a
+    // verdict out of component results, and a replacement resolving a fabricated array never runs the
+    // components and its values become the verdict. That reached `pki.crmf.verifyPop`, which reported
+    // an unverified proof of possession as verified, and the composite arm, which reported `ok` for a
+    // signature whose halves were never checked. A list of names was wrong twice, so this matches the
+    // member rather than naming it.
+    "Promise\\.[A-Za-z$][\\w$]*",
   ];
   // `equals` and `compare` are Buffer.prototype's identity verbs, `toString` and `subarray` its
   // byte-to-text and byte-slice steps. Each decides something on its own: one `equals` answering
@@ -3574,14 +3575,20 @@ function testGuardReadsRuntimeLive() {
   // `globalThis.Promise` is the same replacement.
   var promiseLive = [];
   var _PROMISE_QUAL = "(?:globalThis\\s*\\.\\s*|global\\s*\\.\\s*)?";
-  var _PROMISE_STATICS = "(resolve|reject|all|allSettled|race|any)";
+  // Deliberately NOT a list of method names. Naming them has been wrong twice in one release: the
+  // walk above listed `resolve|reject` and so counted none of the aggregators, and the first version
+  // of this scan listed those six and missed `Promise.try` and `Promise.withResolvers`, both present
+  // on the supported runtime and both building through the receiver exactly as `resolve` does. The
+  // defect is a member call on the live binding, whichever member it is, so the pattern asks for a
+  // member instead of enumerating them and a static the language adds later is caught here without
+  // anyone editing this file.
+  var _PROMISE_MEMBER = "(?:\\.\\s*([A-Za-z$][\\w$]*)\\s*)?";
   var _PROMISE_CALL_RE = new RegExp(
-    "(?:^|[^\\w.$])(new\\s+)?" + _PROMISE_QUAL + "Promise\\s*(?:\\.\\s*" + _PROMISE_STATICS +
-    "\\s*)?\\(", "g");
+    "(?:^|[^\\w.$])(new\\s+)?" + _PROMISE_QUAL + "Promise\\s*" + _PROMISE_MEMBER + "\\(", "g");
   // The load-time binding of the global itself, which is not a call and so is invisible above. One
   // capture point is the rule: a module taking its own leaves two places for the capture to be wrong.
   var _PROMISE_BIND_RE = new RegExp(
-    "=\\s*" + _PROMISE_QUAL + "Promise\\s*(?:\\.\\s*" + _PROMISE_STATICS + ")?\\s*[;,]", "g");
+    "=\\s*" + _PROMISE_QUAL + "Promise\\s*(?:\\.\\s*([A-Za-z$][\\w$]*))?\\s*[;,]", "g");
   _libFiles().forEach(function (f) {
     var rel = _relPath(f);
     if (/[\\/]guard-intrinsic\.js$/.test(rel)) return;

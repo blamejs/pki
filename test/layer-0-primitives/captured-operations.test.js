@@ -443,6 +443,13 @@ async function testCapturedPromiseStaticsSurviveAReplacedGlobal() {
       function (v) { return v === "first"; }],
     ["promiseAny", function (f) { return f(P, [realPromise.resolve("one")]); },
       function (v) { return v === "one"; }],
+    ["promiseTry", function (f) { return f(P, function () { return "ran"; }); },
+      function (v) { return v === "ran"; }],
+    ["promiseWithResolvers", function (f) {
+      var d = f(P);
+      d.resolve("settled");
+      return d.promise;
+    }, function (v) { return v === "settled"; }],
   ];
 
   var broken = [];
@@ -457,7 +464,7 @@ async function testCapturedPromiseStaticsSurviveAReplacedGlobal() {
     else if (!ops[i][2](got)) broken.push(name + " returned " + JSON.stringify(got));
   }
   check("every captured promise static answers from its load-time binding (" +
-    (broken.length ? broken.join("; ") : "all five") + ")", broken.length === 0);
+    (broken.length ? broken.join("; ") : "all " + ops.length) + ")", broken.length === 0);
 
   // `reject` is the refusal carrier, so it is asserted to still REJECT rather than to resolve.
   var rejected = null;
