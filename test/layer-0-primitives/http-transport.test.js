@@ -60,6 +60,25 @@ async function testConfigGates() {
   check("2 an unparseable URL is refused", (await codeOf(t({ method: "GET", url: "::::" }))) === "transport/bad-url");
   check("3 no explicit anchor and no useSystemStore is refused", (await codeOf(t({ method: "GET", url: "https://ca.example/x" }))) === "transport/no-trust-anchors");
   check("3b a non-boolean useSystemStore ('false' string) is not a trust opt-in", (await codeOf(t({ method: "GET", url: "https://ca.example/x", tls: { useSystemStore: "false" } }))) === "transport/no-trust-anchors");
+  /* A request that names no tls at all still has a record of the settings built for it, and an empty
+     object literal inherits from Object.prototype, so a value installed there would answer for the
+     opt-in that turns this refusal off. The record is built with no prototype. This is the backstop
+     for every verb that delegates its fetch here, each of which reads the same setting from a record
+     of its own. */
+  var polluted;
+  try {
+    Object.prototype.useSystemStore = true;
+    polluted = await codeOf(t({ method: "GET", url: "https://ca.example/x" }));
+  } finally { delete Object.prototype.useSystemStore; }
+  check("3c a useSystemStore on Object.prototype is not a trust opt-in either (" + polluted + ")",
+    polluted === "transport/no-trust-anchors");
+  var pollutedDefaults;
+  try {
+    Object.prototype.useSystemStore = true;
+    pollutedDefaults = await codeOf(pki.transport.https({})({ method: "GET", url: "https://ca.example/x" }));
+  } finally { delete Object.prototype.useSystemStore; }
+  check("3d nor when the transport was built with no tls defaults (" + pollutedDefaults + ")",
+    pollutedDefaults === "transport/no-trust-anchors");
   check("4 a sub-floor minVersion is refused", (await codeOf(t({ method: "GET", url: "https://ca.example/x", tls: { anchors: [Buffer.from("x")], minVersion: "TLSv1.1" } }))) === "transport/bad-input");
   check("5 a negative maxResponseBytes is refused", (await codeOf(t({ method: "GET", url: "https://ca.example/x", tls: { anchors: [Buffer.from("x")] }, maxResponseBytes: -5 }))) === "transport/bad-input");
   check("6 a maxResponseBytes above the ceiling is refused (tighten-only)", (await codeOf(t({ method: "GET", url: "https://ca.example/x", tls: { anchors: [Buffer.from("x")] }, maxResponseBytes: pki.C.LIMITS.HTTP_MAX_RESPONSE_BYTES + 1 }))) === "transport/bad-input");

@@ -472,6 +472,16 @@ security-only patches after the next major releases.
 
 ### Keys, secrets, and the crypto engine
 
+- **A copied byte argument is out of the caller's reach once taken (CWE-367 /
+  CWE-471).** Every verb copies the byte arguments it is given at its entry, so
+  that what it validates is what it then uses. The copy is taken into storage of
+  its own rather than through `Buffer.from`, which for a small result allocates
+  out of a shared pool: a caller whose own value came from that pool holds a view
+  of the whole store, the copy lands inside it, and the caller could find and
+  overwrite it while the verb was awaiting something. A shared-memory input
+  (`SharedArrayBuffer`) is refused outright rather than copied, and a detached
+  backing buffer is refused rather than read. This covers the pinned keys,
+  hashes, trust anchors and signed bytes each verb copies.
 - **A key written out by the tool used to look at it (CWE-532).** A report goes
   somewhere: a terminal with scrollback, a log, a ticket, a screenshot. A PKCS#8
   file and a PKCS#12 store both carry a private key, so a renderer that wrote the
@@ -1851,6 +1861,24 @@ security-only patches after the next major releases.
   §6.1 gate as any candidate, and is never added to the trust anchors, so a
   fetched self-signed or anchor-looking certificate can never complete a chain by
   itself (RFC 4158 §6.6).
+- **The destination and the trust material are settled before anything else the
+  caller passed is read (CWE-20 / CWE-295 / CWE-367 / CWE-441).** Reading a value
+  out of an options object can run the caller's own code, and that code can
+  rewrite the options not yet read. Every `pki.ct` verb therefore takes its
+  transport, URL and TLS configuration at its entry, before it reads a signed
+  tree head's fields, a certificate chain's elements or a header name, and sends
+  the request and checks the signature from what it took. Two shapes are refused
+  rather than ordered around: `opts.url` must be a string, since asking an object
+  for its text form runs the caller's code, and `opts.tls` may not carry an
+  accessor, since reading its members has to be inert. Both draw
+  `ct/bad-input`. The trust anchors, the client certificate, the client key and
+  the pinned log key are copied by value where they are taken, so overwriting the
+  bytes a caller still holds does not change what the connection is made under or
+  what a tree head is verified against. The parts of a parsed destination, its
+  scheme, host, port, path and query, are read through accessors captured at load,
+  and the transport reads the scheme once and decides from that one string whether
+  the request is allowed, whether a trust anchor is required and which port it
+  defaults to.
 
 ### Supply chain
 
