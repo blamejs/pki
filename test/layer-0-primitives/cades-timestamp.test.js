@@ -107,6 +107,11 @@ async function run() {
     md5Err !== null && md5Err.code === "cms/bad-input" && md5Err.message.indexOf("MD5") === 0);
   check("CT-45 an out-of-range signerIndex is refused by the imprint verb",
     (await codeOf(pki.cms.timestampImprint(base, { signerIndex: 3 }))) === "cms/bad-input");
+  // CT-58: both verbs read wire bytes, so the input a documented contract names is DER or PEM. A
+  // parsed object is refused rather than half-read, and this pins the contract the docstring states.
+  check("CT-58 the imprint verb takes DER or PEM, and a parsed object is refused",
+    (await codeOf(pki.cms.timestampImprint(pki.schema.cms.parse(base)))) === "cms/bad-input" &&
+    (await pki.cms.timestampImprint(pki.schema.cms.pemEncode(base))).signerIndex === 0);
 
   // ---- the attach verb ------------------------------------------------------------------------
   var token = await mintToken(tsa, sigOctets);
@@ -286,8 +291,19 @@ async function run() {
   check("CT-6 both signatures still verify and only the named signer has a timestamp row",
     vTwo.signers.length === 2 && vTwo.signers.every(function (s) { return s.ok === true; }) &&
     rowStamped.length === 1 && rowStamped[0].signatureTimeStamps[0].valid === true);
+  // Which certificate index 1 belongs to is the DER sort's answer, not the order the signers were
+  // passed in: `pki.cms.sign` sorts the SET OF too. The expected certificate is therefore resolved
+  // from the message, through the signer identifier the attach verb targeted.
+  var targetSid = pki.schema.cms.parse(twoSigners).signerInfos[1].sid;
+  var candidates = [signer.cert, signer2.cert];
+  var serials = candidates.map(function (c) { return pki.schema.x509.parse(c).serialNumber; });
+  check("CT-6 PREMISE the two signer certificates carry different serial numbers",
+    serials[0] !== serials[1]);
+  var expectedCert = candidates.filter(function (c) {
+    return pki.schema.x509.parse(c).serialNumber === targetSid.serialNumber;
+  })[0];
   check("CT-6 the row belongs to the signer whose signature the token covers",
-    rowStamped[0].cert.equals(signer2.cert));
+    expectedCert !== undefined && rowStamped[0].cert.equals(expectedCert));
 
   // CT-7: an unsignedAttrs that already carries a countersignature gains a second MEMBER, and the
   // rebuilt SET OF re-parses, which is what proves its DER ordering.
