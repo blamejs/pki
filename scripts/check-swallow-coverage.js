@@ -69,6 +69,38 @@ function _strip(src) {
     .replace(/`(?:[^`\\]|\\.)*`/g, function (m) { return m.replace(/[^\n]/g, " "); });
 }
 
+// Every `return` statement's FULL expression text, so a rejection can be required to be the whole of
+// it rather than its first token. Depth tracking stops at the `;` or the closing brace that ends the
+// statement, not at one inside the arguments.
+function _returnExpressions(body) {
+  var out = [], re = /\breturn\b/g, m;
+  while ((m = re.exec(body)) !== null) {
+    var i = m.index + m[0].length, start = i, depth = 0;
+    for (; i < body.length; i++) {
+      var c = body[i];
+      if (c === "(" || c === "[" || c === "{") depth++;
+      else if (c === ")" || c === "]" || c === "}") { if (depth === 0) break; depth--; }
+      else if (c === ";" && depth === 0) break;
+    }
+    out.push(body.slice(start, i).trim());
+  }
+  return out;
+}
+
+// Is this expression EXACTLY a call to one of `calleeForms`, with nothing appended? Balances the
+// argument list, then requires the remainder to be empty, so `f(e)` passes while `f(e).catch(g)`,
+// `f(e).constructor` and `f(e) || x` all fail.
+function _isOnlyCallTo(expr, calleeForms) {
+  var m = new RegExp("^(?:" + calleeForms + ")\\s*\\(").exec(expr);
+  if (!m) return false;
+  var i = m[0].length - 1, depth = 0;
+  for (; i < expr.length; i++) {
+    if (expr[i] === "(") depth++;
+    else if (expr[i] === ")") { depth--; if (depth === 0) { i++; break; } }
+  }
+  return expr.slice(i).trim() === "";
+}
+
 function findSwallows(rel, src) {
   var stripped = _strip(src);
   // The `_rej` propagation form below is honored ONLY in a file that itself defines `_rej` as
@@ -100,9 +132,14 @@ function findSwallows(rel, src) {
     // and a catch returning it would still be read as propagation. Any parameter spelled the same
     // withdraws the exemption. The parameter patterns are deliberately loose, because over-matching
     // only withdraws an exemption and the conservative direction is the safe one here.
-    var paramRe = /function\s*[\w$]*\s*\(([^)]*)\)|\(([^)]*)\)\s*=>|\bcatch\s*\(([^)]*)\)/g;
+    // The last alternative is the unparenthesized single-parameter arrow, `name => ...`, which is
+    // valid and binds the name for that body with no parentheses to find it by.
+    var paramRe = new RegExp(
+      "function\\s*[\\w$]*\\s*\\(([^)]*)\\)|\\(([^)]*)\\)\\s*=>|\\bcatch\\s*\\(([^)]*)\\)" +
+      "|\\b(" + capturedReject + ")\\s*=>", "g");
     var shadowed = false, pm;
     while (!shadowed && (pm = paramRe.exec(stripped)) !== null) {
+      if (pm[4]) { shadowed = true; break; }
       var list = pm[1] || pm[2] || pm[3] || "";
       shadowed = list.split(",").some(function (p) {
         return p.trim().replace(/[=\s].*$/, "") === capturedReject;
@@ -110,7 +147,6 @@ function findSwallows(rel, src) {
     }
     if (bindings !== 1 || shadowed) capturedReject = null;
   }
-  var REJECT_FORM = "Promise\\.reject\\b" + (capturedReject ? "|" + capturedReject + "\\s*\\(" : "");
   var rejWraps = new RegExp(
     "function\\s+_rej\\s*\\(\\s*([A-Za-z_$][\\w$]*)\\s*\\)\\s*\\{\\s*return\\s+(?:Promise\\.reject\\(\\s*\\1\\s*\\)" +
     (capturedReject ? "|" + capturedReject + "\\(\\s*[\\w$]+\\s*,\\s*\\1\\s*\\)" : "") +
@@ -132,17 +168,19 @@ function findSwallows(rel, src) {
     // the one-line `_rej(e)` helper, which is defined as `return Promise.reject(e)`: an async
     // entry point rejects rather than throws, and returning that rejection propagates the
     // fault exactly as a throw does.
-    // The rejection has to BE the return value, not the head of a chain. `return reject(e).catch(fn)`
-    // matches the call and returns a promise that settles fulfilled, which is the swallow this gate
-    // exists to find, dressed as the propagation form. Any settlement handler in the body withdraws
-    // the rejection form, which is conservative on purpose: a catch that genuinely only rejects has no
-    // handler to attach. `throw` is unconditional, so it keeps its own test.
-    var retForms = REJECT_FORM + (rejWraps ? "|_rej\\s*\\(" : "");
-    var chainsASettlement = /\.\s*(?:then|catch|finally)\s*\(/.test(body);
-    var noValueReturn = !new RegExp("\\breturn\\s+(?!" + retForms + ")").test(body);
+    // The rejection has to BE the whole return value, which is checked by balancing the call's
+    // parentheses and requiring nothing after them. Testing a prefix and a list of handler names
+    // cannot decide this: `return reject(e).catch(fn)` returns a promise that settles FULFILLED, and
+    // `return reject(e).constructor` returns something that is not a promise at all, so the list would
+    // have to name every property in the language. `throw` is unconditional and keeps its own test.
+    var calleeForms = "Promise\\.reject" + (capturedReject ? "|" + capturedReject : "") +
+      (rejWraps ? "|_rej" : "");
+    var returned = _returnExpressions(body);
+    var noValueReturn = returned.length === 0 ||
+      returned.every(function (e) { return _isOnlyCallTo(e, calleeForms); });
     var reThrows = /\bthrow\b/.test(body) && noValueReturn;
-    var rejectsOnly = new RegExp("return\\s+(?:" + retForms + ")").test(body) &&
-      noValueReturn && !chainsASettlement;
+    var rejectsOnly = returned.length > 0 &&
+      returned.every(function (e) { return _isOnlyCallTo(e, calleeForms); });
     var throwsViaHelper = /\bfail\s*\(/.test(body) && noValueReturn;
     if (reThrows || rejectsOnly || throwsViaHelper) continue;   // safe: propagates the fault
     // Otherwise it is a swallow: it must be exercised (covered) or explicitly marked.
