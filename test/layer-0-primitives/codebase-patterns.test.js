@@ -3353,7 +3353,14 @@ function testGuardReadsRuntimeLive() {
     "Array\\.isArray", "ArrayBuffer\\.isView", "Reflect\\.(?:ownKeys|apply)",
     "Buffer\\.(?:from|alloc|isBuffer|byteLength|concat|compare)",
     "Number\\.(?:isInteger|isSafeInteger|isNaN)", "String\\.fromCharCode",
-    "JSON\\.stringify", "Math\\.(?:floor|ceil|min|max)", "Promise\\.(?:resolve|reject)",
+    "JSON\\.stringify", "Math\\.(?:floor|ceil|min|max)",
+    // The aggregators are here for the same reason `resolve` and `reject` are, and they were the
+    // missing entries: `all` is what assembles a verdict out of component results, so a replacement
+    // resolving a fabricated array never runs the components and its values become the verdict. That
+    // reached `pki.crmf.verifyPop`, which reported an unverified proof of possession as verified, and
+    // the composite arm, which reported `ok` for a signature whose halves were never checked. Listing
+    // only `resolve|reject` meant the budget counted neither site, so the gate was silent on both.
+    "Promise\\.(?:resolve|reject|all|allSettled|race|any)",
   ];
   // `equals` and `compare` are Buffer.prototype's identity verbs, `toString` and `subarray` its
   // byte-to-text and byte-slice steps. Each decides something on its own: one `equals` answering
@@ -3546,6 +3553,37 @@ function testGuardReadsRuntimeLive() {
   });
   bad = _filterMarkers(bad, "guard-reads-runtime-live");
 
+  // The promise statics are held to ZERO across lib/, ahead of and outside the budget below. Two
+  // separate things hid the verdict aggregators while this gate passed. `all` was not on the list
+  // above at all, so nothing counted it. And the budget counts a module's live reads as one total, so
+  // a change that converts one read and introduces a promise read leaves the figure untouched and the
+  // budget cannot tell the two apart. `resolve`, `reject` and the aggregators all build their promise
+  // from the receiver they are called on, and a promise that carries a refusal or assembles a verdict
+  // out of component results decides that verdict, so there is no module where reading the global
+  // binding at the call is the right thing. Holding the class to zero here means a new one fails
+  // whatever the budget arithmetic says.
+  var promiseLive = bad.filter(function (b) { return /^reads `Promise\./.test(b.content); });
+  // The CONSTRUCTOR is the same rule one step further out, and it is held to zero in the same place.
+  // `new Promise(executor)` off the live binding hands the construction to whatever that binding holds,
+  // and a replacement need not call the executor at all: it can settle the promise itself, with a value
+  // of its own, which is how a transport wrapped this way returns a response nobody fetched. The
+  // captured spelling is `new _Promise(...)`, which guard-async and webcrypto already used.
+  var _NEW_PROMISE_RE = /(?:^|[^\w.$])new\s+Promise\s*\(/;
+  _libFiles().forEach(function (f) {
+    var rel = _relPath(f);
+    if (/[\\/]guard-intrinsic\.js$/.test(rel)) return;
+    var lines = _stripCommentsAndLiterals(fs.readFileSync(f, "utf8")).split("\n");
+    for (var i = 0; i < lines.length; i++) {
+      if (_NEW_PROMISE_RE.test(lines[i])) {
+        promiseLive.push({ file: rel, line: i + 1,
+          content: "reads `Promise` from the runtime to construct: use the constructor captured at " +
+            "module load (`new _Promise(...)`), since a replacement settles the promise itself and " +
+            "the executor this code passed may never run" });
+      }
+    }
+  });
+  _report("no module in lib/ builds a promise from the live global Promise binding", promiseLive);
+
   // MIGRATING, a per-module budget rather than a skip list. A module enters the scope above the
   // moment it takes the captures, which arms the whole file at once while its reads are converted a
   // module at a time. A budget is not an exemption: it names an exact number, so a NEW live read in
@@ -3557,36 +3595,46 @@ function testGuardReadsRuntimeLive() {
   // budget nobody tightens is a number that stops meaning anything, and the next reader would take
   // it for the real count. A module reaching zero is deleted from the map and held to zero forever.
   var MIGRATING = {
-    "lib/acme.js": 186,
-    "lib/est.js": 159,
-    "lib/cmp-build.js": 130,
-    "lib/crmf-sign.js": 35,
+    "lib/acme.js": 177,
+    "lib/est.js": 152,
+    "lib/cmp-build.js": 127,
+    "lib/crmf-sign.js": 31,
     "lib/path-validate.js": 86,
-    "lib/webauthn.js": 158,
+    "lib/webauthn.js": 138,
     "lib/asn1-der.js": 101,
     "lib/schema-engine.js": 39,
     "lib/trust.js": 100,
-    "lib/cms-sign.js": 56,
-    "lib/webauthn-mds.js": 88,
-    "lib/attrcert-sign.js": 69,
+    "lib/cms-sign.js": 54,
+    "lib/webauthn-mds.js": 87,
+    "lib/attrcert-sign.js": 67,
     "lib/tsp-sign.js": 42,
     "lib/http-digest.js": 73,
     "lib/pkcs12-build.js": 63,
-    "lib/ct.js": 70,
+    "lib/ct.js": 69,
     "lib/cms-verify.js": 14,
     "lib/cms-encrypt.js": 66,
-    "lib/crl-sign.js": 62,
+    "lib/crl-sign.js": 61,
     "lib/cmc-build.js": 57,
     "lib/pki-build.js": 33,
     "lib/hpke.js": 32,
     "lib/cms-decrypt.js": 45,
-    "lib/composite-sig.js": 36,
-    "lib/cmc-verify.js": 34,
-    "lib/x509-sign.js": 25,
+    "lib/composite-sig.js": 29,
+    "lib/cmc-verify.js": 32,
+    "lib/x509-sign.js": 24,
+    /** Entered scope when they took the captures for the promise-construction fix. A module is armed
+     *  whole the moment it requires guard-intrinsic, so these are the reads that were always there and
+     *  are now counted. Both ratchet DOWN only, like the rest. */
+    "lib/ocsp.js": 92,
+    "lib/csr-sign.js": 26,
     "lib/schema-attrcert.js": 26,
     "lib/tls-cert-compress.js": 18,
     "lib/schema-crl.js": 7,
     "lib/schema-ocsp.js": 9,
+    /** Entered scope when they took the captures so their promise statics could be converted. Arming a
+     *  module arms it whole, so these are the reads that were always there and are now counted. Both
+     *  ratchet DOWN only, like the rest. */
+    "lib/composite-kem.js": 45,
+    "lib/http-transport.js": 118,
   };
   var counts = {};
   bad.forEach(function (b) { counts[b.file] = (counts[b.file] || 0) + 1; });

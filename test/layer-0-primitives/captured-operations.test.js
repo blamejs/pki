@@ -270,6 +270,208 @@ async function testPromiseConstructorIsCaptured() {
   threw === null && !!underReplaced && underReplaced.valid === false);
 }
 
+// ---- the promise a signing verb awaits its own self-check through ----
+/* Every signing verb checks its own output before it emits it, and awaits that check through a
+   promise. `Promise.resolve` builds from the RECEIVER it is called on, so reading the global binding
+   at the call hands the construction to whatever that binding holds: a constructor whose `resolve`
+   settles without awaiting its argument runs the continuation before the check has finished, and the
+   verb emits what it was about to refuse. On the composite arm the check genuinely returns a promise,
+   from `assertSignatureVerifies` in lib/pki-build.js, so a dropped rejection is the whole verdict.
+
+   The instrument COUNTS reads of the global rather than forcing a self-check to fail, because a verb
+   whose check passes emits the same bytes either way: what separates a captured construction from a
+   live one is whether the global was read at all. Replacing the binding does not disturb `async` or
+   `await`, which take the realm's intrinsic rather than this property, so a count of zero means the
+   verb built every promise from the constructor it captured. */
+async function testSigningVerbsBuildThroughTheCapturedPromise() {
+  var ca = makeSigner("ec-p256");
+  var caCert = await pki.x509.sign({
+    subject: "Captured CA", subjectPublicKey: ca.spki, notBefore: NB, notAfter: NA,
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "cRLSign"], subjectKeyIdentifier: true },
+  }, { key: ca.key });
+  var ee = makeSigner("ec-p256");
+  var csrDer = await pki.csr.sign({ subject: "captured.example", subjectPublicKey: ee.spki }, { key: ee.key });
+
+  var realPromise = globalThis.Promise;
+  function countingFor(counter) {
+    function Counting(executor) { return new realPromise(executor); }
+    Counting.prototype = realPromise.prototype;
+    Counting.resolve = function (v) { counter.n += 1; return realPromise.resolve(v); };
+    Counting.reject = function (e) { counter.n += 1; return realPromise.reject(e); };
+    // Every static counts. Counting only `resolve` and `reject` left the aggregators invisible: a verb
+    // that reached the global for `all` reported zero, which is how the composite-verdict and
+    // proof-of-possession aggregators stayed live under a passing instrument.
+    Counting.all = function (a) { counter.n += 1; return realPromise.all(a); };
+    Counting.allSettled = function (a) { counter.n += 1; return realPromise.allSettled(a); };
+    Counting.race = function (a) { counter.n += 1; return realPromise.race(a); };
+    Counting.any = function (a) { counter.n += 1; return realPromise.any(a); };
+    return Counting;
+  }
+
+  // CONTROL: the counter really counts, so a zero below is the verb and not a dead instrument.
+  // Both shapes are controlled: a resolve-only control cannot tell a silent aggregator from a clean one.
+  var ctl = { n: 0 };
+  try { globalThis.Promise = countingFor(ctl); await Promise.resolve(1); }
+  finally { globalThis.Promise = realPromise; }
+  check("CONTROL the read counter registers an explicit Promise.resolve", ctl.n === 1);
+
+  var ctlAll = { n: 0 };
+  try { globalThis.Promise = countingFor(ctlAll); await Promise.all([1, 2]); }
+  finally { globalThis.Promise = realPromise; }
+  check("CONTROL the read counter registers an explicit Promise.all", ctlAll.n === 1);
+
+  var verbs = [
+    ["pki.x509.sign", function () {
+      return pki.x509.sign({ subject: "leaf.example", subjectPublicKey: ee.spki, notBefore: NB, notAfter: NA,
+        extensions: { keyUsage: ["digitalSignature"] } }, { cert: caCert, key: ca.key });
+    }],
+    ["pki.csr.sign", function () {
+      return pki.csr.sign({ subject: "captured.example", subjectPublicKey: ee.spki }, { key: ee.key });
+    }],
+    ["pki.csr.verify", function () { return pki.csr.verify(csrDer); }],
+    ["pki.crl.sign", function () {
+      return pki.crl.sign({ thisUpdate: AT, nextUpdate: NA, crlNumber: 1n,
+        revoked: [{ serialNumber: 7n, revocationDate: AT }] }, { cert: caCert, key: ca.key });
+    }],
+  ];
+
+  var live = [];
+  for (var i = 0; i < verbs.length; i++) {
+    var counter = { n: 0 }, failed = null;
+    try {
+      globalThis.Promise = countingFor(counter);
+      await verbs[i][1]();
+    } catch (e) { failed = (e && e.code) || String(e && e.message).slice(0, 60); }
+    finally { globalThis.Promise = realPromise; }
+    if (failed !== null) live.push(verbs[i][0] + " threw " + failed);
+    else if (counter.n !== 0) live.push(verbs[i][0] + " read the global " + counter.n + " time(s)");
+  }
+  check("every signing verb builds its self-check promise from the captured constructor (" +
+    (live.length ? live.join("; ") : "none read it") + ")", live.length === 0);
+}
+
+// ---- the aggregator that assembles a verdict out of component results ----
+/* A verdict assembled with `Promise.all` is worth only what the constructor awaiting the components is
+   worth. Read off the live global, a replacement that resolves a fabricated array never runs the
+   component verifications and its own values become the verdict: `pki.crmf.verifyPop` reports an
+   unverified proof of possession as verified, and the composite arm reports `ok` for a signature whose
+   ML-DSA and traditional halves were never checked. A counter alone does not show this, so the
+   substitute here fabricates a marked result and the assertion looks for the marker in the verdict. */
+async function testVerdictAggregatorsBuildThroughTheCapturedPromise() {
+  var s = makeSigner("ec-p256");
+  var req = await pki.crmf.build({
+    certReqId: 1n,
+    certTemplate: { subject: "aggregate.example", publicKey: s.spki },
+  }, { key: s.key });
+
+  var realPromise = globalThis.Promise;
+  function fabricating() {
+    function Fabricating(executor) { return new realPromise(executor); }
+    Fabricating.prototype = realPromise.prototype;
+    Fabricating.resolve = function (v) { return realPromise.resolve(v); };
+    Fabricating.reject = function (e) { return realPromise.reject(e); };
+    Fabricating.all = function () {
+      return realPromise.resolve([{ verified: true, ok: true, method: "FABRICATED" }]);
+    };
+    Fabricating.allSettled = function () {
+      return realPromise.resolve([{ status: "fulfilled", value: { verified: true, method: "FABRICATED" } }]);
+    };
+    Fabricating.race = function (a) { return realPromise.race(a); };
+    Fabricating.any = function (a) { return realPromise.any(a); };
+    return Fabricating;
+  }
+
+  // CONTROL: the substitute really does replace the result a caller reading the global receives.
+  var ctl;
+  try {
+    globalThis.Promise = fabricating();
+    ctl = await Promise.all([realPromise.resolve({ verified: false, method: "real" })]);
+  } finally { globalThis.Promise = realPromise; }
+  check("CONTROL the fabricating substitute replaces an explicit Promise.all result",
+    !!ctl && !!ctl[0] && ctl[0].method === "FABRICATED");
+
+  var verdict = null, failed = null;
+  try {
+    globalThis.Promise = fabricating();
+    verdict = await pki.crmf.verifyPop(req);
+  } catch (e) { failed = (e && e.code) || String((e && e.message) || e).slice(0, 70); }
+  finally { globalThis.Promise = realPromise; }
+
+  var first = (verdict && verdict.messages && verdict.messages[0]) || null;
+  var fabricated = !!first && first.method === "FABRICATED";
+  check("pki.crmf.verifyPop assembles its verdict through the captured constructor, so no fabricated " +
+    "component result reaches it (" +
+    (failed !== null ? "threw " + failed : fabricated ? "FABRICATED reached the verdict"
+      : "method=" + (first && first.method)) + ")",
+    failed === null && !fabricated);
+}
+
+// ---- the captured promise statics themselves ----
+/* The six promise statics are captured as a set, because a member with no captured form is a member
+   that stays live: the detector holds every one of them to zero in lib/, so a call site that needs one
+   has to have it. This pins each capture to the operation it was bound to at load, under a global whose
+   own statics throw, so a capture that secretly re-read the binding fails rather than silently
+   degrading. */
+async function testCapturedPromiseStaticsSurviveAReplacedGlobal() {
+  var intrinsic = require("../../lib/guard-intrinsic");
+  var realPromise = globalThis.Promise;
+
+  function hostile() {
+    function Hostile(executor) { return new realPromise(executor); }
+    Hostile.prototype = realPromise.prototype;
+    ["resolve", "reject", "all", "allSettled", "race", "any"].forEach(function (k) {
+      Hostile[k] = function () { throw new Error("hostile " + k + " reached"); };
+    });
+    return Hostile;
+  }
+
+  // CONTROL: the hostile global really does break a caller that reads the binding at the call.
+  var controlThrew = false;
+  try {
+    globalThis.Promise = hostile();
+    try { Promise.resolve(1); } catch (e) { controlThrew = /hostile resolve/.test(String(e.message)); }
+  } finally { globalThis.Promise = realPromise; }
+  check("CONTROL a hostile global breaks a call-time read of Promise.resolve", controlThrew);
+
+  var P = intrinsic.Promise;
+  var ops = [
+    ["promiseResolve", function (f) { return f(P, 7); }, function (v) { return v === 7; }],
+    ["promiseAll", function (f) { return f(P, [1, 2]); }, function (v) { return v[0] === 1 && v[1] === 2; }],
+    ["promiseAllSettled", function (f) { return f(P, [realPromise.resolve(1)]); },
+      function (v) { return v[0].status === "fulfilled" && v[0].value === 1; }],
+    ["promiseRace", function (f) { return f(P, [realPromise.resolve("first")]); },
+      function (v) { return v === "first"; }],
+    ["promiseAny", function (f) { return f(P, [realPromise.resolve("one")]); },
+      function (v) { return v === "one"; }],
+  ];
+
+  var broken = [];
+  for (var i = 0; i < ops.length; i++) {
+    var name = ops[i][0], fn = intrinsic.uncurry(intrinsic[name]), got, failed = null;
+    try {
+      globalThis.Promise = hostile();
+      got = await ops[i][1](fn);
+    } catch (e) { failed = String((e && e.message) || e).slice(0, 60); }
+    finally { globalThis.Promise = realPromise; }
+    if (failed !== null) broken.push(name + " threw " + failed);
+    else if (!ops[i][2](got)) broken.push(name + " returned " + JSON.stringify(got));
+  }
+  check("every captured promise static answers from its load-time binding (" +
+    (broken.length ? broken.join("; ") : "all five") + ")", broken.length === 0);
+
+  // `reject` is the refusal carrier, so it is asserted to still REJECT rather than to resolve.
+  var rejected = null;
+  try {
+    globalThis.Promise = hostile();
+    var rj = intrinsic.uncurry(intrinsic.promiseReject);
+    await rj(P, new Error("refused")).then(
+      function () { rejected = false; }, function (e) { rejected = /refused/.test(String(e.message)); });
+  } catch (e) { rejected = "threw " + String(e && e.message).slice(0, 50); }
+  finally { globalThis.Promise = realPromise; }
+  check("the captured promiseReject still rejects under a hostile global (" + rejected + ")",
+    rejected === true);
+}
+
 // ---- the digest a TUF key identifier is ----
 /* A TUF role names its signers by key identifier, and the identifier is a digest over the key object.
    Reached off the live hash prototype, a replacement decided that binding: a different Ed25519 key
@@ -328,6 +530,9 @@ async function run() {
   await testKeyIdentifierDigestIsCaptured();
   await testViewExtentAccessorsAreCaptured();
   await testPromiseConstructorIsCaptured();
+  await testSigningVerbsBuildThroughTheCapturedPromise();
+  await testVerdictAggregatorsBuildThroughTheCapturedPromise();
+  await testCapturedPromiseStaticsSurviveAReplacedGlobal();
   await testTufKeyIdentifierIsCaptured();
   await testConstantTimeComparisonIsCaptured();
 }
