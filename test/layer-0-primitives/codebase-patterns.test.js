@@ -3601,11 +3601,14 @@ function testGuardReadsRuntimeLive() {
   // Optional chaining is part of the member syntax: `Promise?.all(...)` reaches the same property
   // through the same binding, and the `?` before the dot is enough to miss it otherwise.
   var _PROMISE_MEMBER = "(?:\\??\\.\\s*([A-Za-z$][\\w$]*)|\\s*\\??\\.?\\s*\\[[^\\]]*\\])";
+  // A parenthesized base reaches the same property: `(Promise).all(jobs)` and
+  // `(globalThis.Promise).all(jobs)` put closing parens between the name and the member, and the
+  // opening ones are already allowed by the leading boundary.
   var _PROMISE_READ_RE = new RegExp(
-    "(?:^|[^\\w.$])" + _PROMISE_QUAL + "Promise" + _PROMISE_MEMBER, "g");
+    "(?:^|[^\\w.$])" + _PROMISE_QUAL + "Promise\\s*\\)*" + _PROMISE_MEMBER, "g");
   // The constructor, which takes no member.
   var _PROMISE_NEW_RE = new RegExp(
-    "(?:^|[^\\w.$])new\\s+" + _PROMISE_QUAL + "Promise\\s*\\(", "g");
+    "(?:^|[^\\w.$])new\\s+\\(*\\s*" + _PROMISE_QUAL + "Promise\\s*\\)*\\s*\\(", "g");
   // The load-time binding of the bare global, which names no member and so is invisible above. One
   // capture point is the rule: a module taking its own leaves two places for the capture to be wrong.
   var _PROMISE_BIND_RE = new RegExp(

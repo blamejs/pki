@@ -291,6 +291,14 @@ async function testSigningVerbsBuildThroughTheCapturedPromise() {
   }, { key: ca.key });
   var ee = makeSigner("ec-p256");
   var csrDer = await pki.csr.sign({ subject: "captured.example", subjectPublicKey: ee.spki }, { key: ee.key });
+  var leafCert = await pki.x509.sign({
+    subject: "leaf.captured.example", subjectPublicKey: ee.spki, notBefore: NB, notAfter: NA,
+    extensions: { keyUsage: ["digitalSignature"] },
+  }, { cert: caCert, key: ca.key });
+  var crmfReq = await pki.crmf.build({
+    certReqId: 1n, certTemplate: { subject: "captured.crmf.example", publicKey: ee.spki },
+  }, { key: ee.key });
+  var signedCms = await pki.cms.sign(Buffer.from("captured"), { cert: caCert, key: ca.key });
 
   var realPromise = globalThis.Promise;
   function countingFor(counter) {
@@ -333,6 +341,17 @@ async function testSigningVerbsBuildThroughTheCapturedPromise() {
       return pki.crl.sign({ thisUpdate: AT, nextUpdate: NA, crlNumber: 1n,
         revoked: [{ serialNumber: 7n, revocationDate: AT }] }, { cert: caCert, key: ca.key });
     }],
+    // The verbs in the modules this release converted, so the behavioral guard covers the aggregators
+    // and the refusal carriers rather than the signing self-checks alone. A lexical gate cannot see a
+    // computed read of the binding; driving the verb under a counting substitute can.
+    ["pki.cms.sign", function () {
+      return pki.cms.sign(Buffer.from("captured"), { cert: caCert, key: ca.key });
+    }],
+    ["pki.ocsp.buildRequest", function () {
+      return pki.ocsp.buildRequest({ cert: leafCert, issuer: caCert });
+    }],
+    ["pki.crmf.verifyPop", function () { return pki.crmf.verifyPop(crmfReq); }],
+    ["pki.cms.verify", function () { return pki.cms.verify(signedCms); }],
   ];
 
   var live = [];
@@ -346,8 +365,10 @@ async function testSigningVerbsBuildThroughTheCapturedPromise() {
     if (failed !== null) live.push(verbs[i][0] + " threw " + failed);
     else if (counter.n !== 0) live.push(verbs[i][0] + " read the global " + counter.n + " time(s)");
   }
-  check("every signing verb builds its self-check promise from the captured constructor (" +
-    (live.length ? live.join("; ") : "none read it") + ")", live.length === 0);
+  check("every verb across the converted modules builds its promises from the captured constructor, " +
+    "reading no promise static off the global (" +
+    (live.length ? live.join("; ") : "none of the " + verbs.length + " read it") + ")",
+    live.length === 0);
 }
 
 // ---- the aggregator that assembles a verdict out of component results ----

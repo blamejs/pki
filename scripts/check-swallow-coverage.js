@@ -132,10 +132,17 @@ function findSwallows(rel, src) {
     // the one-line `_rej(e)` helper, which is defined as `return Promise.reject(e)`: an async
     // entry point rejects rather than throws, and returning that rejection propagates the
     // fault exactly as a throw does.
+    // The rejection has to BE the return value, not the head of a chain. `return reject(e).catch(fn)`
+    // matches the call and returns a promise that settles fulfilled, which is the swallow this gate
+    // exists to find, dressed as the propagation form. Any settlement handler in the body withdraws
+    // the rejection form, which is conservative on purpose: a catch that genuinely only rejects has no
+    // handler to attach. `throw` is unconditional, so it keeps its own test.
     var retForms = REJECT_FORM + (rejWraps ? "|_rej\\s*\\(" : "");
+    var chainsASettlement = /\.\s*(?:then|catch|finally)\s*\(/.test(body);
     var noValueReturn = !new RegExp("\\breturn\\s+(?!" + retForms + ")").test(body);
     var reThrows = /\bthrow\b/.test(body) && noValueReturn;
-    var rejectsOnly = new RegExp("return\\s+(?:" + retForms + ")").test(body) && noValueReturn;
+    var rejectsOnly = new RegExp("return\\s+(?:" + retForms + ")").test(body) &&
+      noValueReturn && !chainsASettlement;
     var throwsViaHelper = /\bfail\s*\(/.test(body) && noValueReturn;
     if (reThrows || rejectsOnly || throwsViaHelper) continue;   // safe: propagates the fault
     // Otherwise it is a swallow: it must be exercised (covered) or explicitly marked.
