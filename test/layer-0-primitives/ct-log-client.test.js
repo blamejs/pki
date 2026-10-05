@@ -794,27 +794,492 @@ async function runShared() {
     JSON.stringify(inheritedCalls) + ")",
     inheritedCalls.length === 1 && inheritedCalls[0] === u("get-roots"));
 
-  /* Holding the url VALUE is not enough when the value is an object, because the text form is what
-     names the host and converting asks the object for it. A header getter that rewrote an
-     object-valued url's `href` moved the request just as a second read would have: the conversion is
-     the last reader, so it happens where the value is taken. */
+  /* An object-valued url is refused rather than converted. Converting asks the object for its text and
+     asking runs the caller's code, and that code emptied the anchor list the connection had not been
+     flattened from yet. Ordering the two does not help: flattening first reads `tls.anchors`, which
+     runs caller code that rewrites the url. So neither is allowed to run caller code at all, which
+     means a url is a string here. */
   var convCalls = [];
   var urlObj = { href: BASE, toString: function () { return this.href; } };
-  var convTrap = {};
-  Object.defineProperty(convTrap, "x-trigger", {
-    enumerable: true, configurable: true,
-    get: function () { urlObj.href = EVIL; return "1"; },
-  });
-  await code(function () {
-    return pki.ct.getSth({ url: urlObj, logKey: log.spki, headers: convTrap,
+  var convOutcome = await code(function () {
+    return pki.ct.getSth({ url: urlObj, logKey: log.spki,
       transport: function (req) {
         convCalls.push(String(req.url));
         return Promise.resolve({ status: 500, headers: { "content-type": "application/json" }, body: Buffer.from("{}") });
       } });
   });
-  check("X14: an object-valued url is converted where it is taken, so a header getter cannot change " +
-    "the host by rewriting it later (contacted " + JSON.stringify(convCalls) + ")",
-    convCalls.every(function (hit) { return hit.indexOf("attacker.example") === -1; }));
+  check("X14: an object-valued url is refused, since asking it for its text form runs the caller's " +
+    "code (" + convOutcome + ")", convOutcome === "ct/bad-input");
+  check("X14b: and nothing was fetched under it", convCalls.length === 0);
+
+  /* The same for a tls carrying an accessor: reading its members has to be inert. */
+  var tlsAccT = routeByUrl({});
+  var accTls = { servername: "ct.example" };
+  Object.defineProperty(accTls, "anchors", {
+    enumerable: true, configurable: true,
+    get: function () { return [Buffer.alloc(1)]; },
+  });
+  check("X14c: a tls carrying an accessor is refused, so reading its members cannot run caller code",
+    (await code(function () {
+      return pki.ct.getSth({ url: BASE, logKey: log.spki, transport: tlsAccT, tls: accTls });
+    })) === "ct/bad-input");
+
+  /* The header object is not the only caller value a verb reads. Each verb reads its OWN options first
+     (an STH's fields, a chain's elements), and reading a nested caller value runs caller code just the
+     same, so a getter there ran BEFORE the destination and the anchors had been captured at all. The
+     request is shaped at the door now, before the verb touches anything else. Each vector pairs with a
+     plain-value control, because a vector that passes because the verb refused early proves nothing. */
+  function shapeRecorder(seen) {
+    return function (req) {
+      var rtls = req.tls || {};
+      seen.push({ url: String(req.url),
+        anchors: Array.isArray(rtls.anchors) ? rtls.anchors.length : null,
+        servername: rtls.servername });
+      return Promise.resolve({ status: 500, headers: { "content-type": "application/json" }, body: Buffer.from("{}") });
+    };
+  }
+  function divertedTo(seen) {
+    return seen.some(function (s) { return s.url.indexOf("attacker.example") !== -1; });
+  }
+  var ROOT = t.root;
+
+  var p0 = [], p1 = [];
+  await code(function () {
+    return pki.ct.getProofByHash({ url: BASE, logKey: log.spki, transport: shapeRecorder(p0),
+      sth: { treeSize: 3n, rootHash: ROOT, timestamp: 1n }, leafHash: ROOT });
+  });
+  check("X15 CONTROL: getProofByHash with a plain sth reaches the URL it was given",
+    p0.length === 1 && p0[0].url.indexOf(BASE) === 0);
+  var pBag = { logKey: log.spki, transport: shapeRecorder(p1), leafHash: ROOT };
+  pBag.url = BASE;
+  var pSth = { rootHash: ROOT, timestamp: 1n };
+  Object.defineProperty(pSth, "treeSize", {
+    enumerable: true, configurable: true,
+    get: function () { pBag.url = EVIL; return 3n; },
+  });
+  pBag.sth = pSth;
+  await code(function () { return pki.ct.getProofByHash(pBag); });
+  check("X15: a getter inside opts.sth cannot move the request, because the destination is taken " +
+    "before the verb reads the sth (contacted " + JSON.stringify(p1.map(function (s) { return s.url; })) + ")",
+    !divertedTo(p1));
+
+  var c1 = [];
+  var cBag = { logKey: log.spki, transport: shapeRecorder(c1) };
+  cBag.url = BASE;
+  var cOld = { rootHash: ROOT, timestamp: 1n };
+  Object.defineProperty(cOld, "treeSize", {
+    enumerable: true, configurable: true,
+    get: function () { cBag.url = EVIL; return 1n; },
+  });
+  cBag.oldSth = cOld;
+  cBag.newSth = { treeSize: 3n, rootHash: ROOT, timestamp: 2n };
+  await code(function () { return pki.ct.getSthConsistency(cBag); });
+  check("X16: the same for a getter inside opts.oldSth (contacted " +
+    JSON.stringify(c1.map(function (s) { return s.url; })) + ")", !divertedTo(c1));
+
+  var a1 = [];
+  var aBag = { logKey: log.spki, transport: shapeRecorder(a1) };
+  aBag.url = BASE;
+  var aChain = [];
+  Object.defineProperty(aChain, "0", {
+    enumerable: true, configurable: true,
+    get: function () { aBag.url = EVIL; return Buffer.alloc(40, 9); },
+  });
+  aChain.length = 1;
+  aBag.chain = aChain;
+  await code(function () { return pki.ct.addChain(aBag); });
+  check("X17: the same for a getter on a chain element in opts.chain (contacted " +
+    JSON.stringify(a1.map(function (s) { return s.url; })) + ")", !divertedTo(a1));
+
+  /* The sharpest of the four: the URL stays correct, so nothing about the request looks wrong, while
+     the pinned anchors are emptied and the servername rewritten. */
+  var n1 = [];
+  var nTls = { anchors: [Buffer.alloc(1)], servername: "ct.example" };
+  var nSth = { rootHash: ROOT, timestamp: 1n };
+  Object.defineProperty(nSth, "treeSize", {
+    enumerable: true, configurable: true,
+    get: function () { nTls.anchors.length = 0; nTls.servername = EVIL; return 3n; },
+  });
+  await code(function () {
+    return pki.ct.getProofByHash({ url: BASE, logKey: log.spki, transport: shapeRecorder(n1),
+      tls: nTls, sth: nSth, leafHash: ROOT });
+  });
+  check("X18: and it cannot empty the pinned anchors or rewrite the servername either, which is the " +
+    "case a caller watching the URL would not notice (" + JSON.stringify(n1) + ")",
+    n1.length === 1 && n1[0].anchors === 1 && n1[0].servername === "ct.example");
+
+  /* THE REVERSE DIRECTION, and the reason the options are taken before any of them is derived from.
+     Shaping the request at the door runs the header getters, and those ran before this verb captured
+     the key it verifies the tree head under: a getter that swapped `opts.logKey` for an attacker's SPKI
+     had an attacker-signed head ACCEPTED, which is worse than the wrong-host case it was protecting.
+     There is no safe order to read the options in, so the top level is taken first and nothing nested
+     is touched until it has been. The control is essential: pinning the genuine key must refuse an
+     attacker-signed head, or the vector would pass against a verb that refuses everything. */
+  var attacker = makeLog();
+  var forged = sthBody(attacker, 3, t.root);
+  function serveForged() {
+    return Promise.resolve({ status: 200, headers: { "content-type": "application/json" }, body: Buffer.from(forged) });
+  }
+  check("X19 CONTROL: a tree head signed by another key is refused under the pinned key",
+    (await code(function () {
+      return pki.ct.getSth({ url: BASE, logKey: log.spki, transport: serveForged });
+    })) === "ct/sth-untrusted");
+
+  var swapBag = { url: BASE, transport: serveForged };
+  swapBag.logKey = log.spki;
+  var swapTrap = {};
+  Object.defineProperty(swapTrap, "x-trigger", {
+    enumerable: true, configurable: true,
+    get: function () { swapBag.logKey = attacker.spki; return "1"; },
+  });
+  swapBag.headers = swapTrap;
+  var swapOutcome = await code(function () { return pki.ct.getSth(swapBag); });
+  check("X19: a header getter cannot swap the pinned log key while the request is being shaped, so " +
+    "an attacker-signed tree head is still refused (" + swapOutcome + ")",
+    swapOutcome === "ct/sth-untrusted");
+
+  /* Swapping the reference is not the only way to change a pinned key. A Buffer is mutable, so a getter
+     can copy an attacker's SPKI OVER the caller's bytes and the reference still points at the key the
+     caller passed. The key is copied where it is taken, so the verdict rests on the bytes as they were
+     then. */
+  var liveKey = Buffer.from(log.spki);
+  var inPlaceBag = { url: BASE, transport: serveForged, logKey: liveKey };
+  var inPlaceTrap = {};
+  Object.defineProperty(inPlaceTrap, "x-trigger", {
+    enumerable: true, configurable: true,
+    get: function () { attacker.spki.copy(liveKey); return "1"; },
+  });
+  inPlaceBag.headers = inPlaceTrap;
+  var inPlaceOutcome = await code(function () { return pki.ct.getSth(inPlaceBag); });
+  check("X20: overwriting the pinned key's BYTES in place does not change the key the tree head is " +
+    "verified under (" + inPlaceOutcome + ")", inPlaceOutcome === "ct/sth-untrusted");
+
+  /* The same for an audit proof's trusted root, which is a Buffer inside opts.sth. Overwriting it with
+     the leaf being proven would make an EMPTY audit path verify, so the request is shaped only after
+     the verb has taken what it verifies against. The control shows the verb really does check. */
+  var leafH = crypto.createHash("sha256").update("leaf").digest();
+  function emptyProof() {
+    return Promise.resolve({ status: 200, headers: { "content-type": "application/json" },
+      body: Buffer.from(JSON.stringify({ leaf_index: 0, audit_path: [] })) });
+  }
+  var ctlProof = await code(function () {
+    return pki.ct.getProofByHash({ url: BASE, logKey: log.spki, transport: emptyProof,
+      sth: { treeSize: 1n, rootHash: t.root, timestamp: 1n }, leafHash: leafH });
+  });
+  check("X21 CONTROL: an empty audit path against a root the leaf does not hash to is refused (" +
+    ctlProof + ")", ctlProof === "ct/proof-mismatch");
+
+  var liveSth = { treeSize: 1n, rootHash: Buffer.from(t.root), timestamp: 1n };
+  var proofBag = { url: BASE, logKey: log.spki, transport: emptyProof, sth: liveSth, leafHash: leafH };
+  var proofTrap = {};
+  Object.defineProperty(proofTrap, "x-trigger", {
+    enumerable: true, configurable: true,
+    get: function () { leafH.copy(liveSth.rootHash); return "1"; },
+  });
+  proofBag.headers = proofTrap;
+  var proofOutcome = await code(function () { return pki.ct.getProofByHash(proofBag); });
+  check("X21: overwriting the trusted root in place cannot make an empty audit path verify (" +
+    proofOutcome + ")", proofOutcome === "ct/proof-mismatch");
+
+  /* The refusal has to reach as deep as the reading does. Refusing accessors on `tls` does not reach
+     the ELEMENTS of its anchor list, and copying that list reads each one: an element getter that
+     overwrote the trusted root had the same empty audit path verify. */
+  var elemSth = { treeSize: 1n, rootHash: Buffer.from(t.root), timestamp: 1n };
+  var elemAnchors = [];
+  Object.defineProperty(elemAnchors, "0", {
+    enumerable: true, configurable: true,
+    get: function () { leafH.copy(elemSth.rootHash); return Buffer.alloc(1); },
+  });
+  elemAnchors.length = 1;
+  var elemOutcome = await code(function () {
+    return pki.ct.getProofByHash({ url: BASE, logKey: log.spki, transport: emptyProof,
+      tls: { anchors: elemAnchors, servername: "ct.example" }, sth: elemSth, leafHash: leafH });
+  });
+  check("X22: an accessor on an anchor-list ELEMENT is refused, so copying the list cannot run it (" +
+    elemOutcome + ")", elemOutcome === "ct/bad-input");
+
+  /* And the list is copied by index rather than with `slice`, which would consult the array's species
+     and so run a caller's constructor. A subclass whose species rewrites the trusted root gets no
+     chance to. */
+  var specSth = { treeSize: 1n, rootHash: Buffer.from(t.root), timestamp: 1n };
+  var specAnchors = [Buffer.alloc(1)];
+  Object.defineProperty(specAnchors, "constructor", {
+    configurable: true, writable: true,
+    value: (function () {
+      function C() {}
+      Object.defineProperty(C, Symbol.species, {
+        configurable: true,
+        get: function () { return function () { leafH.copy(specSth.rootHash); return []; }; },
+      });
+      return C;
+    })(),
+  });
+  var specOutcome = await code(function () {
+    return pki.ct.getProofByHash({ url: BASE, logKey: log.spki, transport: emptyProof,
+      tls: { anchors: specAnchors, servername: "ct.example" }, sth: specSth, leafHash: leafH });
+  });
+  check("X23: and a species hook on the anchor list cannot rewrite the trusted root either (" +
+    specOutcome + ")", specOutcome === "ct/proof-mismatch");
+
+  /* Copying the list by index copies the REFERENCES in it, and an anchor is a mutable Buffer. A header
+     getter that overwrites an anchor's bytes in place leaves every reference pointing where it did and
+     still changes the trust material the socket is opened under, which the pin check approved before
+     the getter ran. The anchors are copied by value where they are taken, so what the transport is
+     handed is what the caller passed. */
+  var GOOD_PEM = "-----BEGIN CERTIFICATE-----\nR09PRA==\n-----END CERTIFICATE-----\n";
+  var EVIL_PEM = "-----BEGIN CERTIFICATE-----\nRVZJTA==\n-----END CERTIFICATE-----\n";
+  function recordTls(sink, read) {
+    return function (req) {
+      var t = req.tls || {};
+      var v = read(t);
+      sink.push(Buffer.isBuffer(v) ? v.toString("utf8") : String(v));
+      return resp(500, "{}", "application/json");
+    };
+  }
+  function readFirstAnchor(t) { return Array.isArray(t.anchors) ? t.anchors[0] : t.anchors; }
+  function overwriteWith(target, pem) {
+    var trap = {};
+    Object.defineProperty(trap, "x-trigger", {
+      enumerable: true, configurable: true,
+      get: function () { Buffer.from(pem).copy(target); return "1"; },
+    });
+    return trap;
+  }
+
+  var ctlSeen = [];
+  await code(function () {
+    return pki.ct.getSth({ url: BASE, logKey: log.spki, transport: recordTls(ctlSeen, readFirstAnchor),
+      tls: { anchors: [Buffer.from(GOOD_PEM)], servername: "ct.example" } });
+  });
+  check("X24 CONTROL: the anchor the caller pinned is the one the transport is handed (" +
+    (ctlSeen.length === 1 ? "recorded" : "nothing recorded") + ")",
+  ctlSeen.length === 1 && ctlSeen[0].indexOf("R09PRA") !== -1);
+
+  var elemBytesSeen = [];
+  var liveAnchor = Buffer.from(GOOD_PEM);
+  await code(function () {
+    return pki.ct.getSth({ url: BASE, logKey: log.spki,
+      transport: recordTls(elemBytesSeen, readFirstAnchor),
+      tls: { anchors: [liveAnchor], servername: "ct.example" },
+      headers: overwriteWith(liveAnchor, EVIL_PEM) });
+  });
+  check("X24: overwriting an anchor element's BYTES in place does not change the trust material the " +
+    "request is made under (" + (elemBytesSeen[0] || "nothing recorded") + ")",
+  elemBytesSeen.length === 1 && elemBytesSeen[0].indexOf("RVZJTA") === -1);
+
+  /* The same shape with one anchor rather than a list, where there is no array to copy at all. */
+  var singleSeen = [];
+  var singleAnchor = Buffer.from(GOOD_PEM);
+  await code(function () {
+    return pki.ct.getSth({ url: BASE, logKey: log.spki, transport: recordTls(singleSeen, readFirstAnchor),
+      tls: { anchors: singleAnchor, servername: "ct.example" },
+      headers: overwriteWith(singleAnchor, EVIL_PEM) });
+  });
+  check("X25: and overwriting a single anchor's bytes in place does not either (" +
+    (singleSeen[0] || "nothing recorded") + ")",
+  singleSeen.length === 1 && singleSeen[0].indexOf("RVZJTA") === -1);
+
+  /* And the client credential, which decides what the server is shown rather than what we trust. */
+  var keySeen = [];
+  var liveClientKey = Buffer.from("-----BEGIN PRIVATE KEY-----\nR09PRA==\n-----END PRIVATE KEY-----\n");
+  await code(function () {
+    return pki.ct.getSth({ url: BASE, logKey: log.spki,
+      transport: recordTls(keySeen, function (t) { return t.key; }),
+      tls: { anchors: [Buffer.from(GOOD_PEM)], cert: Buffer.from(GOOD_PEM), key: liveClientKey },
+      headers: overwriteWith(liveClientKey, "-----BEGIN PRIVATE KEY-----\nRVZJTA==\n-----END PRIVATE KEY-----\n") });
+  });
+  check("X26: overwriting the client key's bytes in place does not change the credential the request " +
+    "is made with (" + (keySeen[0] || "nothing recorded") + ")",
+  keySeen.length === 1 && keySeen[0].indexOf("RVZJTA") === -1);
+
+  /* The destination is parsed with the URL constructor, and reading that constructor off the global
+     object at the moment of the parse reads whatever the caller's code has since put there. A header
+     getter that replaces it returns a genuine URL naming another host, and the endpoint is built from
+     it. The constructor is taken at load, so a replacement cannot move the request. */
+  /* The recorder takes its own conversion at definition time. Calling the live one would make the
+     vector below measure the recorder rather than the verb: a replacement installed for one call is
+     spent on whoever calls first, and once the verb stops calling it that is this function. */
+  var nativeString = String;
+  function recordUrl(sink) {
+    return function (req) { sink.push(nativeString(req.url && req.url.href ? req.url.href : req.url)); return resp(500, "{}", "application/json"); };
+  }
+  var urlCtl = [];
+  await code(function () { return pki.ct.getSth({ url: BASE, logKey: log.spki, transport: recordUrl(urlCtl) }); });
+  check("X27 CONTROL: the request goes to the host the caller's URL names (" + (urlCtl[0] || "none") + ")",
+    urlCtl.length === 1 && urlCtl[0].indexOf("ct.example") !== -1);
+
+  var urlSeen = [];
+  var realURL = URL;
+  var urlTrap = {};
+  Object.defineProperty(urlTrap, "x-trigger", {
+    enumerable: true, configurable: true,
+    get: function () {
+      globalThis.URL = function () { return new realURL("https://attacker.example/evil/"); };
+      return "1";
+    },
+  });
+  try {
+    await code(function () {
+      return pki.ct.getSth({ url: BASE, logKey: log.spki, transport: recordUrl(urlSeen), headers: urlTrap });
+    });
+  } finally { globalThis.URL = realURL; }
+  check("X27: replacing the URL constructor mid-request does not move the request off the host the " +
+    "caller pinned (" + (urlSeen[0] || "nothing recorded") + ")",
+  urlSeen.length === 1 && urlSeen[0].indexOf("attacker.example") === -1 &&
+    urlSeen[0].indexOf("ct.example") !== -1);
+
+  /* The destination is also asked for its text form, and reading the conversion off the global object
+     at that moment reads whatever the caller's code has put there. A header getter that replaces it
+     for one call returns another host's URL and the endpoint is built from that. */
+  var strSeen = [];
+  var realString = String;
+  var strTrap = {};
+  Object.defineProperty(strTrap, "x-trigger", {
+    enumerable: true, configurable: true,
+    get: function () {
+      globalThis.String = function () { globalThis.String = realString; return "https://attacker.example/"; };
+      return "1";
+    },
+  });
+  try {
+    await code(function () {
+      return pki.ct.getSth({ url: BASE, logKey: log.spki, transport: recordUrl(strSeen), headers: strTrap });
+    });
+  } finally { globalThis.String = realString; }
+  check("X28: replacing the String conversion mid-request does not move the request either (" +
+    (strSeen[0] || "nothing recorded") + ")",
+  strSeen.length === 1 && strSeen[0].indexOf("attacker.example") === -1 &&
+    strSeen[0].indexOf("ct.example") !== -1);
+
+  /* A copy the caller can still reach is not a copy. A small `Buffer.from` takes its result out of the
+     64 KiB allocation pool, and a caller whose own key came from that pool holds a view of the whole
+     store, so the verb's copy sits inside it at another offset. The caller's transport runs after the
+     copy and before the signature is checked: it found the copy, wrote an attacker's SPKI over it, and
+     the forged tree head verified. The control is the same forged head with no tampering. */
+  var pooledKey = Buffer.from(log.spki);
+  var wholeStore = new Uint8Array(pooledKey.buffer);
+  var ownOffset = pooledKey.byteOffset;
+  var poolCtl = await code(function () {
+    return pki.ct.getSth({ url: BASE, logKey: pooledKey, transport: serveForged });
+  });
+  check("X29 CONTROL: a tree head signed by another key is refused under the pooled pinned key (" +
+    poolCtl + ")", poolCtl === "ct/sth-untrusted");
+
+  function overwriteEveryCopyInThePool() {
+    for (var off = 0; off + log.spki.length <= wholeStore.length; off++) {
+      if (off === ownOffset) continue;                 // leave the caller's own bytes alone
+      var same = true;
+      for (var k = 0; k < log.spki.length; k++) {
+        if (wholeStore[off + k] !== log.spki[k]) { same = false; break; }
+      }
+      if (!same) continue;
+      for (var j = 0; j < attacker.spki.length; j++) wholeStore[off + j] = attacker.spki[j];
+    }
+  }
+  var poolOutcome = await code(function () {
+    return pki.ct.getSth({ url: BASE, logKey: pooledKey, transport: function () {
+      overwriteEveryCopyInThePool();
+      return serveForged();
+    } });
+  });
+  check("X29: the copy of the pinned key is not reachable through the allocation pool the caller " +
+    "shares (" + poolOutcome + ")", poolOutcome === "ct/sth-untrusted");
+
+  /* Capturing the constructor does not capture the prototype the value it returns reads through. A
+     header getter that redefines `URL.prototype.href` answers every read of the parsed destination,
+     and the request went to the host that getter named while the url the caller passed was still the
+     one reported. Each part of the destination is read through an accessor captured at load. */
+  var hrefDesc = Object.getOwnPropertyDescriptor(URL.prototype, "href");
+  function readUrl(req) {
+    var u = req.url;
+    return typeof u === "string" ? u : hrefDesc.get.call(u);
+  }
+  function recordRawUrl(sink) {
+    return function (req) { sink.push(readUrl(req)); return resp(500, "{}", "application/json"); };
+  }
+  var protoCtl = [];
+  await code(function () {
+    return pki.ct.getSth({ url: BASE, logKey: log.spki, transport: recordRawUrl(protoCtl) });
+  });
+  check("X30 CONTROL: the request goes to the host the caller named (" + (protoCtl[0] || "none") + ")",
+    protoCtl.length === 1 && protoCtl[0].indexOf("ct.example") !== -1);
+
+  var protoSeen = [];
+  var protoTrap = {};
+  Object.defineProperty(protoTrap, "x-trigger", {
+    enumerable: true, configurable: true,
+    get: function () {
+      Object.defineProperty(URL.prototype, "href", {
+        configurable: true, get: function () { return "https://attacker.example/stolen"; },
+      });
+      return "1";
+    },
+  });
+  try {
+    await code(function () {
+      return pki.ct.getSth({ url: BASE, logKey: log.spki, transport: recordRawUrl(protoSeen),
+        headers: protoTrap });
+    });
+  } finally { Object.defineProperty(URL.prototype, "href", hrefDesc); }
+  check("X30: redefining URL.prototype.href mid-request does not move the request (" +
+    (protoSeen[0] || "nothing recorded") + ")",
+  protoSeen.length === 1 && protoSeen[0].indexOf("attacker.example") === -1 &&
+    protoSeen[0].indexOf("ct.example") !== -1);
+
+  /* A call that names no TLS at all still builds a record of the settings, and an empty object literal
+     inherits from Object.prototype, so a value installed there answers for a setting the caller never
+     gave. The opt-in that turns off the unpinned-log refusal is one of those settings. The record is
+     built with no prototype, so nothing can be inherited into it. No transport is supplied in either
+     arm, so the refusal is what proves it: the control refuses, and so must the attack. */
+  var leafForPin = crypto.createHash("sha256").update("pin").digest();
+  var pinCtlOutcome = await code(function () {
+    return pki.ct.getProofByHash({ url: BASE, logKey: log.spki, leafHash: leafForPin,
+      sth: { treeSize: 3n, rootHash: t.root, timestamp: 1n } });
+  });
+  check("X31 CONTROL: a call with neither a transport nor an anchor is refused (" + pinCtlOutcome + ")",
+    pinCtlOutcome === "ct/no-trust-anchors");
+
+  var pollutedSth = { rootHash: t.root, timestamp: 1n };
+  Object.defineProperty(pollutedSth, "treeSize", {
+    enumerable: true, configurable: true,
+    get: function () { Object.prototype.useSystemStore = true; return 3n; },
+  });
+  var pollutedOutcome;
+  try {
+    pollutedOutcome = await code(function () {
+      return pki.ct.getProofByHash({ url: BASE, logKey: log.spki, leafHash: leafForPin,
+        sth: pollutedSth });
+    });
+  } finally { delete Object.prototype.useSystemStore; }
+  check("X31: a useSystemStore installed on Object.prototype cannot answer for a setting the caller " +
+    "never gave (" + pollutedOutcome + ")", pollutedOutcome === "ct/no-trust-anchors");
+
+  /* The option list is the union across the messages, so one bag drives several of them and an option
+     a message does not read is ignored by it. Settling the pinned key at every door would make a
+     message that never verifies a signature refuse a bag because of a field it does not consume. The
+     control is the message that DOES consume it, which must still refuse the same bag. */
+  var sharedBagSeen = [];
+  function countCalls(sink) {
+    return function () { sink.push(1); return resp(500, "{}", "application/json"); };
+  }
+  var ignoredOutcome = await code(function () {
+    return pki.ct.getRoots({ url: BASE, transport: countCalls(sharedBagSeen), logKey: 123 });
+  });
+  check("X32: a message that does not read the pinned key ignores it rather than refusing the bag (" +
+    ignoredOutcome + ", " + sharedBagSeen.length + " request(s))",
+  ignoredOutcome === "ct/http-error" && sharedBagSeen.length === 1);
+
+  var consumedOutcome = await code(function () {
+    return pki.ct.getSth({ url: BASE, transport: countCalls([]), logKey: 123 });
+  });
+  check("X32 CONTROL: the message that does read it still refuses the same bag (" + consumedOutcome +
+    ")", consumedOutcome === "ct/bad-input");
+
+  var chainOutcome = await code(function () {
+    return pki.ct.addChain({ url: BASE, transport: countCalls([]), chain: [Buffer.alloc(4)], logKey: 123 });
+  });
+  check("X32 CONTROL: and so does a chain submission (" + chainOutcome + ")",
+    chainOutcome === "ct/bad-input");
 }
 
 // Every refusal the shared readers make, and the RSA log-key arm. A guard that

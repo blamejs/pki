@@ -3605,45 +3605,104 @@ function testGuardReadsRuntimeLive() {
   // A parenthesized base reaches the same property: `(Promise).all(jobs)` and
   // `(globalThis.Promise).all(jobs)` put closing parens between the name and the member, and the
   // opening ones are already allowed by the leading boundary.
-  var _PROMISE_READ_RE = new RegExp(
-    "(?:^|[^\\w.$])" + _PROMISE_QUAL + "Promise\\s*\\)*" + _PROMISE_MEMBER, "g");
+  function _liveReadRe(name) {
+    return new RegExp("(?:^|[^\\w.$])" + _PROMISE_QUAL + name + "\\s*\\)*" + _PROMISE_MEMBER, "g");
+  }
   // The constructor, which takes no member.
-  var _PROMISE_NEW_RE = new RegExp(
-    "(?:^|[^\\w.$])new\\s+\\(*\\s*" + _PROMISE_QUAL + "Promise\\s*\\)*\\s*\\(", "g");
+  function _liveNewRe(name) {
+    return new RegExp("(?:^|[^\\w.$])new\\s+\\(*\\s*" + _PROMISE_QUAL + name + "\\s*\\)*\\s*\\(", "g");
+  }
   // The load-time binding of the bare global, which names no member and so is invisible above. One
   // capture point is the rule: a module taking its own leaves two places for the capture to be wrong.
-  var _PROMISE_BIND_RE = new RegExp(
-    "=\\s*" + _PROMISE_QUAL + "Promise\\s*[;,)]", "g");
+  function _liveBindRe(name) {
+    return new RegExp("=\\s*" + _PROMISE_QUAL + name + "\\s*[;,)]", "g");
+  }
+  // The three spellings, asked of every global the toolkit takes a capture of rather than reading at
+  // the call. `URL` is here because the destination of a request is parsed with it: MEASURED, a header
+  // getter that replaced the constructor returned a genuine URL naming another host, the endpoint was
+  // built from that, and the request went there while the url the caller passed was still the one the
+  // call reported. One module held a capture and three of its own parses read the global anyway, which
+  // is the shape a capture nobody checks takes.
+  var urlLive = [];
+  var LIVE_GLOBALS = [
+    { name: "Promise", found: promiseLive,
+      read: " off the live global binding: take the operation from guard-intrinsic at module load, " +
+        "since a replacement builds through whatever the binding holds and decides the verdict " +
+        "this code goes on to report. A call is not required for this to bite: fetching the " +
+        "operation and invoking it through `.call`, `.apply` or `Reflect.apply` reads the same " +
+        "replaceable property",
+      construct: "constructs with the live global `Promise`: use the constructor captured at module " +
+        "load, since a replacement settles the promise itself and the executor this code passed " +
+        "may never run",
+      bind: "binds the live global `Promise` at module load: take it from guard-intrinsic, " +
+        "which is where the captures are made, so one module cannot hold a capture the rest of " +
+        "the toolkit does not share",
+      report: "no module in lib/ builds a promise from the live global Promise binding" },
+    { name: "URL", found: urlLive,
+      read: " off the live global binding: take it from guard-intrinsic at module load, since a " +
+        "replacement answers with a URL of its own and the host that answer names is the host the " +
+        "request is sent to",
+      construct: "parses with the live global `URL`: use the constructor captured at module load, " +
+        "since a replacement returns a genuine URL naming a host the caller never wrote and the " +
+        "endpoint is built from whatever it returns",
+      bind: "binds the live global `URL` at module load: take it from guard-intrinsic, which is " +
+        "where the captures are made, so one module cannot hold a capture the rest of the toolkit " +
+        "does not share",
+      report: "no module in lib/ parses a URL through the live global URL binding" },
+  ];
   var _GLOBAL_INDEX_RE = new RegExp("(?:^|[^\\w.$])(globalThis|global)\\s*\\??\\.?\\s*\\[", "g");
   // A template substitution is executable code that the literal stripper blanks along with the quoted
   // text around it, so `` `${saved = Promise.all(jobs)}` `` would clear every scan below. This rebuilds
   // a scannable source in which each template's STATIC text is blanked but the interior of every
   // `${...}` is kept, with newlines preserved so a reported line number still points at the right line.
-  function _withTemplateSubstitutions(raw) {
-    var noComments = _stripCommentsAndLiterals(raw);
+  // The source with everything that is not code blanked IN PLACE, one character for one character, so
+  // an index into the result is an index into the file and a reported line is the line the reader
+  // opens. Comment text goes, a quoted literal keeps its delimiters and loses its contents, and a
+  // template keeps the code inside every `${...}` because a substitution is executable: a scan asked
+  // about `` `${saved = Promise.all(jobs)}` `` has to see the call.
+  //
+  // This is a lexer rather than a pass of replacements because the replacements lost code, and silently.
+  // `_stripCommentsAndLiterals` matches a quoted literal with a class that admits a newline, so one
+  // unpaired quote joins the next one further down the file and every line between them collapses:
+  // MEASURED on this tree, acme.js came out 60 lines shorter and est.js 387 shorter, and the live-read
+  // scan below therefore never saw 8 of acme.js's parses or 3 of est.js's. Deciding which backtick
+  // opens a template by indexing that output was wrong for the same reason, the two strings not sharing
+  // an index at all. A gate that reports a count has to scan the file, not a shortened copy of it.
+  function _blankNonCode(raw) {
     var out = raw.split("");
-    var i = 0, n = raw.length;
+    var i = 0, n = raw.length, state = "code", tl = [];
+    function blank(ix) { if (ix < n && raw[ix] !== "\n") out[ix] = " "; }
     while (i < n) {
-      // Only consider a backtick the stripper also saw as code rather than inside a comment.
-      if (raw[i] === "`" && noComments[i] !== undefined) {
-        var j = i + 1, depth = 0, inSub = false;
-        for (; j < n; j++) {
-          if (!inSub && raw[j] === "\\") { j++; continue; }
-          if (!inSub && raw[j] === "$" && raw[j + 1] === "{") { inSub = true; depth = 1; out[j] = " "; out[j + 1] = " "; j++; continue; }
-          if (inSub) {
-            if (raw[j] === "{") depth++;
-            else if (raw[j] === "}") { depth--; if (depth === 0) { inSub = false; out[j] = " "; } }
-            continue;                                      // keep the substitution's code
-          }
-          if (raw[j] === "`") break;
-          if (raw[j] !== "\n") out[j] = " ";                // blank the static text
+      var c = raw[i], c2 = raw[i + 1];
+      if (state === "code") {
+        if (c === "'") { state = "sq"; i += 1; continue; }
+        if (c === "\"") { state = "dq"; i += 1; continue; }
+        if (c === "`") { blank(i); state = "tl"; i += 1; continue; }
+        // A brace inside a substitution: only the one that closes it at depth zero ends it.
+        if (c === "{" && tl.length) { tl[tl.length - 1] += 1; i += 1; continue; }
+        if (c === "}" && tl.length) {
+          if (tl[tl.length - 1] > 0) { tl[tl.length - 1] -= 1; i += 1; continue; }
+          tl.pop(); blank(i); state = "tl"; i += 1; continue;
         }
-        out[i] = " ";
-        if (j < n) out[j] = " ";
-        i = j + 1;
-        continue;
+        if (c === "/" && c2 === "/") { while (i < n && raw[i] !== "\n") { blank(i); i += 1; } continue; }
+        if (c === "/" && c2 === "*") {
+          while (i < n && !(raw[i] === "*" && raw[i + 1] === "/")) { blank(i); i += 1; }
+          blank(i); blank(i + 1); i += 2; continue;
+        }
+        i += 1; continue;
       }
-      i++;
+      // A quoted literal: the delimiters stay, the contents go.
+      if (state === "sq" || state === "dq") {
+        var close = state === "sq" ? "'" : "\"";
+        if (c === "\\") { blank(i); blank(i + 1); i += 2; continue; }
+        if (c === close) { state = "code"; i += 1; continue; }
+        blank(i); i += 1; continue;
+      }
+      // Inside a template: the static text is blanked, each substitution's code kept or blanked.
+      if (c === "\\") { blank(i); blank(i + 1); i += 2; continue; }
+      if (c === "`") { blank(i); state = "code"; i += 1; continue; }
+      if (c === "$" && c2 === "{") { blank(i); blank(i + 1); tl.push(0); state = "code"; i += 2; continue; }
+      blank(i); i += 1; continue;
     }
     return out.join("");
   }
@@ -3653,7 +3712,7 @@ function testGuardReadsRuntimeLive() {
     var raw = fs.readFileSync(f, "utf8");
     var rawLines = raw.split("\n");
     // Comments and quoted text blanked, but every template substitution's code kept.
-    var src = _stripCommentsAndLiterals(_withTemplateSubstitutions(raw));
+    var src = _blankNonCode(raw);
     var lineOf = function (ix) { return src.slice(0, ix).split("\n").length; };
     var m;
     _GLOBAL_INDEX_RE.lastIndex = 0;
@@ -3668,32 +3727,24 @@ function testGuardReadsRuntimeLive() {
           "Name the intrinsic and take it from guard-intrinsic, or mark a module-init enumeration " +
           "with `allow:guard-reads-runtime-live` on the line above" });
     }
-    _PROMISE_READ_RE.lastIndex = 0;
-    while ((m = _PROMISE_READ_RE.exec(src)) !== null) {
-      promiseLive.push({ file: rel, line: lineOf(m.index),
-        content: (m[1] ? "reads `Promise." + m[1] + "`" : "reads a computed member of `Promise`") +
-          " off the live global binding: take the operation from guard-intrinsic at module load, " +
-          "since a replacement builds through whatever the binding holds and decides the verdict " +
-          "this code goes on to report. A call is not required for this to bite: fetching the " +
-          "operation and invoking it through `.call`, `.apply` or `Reflect.apply` reads the same " +
-          "replaceable property" });
-    }
-    _PROMISE_NEW_RE.lastIndex = 0;
-    while ((m = _PROMISE_NEW_RE.exec(src)) !== null) {
-      promiseLive.push({ file: rel, line: lineOf(m.index),
-        content: "constructs with the live global `Promise`: use the constructor captured at module " +
-          "load, since a replacement settles the promise itself and the executor this code passed " +
-          "may never run" });
-    }
-    _PROMISE_BIND_RE.lastIndex = 0;
-    while ((m = _PROMISE_BIND_RE.exec(src)) !== null) {
-      promiseLive.push({ file: rel, line: lineOf(m.index),
-        content: "binds the live global `Promise` at module load: take it from guard-intrinsic, " +
-          "which is where the captures are made, so one module cannot hold a capture the rest of " +
-          "the toolkit does not share" });
-    }
+    LIVE_GLOBALS.forEach(function (g) {
+      var readRe = _liveReadRe(g.name);
+      while ((m = readRe.exec(src)) !== null) {
+        g.found.push({ file: rel, line: lineOf(m.index),
+          content: (m[1] ? "reads `" + g.name + "." + m[1] + "`"
+            : "reads a computed member of `" + g.name + "`") + g.read });
+      }
+      var newRe = _liveNewRe(g.name);
+      while ((m = newRe.exec(src)) !== null) {
+        g.found.push({ file: rel, line: lineOf(m.index), content: g.construct });
+      }
+      var bindRe = _liveBindRe(g.name);
+      while ((m = bindRe.exec(src)) !== null) {
+        g.found.push({ file: rel, line: lineOf(m.index), content: g.bind });
+      }
+    });
   });
-  _report("no module in lib/ builds a promise from the live global Promise binding", promiseLive);
+  LIVE_GLOBALS.forEach(function (g) { _report(g.report, g.found); });
 
   // MIGRATING, a per-module budget rather than a skip list. A module enters the scope above the
   // moment it takes the captures, which arms the whole file at once while its reads are converted a
@@ -3707,8 +3758,8 @@ function testGuardReadsRuntimeLive() {
   // it for the real count. A module reaching zero is deleted from the map and held to zero forever.
   var MIGRATING = {
     "lib/acme.js": 177,
-    "lib/est.js": 152,
-    "lib/cmp-build.js": 127,
+    "lib/est.js": 149,
+    "lib/cmp-build.js": 125,
     "lib/crmf-sign.js": 31,
     "lib/path-validate.js": 86,
     "lib/webauthn.js": 138,
@@ -3721,7 +3772,7 @@ function testGuardReadsRuntimeLive() {
     "lib/tsp-sign.js": 42,
     "lib/http-digest.js": 73,
     "lib/pkcs12-build.js": 63,
-    "lib/ct.js": 65,
+    "lib/ct.js": 62,
     "lib/cms-verify.js": 14,
     "lib/cms-encrypt.js": 66,
     "lib/crl-sign.js": 61,
@@ -3745,7 +3796,11 @@ function testGuardReadsRuntimeLive() {
      *  module arms it whole, so these are the reads that were always there and are now counted. Both
      *  ratchet DOWN only, like the rest. */
     "lib/composite-kem.js": 45,
-    "lib/http-transport.js": 118,
+    "lib/http-transport.js": 117,
+    /** Entered scope when it took the capture of the URL parser, which decides the host each of its
+     *  operations is sent to. Arming a module arms it whole, so this is the count that was always
+     *  there and is now counted, and it ratchets DOWN only like the rest. */
+    "lib/scep.js": 91,
   };
   var counts = {};
   bad.forEach(function (b) { counts[b.file] = (counts[b.file] || 0) + 1; });

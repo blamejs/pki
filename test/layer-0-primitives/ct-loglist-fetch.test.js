@@ -310,6 +310,130 @@ async function testLoopback(fx) {
     evilCode === "ct/bad-input");
   check("20. and nothing was fetched under it (contacted " + JSON.stringify(evilCalls) + ")",
     evilCalls.length === 0);
+
+  /* The TLS settings are taken before the URL is parsed and before the signer key is copied, because
+     both read caller values and reading one runs caller code. An object-valued url whose `toString`
+     emptied the pinned anchor list left the connection made with none, and the URL itself stayed
+     correct, so nothing about the request looked wrong. The control is a plain url under the same
+     anchors. */
+  function tlsSeen(seen) {
+    return function (req) {
+      var t = req.tls || {};
+      seen.push({ url: String(req.url), anchors: Array.isArray(t.anchors) ? t.anchors.length : null,
+        servername: t.servername });
+      return Promise.resolve({ status: 500, headers: {}, body: Buffer.alloc(0) });
+    };
+  }
+  var pinCtl = [];
+  await code(function () {
+    return pki.ct.fetchLogList({ url: JSON_URL, signerKey: fx.signerKey, transport: tlsSeen(pinCtl),
+      tls: { anchors: [Buffer.alloc(1)], servername: "ct.example" } });
+  });
+  check("21. CONTROL a plain url connects under the anchors the caller pinned (" +
+    JSON.stringify(pinCtl) + ")",
+    pinCtl.length > 0 && pinCtl[0].anchors === 1 && pinCtl[0].servername === "ct.example");
+
+  var pinSeen = [];
+  var sharedTls = { anchors: [Buffer.alloc(1)], servername: "ct.example" };
+  var trapUrl = { toString: function () {
+    sharedTls.anchors.length = 0;
+    sharedTls.servername = "https://attacker.example/";
+    return JSON_URL;
+  } };
+  var trapOutcome = await code(function () {
+    return pki.ct.fetchLogList({ url: trapUrl, signerKey: fx.signerKey, transport: tlsSeen(pinSeen),
+      tls: sharedTls });
+  });
+  check("21. a url that runs caller code when asked for its text form is refused, rather than ordered " +
+    "around (" + trapOutcome + ")", trapOutcome === "ct/bad-input");
+  check("21. and nothing was fetched under it (" + JSON.stringify(pinSeen) + ")", pinSeen.length === 0);
+
+  /* And the reverse: taking the tls first would let a getter inside IT rewrite the url and the signer
+     key, which is why the options are taken before any of them is derived from rather than in some
+     chosen order. */
+  var revSeen = [];
+  var other = ctx.makeFixture();
+  var revBag = { transport: function (req) {
+    revSeen.push(String(req.url));
+    return Promise.resolve({ status: 500, headers: {}, body: Buffer.alloc(0) });
+  } };
+  revBag.url = JSON_URL;
+  revBag.signerKey = fx.signerKey;
+  var revTls = { servername: "ct.example" };
+  Object.defineProperty(revTls, "anchors", {
+    enumerable: true, configurable: true,
+    get: function () {
+      revBag.url = "https://attacker.example/log_list.json";
+      revBag.signerKey = other.signerKey;
+      return [Buffer.alloc(1)];
+    },
+  });
+  revBag.tls = revTls;
+  var revOutcome = await code(function () { return pki.ct.fetchLogList(revBag); });
+  check("22. a tls carrying an accessor is refused, so reading its members cannot rewrite the url or " +
+    "the signer key (" + revOutcome + ")", revOutcome === "ct/bad-input");
+  check("22. and nothing was fetched under it (contacted " + JSON.stringify(revSeen) + ")",
+    revSeen.length === 0);
+
+  /* An anchor is a mutable Buffer, so copying the list copies references that still point at the
+     caller's bytes. A header getter overwriting those bytes changes the trust material both GETs are
+     made under while every reference and the URL stay as they were. The anchors are copied by value
+     where they are taken. */
+  var GOOD_PEM = "-----BEGIN CERTIFICATE-----\nR09PRA==\n-----END CERTIFICATE-----\n";
+  var EVIL_PEM = "-----BEGIN CERTIFICATE-----\nRVZJTA==\n-----END CERTIFICATE-----\n";
+  function anchorSeen(seen) {
+    return function (req) {
+      var t = req.tls || {};
+      var a = Array.isArray(t.anchors) ? t.anchors[0] : t.anchors;
+      seen.push(Buffer.isBuffer(a) ? a.toString("utf8") : String(a));
+      return Promise.resolve({ status: 500, headers: {}, body: Buffer.alloc(0) });
+    };
+  }
+  var byteCtl = [];
+  await code(function () {
+    return pki.ct.fetchLogList({ url: JSON_URL, signerKey: fx.signerKey, transport: anchorSeen(byteCtl),
+      tls: { anchors: [Buffer.from(GOOD_PEM)], servername: "ct.example" } });
+  });
+  check("23. CONTROL the anchor the caller pinned is the one the transport is handed (" +
+    (byteCtl.length > 0 ? "recorded" : "nothing recorded") + ")",
+  byteCtl.length > 0 && byteCtl[0].indexOf("R09PRA") !== -1);
+
+  var byteSeen = [];
+  var liveAnchor = Buffer.from(GOOD_PEM);
+  var byteTrap = {};
+  Object.defineProperty(byteTrap, "x-trigger", {
+    enumerable: true, configurable: true,
+    get: function () { Buffer.from(EVIL_PEM).copy(liveAnchor); return "1"; },
+  });
+  await code(function () {
+    return pki.ct.fetchLogList({ url: JSON_URL, signerKey: fx.signerKey, transport: anchorSeen(byteSeen),
+      tls: { anchors: [liveAnchor], servername: "ct.example" }, headers: byteTrap });
+  });
+  check("23. overwriting an anchor's bytes in place does not change the trust material the log list " +
+    "is fetched under (" + (byteSeen[0] || "nothing recorded") + ")",
+  byteSeen.length > 0 && byteSeen[0].indexOf("RVZJTA") === -1);
+
+  /* The detached-signature URL is a destination as much as the list's own, so it is held to the same
+     rule: a value that has to be converted has its conversion run after everything else was settled,
+     and that conversion is caller code. The control is the same fetch with a string. */
+  var strSigSeen = [];
+  await code(function () {
+    return pki.ct.fetchLogList({ url: JSON_URL, sigUrl: SIG_URL, signerKey: fx.signerKey,
+      transport: tlsSeen(strSigSeen), tls: { anchors: [Buffer.alloc(1)] } });
+  });
+  check("24. CONTROL a string sigUrl is fetched (" + strSigSeen.length + " request(s))",
+    strSigSeen.length > 0);
+
+  var objSigSeen = [];
+  var objSigBag = { url: JSON_URL, signerKey: fx.signerKey, transport: tlsSeen(objSigSeen),
+    tls: { anchors: [Buffer.alloc(1)] } };
+  objSigBag.sigUrl = { toString: function () { objSigBag.url = "https://attacker.example/log_list.json"; return SIG_URL; } };
+  var objSigOutcome = await code(function () { return pki.ct.fetchLogList(objSigBag); });
+  check("24. an object-valued sigUrl is refused rather than converted later (" + objSigOutcome + ")",
+    objSigOutcome === "ct/bad-input");
+  check("24. and nothing was fetched under it (" + JSON.stringify(objSigSeen) + ")",
+    objSigSeen.length === 0);
+
 }
 
 run().then(null, function (e) { console.error(helpers.formatErr ? helpers.formatErr(e) : (e && e.stack || e)); process.exit(1); });

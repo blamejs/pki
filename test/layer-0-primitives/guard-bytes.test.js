@@ -1403,6 +1403,43 @@ async function run() {
   testTranslateStreamError();
   await testDeepCopyWorkBudget();
   await testLargeByteArgumentSnapshot();
+  testSnapshotDoesNotShareTheAllocationPool();
+}
+
+// A copy is only a copy if the caller cannot reach it. `Buffer.from(view)` takes a small result out of
+// the 64 KiB allocation pool, and a caller whose own input came from that pool holds a view of the
+// whole store: the copy lands in it, at a different offset, and the caller can write through it.
+// MEASURED through a shipped verb, this accepted a forged tree head after the caller's transport
+// rewrote the key the verb had copied. The copy is taken into its own store instead.
+function testSnapshotDoesNotShareTheAllocationPool() {
+  // A small Buffer.from is pooled, which is the precondition the vector rests on. If a runtime stops
+  // pooling, the first check says so rather than the vector passing for the wrong reason.
+  var a = Buffer.from([1, 2, 3, 4]), b = Buffer.from([5, 6, 7, 8]);
+  check("CONTROL: a small Buffer.from shares one backing store with the next, which is the pool",
+    a.buffer === b.buffer && a.buffer.byteLength > 8);
+
+  var input = Buffer.from([0xaa, 0xbb, 0xcc, 0xdd]);
+  var wholeStore = new Uint8Array(input.buffer);
+  var copy = guardBytes.snapshot(input, TestError, "t/bad", "arg");
+  check("snapshot does not hand back a view of the caller's own store",
+    copy.buffer !== input.buffer);
+
+  // Writing through the retained whole-store view must not reach the copy, wherever it sits.
+  for (var i = 0; i < wholeStore.length; i++) wholeStore[i] = 0x41;
+  check("a write through the caller's whole-store view does not change the copy",
+    copy[0] === 0xaa && copy[1] === 0xbb && copy[2] === 0xcc && copy[3] === 0xdd);
+
+  // And two successive copies do not share with each other, which is how one caller's value became
+  // reachable from another's.
+  var c1 = guardBytes.snapshot(Buffer.from([1, 1, 1, 1]), TestError, "t/bad", "arg");
+  var c2 = guardBytes.snapshot(Buffer.from([2, 2, 2, 2]), TestError, "t/bad", "arg");
+  check("two snapshots do not share a backing store", c1.buffer !== c2.buffer);
+
+  var src = new Uint8Array([9, 8, 7, 6]);
+  var s2 = guardBytes.snapshotSource(src, TestError, "t/bad", "arg");
+  check("snapshotSource copies into its own store too", s2.buffer !== src.buffer);
+  src[0] = 0x00;
+  check("and the copy keeps the bytes it was given", s2[0] === 9);
 }
 
 // A byte argument's identity is its BYTES. The deep snapshot copied them and then walked the
