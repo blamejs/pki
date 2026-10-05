@@ -665,6 +665,33 @@ async function run() {
     vSharedReversed.signers[0].cert.equals(boundB) &&
     vSharedReversed.signers[0].cadesBaseline.conformant === true);
 
+  // CT-59b: the attribute is read ONCE however many candidates match the identifier. Both sides of
+  // the product are attacker-chosen, the candidate count and the attribute's own length, so a read
+  // per candidate would be their product, spent before the signature is checked. Counted rather
+  // than timed: the work is the number of reads, and a count does not depend on how fast the host
+  // happens to be.
+  var manyCandidates = [];
+  for (var cnd = 0; cnd < 24; cnd++) manyCandidates.push(cnd % 2 ? siblingA : boundB);
+  var smimeModule = require("../../lib/schema-smime.js");
+  var reads = 0;
+  var comparisons = 0;
+  var realClaims = smimeModule.certBindingClaims;
+  var realAgainst = smimeModule.certBindingAgainst;
+  smimeModule.certBindingClaims = function (a) { reads++; return realClaims(a); };
+  smimeModule.certBindingAgainst = function (c, d) { comparisons++; return realAgainst(c, d); };
+  var vMany;
+  try {
+    vMany = await pki.cms.verify(skiSigned, { certs: manyCandidates, content: CONTENT });
+  } finally {
+    smimeModule.certBindingClaims = realClaims;
+    smimeModule.certBindingAgainst = realAgainst;
+  }
+  check("CT-59b PREMISE every candidate was compared, so the selection ran over all 24, and the " +
+    "verdict is still the bound certificate",
+  comparisons >= 24 && vMany.signers[0].cert.equals(boundB));
+  check("CT-59b the attribute is read ONCE for those 24 candidates, not once each: " + reads +
+    " read(s)", reads === 1);
+
   // CT-50: the imprint verb will not produce a request for a token its own attach verb refuses by
   // default. There is no archived case on the producing side: the token does not exist yet.
   check("CT-50 a weak digest is refused by the imprint verb",
