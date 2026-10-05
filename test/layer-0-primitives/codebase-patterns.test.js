@@ -3574,7 +3574,7 @@ function testGuardReadsRuntimeLive() {
   // different lines, and it accepts the qualified spellings: a replacement reached through
   // `globalThis.Promise` is the same replacement.
   var promiseLive = [];
-  var _PROMISE_QUAL = "(?:globalThis\\s*\\.\\s*|global\\s*\\.\\s*)?";
+  var _PROMISE_QUAL = "(?:(?:globalThis|global)\\s*\\??\\.\\s*)?";
   // Deliberately NOT a list of method names. Naming them has been wrong twice in one release: the
   // walk above listed `resolve|reject` and so counted none of the aggregators, and the first version
   // of this scan listed those six and missed `Promise.try` and `Promise.withResolvers`, both present
@@ -3585,16 +3585,22 @@ function testGuardReadsRuntimeLive() {
   // Either member syntax. Dot access was the only form matched, and `Promise["all"](...)` reaches the
   // same property through the same binding, so the computed form is matched by its SHAPE: the literal
   // stripper blanks what is inside the brackets but leaves the brackets, so there is no name to read
-  // there and none is needed. What a lexical gate cannot see is a computed access to the BINDING
-  // itself, `globalThis["Promise"]`, whose name the stripper removes; the behavioral vector in
-  // `captured-operations.test.js` is what answers for that, by substituting the global and asserting
-  // the shipped verbs never reach it.
+  // there and none is needed.
+  //
+  // `globalThis["Promise"]["all"](jobs)` hides the token from every pattern here for the same reason,
+  // so it is closed from the other end instead: lib/ does not index the global object AT ALL, and any
+  // computed access to it is reported whatever name it would have resolved. That is checkable because
+  // the rule holds today with one declared exception, the module-init TypedArray enumeration in
+  // guard-bytes, which already carries the `allow:guard-reads-runtime-live` marker this honors. A rule
+  // nothing may do is worth more than a pattern listing what it may not spell.
   // Reading the member is the defect, so nothing here requires a call to follow it. Requiring one
   // missed every indirect invocation: `Promise.all.call(Promise, jobs)` and
   // `Reflect.apply(Promise.all, Promise, [jobs])` both fetch the replaceable operation and hand it the
   // replaceable receiver, and neither puts a parenthesis after the member. A member read that is
   // merely stored is the same exposure one step earlier.
-  var _PROMISE_MEMBER = "(?:\\.\\s*([A-Za-z$][\\w$]*)|\\s*\\[[^\\]]*\\])";
+  // Optional chaining is part of the member syntax: `Promise?.all(...)` reaches the same property
+  // through the same binding, and the `?` before the dot is enough to miss it otherwise.
+  var _PROMISE_MEMBER = "(?:\\??\\.\\s*([A-Za-z$][\\w$]*)|\\s*\\??\\.?\\s*\\[[^\\]]*\\])";
   var _PROMISE_READ_RE = new RegExp(
     "(?:^|[^\\w.$])" + _PROMISE_QUAL + "Promise" + _PROMISE_MEMBER, "g");
   // The constructor, which takes no member.
@@ -3604,12 +3610,27 @@ function testGuardReadsRuntimeLive() {
   // capture point is the rule: a module taking its own leaves two places for the capture to be wrong.
   var _PROMISE_BIND_RE = new RegExp(
     "=\\s*" + _PROMISE_QUAL + "Promise\\s*[;,)]", "g");
+  var _GLOBAL_INDEX_RE = new RegExp("(?:^|[^\\w.$])(globalThis|global)\\s*\\??\\.?\\s*\\[", "g");
   _libFiles().forEach(function (f) {
     var rel = _relPath(f);
     if (/[\\/]guard-intrinsic\.js$/.test(rel)) return;
-    var src = _stripCommentsAndLiterals(fs.readFileSync(f, "utf8"));
+    var raw = fs.readFileSync(f, "utf8");
+    var rawLines = raw.split("\n");
+    var src = _stripCommentsAndLiterals(raw);
     var lineOf = function (ix) { return src.slice(0, ix).split("\n").length; };
     var m;
+    _GLOBAL_INDEX_RE.lastIndex = 0;
+    while ((m = _GLOBAL_INDEX_RE.exec(src)) !== null) {
+      var gLine = lineOf(m.index);
+      // The same marker the walk above honors, on the line before, for a module-init enumeration.
+      if (/allow:guard-reads-runtime-live/.test(rawLines[gLine - 2] || "")) continue;
+      promiseLive.push({ file: rel, line: gLine,
+        content: "indexes the global object (`" + m[1] + "[...]`): nothing in lib/ reads a global by " +
+          "computed name, and one that does can resolve to `Promise` with the name hidden from every " +
+          "scan here, so the operation would come from the live binding with nothing to report it. " +
+          "Name the intrinsic and take it from guard-intrinsic, or mark a module-init enumeration " +
+          "with `allow:guard-reads-runtime-live` on the line above" });
+    }
     _PROMISE_READ_RE.lastIndex = 0;
     while ((m = _PROMISE_READ_RE.exec(src)) !== null) {
       promiseLive.push({ file: rel, line: lineOf(m.index),

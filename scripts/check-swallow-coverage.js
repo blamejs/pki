@@ -94,7 +94,21 @@ function findSwallows(rel, src) {
   // withdraws the exemption rather than widening it.
   if (capturedReject) {
     var bindRe = new RegExp("\\b" + capturedReject + "\\s*=(?!=)|function\\s+" + capturedReject + "\\b", "g");
-    if ((stripped.match(bindRe) || []).length !== 1) capturedReject = null;
+    var bindings = (stripped.match(bindRe) || []).length;
+    // A parameter binds the name as surely as an assignment does, and a parameter list is where a
+    // shadow hides without one: `function f(_promiseReject) { ... }` rebinds it for that whole body,
+    // and a catch returning it would still be read as propagation. Any parameter spelled the same
+    // withdraws the exemption. The parameter patterns are deliberately loose, because over-matching
+    // only withdraws an exemption and the conservative direction is the safe one here.
+    var paramRe = /function\s*[\w$]*\s*\(([^)]*)\)|\(([^)]*)\)\s*=>|\bcatch\s*\(([^)]*)\)/g;
+    var shadowed = false, pm;
+    while (!shadowed && (pm = paramRe.exec(stripped)) !== null) {
+      var list = pm[1] || pm[2] || pm[3] || "";
+      shadowed = list.split(",").some(function (p) {
+        return p.trim().replace(/[=\s].*$/, "") === capturedReject;
+      });
+    }
+    if (bindings !== 1 || shadowed) capturedReject = null;
   }
   var REJECT_FORM = "Promise\\.reject\\b" + (capturedReject ? "|" + capturedReject + "\\s*\\(" : "");
   var rejWraps = new RegExp(
