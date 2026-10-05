@@ -3614,12 +3614,45 @@ function testGuardReadsRuntimeLive() {
   var _PROMISE_BIND_RE = new RegExp(
     "=\\s*" + _PROMISE_QUAL + "Promise\\s*[;,)]", "g");
   var _GLOBAL_INDEX_RE = new RegExp("(?:^|[^\\w.$])(globalThis|global)\\s*\\??\\.?\\s*\\[", "g");
+  // A template substitution is executable code that the literal stripper blanks along with the quoted
+  // text around it, so `` `${saved = Promise.all(jobs)}` `` would clear every scan below. This rebuilds
+  // a scannable source in which each template's STATIC text is blanked but the interior of every
+  // `${...}` is kept, with newlines preserved so a reported line number still points at the right line.
+  function _withTemplateSubstitutions(raw) {
+    var noComments = _stripCommentsAndLiterals(raw);
+    var out = raw.split("");
+    var i = 0, n = raw.length;
+    while (i < n) {
+      // Only consider a backtick the stripper also saw as code rather than inside a comment.
+      if (raw[i] === "`" && noComments[i] !== undefined) {
+        var j = i + 1, depth = 0, inSub = false;
+        for (; j < n; j++) {
+          if (!inSub && raw[j] === "\\") { j++; continue; }
+          if (!inSub && raw[j] === "$" && raw[j + 1] === "{") { inSub = true; depth = 1; out[j] = " "; out[j + 1] = " "; j++; continue; }
+          if (inSub) {
+            if (raw[j] === "{") depth++;
+            else if (raw[j] === "}") { depth--; if (depth === 0) { inSub = false; out[j] = " "; } }
+            continue;                                      // keep the substitution's code
+          }
+          if (raw[j] === "`") break;
+          if (raw[j] !== "\n") out[j] = " ";                // blank the static text
+        }
+        out[i] = " ";
+        if (j < n) out[j] = " ";
+        i = j + 1;
+        continue;
+      }
+      i++;
+    }
+    return out.join("");
+  }
   _libFiles().forEach(function (f) {
     var rel = _relPath(f);
     if (/[\\/]guard-intrinsic\.js$/.test(rel)) return;
     var raw = fs.readFileSync(f, "utf8");
     var rawLines = raw.split("\n");
-    var src = _stripCommentsAndLiterals(raw);
+    // Comments and quoted text blanked, but every template substitution's code kept.
+    var src = _stripCommentsAndLiterals(_withTemplateSubstitutions(raw));
     var lineOf = function (ix) { return src.slice(0, ix).split("\n").length; };
     var m;
     _GLOBAL_INDEX_RE.lastIndex = 0;

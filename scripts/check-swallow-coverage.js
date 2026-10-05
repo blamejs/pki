@@ -147,9 +147,14 @@ function findSwallows(rel, src) {
     }
     if (bindings !== 1 || shadowed) capturedReject = null;
   }
+  // The module's captured constructor, which is the receiver a captured rejection has to be handed.
+  var capturedPromise = (/\b(_[A-Za-z$][\w$]*)\s*=\s*[A-Za-z_$][\w$]*\.Promise\b/.exec(stripped) || [])[1] || null;
   var rejWraps = new RegExp(
     "function\\s+_rej\\s*\\(\\s*([A-Za-z_$][\\w$]*)\\s*\\)\\s*\\{\\s*return\\s+(?:Promise\\.reject\\(\\s*\\1\\s*\\)" +
-    (capturedReject ? "|" + capturedReject + "\\(\\s*[\\w$]+\\s*,\\s*\\1\\s*\\)" : "") +
+    // Same receiver condition as the call sites: the wrapper only wraps a REJECTION if it hands the
+    // captured operation this module's captured constructor.
+    ((capturedReject && capturedPromise)
+      ? "|" + capturedReject + "\\(\\s*" + capturedPromise + "\\s*,\\s*\\1\\s*\\)" : "") +
     ")\\s*;?\\s*\\}").test(stripped);
   var out = [];
   var re = /catch\s*\(([^)]*)\)\s*\{/g, m;
@@ -173,8 +178,15 @@ function findSwallows(rel, src) {
     // cannot decide this: `return reject(e).catch(fn)` returns a promise that settles FULFILLED, and
     // `return reject(e).constructor` returns something that is not a promise at all, so the list would
     // have to name every property in the language. `throw` is unconditional and keeps its own test.
-    var calleeForms = "Promise\\.reject" + (capturedReject ? "|" + capturedReject : "") +
-      (rejWraps ? "|_rej" : "");
+    // The captured `reject` is GENERIC: the uncurried form builds through the receiver it is handed as
+    // its first argument, so `_promiseReject(SomethingElse, e)` resolves rather than rejects and is not
+    // propagation at all. The captured alternative therefore asserts the receiver is this module's own
+    // captured constructor, and if the file has no such capture to name, the captured form is withdrawn
+    // rather than trusted.
+    var capturedForm = (capturedReject && capturedPromise)
+      ? "|" + capturedReject + "(?=\\s*\\(\\s*" + capturedPromise + "\\s*,)"
+      : "";
+    var calleeForms = "Promise\\.reject" + capturedForm + (rejWraps ? "|_rej" : "");
     var returned = _returnExpressions(body);
     var noValueReturn = returned.length === 0 ||
       returned.every(function (e) { return _isOnlyCallTo(e, calleeForms); });
