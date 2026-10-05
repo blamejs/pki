@@ -720,6 +720,27 @@ async function run() {
   var sha3Token = await mintToken(tsa, sigOctets, { alg: "sha3-256" });
   check("CT-56 and the attach verb refuses a token whose imprint uses one",
     (await codeOf(pki.cms.attachTimestamp(base, sha3Token))) === "cms/bad-input");
+  // CT-56b: the imprint identifier is held to its own encoding too, the same rule as the ESS one.
+  // A digest identifier carries absent or DER NULL parameters (RFC 5754 clause 2), and the generic
+  // PKIX decoder carries the ANY field through unvalidated.
+  var oddImprintParams = await (async function () {
+    var h = crypto.createHash("sha256").update(sigOctets).digest();
+    var fields = [b.integer(1n), b.oid("1.2.3.4.1"),
+      b.sequence([b.sequence([b.oid(pki.oid.byName("sha256")), b.integer(7n)]), b.octetString(h)]),
+      b.integer(7n), b.generalizedTime(GENTIME)];
+    return await pki.cms.sign(b.sequence(fields), { cert: tsa.cert, key: tsa.key },
+      { eContentType: "tSTInfo", additionalSignedAttributes: [{ type: "signingCertificateV2",
+        values: [pki.schema.smime.buildSigningCertificateV2(tsa.cert)] }] });
+  })();
+  check("CT-56b the attach verb refuses an imprint identifier carrying parameters other than NULL",
+    (await codeOf(pki.cms.attachTimestamp(base, oddImprintParams))) === "cms/bad-input");
+  var vOddImprint = await pki.cms.verify(await spliceRawUnsignedAttr(base,
+    b.sequence([b.oid(pki.oid.byName("timeStampToken")), b.set([oddImprintParams])])),
+  { certs: [signer.cert], content: CONTENT });
+  check("CT-56b and the verify row refuses it rather than hashing under the name alone",
+    vOddImprint.signers[0].ok === true &&
+    vOddImprint.signers[0].signatureTimeStamps[0].valid === false &&
+    vOddImprint.signers[0].signatureTimeStamps[0].code === "tsp/unsupported-algorithm");
 
   // CT-57: the expiry bound is decided on the instant the token NAMES, not on the millisecond a
   // Date can hold. RFC 3161 clause 2.4.2 lets genTime carry a fraction finer than that, so a token

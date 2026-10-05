@@ -235,9 +235,13 @@ function run() {
   // An Accuracy's seconds field is an arbitrary-size INTEGER, so it is bounded before it is scaled:
   // the scale helper refuses a result outside the safe-integer range, and that refusal would escape
   // the verdict the caller is building.
+  // The saturated bound is the last instant a DER time carries, which is past every certificate
+  // date AND a Date a verdict can render: a bound a message cannot name is a bound that throws
+  // where it is reported.
   check("62. an accuracy wider than the DER year range saturates instead of throwing",
-        guard.latestInstantOf(fracBase, null, { seconds: 10n ** 40n }) === Number.MAX_SAFE_INTEGER &&
-        guard.latestInstantOf(fracBase, null, { seconds: 10n ** 40n }) > fracAt);
+        guard.latestInstantOf(fracBase, null, { seconds: 10n ** 40n }) > fracAt &&
+        guard.isoOf(new Date(guard.latestInstantOf(fracBase, null, { seconds: 10n ** 40n }))) ===
+          "9999-12-31T23:59:59.999Z");
   check("63. and one inside it is still counted exactly",
         guard.latestInstantOf(fracBase, null, { seconds: 1000n }) === fracAt + 1000000);
   check("61. the fourth to sixth fraction digits are microseconds, finer than that counts as one",
