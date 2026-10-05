@@ -331,6 +331,48 @@ async function run() {
   check("CT-11 CONTROL without a checker the same row reports that nothing was consulted",
     vAnchored.signers[0].signatureTimeStamps[0].revocationChecked === false);
 
+  // CT-11b: the authority's trust inputs are taken at the call, not inside the per-signer loop. The
+  // options object here answers the anchor list once and then answers with the OTHER authority, the
+  // way a caller mutating a shared bag mid-verification would: both rows of the two-signer message
+  // are judged against the authority the call was made with.
+  var anchorReads = 0;
+  // Each attach re-sorts the signerInfos SET OF, so the second one addresses its target by finding
+  // the signature it is for in the message as it stands, not by the index it held before.
+  var sigA = signatureOctetsOf(twoSigners, 0);
+  var sigB = signatureOctetsOf(twoSigners, 1);
+  function indexOfSignature(cmsDer, want) {
+    var sis = pki.schema.cms.parse(cmsDer).signerInfos;
+    for (var i = 0; i < sis.length; i++) if (sis[i].signature.equals(want)) return i;
+    return -1;
+  }
+  var onceStamped = await pki.cms.attachTimestamp(twoSigners, await mintToken(tsa, sigA),
+    { signerIndex: indexOfSignature(twoSigners, sigA) });
+  var twoStamped = await pki.cms.attachTimestamp(onceStamped, await mintToken(tsa, sigB),
+    { signerIndex: indexOfSignature(onceStamped, sigB) });
+  // The options door refuses an accessor-backed field outright, so the window that remains is the
+  // ARRAY the caller passed: its entries can be replaced while verification is pending. The mutation
+  // is driven from the one place a caller's code runs mid-verification, the revocation checker the
+  // first row calls, so the second row is judged after it.
+  var movingAnchors = [tsa.cert];
+  var mutatingChecker = { check: function () {
+    anchorReads++;
+    movingAnchors.length = 0;
+    movingAnchors.push(tsa2.cert);
+    return Promise.resolve({ status: "good" });
+  } };
+  var vMoving = await pki.cms.verify(twoStamped, { certs: [signer.cert, signer2.cert],
+    content: CONTENT, timestampTrustAnchors: movingAnchors,
+    timestampRevocationChecker: mutatingChecker });
+  check("CT-11b PREMISE the message carries a timestamp row on each of its two signers, and the " +
+    "caller's code ran between them",
+  vMoving.signers.length === 2 && anchorReads >= 1 &&
+    vMoving.signers.every(function (s) { return s.signatureTimeStamps.length === 1; }));
+  check("CT-11b every row is judged against the anchors the call was made with",
+    vMoving.signers.every(function (s) {
+      return s.signatureTimeStamps[0].trusted === true &&
+        s.signatureTimeStamps[0].revocationChecked === "determined";
+    }));
+
   // CT-12: the signer's chain is validated at the instant the caller names, which for a timestamped
   // signature is the token's genTime. An expired signer certificate is still trusted as of a time
   // inside its window, and untrusted as of now.
@@ -435,14 +477,49 @@ async function run() {
     vBb.signers[0].cadesBaseline.findings.length === 0);
   check("CT-48 the report names the requirements it answered for, so conformant is read against " +
     "that list rather than as a full clause 6.3 audit",
-  vBb.signers[0].cadesBaseline.requirementsChecked.length === 3);
+  vBb.signers[0].cadesBaseline.requirementsChecked.length === 5 &&
+    vBb.signers[0].cadesBaseline.requirementsChecked.indexOf("ETSI EN 319 122-1 clause 6.3 requirement h") !== -1);
   var v1Ess = b.sequence([b.sequence([b.sequence([b.octetString(crypto.createHash("sha1").update(signer.cert).digest())])])]);
   var vV1 = await pki.cms.verify(await pki.cms.sign(CONTENT, { cert: signer.cert, key: signer.key },
     { additionalSignedAttributes: [{ type: "signingCertificate", values: [v1Ess] }] }),
   { certs: [signer.cert], content: CONTENT });
-  check("CT-48 the v1 form under a SHA-256 signature is non-conformant (requirement i)",
+  // Requirement h permits the v1 form for a SHA-1 binding, which is the only binding a v1
+  // identifier can carry, so the v1 form is conformant and what it draws is requirement j's
+  // migration guidance, a should rather than a shall.
+  var v1Findings = vV1.signers[0].cadesBaseline.findings;
+  check("CT-48 the v1 form is conformant and draws requirement j's migration guidance as a should",
     vV1.signers[0].cadesBaseline.signingCertificateAttribute === "v1" &&
-    vV1.signers[0].cadesBaseline.findings.some(function (f) { return f.code === "cms/cades-signing-certificate-v1"; }));
+    vV1.signers[0].cadesBaseline.conformant === true &&
+    v1Findings.length === 1 && v1Findings[0].code === "cms/cades-weak-certificate-binding" &&
+    v1Findings[0].level === "should");
+  // The v2 form is defined as the one using a hash algorithm different from SHA-1 (clause 5.2.2.3),
+  // so a v2 identifier binding with SHA-1 is the case requirement h sends to the v1 attribute.
+  var v2Sha1 = b.sequence([b.sequence([b.sequence([b.sequence([b.oid(pki.oid.byName("sha1")), b.nullValue()]),
+    b.octetString(crypto.createHash("sha1").update(signer.cert).digest())])])]);
+  var vV2Sha1 = await pki.cms.verify(await pki.cms.sign(CONTENT, { cert: signer.cert, key: signer.key },
+    { additionalSignedAttributes: [{ type: "signingCertificateV2", values: [v2Sha1] }] }),
+  { certs: [signer.cert], content: CONTENT });
+  check("CT-48 a signing-certificate-v2 identifier binding with SHA-1 is non-conformant " +
+    "(requirement h)",
+  vV2Sha1.signers[0].cadesBaseline.conformant === false &&
+    vV2Sha1.signers[0].cadesBaseline.findings.some(function (f) {
+      return f.code === "cms/cades-signing-certificate-form" && f.level === "shall";
+    }));
+  // Requirement g is a should, so an identifier carrying the issuerSerial hint is reported without
+  // the verdict reading as non-conformance.
+  var withIs = b.sequence([b.sequence([b.sequence([
+    b.octetString(crypto.createHash("sha256").update(signer.cert).digest()),
+    b.sequence([b.sequence([b.explicit(4, pki.schema.x509.parse(signer.cert).issuer.bytes)]),
+      b.integer(pki.schema.x509.parse(signer.cert).serialNumber)])])])]);
+  var vWithIs = await pki.cms.verify(await pki.cms.sign(CONTENT, { cert: signer.cert, key: signer.key },
+    { additionalSignedAttributes: [{ type: "signingCertificateV2", values: [withIs] }] }),
+  { certs: [signer.cert], content: CONTENT });
+  check("CT-48 an included issuerSerial is reported as requirement g, a should, and the signature " +
+    "stays conformant",
+  vWithIs.signers[0].cadesBaseline.conformant === true &&
+    vWithIs.signers[0].cadesBaseline.findings.length === 1 &&
+    vWithIs.signers[0].cadesBaseline.findings[0].code === "cms/cades-issuer-serial-included" &&
+    vWithIs.signers[0].cadesBaseline.findings[0].level === "should");
   var vCt = await pki.cms.verify(await pki.cms.sign(CONTENT, { cert: signer.cert, key: signer.key },
     { eContentType: "tSTInfo", additionalSignedAttributes: [{ type: "signingCertificateV2",
       values: [pki.schema.smime.buildSigningCertificateV2(signer.cert)] }] }),
@@ -472,13 +549,11 @@ async function run() {
   var vV1Bound = await pki.cms.verify(await pki.cms.sign(CONTENT, { cert: signer.cert, key: signer.key },
     { additionalSignedAttributes: [{ type: "signingCertificate", values: [v1Bound] }] }),
   { certs: [signer.cert], content: CONTENT });
-  // A v1 identifier is SHA-1 by definition (RFC 2634), so a correctly-bound one draws the
-  // requirement-i row and the weak-binding row, which is the posture `pki.tsp.verify` already holds
-  // a v1-bound token to, and NOT the mismatch row.
+  // A v1 identifier is SHA-1 by definition (RFC 2634), so a correctly-bound one draws requirement
+  // j's migration guidance and NOT the mismatch row.
   var v1Codes = vV1Bound.signers[0].cadesBaseline.findings.map(function (f) { return f.code; });
   check("CT-49 CONTROL a v1 identifier that does bind is not reported as a mismatch",
     v1Codes.indexOf("cms/cades-signing-certificate-mismatch") === -1 &&
-    v1Codes.indexOf("cms/cades-signing-certificate-v1") !== -1 &&
     v1Codes.indexOf("cms/cades-weak-certificate-binding") !== -1);
   var junkEss = b.sequence([b.oid(pki.oid.byName("sha256"))]);
   var vJunkEss = await pki.cms.verify(await pki.cms.sign(CONTENT, { cert: signer.cert, key: signer.key },
@@ -514,8 +589,10 @@ async function run() {
   var vWeakBound = await pki.cms.verify(await pki.cms.sign(CONTENT, { cert: signer.cert, key: signer.key },
     { additionalSignedAttributes: [{ type: "signingCertificateV2", values: [weakBound] }] }),
   { certs: [signer.cert], content: CONTENT });
-  check("CT-49 a binding digest the rest of the toolkit refuses is reported here too",
-    vWeakBound.signers[0].cadesBaseline.findings.some(function (f) { return f.code === "cms/cades-weak-certificate-binding"; }));
+  check("CT-49 a SHA-1 binding in the v2 form is reported against requirement h, the form rule",
+    vWeakBound.signers[0].cadesBaseline.findings.some(function (f) {
+      return f.code === "cms/cades-signing-certificate-form";
+    }));
 
   // CT-50: the imprint verb will not produce a request for a token its own attach verb refuses by
   // default. There is no archived case on the producing side: the token does not exist yet.
