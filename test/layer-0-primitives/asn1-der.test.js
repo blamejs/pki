@@ -239,6 +239,30 @@ function testRejects() {
      refusals; the vector pins WHICH, so the boundary between the two rules stays visible. */
   check("an over-large multi-octet tag is refused by the size rule, ahead of the reserved rule",
     code(function () { pki.asn1.decode(Buffer.from("1f8180808000", "hex")); }) === "asn1/tag-too-large");
+  /* A value that is not a tag number does not have the property, which is how the other two public
+     predicates in this toolkit answer: `pki.asn1.isPrintableString(42)` and
+     `pki.oid.isDottedDecimal(42)` both return false rather than throwing or coercing. `37.5` and
+     `Infinity` sit inside the reserved RANGE while being no tag at all, so a range test alone calls
+     them reserved. */
+  var notTagNumbers = [37.5, Infinity, -Infinity, NaN, -1, "15", "37", null, undefined, {}, []];
+  var misread = [];
+  notTagNumbers.forEach(function (v) {
+    if (pki.asn1.reservedUniversalTag(v) !== false) misread.push(String(v));
+  });
+  check("pki.asn1.reservedUniversalTag answers false for a value that is no tag number (" +
+    (misread.join(",") || "all false") + ")", misread.length === 0);
+  /* And it reaches no further than its own type check: a comparison against a caller's object runs
+     that object's `valueOf`, which is caller code executing inside a predicate. The type check comes
+     first precisely so the comparison never sees a value that could run any. */
+  var valueOfRan = false;
+  var coercer = { valueOf: function () { valueOfRan = true; return 40; } };
+  var coercedAnswer = pki.asn1.reservedUniversalTag(coercer);
+  check("and it never coerces a caller value to get the answer",
+    coercedAnswer === false && valueOfRan === false);
+  check("CONTROL the tag numbers a decoder actually reads still answer as they did",
+    pki.asn1.reservedUniversalTag(0) === true && pki.asn1.reservedUniversalTag(15) === true &&
+    pki.asn1.reservedUniversalTag(37) === true && pki.asn1.reservedUniversalTag(1) === false &&
+    pki.asn1.reservedUniversalTag(36) === false);
   // Non-minimal INTEGER: 02 02 00 01 (leading zero not needed).
   check("rejects non-minimal integer", code(function () { pki.asn1.read.integer(pki.asn1.decode(Buffer.from("02020001", "hex"))); }) === "asn1/non-minimal-integer");
   // Non-minimal NEGATIVE INTEGER: 02 02 FF 80 -- a leading 0xFF is redundant when the next

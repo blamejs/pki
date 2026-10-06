@@ -10,7 +10,7 @@ Refuse the universal tags X.680 assigns to no type, and tell a caller which thos
 
 ### Added
 
-- `pki.asn1.reservedUniversalTag(tagNumber)` answers whether X.680 reserves a universal tag number, which is the question `pki.asn1.decode` asks before it accepts an element. It returns `false` for every assigned type, including the seven this codec carries no reader for, so it is not a statement about what can be read: a caller deciding whether bytes are worth passing on gets the same answer the decoder will give.
+- `pki.asn1.reservedUniversalTag(tagNumber)` answers whether X.680 reserves a universal tag number, which is the question `pki.asn1.decode` asks before it accepts an element. It returns `false` for every assigned type, including the seven this codec carries no reader for, so it is not a statement about what can be read: a caller deciding whether bytes are worth passing on gets the same answer the decoder will give. A value that is not a tag number answers `false` rather than throwing, as `pki.asn1.isPrintableString` and `pki.oid.isDottedDecimal` do of a value of the wrong type, and the type is checked before anything is compared, so `37.5` and `Infinity` are not read as reserved for sitting inside the addenda range and no `valueOf` of a caller's object is invoked inside the predicate.
 
 ### Changed
 
