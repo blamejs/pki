@@ -3842,8 +3842,8 @@ function testGuardReadsRuntimeLive() {
     "lib/est.js": 149,
     "lib/cmp-build.js": 125,
     "lib/crmf-sign.js": 31,
-    "lib/path-validate.js": 63,
-    "lib/webauthn.js": 134,
+    "lib/path-validate.js": 60,
+    "lib/webauthn.js": 128,
     "lib/asn1-der.js": 100,
     "lib/schema-engine.js": 39,
     "lib/trust.js": 50,
@@ -3851,7 +3851,7 @@ function testGuardReadsRuntimeLive() {
     "lib/webauthn-mds.js": 87,
     "lib/attrcert-sign.js": 67,
     "lib/tsp-sign.js": 41,
-    "lib/http-digest.js": 73,
+    "lib/http-digest.js": 50,
     "lib/pkcs12-build.js": 63,
     "lib/ct.js": 62,
     "lib/cms-verify.js": 14,
@@ -3877,7 +3877,7 @@ function testGuardReadsRuntimeLive() {
      *  module arms it whole, so these are the reads that were always there and are now counted. Both
      *  ratchet DOWN only, like the rest. */
     "lib/composite-kem.js": 45,
-    "lib/http-transport.js": 109,
+    "lib/http-transport.js": 108,
     /** Entered scope when it took the capture of the URL parser, which decides the host each of its
      *  operations is sent to. Arming a module arms it whole, so this is the count that was always
      *  there and is now counted, and it ratchets DOWN only like the rest. */

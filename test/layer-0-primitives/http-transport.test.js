@@ -522,6 +522,20 @@ async function testBlockPrivateAddresses() {
     }
     check("blockPrivateAddresses on: the IPv6 blocklist still refuses under a replaced parseInt (" +
       intCode + ")", intCode === "transport/blocked-address");
+    // The family classification is consulted BEFORE any of those operations and comes from a module
+    // export, not a prototype or a global. Answering 0 for a literal makes the blocklist fall through
+    // to "not blocked", so every captured operation after it decides nothing.
+    var nodeNetMod = require("node:net");
+    var realIsIP = nodeNetMod.isIP;
+    var famCode;
+    try {
+      nodeNetMod.isIP = function (s) { return s === "127.0.0.1" ? 0 : realIsIP(s); };
+      famCode = await codeOf(t({ method: "GET", url: "https://127.0.0.1:9/x", blockPrivateAddresses: true }));
+    } finally {
+      nodeNetMod.isIP = realIsIP;
+    }
+    check("blockPrivateAddresses on: the blocklist still refuses under a replaced net.isIP (" +
+      famCode + ")", famCode === "transport/blocked-address");
     check("blockPrivateAddresses off (default): the private-literal guard is opt-in, not applied",
       (await codeOf(t({ method: "GET", url: "https://127.0.0.1:9/x" }))) !== "transport/blocked-address");
   } finally { s.srv.close(); }
@@ -742,8 +756,27 @@ async function testProxyConnect() {
     var pxMd5 = await startConnectProxy({ tls: proxyTls, requireAuth: "digest", username: "u", password: "p",
       challenge: 'Digest realm="proxy", nonce="n0nce", qop="auth", algorithm=MD5' });
     try {
+      var md5Opts = { method: "GET", url: originUrl, proxy: { url: "https://127.0.0.1:" + pxMd5.port, auth: { scheme: "digest", username: "u", password: "p" }, tls: pTrust } };
       check("PX-20 an MD5 Digest challenge is refused by default",
-        (await codeOf(t({ method: "GET", url: originUrl, proxy: { url: "https://127.0.0.1:" + pxMd5.port, auth: { scheme: "digest", username: "u", password: "p" }, tls: pTrust } }))) === "transport/proxy-digest-weak-algorithm");
+        (await codeOf(t(md5Opts))) === "transport/proxy-digest-weak-algorithm");
+      // The challenge the policy is applied to is read through a string conversion. Read off the live
+      // global, a replacement that rewrites the challenge to a strong one makes the weak-algorithm
+      // refusal into an accepted credential, so the policy is applied to text the proxy never sent.
+      var realStringPx = global.String;
+      var rewrittenCode;
+      try {
+        global.String = function (v) {
+          var s = realStringPx(v);
+          return s.indexOf("algorithm=MD5") !== -1
+            ? 'Digest realm="proxy", nonce="n0nce", qop="auth", algorithm=SHA-256' : s;
+        };
+        global.String.prototype = realStringPx.prototype;
+        rewrittenCode = await codeOf(t(md5Opts));
+      } finally {
+        global.String = realStringPx;
+      }
+      check("PX-20 the Digest policy still refuses MD5 under a replaced String (" +
+        rewrittenCode + ")", rewrittenCode === "transport/proxy-digest-weak-algorithm");
     } finally { pxMd5.srv.close(); }
     var pxMd5Ok = await startConnectProxy({ tls: proxyTls, requireAuth: "digest", username: "u", password: "p",
       challenge: 'Digest realm="proxy", nonce="n0nce", qop="auth", algorithm=MD5' });

@@ -1864,6 +1864,33 @@ async function testAndroidSafetyNet() {
   }
   check("safetynet: the hostname gate still refuses under a replaced toLowerCase (" +
     swappedCode + ")", swappedCode === "webauthn/safetynet-bad-hostname");
+  // The fold is not the whole gate: the membership WALK reaches the same `true`. A replaced
+  // Array.prototype.some answering true for the decoded dNSName list passes the requirement whatever
+  // the names compare as, and a replaced filter that drops the dNSName entries sends it down the
+  // commonName fallback instead.
+  var realSome = Array.prototype.some;
+  var someCode, someFired = 0;
+  try {
+    Array.prototype.some = function (fn, thisArg) {
+      // Match on the serialized entry rather than a guessed field name, so the probe ARRIVES: a
+      // condition keyed to the wrong shape never fires and the check passes while the hole is open.
+      // Any membership walk that answers the hostname question. The commonName fallback walks the
+      // leaf's RDNs, so an `noSan` fixture is the one that exercises it; the dNSName branch of the
+      // same function is captured the same way.
+      if (this.length && this[0] && (this[0].type === "dNSName" || Array.isArray(this[0]) ||
+          (this[0].name !== undefined && this[0].value !== undefined))) {
+        someFired += 1; return true;
+      }
+      return realSome.call(this, fn, thisArg);
+    };
+    someCode = await codeFor({ noSan: true, hostname: "other.example" });
+  } finally {
+    Array.prototype.some = realSome;
+  }
+  check("safetynet: no hostname walk consults a replaced some (fired=" + someFired + ")",
+    someFired === 0);
+  check("safetynet: and the hostname gate still refuses (" +
+    someCode + ")", someCode === "webauthn/safetynet-bad-hostname");
   check("safetynet: a signature that does not verify is refused (bullet 4)",
     (await codeFor({ badSig: true })) === "webauthn/verify-failed");
   check("safetynet: a signature by a key other than the x5c leaf is refused (bullet 4)",
