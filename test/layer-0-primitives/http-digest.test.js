@@ -249,6 +249,21 @@ async function run() {
     inheritedPolicyCode === "digest/weak-algorithm");
   check("DG-a-md5protofield. an inherited `allowMD5` cannot opt a caller's own policy into MD5",
     inheritedFieldCode === "digest/weak-algorithm");
+  // Every field of the params bag is a separate way to supply a value the caller did not, so the bag
+  // is taken as an own-key copy once. `rng` is the sharpest: an inherited one answers for the client
+  // nonce, and a cnonce the same on every exchange makes the credential replayable, which is the one
+  // property the value exists to have.
+  var protoRngHeader;
+  try {
+    Object.prototype.rng = function () { return "FIXED"; };
+    protoRngHeader = httpDigest.answer(
+      httpDigest.parseChallenge('Digest realm="r", nonce="n", qop="auth", algorithm=SHA-256', E, CODES.badChallenge),
+      { method: "GET", uri: "/x", username: "u", password: "p" }, E);
+  } finally {
+    delete Object.prototype.rng;
+  }
+  check("DG-a-protorng. an inherited `rng` cannot supply the client nonce",
+    param(protoRngHeader, "cnonce") !== "FIXED");
   check("DG-a-noqop. a no-qop (RFC 2069) challenge is refused by default", codeOf(function () { ans('Digest realm="r", nonce="n", algorithm=SHA-256', {}); }) === "est/digest-no-qop");
   check("DG-a-badqop. a non-empty qop offering only unknown members is a bad challenge (not the RFC 2069 no-qop path)", codeOf(function () { ans('Digest realm="r", nonce="n", qop="foo", algorithm=SHA-256', { allowLegacyQop: true }); }) === "est/digest-bad-challenge");
   check("DG-p-algquoted. a QUOTED algorithm (must be a token) is rejected", codeOf(function () { httpDigest.parseChallenge('Digest realm="r", nonce="n", algorithm="SHA-256"', E, "est/digest-bad-challenge"); }) === "est/digest-bad-challenge");

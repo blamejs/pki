@@ -1289,6 +1289,31 @@ async function testSelfIssuedAndConstraints() {
   // contract is that hostile input either succeeds or throws a PkiError.
   check("and it does not escape as a non-PkiError",
     permSpeciesThrow === null || permSpeciesThrow instanceof pki.errors.PkiError);
+  // The certificate list the validation loop runs over is built the same way, and its LENGTH is what
+  // bounds that loop, so it is built here rather than by a built-in projection. This pair is a
+  // CONTROL and not a proven admission: dropping a certificate from a path breaks the issuer chain
+  // across the gap, so a shortened list refuses on the signature before any skipped constraint
+  // matters. It is pinned because a loop bound should not be decidable by a construction a caller can
+  // replace, and because the pair also asserts the refusal stays inside the toolkit's verdict
+  // surface.
+  var realSpeciesN = Object.getOwnPropertyDescriptor(Array, Symbol.species);
+  var shortened, shortenedThrow = null;
+  try {
+    Object.defineProperty(Array, Symbol.species, {
+      value: function () { var a = []; Object.defineProperty(a, "length", { value: 1, writable: true }); return a; },
+      configurable: true,
+    });
+    shortened = await run([interNc, permOutside], { time: T2027, trustAnchors: anchor });
+  } catch (e) {
+    shortenedThrow = e;
+    shortened = { valid: false };
+  } finally {
+    Object.defineProperty(Array, Symbol.species, realSpeciesN);
+  }
+  check("a construction that shortens the certificate list cannot drop a constraining intermediate",
+    shortened.valid === false);
+  check("and that path does not escape as a non-PkiError either",
+    shortenedThrow === null || shortenedThrow instanceof pki.errors.PkiError);
 
   // RFC 5280 sec. 4.2.1.6 forbids a zero-length dNSName in subjectAltName ("subjectAltName
   // extensions with a dNSName of ' ' MUST NOT be used"). Sec. 4.2.1.10 places no length floor on a

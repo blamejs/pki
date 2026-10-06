@@ -1775,11 +1775,20 @@ async function testAndroidSafetyNet() {
       subject: rootName, subjectPublicKey: rootSpki, serialNumber: Buffer.from([1]), notBefore: NB, notAfter: NA,
       extensions: { basicConstraints: { critical: true, cA: true }, keyUsage: ["keyCertSign", "cRLSign"] },
     }, { key: rootKp.privateKey, name: rootName, publicKey: rootSpki });
+    // The SAN host and the commonName are settable SEPARATELY. Minting both from one name is the
+    // config in which this bind cannot fail: the authoritative SAN and the fallback agree, so a
+    // check reading neither correctly still answers right. The two must be able to disagree.
     var host = o.hostname || "attest.android.com";
+    var sanHost = o.sanHost === undefined ? host : o.sanHost;
+    // `cn` sets the commonName independently. It was accepted and IGNORED, so the vector below that
+    // claims a SAN-only leaf verifies "even when the commonName differs" was minting both names from
+    // one string and passing vacuously. That is why a check reading the SAN through a field shape the
+    // decoder never produces went unnoticed: the fallback it silently relied on gave the right answer.
+    var cnHost = o.cn === undefined ? host : o.cn;
     var leafExts = { keyUsage: ["digitalSignature"] };
-    if (!o.noSan) leafExts.subjectAltName = [{ dNSName: host }];
+    if (!o.noSan) leafExts.subjectAltName = [{ dNSName: sanHost }];
     var leafDer = await pki.x509.sign({
-      subject: [{ commonName: host }], subjectPublicKey: leafSpki, serialNumber: Buffer.from([2]), notBefore: NB, notAfter: NA,
+      subject: [{ commonName: cnHost }], subjectPublicKey: leafSpki, serialNumber: Buffer.from([2]), notBefore: NB, notAfter: NA,
       extensions: leafExts,
     }, { key: rootKp.privateKey, name: rootName, publicKey: rootSpki });
 
@@ -1903,6 +1912,13 @@ async function testAndroidSafetyNet() {
   check("safetynet: a replaced digest ENCODING cannot satisfy the nonce bind (bullet 3)",
     nonceEncCode === "webauthn/safetynet-nonce-mismatch");
   // A suffix of the expected name must not pass -- the match is exact, never a suffix or wildcard.
+  // The subjectAltName is AUTHORITATIVE and the commonName is only a fallback for a leaf that has
+  // no SAN, so the two must be able to disagree and the SAN must win both ways. Minting both names
+  // from one string hides a check that reads neither correctly: the decoder returns
+  // `{ names, bytes }` with each entry carrying `tagNumber`, so a check looking for a bare array of
+  // `{ type: "dNSName" }` selects nothing and every leaf falls through to the commonName.
+  check("safetynet: a leaf whose SAN names another host is refused, whatever its commonName says",
+    (await codeFor({ sanHost: "other.example" })) === "webauthn/safetynet-bad-hostname");
   check("safetynet: a leaf issued to another hostname is refused (bullet 4)",
     (await codeFor({ hostname: "attest.android.com.evil.test" })) === "webauthn/safetynet-bad-hostname");
   // The hostname check is an ADMISSION gate, and it folds the leaf's name through

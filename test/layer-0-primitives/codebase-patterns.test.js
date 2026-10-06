@@ -3861,7 +3861,7 @@ function testGuardReadsRuntimeLive() {
     /** Still budgeted: the module's own selections and copies are converted and its policy-mapping
      *  copies were an admission, but the 57 counted here are the live prototype reads elsewhere in
      *  it, which item 0v7 carries. */
-    "lib/path-validate.js": 57,
+    "lib/path-validate.js": 53,
     "lib/asn1-der.js": 100,
     "lib/schema-engine.js": 39,
     "lib/cms-sign.js": 53,
