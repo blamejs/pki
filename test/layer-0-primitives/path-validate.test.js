@@ -1588,6 +1588,35 @@ async function testSelfIssuedAndConstraints() {
   var resP = await run([interP, leafP], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true });
   check("explicit policy satisfied validates", resP.valid === true);
   check("policy graph survives", resP.validPolicyGraph !== null && resP.validPolicyGraph !== undefined);
+
+  // The graph is built by walking the certificate's own SIGNED policy entries. That walk reads
+  // `Array.prototype.forEach` off the array at the call unless it comes from the capture, so a
+  // replacement calling the callback with a fabricated identifier builds a node for a policy the
+  // certificate never asserted. With `initialExplicitPolicy` and a `userInitialPolicySet` naming only
+  // that fabricated policy, the chain would then validate for it. The replacement is narrowed to an
+  // array carrying a policy entry, because installing it on every array breaks an earlier step.
+  var P_FAKE = "1.3.6.1.4.1.99999.77";
+  var policyForEachDesc = Object.getOwnPropertyDescriptor(Array.prototype, "forEach");
+  var forgedRes, forEachHooked = false;
+  try {
+    Object.defineProperty(Array.prototype, "forEach", {
+      value: function (fn) {
+        if (this.length === 1 && this[0] && this[0].policyIdentifier === P1) {
+          forEachHooked = true;
+          return policyForEachDesc.value.call([{ policyIdentifier: P_FAKE, qualifiersBytes: null }], fn);
+        }
+        return policyForEachDesc.value.apply(this, arguments);
+      },
+      writable: true, configurable: true,
+    });
+    forgedRes = await run([interP, leafP], { time: T2027, trustAnchors: anchor,
+      initialExplicitPolicy: true, userInitialPolicySet: [P_FAKE] });
+  } finally { Object.defineProperty(Array.prototype, "forEach", policyForEachDesc); }
+  check("a replaced array walk cannot put a policy the certificate never asserted into the graph (" +
+    "consulted=" + forEachHooked + ")", forgedRes.valid === false && forEachHooked === false);
+  check("CONTROL the same chain is invalid for that policy with no replacement installed",
+    (await run([interP, leafP], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true,
+      userInitialPolicySet: [P_FAKE] })).valid === false);
 }
 
 // ---------------------------------------------------------------------------
@@ -1604,6 +1633,30 @@ async function testCoreRejections() {
   });
   var res8 = await run([tampered], { time: T2027, trustAnchors: anchor });
   check("bad signature rejected", res8.valid === false && failCodes(res8).indexOf("path/bad-signature") !== -1);
+  // That refusal is delivered by a promise continuation, and a continuation is read off the promise
+  // at the call unless it comes from the capture. A replacement that settles the key-import step
+  // reports `ok: true` without the signature ever being checked, so this chain validates on a
+  // signature that does not verify. The replacement is narrowed to the callback by a phrase only it
+  // carries; `consulted` must read false, since the verifier no longer reaches the prototype.
+  var realThenP = Object.getOwnPropertyDescriptor(Promise.prototype, "then");
+  var hookedSig, thenConsulted = false;
+  try {
+    Object.defineProperty(Promise.prototype, "then", {
+      value: function (onOk, onFail) {
+        if (typeof onOk === "function" && String(onOk).indexOf("ecdsaDerToP1363") !== -1) {
+          thenConsulted = true;
+          return realThenP.value.call(Promise.resolve(true), function () { return true; });
+        }
+        return realThenP.value.call(this, onOk, onFail);
+      },
+      writable: true, configurable: true,
+    });
+    hookedSig = await run([tampered], { time: T2027, trustAnchors: anchor });
+  } finally { Object.defineProperty(Promise.prototype, "then", realThenP); }
+  check("a replaced promise continuation cannot report a signature verdict nothing computed (" +
+    "consulted=" + thenConsulted + ")",
+  hookedSig.valid === false && failCodes(hookedSig).indexOf("path/bad-signature") !== -1 &&
+    thenConsulted === false);
   // The per-certificate `checks` list is what tells an operator WHICH gate refused, and it is
   // appended to by defining the entry. Writing it by assignment would let a setter at that index
   // take the entry and answer the read with one the validator never produced, so a refusal would

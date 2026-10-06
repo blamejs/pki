@@ -65,6 +65,29 @@ async function run() {
   check("composite: a corrupted ML-DSA component fails the whole signature (AND, not OR)", (await verifyDer(flip(20))) === false);
   check("composite: a corrupted traditional component fails the whole signature (AND, not OR)", (await verifyDer(flip(MLDSA65_SIG + 20))) === false);
 
+  // That conjunction is delivered by promise continuations, and a continuation is read off the
+  // promise at the call unless it comes from the capture. A replacement settling the component the
+  // callback was about to check reports it as verified, and the whole composite signature then reads
+  // as valid with one half, or neither, actually checked. The replacement is narrowed to that one
+  // callback by a phrase only it carries; `consulted` must read false.
+  var realThenC = Object.getOwnPropertyDescriptor(Promise.prototype, "then");
+  var hookedVerdict, thenConsulted = false;
+  try {
+    Object.defineProperty(Promise.prototype, "then", {
+      value: function (onOk, onFail) {
+        if (typeof onOk === "function" && String(onOk).indexOf("ecdsaDerToP1363") !== -1) {
+          thenConsulted = true;
+          return realThenC.value.call(Promise.resolve(true), function () { return true; });
+        }
+        return realThenC.value.call(this, onOk, onFail);
+      },
+      writable: true, configurable: true,
+    });
+    hookedVerdict = await verifyDer(flip(MLDSA65_SIG + 20));
+  } finally { Object.defineProperty(Promise.prototype, "then", realThenC); }
+  check("composite: a replaced promise continuation cannot report a component as verified (" +
+    "consulted=" + thenConsulted + ")", hookedVerdict === false && thenConsulted === false);
+
   // 2b. The same AND-combination over the Ed448 arm, whose pre-hash is SHAKE256 rather
   //     than a SHA-2 digest. Its ML-DSA-87 signature is the fixed first 4627 bytes and
   //     the Ed448 signature is the 114-byte remainder.
