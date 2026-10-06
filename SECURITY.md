@@ -1479,17 +1479,32 @@ security-only patches after the next major releases.
   caller cannot sign and send a message embedding a request a CA would reject.
   The verdict is awaited through the native promise job rather than a replaceable
   prototype method, so a co-resident cannot force the check to report success.
-- **Admissions decided through captured string operations.** A check that lets
-  something through decides on the operations this toolkit captured when it
-  loaded, not the ones a caller can reassign. That covers the name-constraint
-  comparisons behind `pki.path.validate`, the android-safetynet hostname
-  requirement in `pki.webauthn.verify`, the private-address classification
-  `pki.transport.https` applies under `blockPrivateAddresses` for both address
-  families, and the Trust Bits lookup in `pki.trust.parseCcadbCsv` that grants an
-  anchor its purposes. Each is tested by replacing the operation it reads and
-  asserting the refusal still holds; the replacement in each test is narrowed to
-  the one value under test, because replacing an operation for every string stops
-  an earlier step and the check never reaches the gate.
+- **Admissions decided through captured operations and closed values.** A check
+  that lets something through decides on the operations this toolkit captured
+  when it loaded, not the ones a caller can reassign. That covers the
+  name-constraint comparisons behind `pki.path.validate`, the android-safetynet
+  hostname requirement in `pki.webauthn.verify`, the private-address
+  classification `pki.transport.https` applies under `blockPrivateAddresses` for
+  both address families, the Trust Bits lookup in `pki.trust.parseCcadbCsv` that
+  grants an anchor its purposes, and the status check in
+  `pki.webauthn.verifyMetadataBlob` that refuses a revoked authenticator.
+  A capture is not only the method a check calls: it is the construction of the
+  container the decision is read out of, the encoding that turns a digest back
+  into a comparable value, the integer a length check is computed from, the key
+  an imported signature is verified under, and the call made through another
+  module's exports, which is why `pki.trust`, `pki.webauthn`, the metadata reader
+  and the Digest exchange freeze what they export. The values are closed with
+  them: the tables these checks read carry no prototype and nothing writable, row
+  by row, since a frozen row written as an object literal still inherits; option
+  bags and policies default to records with no prototype and are read by own key;
+  and a selection is indexed only once it holds something, because index 0 of an
+  empty array reads through to the array prototype. Where a selection gates a
+  refusal it is written as an index loop rather than a built-in, since a built-in
+  consults a replaceable construction protocol even when the method itself is
+  captured. Each is tested by replacing the operation or value it reads and
+  asserting the refusal still holds; each replacement is narrowed to the one
+  value under test, because replacing an operation for every string stops an
+  earlier step and the check never reaches the gate.
 - **Signed OCSP request verification (responder side).** `pki.ocsp.verifyRequest`
   lets a responder authenticate a client's signed request (RFC 6960 §4.1.1)
   through the same certification-path signature engine `pki.ocsp.verify` uses for

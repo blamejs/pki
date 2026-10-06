@@ -583,6 +583,13 @@ async function run() {
   }
   check("verify: an inherited array index cannot supply an extension the leaf does not carry",
     protoZeroCode === "webauthn/bad-att-cert");
+  // A captured `filter` would not be enough either: it builds its result through ArraySpeciesCreate,
+  // which reads a constructor off the receiver, and a species returning `{ length: 0 }` takes the
+  // match as property 0 while the length stays zero, so a present extension reads ABSENT and the
+  // hostname check falls back to the common name. The selection is an index loop for that reason.
+  // The property is pinned on the primitive in guard-intrinsic.test.js rather than end to end,
+  // because a global species replacement also breaks the modules on this path that still use a
+  // species-backed selection, so an end-to-end probe measures one of those refusals instead.
   // the anonymous-attestation extension value must decode to SEQUENCE {[1] OCTET STRING}.
   check("verify: apple attestation extension that is not decodable -> webauthn/bad-att-cert",
     (await codeOfAsync(function () { return pki.webauthn.verify(appleAtt(appleCert(ecP256Spki(goodEcPoint), Buffer.from([0x01])), realAuthData), packedHash); })) === "webauthn/bad-att-cert");

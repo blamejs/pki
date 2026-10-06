@@ -410,6 +410,129 @@ function run() {
   testRuntimeReadsAreSnapshotted();
   testKeyEqualsIsSnapshotted();
   testWholeFamilyUnderFullPoisoning();
+  testSelectionsConsultNoConstructionProtocol();
+}
+
+// A capture closes the METHOD and leaves the PROTOCOL the method consults open. `filter` and `map`
+// build their result through ArraySpeciesCreate, which reads `constructor` off the receiver and
+// `Symbol.species` off that, and `subarray` runs the typed-array form of the same thing. The species
+// descriptor is configurable, so a replacement decides what the operation hands back: one returning
+// `{ length: 0 }` collects every match as an indexed property while the length stays zero, and the
+// result reads EMPTY. Empty is rarely inert -- an empty subject-alternative-name selection sends a
+// hostname check to its common-name fallback, an empty permitted-subtree list reads as "constrains no
+// name of that form" and skips the check -- so a refusal must not be reached through one.
+//
+// These three primitives exist for that, and this pins the difference: the captured operations are
+// shown to be steerable in the same breath, so the vector cannot pass by the protocol being
+// unreachable.
+function testSelectionsConsultNoConstructionProtocol() {
+  var realSpecies = Object.getOwnPropertyDescriptor(Array, Symbol.species);
+  var src = [1, 2, 3, 4];
+  var buf = Buffer.from([9, 8, 7, 6, 5]);
+  var captured, safe, capturedMap, safeMap, capturedSlice, safeSlice;
+  try {
+    Object.defineProperty(Array, Symbol.species, {
+      value: function () { return { length: 0 }; }, configurable: true,
+    });
+    captured = intrinsic.filter(src, function (x) { return x % 2 === 0; }).length;
+    safe = intrinsic.selectList(src, function (x) { return x % 2 === 0; }).length;
+    capturedMap = intrinsic.map(src, function (x) { return x; }).length;
+    safeMap = intrinsic.mapList(src, function (x) { return x; }).length;
+  } finally {
+    Object.defineProperty(Array, Symbol.species, realSpecies);
+  }
+  check("intrinsic: a hostile Array species empties a captured filter", captured === 0);
+  check("intrinsic: selectList is unaffected by a hostile Array species", safe === 2);
+  check("intrinsic: a hostile Array species empties a captured map", capturedMap === 0);
+  check("intrinsic: mapList is unaffected by a hostile Array species", safeMap === 4);
+
+  // The typed-array form. `subarray` reads `constructor` off the receiver, so a Buffer whose
+  // constructor carries a hostile species hands back whatever that species built: answering with the
+  // expected RP ID hash for a 32-byte slice made an assertion produced for another relying party
+  // satisfy expectedRpId while the signature was verified over the original bytes.
+  var hostile = function (len) { return new Uint8Array(len === undefined ? 0 : len); };
+  hostile[Symbol.species] = function () { return new Uint8Array([0, 0, 0]); };
+  var poisoned = Buffer.from([9, 8, 7, 6, 5]);
+  Object.defineProperty(poisoned, "constructor", { value: hostile, configurable: true });
+  capturedSlice = intrinsic.bufToString(intrinsic.subarray(poisoned, 1, 4), "hex");
+  safeSlice = intrinsic.bufToString(intrinsic.byteSlice(poisoned, 1, 4), "hex");
+  check("intrinsic: a hostile typed-array species steers a captured subarray", capturedSlice === "000000");
+  check("intrinsic: byteSlice is unaffected by a hostile typed-array species", safeSlice === "080706");
+  check("intrinsic: byteSlice matches subarray on an ordinary buffer",
+    intrinsic.bufToString(intrinsic.byteSlice(buf, 1, 4), "hex") ===
+    intrinsic.bufToString(intrinsic.subarray(buf, 1, 4), "hex"));
+
+  // `slice` runs the same species create, and its result object receives both the elements and the
+  // length write, so a species that discards them leaves an empty copy. An empty copy of a
+  // certificate chain reads as "nothing left to validate" where a self-presented anchor has just
+  // been stripped, and the chain reports trusted with no path validated at all.
+  var capturedCopy, safeCopy;
+  try {
+    Object.defineProperty(Array, Symbol.species, {
+      value: function () { return { length: 0 }; }, configurable: true,
+    });
+    capturedCopy = intrinsic.arraySlice(src);
+    safeCopy = intrinsic.copyList(src);
+  } finally {
+    Object.defineProperty(Array, Symbol.species, realSpecies);
+  }
+  check("intrinsic: a hostile Array species makes a captured slice return a non-array",
+    Array.isArray(capturedCopy) === false);
+  check("intrinsic: copyList is unaffected by a hostile Array species",
+    Array.isArray(safeCopy) && safeCopy.length === 4 && safeCopy[0] === 1);
+  check("intrinsic: copyList honors a start offset like slice does",
+    intrinsic.copyList(src, 2).length === 2 && intrinsic.copyList(src, 2)[0] === 3);
+
+  // Appending is the other half. `push` writes through Set, which WALKS THE PROTOTYPE for a numeric
+  // setter: an accessor installed at `Array.prototype[0]` takes the value, no own property lands on
+  // the array, and the index reads back as whatever its getter answers. That is enough to substitute
+  // a quality-of-protection token into a Digest credential, so the appends these build with define
+  // an own property instead.
+  // The accumulator is a counter, not an array: writing index 0 of an array would re-enter the very
+  // setter being installed.
+  var taken = 0;
+  var pushRes, appendRes, selRes;
+  try {
+    Object.defineProperty(Array.prototype, "0", {
+      set: function () { taken += 1; },
+      get: function () { return "SUBSTITUTED"; },
+      configurable: true,
+    });
+    var viaPush = [];
+    intrinsic.push(viaPush, "auth-int");
+    pushRes = viaPush[0];
+    var viaAppend = [];
+    intrinsic.append(viaAppend, "auth-int");
+    appendRes = viaAppend[0];
+    selRes = intrinsic.selectList(["auth-int"], function () { return true; })[0];
+  } finally {
+    delete Array.prototype["0"];
+  }
+  check("intrinsic: an Array.prototype numeric setter intercepts a captured push",
+    pushRes === "SUBSTITUTED" && taken >= 1);
+  check("intrinsic: append writes an own property the setter cannot intercept", appendRes === "auth-int");
+  check("intrinsic: selectList writes own properties the setter cannot intercept", selRes === "auth-int");
+
+  // The element count is read off the receiver, so the four list verbs take a real array and nothing
+  // else. An array's `length` is an own data property and consults nothing; a typed array answers
+  // from an accessor on `%TypedArray%.prototype` that a caller can redefine to report zero, which
+  // would empty every result, and `append` would then overwrite index 0 rather than extend.
+  var taLenProto = Object.getPrototypeOf(Uint8Array.prototype);
+  var realTaLen = Object.getOwnPropertyDescriptor(taLenProto, "length");
+  var refused = 0;
+  try {
+    Object.defineProperty(taLenProto, "length", { get: function () { return 0; }, configurable: true });
+    ["mapList", "selectList", "copyList"].forEach(function (k) {
+      try { intrinsic[k](new Uint8Array([1, 2, 3]), function (x) { return x; }); } catch (_e) { refused += 1; }
+    });
+    try { intrinsic.append(new Uint8Array([1, 2, 3]), 9); } catch (_e) { refused += 1; }
+  } finally {
+    Object.defineProperty(taLenProto, "length", realTaLen);
+  }
+  check("intrinsic: the list verbs refuse a receiver whose length is read from a prototype accessor",
+    refused === 4);
+  check("intrinsic: the list verbs still accept an ordinary array",
+    intrinsic.mapList([1, 2], function (x) { return x * 3; })[1] === 6);
 }
 
 module.exports = { run: run };
