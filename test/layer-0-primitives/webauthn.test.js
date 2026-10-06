@@ -1786,7 +1786,10 @@ async function testAndroidSafetyNet() {
     // decoder never produces went unnoticed: the fallback it silently relied on gave the right answer.
     var cnHost = o.cn === undefined ? host : o.cn;
     var leafExts = { keyUsage: ["digitalSignature"] };
-    if (!o.noSan) leafExts.subjectAltName = [{ dNSName: sanHost }];
+    // `sanEntries` sets the SAN to arbitrary GeneralName forms, which is how the middle case is
+    // reachable: a SAN that is PRESENT but carries no dNSName at all.
+    if (o.sanEntries) leafExts.subjectAltName = o.sanEntries;
+    else if (!o.noSan) leafExts.subjectAltName = [{ dNSName: sanHost }];
     var leafDer = await pki.x509.sign({
       subject: [{ commonName: cnHost }], subjectPublicKey: leafSpki, serialNumber: Buffer.from([2]), notBefore: NB, notAfter: NA,
       extensions: leafExts,
@@ -2109,6 +2112,15 @@ async function testAndroidSafetyNet() {
     sanOnly && sanOnly.attestationVerified === true);
   check("safetynet: a SAN that names another host is refused even when the commonName is right",
     (await codeFor({ hostname: "other.example", cn: "attest.android.com" })) === "webauthn/safetynet-bad-hostname");
+  // The middle case between those two: a SAN that is PRESENT but carries no dNSName. A present SAN
+  // is authoritative whichever forms it holds, so the commonName must not be consulted, and a leaf
+  // whose only name form is a URI does not bind the required host however its commonName reads.
+  check("safetynet: a SAN carrying no dNSName is still authoritative, so the commonName is not read",
+    (await codeFor({ sanEntries: [{ uniformResourceIdentifier: "https://attest.android.com/" }], cn: "attest.android.com" }))
+      === "webauthn/safetynet-bad-hostname");
+  check("safetynet: nor is it read when the SAN holds only an address",
+    (await codeFor({ sanEntries: [{ iPAddress: "10.0.0.1" }], cn: "attest.android.com" }))
+      === "webauthn/safetynet-bad-hostname");
   var noSanOk = await codeFor({ noSan: true });
   check("safetynet: a leaf naming the host only in its commonName verifies",
     noSanOk && noSanOk.attestationVerified === true && noSanOk.attestationType === "Basic");

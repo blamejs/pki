@@ -564,6 +564,28 @@ function testSelectionsConsultNoConstructionProtocol() {
   check("intrinsic: the list verbs still accept an ordinary array",
     intrinsic.mapList([1, 2], function (x) { return x * 3; })[1] === 6);
 
+  // `isArray` is satisfied by a PROXY over an array, and its `length` trap can hand back an OBJECT
+  // whose `valueOf` answers differently on each coercion. A loop that re-reads the length per
+  // iteration then visits fewer elements than the first read promised, which silently drops the
+  // tail: MEASURED through `pki.path.validate`, a proxied two-certificate path whose length shrank
+  // that way reported valid with the second certificate never checked. The count is read once and
+  // type-checked, the way `guard.list` does it.
+  function shrinkingProxy(arr) {
+    var reads = 0;
+    var len = { valueOf: function () { reads += 1; return reads === 1 ? arr.length : arr.length - 1; } };
+    return new Proxy(arr, { get: function (t, k) { return k === "length" ? len : t[k]; } });
+  }
+  check("intrinsic: a proxy whose length is an object is still seen as an array",
+    Array.isArray(shrinkingProxy([1, 2])) === true);
+  ["mapList", "selectList", "copyList"].forEach(function (verb) {
+    var refused = false;
+    try { intrinsic[verb](shrinkingProxy([1, 2]), function (x) { return x; }); } catch (_e) { refused = true; }
+    check("intrinsic: " + verb + " refuses a receiver whose length is not a plain integer", refused === true);
+  });
+  var appendRefused = false;
+  try { intrinsic.append(shrinkingProxy([1, 2]), 3); } catch (_e) { appendRefused = true; }
+  check("intrinsic: append refuses one too", appendRefused === true);
+
   // `String.prototype.split` is SPECIFIED to look the separator's `Symbol.split` method up and call
   // it (ES2015 21.1.3.19 step 2), so the separator's prototype chain is part of the operation and
   // capturing `split` does not close it. Hard rule 11 bans `split` in lib/ for that reason.
