@@ -812,6 +812,30 @@ async function testProxyConnect() {
       }
       check("PX-20 the Digest policy still refuses MD5 under a replaced trim (" +
         segCode + ")", segCode === "transport/proxy-digest-weak-algorithm");
+      // And at the characters: the lexer copies the challenge one character at a time, so a replaced
+      // charAt rewrites MD5 to SHA-256 while the split is copying it and the parse reports a strong
+      // algorithm. Capturing the token handling does not make the parse safe end to end.
+      var realCharAt = String.prototype.charAt;
+      var charCode2;
+      try {
+        // The replacement answers from a rewritten copy of whatever string is being lexed, which is
+        // what a per-character attack amounts to: every index the lexer asks for comes back from the
+        // rewritten text, so the token it assembles says SHA-256.
+        String.prototype.charAt = function (i) {
+          var self = realStringPx(this);
+          var swapped = self.indexOf("algorithm=MD5") !== -1
+            ? self.split("algorithm=MD5").join("algorithm=SHA-256") : self;
+          return realCharAt.call(swapped, i);
+        };
+        charCode2 = await codeOf(t(md5Opts));
+      } finally {
+        String.prototype.charAt = realCharAt;
+      }
+      // This one pins the REASON, not the refusal: measured, the character rewrite does not reach an
+      // accepted credential either way, but without the capture the refusal comes back as
+      // proxy-digest-unsupported-algorithm instead of naming the weak algorithm it actually found.
+      check("PX-20 the Digest refusal still names the weak algorithm under a replaced charAt (" +
+        charCode2 + ")", charCode2 === "transport/proxy-digest-weak-algorithm");
     } finally { pxMd5.srv.close(); }
     var pxMd5Ok = await startConnectProxy({ tls: proxyTls, requireAuth: "digest", username: "u", password: "p",
       challenge: 'Digest realm="proxy", nonce="n0nce", qop="auth", algorithm=MD5' });
