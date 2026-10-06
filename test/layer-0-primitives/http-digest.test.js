@@ -40,6 +40,23 @@ async function run() {
   var chKat = httpDigest.parseChallenge(KAT_WWW, E, "bad");
   var hdrKat = httpDigest.answer(chKat, { method: "GET", uri: "/dir/index.html", username: "Mufasa", password: "Circle of Life", policy: POL, rng: function () { return KAT_CNONCE; } }, E);
   check("DG-KAT. the RFC 7616 sec. 3.9.1 SHA-256 known-answer response matches byte-exact", param(hdrKat, "response") === KAT_RESPONSE);
+  // The client nonce is unpredictable only if what reaches the header is. Capturing the random
+  // SOURCE is not enough: the bytes are encoded to base64, and a replaced Buffer.prototype.toString
+  // answering with a fixed string forces a known cnonce, which makes the response replayable.
+  var realBufToString = Buffer.prototype.toString;
+  var forcedCnonce;
+  try {
+    Buffer.prototype.toString = function (enc) {
+      if (enc === "base64" && this.length === 18) return "FIXED";
+      return realBufToString.apply(this, arguments);
+    };
+    var hdrForced = httpDigest.answer(chKat, { method: "GET", uri: "/x", username: "u", password: "p", policy: POL }, E);
+    forcedCnonce = param(hdrForced, "cnonce");
+  } finally {
+    Buffer.prototype.toString = realBufToString;
+  }
+  check("DG-KAT. the cnonce is not forced by a replaced Buffer toString (" + forcedCnonce + ")",
+    forcedCnonce !== "FIXED" && typeof forcedCnonce === "string" && forcedCnonce.length >= 16);
   check("DG-KAT. the answer carries the RFC's qop/nc/opaque/algorithm/uri", param(hdrKat, "qop") === "auth" && param(hdrKat, "nc") === "00000001" && param(hdrKat, "opaque") === "FQhe/qaU925kfnzjCev0ciny7QMkPqMAFRtzCUYo5tdS" && param(hdrKat, "algorithm") === "SHA-256" && param(hdrKat, "uri") === "/dir/index.html" && param(hdrKat, "cnonce") === KAT_CNONCE && param(hdrKat, "username") === "Mufasa");
 
   // ===== DG-KAT-sess: -sess mixes nonce:cnonce into A1, so the response differs from the base =====
