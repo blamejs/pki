@@ -233,6 +233,38 @@ async function testCertdataPairing() {
   check("T2: an orphan trust object is ignored -- its bits attach to nothing",
     out2c.anchors.length === 1 && out2c.anchors[0].purposes.serverAuth === false);
 
+  // The (issuer, serial) pairing key is an ENCODING of those bytes, so the join is only as byte-exact
+  // as the encoding that produces it. A replaced Buffer.prototype.toString answering the same text for
+  // two different serials makes this orphan's delegator bits attach to the unrelated certificate --
+  // the same result as T1 reading the wrong cert's trust object, reached one operation lower down.
+  // Narrowed to the orphan's own two halves: each answers with the REAL hex of the certificate's
+  // corresponding half, so the two keys collide and nothing else the parse encodes is touched. A
+  // replacement answering a constant for every hex call trips trust/not-a-certificate on the DER
+  // before the join and measures nothing.
+  var realBufToString = Buffer.prototype.toString;
+  var ghostIssuerHex = realBufToString.call(fx.rootB.issuer.bytes, "hex");
+  var ghostSerialHex = realBufToString.call(b.integer(777n), "hex");
+  var certIssuerHex = realBufToString.call(fx.rootA.issuer.bytes, "hex");
+  var certSerialHex = realBufToString.call(serialTlv(fx.rootA), "hex");
+  var out2d;
+  try {
+    Buffer.prototype.toString = function (enc) {
+      var real = realBufToString.apply(this, arguments);
+      if (enc !== "hex") return real;
+      if (real === ghostIssuerHex) return certIssuerHex;
+      if (real === ghostSerialHex) return certSerialHex;
+      return real;
+    };
+    out2d = pki.trust.parseCertdata(t2c);
+  } catch (e) {
+    out2d = e;
+  } finally {
+    Buffer.prototype.toString = realBufToString;
+  }
+  check("T2: a replaced pairing-key ENCODING cannot attach an orphan's bits to a certificate",
+    out2d && out2d.anchors && out2d.anchors.length === 1 &&
+    out2d.anchors[0].purposes.serverAuth === false);
+
   // T3: a cert object with NO trust object -> anchor trusted for nothing,
   // not silently dropped.
   var t3 = certdata([certBlock({ label: "Test Root A", cert: fx.rootA, der: fx.rootADer })]);

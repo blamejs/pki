@@ -197,6 +197,58 @@ async function run() {
   check("DG-a-md5. MD5 is refused by default", codeOf(function () { ans('Digest realm="r", nonce="n", qop="auth", algorithm=MD5', {}); }) === "est/digest-weak-algorithm");
   check("DG-a-md5allow. MD5 is answered when opted in", param(ans('Digest realm="r", nonce="n", qop="auth", algorithm=MD5', { allowMD5: true }), "algorithm") === "MD5");
   check("DG-a-md5default. an absent algorithm defaults to MD5 and is refused by default", codeOf(function () { ans('Digest realm="r", nonce="n", qop="auth"', {}); }) === "est/digest-weak-algorithm");
+  // That default is read out of the directive map the challenge parse BUILDS, so the construction of
+  // the map decides it as surely as the lexer that fills it. A replacement handing back a map that
+  // already names SHA-256 turns the refusal above into an issued credential. Narrowed to the
+  // one-argument `Object.create(null)` form the parse uses.
+  var realObjCreate = Object.create;
+  var preseedCode;
+  try {
+    Object.create = function (proto) {
+      if (proto === null && arguments.length === 1) {
+        var m = realObjCreate(null);
+        m.algorithm = { value: "SHA-256", quoted: false };
+        return m;
+      }
+      return realObjCreate.apply(Object, arguments);
+    };
+    preseedCode = codeOf(function () { ans('Digest realm="r", nonce="n", qop="auth"', {}); });
+  } finally {
+    Object.create = realObjCreate;
+  }
+  check("DG-a-md5preseed. a replaced directive-map CONSTRUCTION cannot supply the algorithm",
+    preseedCode === "est/digest-weak-algorithm");
+  // Every policy field is read off the policy record, so each INHERITED read is a way to supply one:
+  // `policy` itself for a caller who passed none, and `allowMD5` for a caller who passed an empty
+  // object. Both turn the refusal above into an issued credential, so the bag is asked by own key and
+  // copied without a prototype.
+  var inheritedPolicyCode, inheritedFieldCode;
+  try {
+    Object.prototype.policy = { allowMD5: true, codes: CODES };
+    inheritedPolicyCode = codeOf(function () {
+      return httpDigest.answer(httpDigest.parseChallenge('Digest realm="r", nonce="n", qop="auth", algorithm=MD5', E, CODES.badChallenge),
+        { method: "GET", uri: "/x", username: "u", password: "p", rng: function () { return "cc"; } }, E);
+    });
+  } finally {
+    delete Object.prototype.policy;
+  }
+  // Called directly rather than through `ans`: that helper builds its policy as `{ allowMD5: pol &&
+  // pol.allowMD5, ... }` off an object literal, so it reads the inherited property itself and would
+  // pass `allowMD5: true` legitimately. The vector has to hand the subject the empty policy.
+  try {
+    Object.prototype.allowMD5 = true;
+    inheritedFieldCode = codeOf(function () {
+      return httpDigest.answer(httpDigest.parseChallenge('Digest realm="r", nonce="n", qop="auth", algorithm=MD5', E, CODES.badChallenge),
+        { method: "GET", uri: "/x", username: "u", password: "p", policy: {}, rng: function () { return "cc"; } }, E);
+    });
+  } finally {
+    delete Object.prototype.allowMD5;
+  }
+  // With no own policy the codes come from the module's own defaults, not the caller's table.
+  check("DG-a-md5protopolicy. an inherited `policy` cannot supply a policy the caller did not pass",
+    inheritedPolicyCode === "digest/weak-algorithm");
+  check("DG-a-md5protofield. an inherited `allowMD5` cannot opt a caller's own policy into MD5",
+    inheritedFieldCode === "digest/weak-algorithm");
   check("DG-a-noqop. a no-qop (RFC 2069) challenge is refused by default", codeOf(function () { ans('Digest realm="r", nonce="n", algorithm=SHA-256', {}); }) === "est/digest-no-qop");
   check("DG-a-badqop. a non-empty qop offering only unknown members is a bad challenge (not the RFC 2069 no-qop path)", codeOf(function () { ans('Digest realm="r", nonce="n", qop="foo", algorithm=SHA-256', { allowLegacyQop: true }); }) === "est/digest-bad-challenge");
   check("DG-p-algquoted. a QUOTED algorithm (must be a token) is rejected", codeOf(function () { httpDigest.parseChallenge('Digest realm="r", nonce="n", algorithm="SHA-256"', E, "est/digest-bad-challenge"); }) === "est/digest-bad-challenge");

@@ -564,6 +564,25 @@ async function run() {
     (await codeOfAsync(function () { return pki.webauthn.verify(appleAtt(packedLeaf, realAuthData), packedHash); })) === "webauthn/bad-att-cert");
   check("verify: apple v3 leaf with no extensions -> webauthn/bad-att-cert",
     (await codeOfAsync(function () { return pki.webauthn.verify(appleAtt(appleCert(ecP256Spki(goodEcPoint), null), realAuthData), packedHash); })) === "webauthn/bad-att-cert");
+  // That refusal rests on the extension SELECTION coming back empty, and index 0 of an empty array is
+  // not absence: it reads through to `Array.prototype[0]`. A value installed there answers for an
+  // extension the certificate does not carry, and the nonce the attestation is then compared against
+  // was never in the signed certificate. The selection is only indexed once it holds something.
+  var protoZeroCode;
+  try {
+    // A WELL-FORMED extension carrying the nonce this ceremony's authData and clientDataHash do hash
+    // to, so the probe reaches the acceptance rather than stopping at a decode refusal: the injected
+    // value has to be the one the check would have compared equal.
+    Array.prototype[0] = { critical: false, oid: _oidName("appleAnonymousAttestation"),
+      value: nonceExtFor(realAuthData, packedHash) };
+    protoZeroCode = await codeOfAsync(function () {
+      return pki.webauthn.verify(appleAtt(appleCert(ecP256Spki(goodEcPoint), null), realAuthData), packedHash);
+    });
+  } finally {
+    delete Array.prototype[0];
+  }
+  check("verify: an inherited array index cannot supply an extension the leaf does not carry",
+    protoZeroCode === "webauthn/bad-att-cert");
   // the anonymous-attestation extension value must decode to SEQUENCE {[1] OCTET STRING}.
   check("verify: apple attestation extension that is not decodable -> webauthn/bad-att-cert",
     (await codeOfAsync(function () { return pki.webauthn.verify(appleAtt(appleCert(ecP256Spki(goodEcPoint), Buffer.from([0x01])), realAuthData), packedHash); })) === "webauthn/bad-att-cert");
@@ -1424,6 +1443,21 @@ async function testTpmObjectAttributePolicy() {
     (await codeOfAsync(function () {
       return pki.webauthn.verify(attObjOf("none", [], noneAuth), clientHash("packed"), { requireCtsProfileMatch: "true" });
     })) === "webauthn/bad-input");
+  // That refusal is reached by WALKING the format-scoped boolean options, so the walk decides it. A
+  // walk that visits nothing leaves `"true"` in place, and the arm that reads it later wants exactly
+  // `true`, so the mistyped value becomes an opt-in the caller never expressed.
+  var realForEach = Array.prototype.forEach;
+  var noWalkCode;
+  try {
+    Array.prototype.forEach = function () { return undefined; };
+    noWalkCode = await codeOfAsync(function () {
+      return pki.webauthn.verify(attObjOf("none", [], noneAuth), clientHash("packed"), { requireCtsProfileMatch: "true" });
+    });
+  } finally {
+    Array.prototype.forEach = realForEach;
+  }
+  check("cts policy: a walk that visits nothing cannot admit a mistyped requireCtsProfileMatch",
+    noWalkCode === "webauthn/bad-input");
   check("cts policy: ...and so is a mistyped verifySafetyNetJws",
     (await codeOfAsync(function () {
       return pki.webauthn.verify(attObjOf("none", [], noneAuth), clientHash("packed"), { verifySafetyNetJws: "yes" });
@@ -1842,6 +1876,25 @@ async function testAndroidSafetyNet() {
     (await codeFor({ nonce: Buffer.alloc(32, 7).toString("base64") })) === "webauthn/safetynet-nonce-mismatch");
   check("safetynet: the nonce is standard base64, not base64url (bullet 3)",
     (await codeFor({ nonce: "not-the-right-nonce" })) === "webauthn/safetynet-nonce-mismatch");
+  // The nonce bind is what stops a correctly signed response being replayed against other
+  // authenticatorData. The digest is taken with the captured hash and then ENCODED to text before
+  // the comparison, so capturing the hash alone leaves the encoding deciding the operand. Narrow to
+  // a 32-byte buffer asked for base64: that is the digest and nothing else on this path, and a wider
+  // replacement breaks the x5c decode before the gate is reached.
+  var SN_WRONG = Buffer.alloc(32, 7).toString("base64");
+  var realBufToString = Buffer.prototype.toString;
+  var nonceEncCode;
+  try {
+    Buffer.prototype.toString = function (enc) {
+      if (enc === "base64" && this.length === 32) return SN_WRONG;
+      return realBufToString.apply(this, arguments);
+    };
+    nonceEncCode = await codeFor({ nonce: SN_WRONG });
+  } finally {
+    Buffer.prototype.toString = realBufToString;
+  }
+  check("safetynet: a replaced digest ENCODING cannot satisfy the nonce bind (bullet 3)",
+    nonceEncCode === "webauthn/safetynet-nonce-mismatch");
   // A suffix of the expected name must not pass -- the match is exact, never a suffix or wildcard.
   check("safetynet: a leaf issued to another hostname is refused (bullet 4)",
     (await codeFor({ hostname: "attest.android.com.evil.test" })) === "webauthn/safetynet-bad-hostname");
@@ -2217,6 +2270,28 @@ async function testAssertion() {
   check("assertion: a genuine signature over authenticatorData || SHA-256(clientDataJSON) verifies",
     res.signatureVerified === true && res.signCount === 9);
   check("#78 valid aliases signatureVerified on the webauthn assertion verdict", res.valid === true && res.valid === res.signatureVerified);
+  // Each byte field the verdict is computed over is SNAPSHOTTED by a walk over their names, so a walk
+  // that visits nothing leaves the caller's own buffers in place and they can be rewritten between
+  // this call returning its promise and the verification running. Substituting authenticatorData with
+  // a signature that matches it then verifies, so the verdict describes bytes the call never saw.
+  var walkAd = Buffer.from(ad), walkSig = Buffer.from(sig);
+  var otherAd = _assertAuthData({ signCount: 4096 });
+  var otherSig = _assertSig(otherAd, cd);
+  var realForEachA = Array.prototype.forEach;
+  var swapped;
+  try {
+    Array.prototype.forEach = function () { return undefined; };
+    var p = pki.webauthn.verifyAssertion({ authenticatorData: walkAd, clientDataJSON: cd,
+      signature: walkSig, credentialPublicKey: stored });
+    otherAd.copy(walkAd); otherSig.copy(walkSig);     // the window the snapshot exists to close
+    swapped = await p;
+  } catch (e) {
+    swapped = e.code || e.constructor.name;
+  } finally {
+    Array.prototype.forEach = realForEachA;
+  }
+  check("assertion: a walk that visits nothing cannot leave the verified bytes rewritable",
+    swapped && swapped.signCount === 9);
   // The verdict ends the prototype lookup for `then` on itself, so resolving it does not hand an
   // inherited accessor the verdict as a receiver. verdict-shield.test.js drives that behavior.
   check("the webauthn assertion verdict owns then", Object.prototype.hasOwnProperty.call(res, "then") && res.then === undefined);

@@ -35,6 +35,32 @@ async function run() {
   var md = await pki.webauthn.verifyMetadataBlob(base.blob, { rootCertificates: [base.rootDer], time: T });
   check("mds: a signed BLOB anchored to the supplied root verifies", md.no === 42 && md.entries.length === 1 && md.stale === false);
   check("mds: the legalHeader is surfaced, never compared", typeof md.legalHeader === "string");
+  // The algorithm table is exported and looked up by a name taken from the BLOB header, and the row it
+  // returns carries the import and verify parameters the signature is checked under. Freezing the rows
+  // is not enough on its own: a row written as an object literal still inherits, so `fromLeaf`
+  // installed on Object.prototype is read off every row and routes the strongest algorithm down the
+  // take-the-scheme-from-the-leaf branch, which imports the RSA leaf key for Ed25519. The table's rows
+  // carry no prototype, so a valid RS256 BLOB verifies with the property installed exactly as without.
+  // Asserted on the exported table rather than end to end: installing the property globally breaks
+  // chain validation before the algorithm selection is reached (`webauthn/metadata-untrusted`), so an
+  // end-to-end form measures that refusal instead of this one. The table is what the verifier reads
+  // the parameters out of, and these are the three reads it makes.
+  var mdsTbl = require("../../lib/webauthn-mds.js");
+  var seenFromLeaf, seenScheme, seenHash;
+  try {
+    Object.prototype.fromLeaf = true;
+    Object.prototype["RSASSA-PKCS1-v1_5"] = 1;
+    Object.prototype.hash = "SHA-1";
+    seenFromLeaf = mdsTbl.BLOB_ALGS.RS256.fromLeaf;
+    seenScheme = mdsTbl.BLOB_ALGS.EdDSA && mdsTbl.BLOB_ALGS.EdDSA.scheme;
+    seenHash = mdsTbl.BLOB_ALGS.RS256.imp.hash;
+  } finally {
+    delete Object.prototype.fromLeaf;
+    delete Object.prototype["RSASSA-PKCS1-v1_5"];
+    delete Object.prototype.hash;
+  }
+  check("mds: an inherited `fromLeaf` cannot reroute the algorithm a BLOB signature is checked under",
+    seenFromLeaf === undefined && seenScheme === "EdDSA" && seenHash === "SHA-256");
   check("mds: an entry is found by its aaguid", !!pki.webauthn.metadataFor(md, base.aaguid));
   check("mds: the lookup is case-insensitive on the aaguid", !!pki.webauthn.metadataFor(md, base.aaguid.toUpperCase()));
   // The all-zero aaguid means "no model identity" and must never resolve to an entry.
@@ -145,6 +171,89 @@ async function run() {
   check("mds: a BLOB listing a revoked authenticator still verifies (the BLOB is valid)", mdRevoked.no === 42);
   check("mds: a REVOKED report denies trust even when a later report is clean",
     require("../../lib/webauthn-mds.js").statusDenied(revokedEntry, mdRevoked) === true);
+  // That denial is reached by selecting the reports in force and then testing them for a
+  // disqualifying status, so every operation that narrows the set decides it, in the direction that
+  // OPENS: a selection answering with an empty list leaves nothing disqualifying to find, and a
+  // membership test answering false permits the entry whatever its reports say. Each replacement is
+  // installed on its own, against the same REVOKED entry the check above denies.
+  //
+  // The last two are PROTOCOLS rather than methods, and they reach a captured operation: a captured
+  // `filter` or `map` still builds its result through the species constructor it reads off the
+  // receiver, so one returning an ordinary object collects the matches as indexed properties while
+  // `length` stays 0; `concat` reads its spreadable flag the same way, and a false there leaves the
+  // selections nested where no report has a status to recognize.
+  var mdsMod = require("../../lib/webauthn-mds.js");
+  var realSpecies = Object.getOwnPropertyDescriptor(Array, Symbol.species);
+  function withSpecies(ctor, fn) {
+    Object.defineProperty(Array, Symbol.species, { value: ctor, configurable: true });
+    try { return fn(); } finally { Object.defineProperty(Array, Symbol.species, realSpecies); }
+  }
+  var cases = [
+    ["filter", function (f) { var real = Array.prototype.filter; Array.prototype.filter = function () { return []; };
+      try { return f(); } finally { Array.prototype.filter = real; } }],
+    ["some", function (f) { var real = Array.prototype.some; Array.prototype.some = function () { return false; };
+      try { return f(); } finally { Array.prototype.some = real; } }],
+    ["reduce", function (f) { var real = Array.prototype.reduce; Array.prototype.reduce = function () { return { effectiveDate: "1970-01-01" }; };
+      try { return f(); } finally { Array.prototype.reduce = real; } }],
+    ["Symbol.species", function (f) { return withSpecies(function () { return { length: 0 }; }, f); }],
+    ["Symbol.isConcatSpreadable", function (f) {
+      Array.prototype[Symbol.isConcatSpreadable] = false;
+      try { return f(); } finally { delete Array.prototype[Symbol.isConcatSpreadable]; } }],
+  ];
+  cases.forEach(function (pair) {
+    var name = pair[0], denied;
+    try {
+      denied = pair[1](function () { return mdsMod.statusDenied(revokedEntry, mdRevoked); });
+    } catch (_e) {
+      denied = true;   // a refusal is a denial; what must not happen is a permit
+    }
+    check("mds: a replaced `" + name + "` cannot make a REVOKED entry permitted", denied === true);
+  });
+  // The same under the date policy, which is the arm that selects, folds and joins. The entry is one
+  // whose NEWEST report is the revocation, since an entry whose newest is clean is permitted under
+  // this policy by design (the vector below pins that).
+  var byDatePolicy = { statusPolicy: "latest-by-date" };
+  var latestRevoked = { index: 0, statusReports: [
+    { status: "FIDO_CERTIFIED", effectiveDate: "2026-01-01" },
+    { status: "REVOKED", effectiveDate: "2026-05-01" },
+  ] };
+  check("mds: under latest-by-date a newest REVOKED report denies", mdsMod.statusDenied(latestRevoked, byDatePolicy, null, T) === true);
+  cases.forEach(function (pair) {
+    var name = pair[0], denied;
+    try {
+      denied = pair[1](function () { return mdsMod.statusDenied(latestRevoked, byDatePolicy, null, T); });
+    } catch (_e) {
+      denied = true;
+    }
+    check("mds: a replaced `" + name + "` cannot permit a REVOKED entry under latest-by-date", denied === true);
+  });
+  // An undated report must not read as one that is not yet in force because a caller-supplied record
+  // inherits a date. Each field is taken as an OWN property.
+  var undatedDenied;
+  try {
+    Object.prototype.effectiveDate = "9999-01-01";
+    undatedDenied = mdsMod.statusDenied({ index: 0, statusReports: [{ status: "REVOKED" }] }, mdRevoked, null, T);
+  } catch (_e) {
+    undatedDenied = true;
+  } finally {
+    delete Object.prototype.effectiveDate;
+  }
+  check("mds: an inherited `effectiveDate` cannot postpone an undated revocation out of force",
+    undatedDenied === true);
+  // The consumer reads these two off this module's exports at the call, and each is the whole check at
+  // the point it is read: `metadataFor` finds the entry the status refusal is read out of, so answering
+  // null turns a disqualified authenticator into "no entry found", and `chainToAnchor` IS the chain
+  // validation, so settling without walking a path reports anchored with nothing compared. A writable
+  // export makes the consumer's own captures decide nothing after that.
+  check("mds: the module exports are frozen, so a consumer's cross-module read cannot be replaced",
+    Object.isFrozen(mdsMod));
+  ["metadataFor", "chainToAnchor"].forEach(function (name) {
+    var threw = false;
+    try { mdsMod[name] = function () { return null; }; } catch (_e) { threw = true; }
+    check("mds: `" + name + "` cannot be replaced on the exports object",
+      threw === true && mdsMod[name] !== null && typeof mdsMod[name] === "function" &&
+      mdsMod[name].name !== "");
+  });
   // The status gate is on the ROUTE, not only inside the attestation verifier. An operator who
   // anchors an attestation themselves goes metadataFor -> metadataAnchors -> pki.path.validate, and
   // nothing along that route consulted the status reports: a REVOKED model's registered roots were

@@ -2167,6 +2167,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/cmp-build.js:<top>", "lib/crmf-sign.js:<top>", "lib/key.js:<top>", "lib/sigstore.js:<top>",
         "lib/ip-utils.js:<top>", "lib/pkcs11-uri.js:<top>", "lib/guard-encoding.js:_alphabet",
         "lib/identity-match.js:<top>", "lib/identity-match.js:E", "lib/tlog.js:<top>",
+        "lib/pki-build.js:<top>",
         "lib/sign-scheme.js:O", "lib/tuf.js:_err", "lib/tuf.js:<top>",
         "lib/related-cert.js:<top>", "lib/related-cert.js:_err",
         "lib/alt-sig.js:<top>", "lib/possession.js:<top>", "lib/possession.js:setEngine",
@@ -3460,11 +3461,20 @@ function testGuardReadsRuntimeLive() {
   // to zero live reads, because this list is an ENUMERATION of names and `pop` was never in it: the
   // read was never counted, so no budget was ever exceeded. `shift`, `unshift` and `splice` move the
   // same boundary from the other end and are added with it.
+  // The NUMERIC READERS are here for the same reason as the mutators. A length or a counter read out
+  // of a wire structure is what the bounds check and the slice after it are computed from, so a
+  // replaced reader decides which bytes a check runs over: a credential-id length read this way
+  // chose the slice the COSE key was then decoded from, and a signature counter read this way
+  // answered the replay rule that compares it with the stored one. Neither was ever counted, because
+  // this list is an ENUMERATION of names and no `read*` was in it.
   var LIVE_METHODS = "(?:forEach|map|filter|every|some|indexOf|sort|push|pop|shift|unshift|splice|" +
-    "reverse|copyWithin|concat|join|" +
+    "reverse|copyWithin|concat|join|reduce|reduceRight|" +
     "toLowerCase|toUpperCase|charAt|charCodeAt|fill|getTime|equals|compare|toString|subarray|" +
     "slice|lastIndexOf|search|test|exec|replace|split|trim|substring|substr|startsWith|endsWith|" +
-    "includes|hasOwnProperty)";
+    "includes|hasOwnProperty|" +
+    "readUInt8|readUInt16BE|readUInt16LE|readUInt32BE|readUInt32LE|readInt8|readInt16BE|" +
+    "readInt16LE|readInt32BE|readInt32LE|readBigUInt64BE|readBigUInt64LE|" +
+    "writeUInt8|writeUInt16BE|writeUInt16LE|writeUInt32BE|writeUInt32LE)";
   var staticRe = new RegExp("\\b(?:" + LIVE_STATICS.join("|") + ")\\s*\\(", "g");
   // A method call whose receiver is NOT a `_`-prefixed capture. The receiver may be a whole member
   // expression: `sanNode.bytes.equals(...)` dispatches off a prototype exactly as `bytes.equals(...)`
@@ -3843,15 +3853,11 @@ function testGuardReadsRuntimeLive() {
     "lib/cmp-build.js": 125,
     "lib/crmf-sign.js": 31,
     "lib/path-validate.js": 57,
-    "lib/webauthn.js": 127,
     "lib/asn1-der.js": 100,
     "lib/schema-engine.js": 39,
-    "lib/trust.js": 50,
     "lib/cms-sign.js": 53,
-    "lib/webauthn-mds.js": 87,
     "lib/attrcert-sign.js": 67,
     "lib/tsp-sign.js": 41,
-    "lib/http-digest.js": 4,
     "lib/pkcs12-build.js": 63,
     "lib/ct.js": 62,
     "lib/cms-verify.js": 14,
