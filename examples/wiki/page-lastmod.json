@@ -44,7 +44,7 @@
   "lib/csr-verify.js": "2026-09-01",
   "lib/ct.js": "2026-10-06",
   "lib/edwards-point.js": "2026-09-06",
-  "lib/est.js": "2026-10-05",
+  "lib/est.js": "2026-10-06",
   "lib/framework-error.js": "2026-10-03",
   "lib/guard-all.js": "2026-09-05",
   "lib/guard-async.js": "2026-10-05",

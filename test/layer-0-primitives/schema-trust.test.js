@@ -417,6 +417,40 @@ async function testTrustBits() {
   check("T13: MUST_VERIFY_TRUST / NOT_TRUSTED / TRUSTED (non-delegator) -> all false",
     a13.purposes.serverAuth === false && a13.purposes.emailProtection === false && a13.purposes.codeSigning === false);
 
+  // Those tokens are read out of lines the lexer APPENDS to a list, and the lexer now defines each
+  // line as an own property rather than assigning to an index, because an index assignment writes
+  // through Set, which walks the prototype for a numeric setter.
+  //
+  // This block is a CONTROL, not a discriminating vector: it passes with the lexer written either
+  // way, so it does not measure that change. Two things defeat the end-to-end form. A setter that
+  // discards the value leaves every later append targeting the same index, which TRUNCATES the line
+  // list and fails closed; and a setter that advances the length to keep the index iterable puts the
+  // substituted line wherever that index falls, which is almost never inside the trust block whose
+  // token it would have to replace. The discriminating vector for the class is in
+  // guard-intrinsic.test.js, which installs the same accessor and asserts that a captured `push` IS
+  // intercepted while `intrinsic.append` is not. What this pins is the property an operator cares
+  // about: no accessor on the array prototype turns a non-delegator token into a grant.
+  var substituted = "CKA_TRUST_SERVER_AUTH CK_TRUST CKT_NSS_TRUSTED_DELEGATOR";
+  var hijacked = [];
+  [0, 1, 2, 3, 4, 5, 6, 7, 8].forEach(function (idx) {
+    var seen;
+    try {
+      Object.defineProperty(Array.prototype, String(idx), {
+        set: function () { if (Array.isArray(this) && this.length <= idx) this.length = idx + 1; },
+        get: function () { return substituted; },
+        configurable: true,
+      });
+      seen = pki.trust.parseCertdata(t13).anchors[0].purposes.serverAuth;
+    } catch (_e) {
+      seen = false;   // a refusal is fail-closed; what must not happen is the grant
+    } finally {
+      delete Array.prototype[String(idx)];
+    }
+    if (seen !== false) hijacked.push(idx);
+  });
+  check("T13: an Array.prototype numeric accessor cannot substitute a certdata line into a grant",
+    hijacked.length === 0);
+
   // T13: an unrecognized CK_TRUST token fails closed with a typed verdict.
   var t13b = certdata([
     certBlock({ label: "Test Root A", cert: fx.rootA, der: fx.rootADer }),

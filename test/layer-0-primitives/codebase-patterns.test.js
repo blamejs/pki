@@ -3491,6 +3491,12 @@ function testGuardReadsRuntimeLive() {
   // these survived a migration that had removed every other spelling. One of them decided which
   // hash a digest ran under, so a replaced case fold answered SHA-1 to a caller who asked for
   // SHA-256. The receiver is unnamed here, so the match is reported by its method alone.
+  // An INDEX result is the same receiver one bracket over: `mappedFrom[idp].slice()` reads `slice`
+  // off whatever that element is, exactly as `f(x).slice()` reads it off a call result. This pattern
+  // matches only `)`, so it cannot see that form, and two live `.slice()` calls on an index result
+  // sat in the policy-mapping walk where the copy they produce becomes a node's expectedPolicySet.
+  // Both are converted. Arming the form here is item 0w4: it counts 23 more reads across 11 modules
+  // at once, and a budget raise is what this map refuses, so the arming and that sweep land together.
   var callResultMethodRe = new RegExp("\\)\\s*\\." + LIVE_METHODS + "\\s*\\(", "g");
   // The conversions and predicates called as bare globals. They read as language rather than as
   // code, which is why they outlasted every other read here: an index test is
@@ -3852,6 +3858,9 @@ function testGuardReadsRuntimeLive() {
     "lib/est.js": 149,
     "lib/cmp-build.js": 125,
     "lib/crmf-sign.js": 31,
+    /** Still budgeted: the module's own selections and copies are converted and its policy-mapping
+     *  copies were an admission, but the 57 counted here are the live prototype reads elsewhere in
+     *  it, which item 0v7 carries. */
     "lib/path-validate.js": 57,
     "lib/asn1-der.js": 100,
     "lib/schema-engine.js": 39,

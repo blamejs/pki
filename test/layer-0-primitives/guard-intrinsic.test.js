@@ -483,6 +483,36 @@ function testSelectionsConsultNoConstructionProtocol() {
   check("intrinsic: copyList honors a start offset like slice does",
     intrinsic.copyList(src, 2).length === 2 && intrinsic.copyList(src, 2)[0] === 3);
 
+  // The join is the fourth form. `concat` reads a spreadability flag off each operand AND builds
+  // through the species, so a hostile species hands back a non-array holding the elements, and a
+  // `false` flag leaves the operands nested inside the result. A join that drops an excluded-subtree
+  // list loses the exclusion, and one that drops a chain element shortens the path that is validated.
+  var capturedJoin, safeJoin, nestedJoin, safeNested;
+  try {
+    Object.defineProperty(Array, Symbol.species, {
+      value: function () { return { length: 0 }; }, configurable: true,
+    });
+    capturedJoin = intrinsic.concat([1, 2], [3]);
+    safeJoin = intrinsic.concatList([1, 2], [3]);
+  } finally {
+    Object.defineProperty(Array, Symbol.species, realSpecies);
+  }
+  check("intrinsic: a hostile Array species makes a captured concat return a non-array",
+    Array.isArray(capturedJoin) === false);
+  check("intrinsic: concatList is unaffected by a hostile Array species",
+    Array.isArray(safeJoin) && safeJoin.length === 3 && safeJoin[2] === 3);
+  try {
+    Array.prototype[Symbol.isConcatSpreadable] = false;
+    nestedJoin = intrinsic.concat([1, 2], [3]);
+    safeNested = intrinsic.concatList([1, 2], [3]);
+  } finally {
+    delete Array.prototype[Symbol.isConcatSpreadable];
+  }
+  check("intrinsic: a false isConcatSpreadable nests the operands of a captured concat",
+    nestedJoin.length === 2 && Array.isArray(nestedJoin[0]));
+  check("intrinsic: concatList ignores isConcatSpreadable",
+    safeNested.length === 3 && safeNested[0] === 1);
+
   // Appending is the other half. `push` writes through Set, which WALKS THE PROTOTYPE for a numeric
   // setter: an accessor installed at `Array.prototype[0]` takes the value, no own property lands on
   // the array, and the index reads back as whatever its getter answers. That is enough to substitute

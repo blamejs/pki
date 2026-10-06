@@ -1254,6 +1254,41 @@ async function testSelfIssuedAndConstraints() {
   check("and a SAN outside the permitted subtree is still refused (" +
     permSwapped.valid + ", " + failCodes(permSwapped).join(",") + ")",
     permSwapped.valid === false);
+  // Capturing the method is not the whole of it: a captured filter or map still builds its result
+  // through the constructor it reads off the receiver, and that species descriptor is configurable.
+  // MEASURED at the primitive, a species answering with an ordinary object leaves the mapped
+  // constraints on indexed properties with the length at zero, which is a generation a `length > 0`
+  // filter discards and a list verb refuses outright. Either is wrong for a permitted subtree, since
+  // discarding one reads as "this issuer constrains no name of that form". The collection is built
+  // through a value this toolkit constructs itself for that reason.
+  //
+  // The two checks below are CONTROLS: they pass with the collection built either way, because a
+  // global species replacement perturbs enough of the surrounding machinery that this run refuses
+  // before the collection is reached, so it measures that refusal instead. The discriminating vector
+  // is in guard-intrinsic.test.js, which installs the same species and asserts that the captured
+  // operation IS steered while the one used here is not. What these pin is the pair of properties an
+  // operator depends on regardless of mechanism.
+  var realSpeciesP = Object.getOwnPropertyDescriptor(Array, Symbol.species);
+  var permSpecies, permSpeciesThrow = null;
+  try {
+    Object.defineProperty(Array, Symbol.species, {
+      value: function () { return { length: 0 }; }, configurable: true,
+    });
+    permSpecies = await run([interNc, permOutside], { time: T2027, trustAnchors: anchor });
+  } catch (e) {
+    permSpeciesThrow = e;
+    permSpecies = { valid: false };
+  } finally {
+    Object.defineProperty(Array, Symbol.species, realSpeciesP);
+  }
+  check("a hostile array species cannot empty the permitted-subtree collection into an acceptance",
+    permSpecies.valid === false);
+  // And whatever it does instead stays inside the toolkit's own verdict surface. A collection that
+  // comes back as a plain object would reach a list verb that refuses a non-array with a bare
+  // TypeError, and a TypeError escaping this verb is a different defect from the one above: the fuzz
+  // contract is that hostile input either succeeds or throws a PkiError.
+  check("and it does not escape as a non-PkiError",
+    permSpeciesThrow === null || permSpeciesThrow instanceof pki.errors.PkiError);
 
   // RFC 5280 sec. 4.2.1.6 forbids a zero-length dNSName in subjectAltName ("subjectAltName
   // extensions with a dNSName of ' ' MUST NOT be used"). Sec. 4.2.1.10 places no length floor on a
