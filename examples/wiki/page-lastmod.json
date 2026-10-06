@@ -9,7 +9,7 @@
   "examples/wiki/lib/nav.js": "2026-07-04",
   "examples/wiki/lib/page-generator.js": "2026-10-05",
   "examples/wiki/lib/search.js": "2026-07-13",
-  "examples/wiki/lib/source-comment-block-validator.js": "2026-10-05",
+  "examples/wiki/lib/source-comment-block-validator.js": "2026-10-06",
   "examples/wiki/lib/source-doc-parser.js": "2026-07-06",
   "examples/wiki/lib/symbol-index.js": "2026-09-19",
   "examples/wiki/site.config.js": "2026-07-04",

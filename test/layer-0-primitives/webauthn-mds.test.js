@@ -254,6 +254,18 @@ async function run() {
       threw === true && mdsMod[name] !== null && typeof mdsMod[name] === "function" &&
       mdsMod[name].name !== "");
   });
+  // The fold that anchors a BLOB's own chain reads the validator off the path module at the call, and
+  // that validator IS the check: one resolving `{ valid: true }` makes an x5c leaf unrelated to every
+  // supplied FIDO root pass, after which `verifyMetadataBlob` brands the catalogue verified and its
+  // status entries and attestation roots govern WebAuthn verification. The producer is frozen, so the
+  // reference cannot be substituted whether or not the consumer also captured it.
+  var pathMod = require("../../lib/path-validate.js");
+  check("mds: the path module's exports are frozen, so the anchoring fold's validator cannot be replaced",
+    Object.isFrozen(pathMod));
+  var pathThrew = false;
+  try { pathMod.validate = function () { return { valid: true }; }; } catch (_e) { pathThrew = true; }
+  check("mds: `pki.path.validate` cannot be replaced on the exports object",
+    pathThrew === true && typeof pathMod.validate === "function" && pathMod.validate.name !== "");
   // The status gate is on the ROUTE, not only inside the attestation verifier. An operator who
   // anchors an attestation themselves goes metadataFor -> metadataAnchors -> pki.path.validate, and
   // nothing along that route consulted the status reports: a REVOKED model's registered roots were

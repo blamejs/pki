@@ -193,9 +193,14 @@ function _extractExportKeys(source) {
   var pm;
   while ((pm = perPropRe.exec(source)) !== null) keys[pm[1]] = true;
 
-  // A module may hand its literal to Object.freeze on the way out, so the `{` is not always the
-  // next thing after the `=`. Anchoring on the bare form read a frozen module as exporting nothing.
-  var litMatch = source.match(/module\.exports\s*=\s*(?:Object\.freeze\s*\(\s*)?\{/);
+  // A module may hand its literal to a freeze on the way out, so the `{` is not always the next
+  // thing after the `=`. Anchoring on the bare form read a frozen module as exporting nothing.
+  // The WRAPPER IS NOT ALWAYS `Object.freeze`: modules that take the guard-intrinsic captures write
+  // `intrinsic.freeze(`, the guard family writes `_freeze(` or `_intrinsic.freeze(`, and
+  // guard-parsed writes `_freezeExports(`. Matching one spelling made every module using another
+  // read as exporting nothing, and each `@related` reference into one of them reported drift. Match
+  // any callee whose name ends in a freeze instead of listing them.
+  var litMatch = source.match(/module\.exports\s*=\s*(?:[A-Za-z_$][\w$.]*[Ff]reeze[A-Za-z]*\s*\(\s*)?\{/);
   if (litMatch) {
     var openIdx = litMatch.index + litMatch[0].length - 1;
     _collectObjectKeys(source, openIdx).forEach(function (k) { keys[k] = true; });
