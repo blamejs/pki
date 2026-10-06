@@ -349,6 +349,22 @@ async function testDistrustAfter() {
   check("T9: CKA_NSS_SERVER_DISTRUST_AFTER decodes to the exact instant",
     a9.distrustAfter.serverAuth instanceof Date &&
     a9.distrustAfter.serverAuth.getTime() === Date.UTC(2024, 10, 30, 23, 59, 59));
+  // That instant is produced by a leaf reader reached BY NAME off the ASN.1 module's reader table,
+  // and the reader is the step that turns the bytes into the date a distrust cutoff is compared
+  // against. A replacement answering with a far-future date leaves a root trusted long past the date
+  // the store names. The table is frozen, so the reader cannot be substituted for any of the sixty-odd
+  // modules that reach it this way, which is what capturing it one module at a time cannot do.
+  // The VERDICT assertion comes first, so a run against an unfrozen table reports the admission
+  // rather than stopping at the structural check behind it.
+  var asn1Mod = require("../../lib/asn1-der.js");
+  var swapThrew = false;
+  try { asn1Mod.read.time = function () { return new Date("2099-01-01T00:00:00Z"); }; } catch (_e) { swapThrew = true; }
+  var a9swap = pki.trust.parseCertdata(t9).anchors[0];
+  check("T9: a replaced reader cannot move a stated distrust date",
+    a9swap.distrustAfter.serverAuth.getTime() === Date.UTC(2024, 10, 30, 23, 59, 59));
+  check("T9: the ASN.1 reader and builder tables are frozen",
+    Object.isFrozen(asn1Mod.read) && Object.isFrozen(asn1Mod.build));
+  void swapThrew;
 
   // T9: the 15-byte GeneralizedTime branch (a far-future date).
   var t9b = certdata([
