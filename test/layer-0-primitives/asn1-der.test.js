@@ -13,6 +13,9 @@ var check = helpers.check;
 var vectors = helpers.vectors;
 var guard = require("../../lib/guard-all");
 function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return e.code; } }
+// Two refusals carrying one code are told apart by what each says, which is how a vector asserts
+// WHICH rule answered.
+function msg(fn) { try { fn(); return "NO-THROW"; } catch (e) { return String(e.message || ""); } }
 function hex(buf) { return Buffer.from(buf).toString("hex"); }
 
 function testBuildVectors() {
@@ -159,6 +162,107 @@ function testRejects() {
     code(function () { pki.asn1.decode(Buffer.from("a0020500", "hex")); }) === "NO-THROW");
   check("CONTROL a SEQUENCE carrying a NULL still decodes",
     code(function () { pki.asn1.decode(Buffer.from("30020500", "hex")); }) === "NO-THROW");
+  /* The other tags X.680 RESERVES, read off its own assignment table rather than off this codec's
+     reader list. Table 1 of X.680 (02/2021) clause 8.4 reads, verbatim: "UNIVERSAL 0  Reserved for
+     use by the encoding rules", "UNIVERSAL 15  Reserved for future editions of this Recommendation |
+     International Standard", and "UNIVERSAL 37-...  Reserved for addenda to this Recommendation |
+     International Standard". No ASN.1 type is assigned to any of them, so no DER encoding of any
+     type uses one, and a decoder that hands one back has invented an element.
+
+     The distinction the table forces is the whole point: the reader list is what this codec has
+     READERS for, which is a smaller set than what X.680 ASSIGNS. ObjectDescriptor (7), REAL (9),
+     RELATIVE-OID (13), TIME (14), VideotexString (21), GraphicString (25) and GeneralString (27)
+     are all assigned and all absent from the reader list, and each can legitimately arrive inside an
+     opaque ANY. Refusing "every tag we have no reader for" would refuse those, which is the worse
+     error, so the rule is the table's reserved rows and nothing else. */
+  function longFormTag(n) {
+    var parts = [], v = n;
+    do { parts.unshift(v & 0x7f); v = v >>> 7; } while (v > 0);
+    for (var i = 0; i < parts.length - 1; i++) parts[i] |= 0x80;
+    return Buffer.from([0x1f].concat(parts).concat([0x00]));
+  }
+  check("rejects universal tag 15, which X.680 Table 1 reserves for future editions",
+    code(function () { pki.asn1.decode(Buffer.from("0f00", "hex")); }) === "asn1/reserved-tag" &&
+    code(function () { pki.asn1.decode(Buffer.from("0f0100", "hex")); }) === "asn1/reserved-tag");
+  check("and inside a SEQUENCE and a SET, wherever it sits",
+    code(function () { pki.asn1.decode(Buffer.from("30020f00", "hex")); }) === "asn1/reserved-tag" &&
+    code(function () { pki.asn1.decode(Buffer.from("31020f00", "hex")); }) === "asn1/reserved-tag" &&
+    code(function () { pki.asn1.decode(Buffer.from("30040500" + "0f00", "hex")); }) === "asn1/reserved-tag");
+  var addendaRefused = [], addendaCodes = [];
+  [37, 38, 40, 99, 128, 1000].forEach(function (n) {
+    var got = code(function () { pki.asn1.decode(longFormTag(n)); });
+    if (got !== "asn1/reserved-tag") addendaRefused.push(n + ":" + got);
+    addendaCodes.push(got);
+  });
+  check("rejects every universal tag from 37 up, which the table reserves for addenda (" +
+    (addendaRefused.join(",") || "all refused") + ")", addendaRefused.length === 0);
+  /* The controls are the assigned tags, and they are what a fix aimed at the reserved rows must not
+     touch: the four long-form time types and the two IRI types the table assigns at 31 to 36, and
+     the seven assigned types this codec carries no reader for. */
+  var assignedAdmitted = [];
+  [31, 32, 33, 34, 35, 36].forEach(function (n) {
+    if (code(function () { pki.asn1.decode(longFormTag(n)); }) !== "NO-THROW") assignedAdmitted.push(n);
+  });
+  check("CONTROL universal 31 to 36 are assigned (DATE, TIME-OF-DAY, DATE-TIME, DURATION and the two " +
+    "IRI types) and still decode (" + (assignedAdmitted.join(",") || "all admitted") + ")",
+    assignedAdmitted.length === 0);
+  var readerlessAdmitted = [];
+  [7, 9, 13, 14, 21, 25, 27].forEach(function (n) {
+    if (code(function () { pki.asn1.decode(Buffer.from([n, 0x00])); }) !== "NO-THROW") readerlessAdmitted.push(n);
+  });
+  check("CONTROL the assigned types this codec has no reader for still decode, since one can arrive " +
+    "inside an ANY (" + (readerlessAdmitted.join(",") || "all admitted") + ")",
+    readerlessAdmitted.length === 0);
+  /* The predicate the door asks, driven by name: one table decides, so a reader that wants to know
+     before it tries gets the same answer the decoder gives. The four values below are the ones the
+     documented examples claim. */
+  check("pki.asn1.reservedUniversalTag answers for the two reserved rows",
+    pki.asn1.reservedUniversalTag(15) === true &&
+    pki.asn1.reservedUniversalTag(37) === true &&
+    pki.asn1.reservedUniversalTag(99) === true);
+  check("pki.asn1.reservedUniversalTag answers false for an assigned type, reader or no reader",
+    pki.asn1.reservedUniversalTag(9) === false &&
+    pki.asn1.reservedUniversalTag(31) === false &&
+    pki.asn1.reservedUniversalTag(1) === false &&
+    pki.asn1.reservedUniversalTag(36) === false);
+  /* Tag 0 is the table's third reserved row, so the predicate says so. The door keeps a separate
+     branch for it ahead of the general one, because its refusal cites the end-of-contents encoding
+     X.690 sec. 8.1.5 gives that octet pair, which is the useful thing to report; the ANSWER to "is
+     it reserved" is the same from either place. */
+  check("tag 0 is reserved too, and the door still reports it as the end-of-contents encoding",
+    pki.asn1.reservedUniversalTag(0) === true &&
+    code(function () { pki.asn1.decode(Buffer.from("0000", "hex")); }) === "asn1/reserved-tag" &&
+    msg(function () { pki.asn1.decode(Buffer.from("0000", "hex")); }).indexOf("end-of-contents") !== -1 &&
+    msg(function () { pki.asn1.decode(Buffer.from("0f00", "hex")); }).indexOf("X.680 Table 1") !== -1);
+  /* The size bound on a multi-octet tag is a different rule and fires first, so a tag far above the
+     reserved range is refused for being unreadable rather than for being reserved. Both are
+     refusals; the vector pins WHICH, so the boundary between the two rules stays visible. */
+  check("an over-large multi-octet tag is refused by the size rule, ahead of the reserved rule",
+    code(function () { pki.asn1.decode(Buffer.from("1f8180808000", "hex")); }) === "asn1/tag-too-large");
+  /* A value that is not a tag number does not have the property, which is how the other two public
+     predicates in this toolkit answer: `pki.asn1.isPrintableString(42)` and
+     `pki.oid.isDottedDecimal(42)` both return false rather than throwing or coercing. `37.5` and
+     `Infinity` sit inside the reserved RANGE while being no tag at all, so a range test alone calls
+     them reserved. */
+  var notTagNumbers = [37.5, Infinity, -Infinity, NaN, -1, "15", "37", null, undefined, {}, []];
+  var misread = [];
+  notTagNumbers.forEach(function (v) {
+    if (pki.asn1.reservedUniversalTag(v) !== false) misread.push(String(v));
+  });
+  check("pki.asn1.reservedUniversalTag answers false for a value that is no tag number (" +
+    (misread.join(",") || "all false") + ")", misread.length === 0);
+  /* And it reaches no further than its own type check: a comparison against a caller's object runs
+     that object's `valueOf`, which is caller code executing inside a predicate. The type check comes
+     first precisely so the comparison never sees a value that could run any. */
+  var valueOfRan = false;
+  var coercer = { valueOf: function () { valueOfRan = true; return 40; } };
+  var coercedAnswer = pki.asn1.reservedUniversalTag(coercer);
+  check("and it never coerces a caller value to get the answer",
+    coercedAnswer === false && valueOfRan === false);
+  check("CONTROL the tag numbers a decoder actually reads still answer as they did",
+    pki.asn1.reservedUniversalTag(0) === true && pki.asn1.reservedUniversalTag(15) === true &&
+    pki.asn1.reservedUniversalTag(37) === true && pki.asn1.reservedUniversalTag(1) === false &&
+    pki.asn1.reservedUniversalTag(36) === false);
   // Non-minimal INTEGER: 02 02 00 01 (leading zero not needed).
   check("rejects non-minimal integer", code(function () { pki.asn1.read.integer(pki.asn1.decode(Buffer.from("02020001", "hex"))); }) === "asn1/non-minimal-integer");
   // Non-minimal NEGATIVE INTEGER: 02 02 FF 80 -- a leading 0xFF is redundant when the next
@@ -669,6 +773,82 @@ function testEncodeIdentifierValidation() {
     var tlv = pki.asn1.encode(0x80, false, 128, Buffer.alloc(0));
     return pki.asn1.decode(tlv).tagNumber === 128;
   })());
+  /* The reserved rows are the same symmetry. X.680 Table 1 assigns no type to universal 0, 15 or 37
+     upward, so `decode` refuses all three, and emitting them anyway handed a caller bytes this
+     codec's own decoder calls malformed: encode(universal, 15) returned 0f00 and decode(0f00) threw
+     asn1/reserved-tag. Both doors that write an identifier octet answer the same way now. */
+  var reservedTags = [0, 15, 37, 100, 16383];
+  var emitted = [];
+  reservedTags.forEach(function (t) {
+    if (code(function () { pki.asn1.encode(0x00, false, t, Buffer.alloc(0)); }) !== "asn1/reserved-tag") emitted.push(t);
+  });
+  check("encode refuses every reserved universal tag (" + (emitted.join(",") || "none emitted") + ")",
+    emitted.length === 0);
+  check("encodeIdentifier refuses one too, being the door that writes the octet",
+    code(function () { pki.asn1.encodeIdentifier(0x00, false, 15); }) === "asn1/reserved-tag");
+  /* The class is read off the masked bits, as the decoder reads it: a classBits carrying the
+     constructed bit alone is still universal class, and 2f00 decodes as universal 15. */
+  check("encode refuses it when the constructed bit is folded into classBits",
+    code(function () { pki.asn1.encode(0x20, false, 15, Buffer.alloc(0)); }) === "asn1/reserved-tag");
+  /* CONTROLS. The rule is universal-class only: a context [15] is how an optional field is written
+     across X.509 and CMS, and tags 31 to 36 are assigned types. */
+  var refused = [];
+  [[0x80, 15, "context [15]"], [0x40, 37, "application 37"], [0xc0, 40, "private 40"],
+   [0x00, 31, "universal 31"], [0x00, 36, "universal 36"], [0x00, 5, "universal NULL"]].forEach(function (r) {
+    if (code(function () { pki.asn1.encode(r[0], false, r[1], Buffer.alloc(0)); }) !== "NO-THROW") refused.push(r[2]);
+  });
+  check("CONTROL every other class and every assigned tag still encodes (" +
+    (refused.join(",") || "none refused") + ")", refused.length === 0);
+  /* And the DER FORM rules stay OUT of the encoder deliberately. A constructed OCTET STRING is a
+     legitimate BER encoding (X.690 sec. 8.21.1) that DER alone restricts to the primitive form
+     (sec. 10.2), and this is the encoder the BER-door fixtures below are minted through. */
+  check("CONTROL a constructed OCTET STRING still encodes, for the BER door to read",
+    code(function () { pki.asn1.encode(0x00, true, pki.asn1.TAGS.OCTET_STRING, pki.asn1.build.octetString(Buffer.alloc(1))); }) === "NO-THROW");
+  /* The low five bits of classBits are OR'd into a single-octet identifier, so a classBits carrying
+     any of them emitted a DIFFERENT tag than the one handed in, past a check shown the one handed
+     in: encodeIdentifier(0x0e, false, 1) wrote 0f, universal 15, which decode refuses. The four
+     class values are the whole domain, with the constructed bit allowed beside them. */
+  var leaked = [];
+  [[0x0e, 1], [0x01, 14], [0x1f, 0], [0xff, 1]].forEach(function (r) {
+    if (code(function () { pki.asn1.encode(r[0], false, r[1], Buffer.alloc(0)); }) !== "asn1/bad-tag") {
+      leaked.push("0x" + r[0].toString(16) + "/" + r[1]);
+    }
+  });
+  check("encode refuses class bits that are not a class (" + (leaked.join(",") || "none leaked") + ")",
+    leaked.length === 0);
+  /* And a value that is not a class bits NUMBER is refused rather than coerced into one, as a tag
+     number of the wrong type already was: "128" and 0x100000080 both narrowed to 0x80 and emitted a
+     context [1]. */
+  var coerced = [];
+  ["128", 0x100000080, undefined, null, 128.5, NaN, {}, [0x80]].forEach(function (v) {
+    if (code(function () { pki.asn1.encode(v, false, 1, Buffer.alloc(0)); }) !== "asn1/bad-tag") {
+      coerced.push(String(v));
+    }
+  });
+  check("encode refuses class bits that are not a number (" + (coerced.join(",") || "none coerced") + ")",
+    coerced.length === 0);
+  check("CONTROL all four classes, with and without the constructed bit folded in, still encode",
+    [0x00, 0x40, 0x80, 0xc0, 0x20, 0x60, 0xa0, 0xe0].every(function (cb) {
+      return code(function () { pki.asn1.encode(cb, false, 5, Buffer.alloc(0)); }) === "NO-THROW";
+    }));
+  /* The size bound is checked before the reserved rows, which is the order decode refuses them in:
+     a tag past the four-octet high-tag form is unreadable whatever the table says about the number,
+     so both directions name the same code for it. */
+  check("the encoder's size bound precedes its reserved rule, as the decoder's does",
+    code(function () { pki.asn1.encode(0x00, false, 0x10000000, Buffer.alloc(0)); }) === "asn1/tag-too-large" &&
+    code(function () { pki.asn1.decode(Buffer.from("1f818080800000", "hex")); }) === "asn1/tag-too-large");
+  /* sequenceTlv composed its own identifier octet rather than calling the one function that writes
+     one, which made it the only encoder in the file that could emit a reserved tag: with TAGS
+     reassigned it wrote 2f00 while every build.* helper refused. The table is frozen, so the
+     reassignment is not available to anything in the process. */
+  check("pki.asn1.TAGS is frozen, so no encoder's tag can be reassigned under it",
+    Object.isFrozen(pki.asn1.TAGS) && (function () {
+      try { pki.asn1.TAGS.SEQUENCE = 15; } catch (_e) { /* strict-mode refusal is the same verdict */ }
+      return pki.asn1.TAGS.SEQUENCE === 16;
+    })());
+  check("sequenceTlv writes a SEQUENCE through the shared identifier door",
+    pki.asn1.sequenceTlv({ content: Buffer.alloc(0) }).toString("hex") === "3000" &&
+    code(function () { pki.asn1.decode(pki.asn1.sequenceTlv({ content: Buffer.alloc(0) })); }) === "NO-THROW");
 }
 
 function testIa5SevenBit() {

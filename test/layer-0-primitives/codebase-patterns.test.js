@@ -3270,6 +3270,27 @@ function testGuardShapeReinlined() {
     }
   });
   var bad = [];
+  // A shape is a BARE pattern, never a /regex/ literal. Written as one on the last line of a
+  // `/** ... */` block, the capture above takes the delimiters AND the ` */` terminator with it, so
+  // the compiled pattern demands literal slashes in the code and can never match a re-inline. Three
+  // shapes were declared that way and had never been able to fire: the detectors ran, matched
+  // nothing, and reported clean. The check is mechanical because the damage is silent.
+  guards.forEach(function (g) {
+    g.shapes.forEach(function (s) {
+      if (s.charAt(0) === "/" || /\*\/\s*$/.test(s)) {
+        bad.push({ file: g.module, line: 1,
+          content: "the @guard-shape on " + g.ref + " is a /regex/ literal or carries a comment " +
+            "terminator (" + s + ") -- declare the bare pattern, or the compiled regex needs literal " +
+            "slashes in the code and the detector can never fire" });
+        return;
+      }
+      try { new RegExp(s); }
+      catch (_badPattern) {
+        bad.push({ file: g.module, line: 1,
+          content: "the @guard-shape on " + g.ref + " is not a valid regex (" + s + ")" });
+      }
+    });
+  });
   _libFiles().forEach(function (f) {
     var rel = _relPath(f);
     var src = fs.readFileSync(f, "utf8");
@@ -3823,7 +3844,7 @@ function testGuardReadsRuntimeLive() {
     "lib/crmf-sign.js": 31,
     "lib/path-validate.js": 86,
     "lib/webauthn.js": 138,
-    "lib/asn1-der.js": 101,
+    "lib/asn1-der.js": 100,
     "lib/schema-engine.js": 39,
     "lib/trust.js": 100,
     "lib/cms-sign.js": 53,
