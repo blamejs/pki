@@ -496,6 +496,21 @@ async function testCsvHeaderKeyed() {
   }
   check("T15: a Trust Bits token is not re-read through a replaced toLowerCase (serverAuth=" +
     foldedBits.serverAuth + ")", foldedBits.serverAuth === false && foldedBits.emailProtection === true);
+  // The cell is converted to a string before it is split, and that conversion is one more operation
+  // that decides the TOKEN. Converting the split, the trim and the fold without it left the whole
+  // bypass in place: a replaced global String mapping the cell Email to Websites grants serverAuth.
+  var realString = global.String;
+  var stringedBits;
+  try {
+    global.String = function (v) { return realString(v) === "Email" ? "Websites" : realString(v); };
+    global.String.prototype = realString.prototype;
+    stringedBits = pki.trust.parseCcadbCsv(csvEmailOnly).anchors[0].purposes;
+  } finally {
+    global.String = realString;
+  }
+  check("T15: a Trust Bits cell is not converted through a replaced String (serverAuth=" +
+    stringedBits.serverAuth + ")",
+    stringedBits.serverAuth === false && stringedBits.emailProtection === true);
 
   // A distrust-date cell is trimmed before it is parsed, and an EMPTY cell means there is no distrust
   // date. Read off the live prototype, a replacement answering with the empty string for a cell the

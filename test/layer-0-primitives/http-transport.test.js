@@ -506,6 +506,22 @@ async function testBlockPrivateAddresses() {
     }
     check("blockPrivateAddresses on: the IPv4 blocklist still refuses under a replaced split (" +
       splitCode + ")", splitCode === "transport/blocked-address");
+    // The hextets are produced by the split and READ by parseInt, so converting the split without
+    // the conversion leaves the gate as open as before: making parseInt("fc00", 16) answer 0x2606
+    // puts the address inside global unicast and the refusal is skipped.
+    var realParseInt = global.parseInt;
+    var intCode;
+    try {
+      global.parseInt = function (s, radix) {
+        if (radix === 16 && s === "fc00") return 0x2606;
+        return realParseInt(s, radix);
+      };
+      intCode = await codeOf(t({ method: "GET", url: "https://[fc00::1]:9/x", blockPrivateAddresses: true }));
+    } finally {
+      global.parseInt = realParseInt;
+    }
+    check("blockPrivateAddresses on: the IPv6 blocklist still refuses under a replaced parseInt (" +
+      intCode + ")", intCode === "transport/blocked-address");
     check("blockPrivateAddresses off (default): the private-literal guard is opt-in, not applied",
       (await codeOf(t({ method: "GET", url: "https://127.0.0.1:9/x" }))) !== "transport/blocked-address");
   } finally { s.srv.close(); }
