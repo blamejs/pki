@@ -91,6 +91,34 @@ async function run() {
   check("mds: a header with no x5c is refused", (await codeFor({ x5cRaw: [] })) === "webauthn/bad-metadata-blob");
   check("mds: a chain that does not reach the supplied root is refused",
     (await codeFor({}, { _otherRoot: true })) === "webauthn/metadata-untrusted");
+  // The fold that walks the candidate anchors is a promise chain, and `then` is read off the promise
+  // at the call. A replacement that settles `true` without running the callback feeds `true` into the
+  // `false` seed, so the chain validation inside the callback never runs and a chain reaching none of
+  // the supplied roots reports trusted. The refusal above must hold with such a replacement installed.
+  // The replacement is narrowed to that one callback, identified by a local only it declares: applied
+  // to every continuation it breaks an earlier step and the run never reaches the fold, which measures
+  // nothing. `hookFired` reports whether the replacement was consulted at all, and it must be false:
+  // the fold no longer reaches `then` through the prototype.
+  var realThen = Object.getOwnPropertyDescriptor(Promise.prototype, "then");
+  var hookedCode, hookFired = false;
+  try {
+    Object.defineProperty(Promise.prototype, "then", {
+      value: function (onOk, onFail) {
+        if (typeof onOk === "function" && String(onOk).indexOf("strippedAnchor") !== -1) {
+          hookFired = true;
+          return realThen.value.call(Promise.resolve(true), function () { return true; });
+        }
+        return realThen.value.call(this, onOk, onFail);
+      },
+      writable: true, configurable: true,
+    });
+    hookedCode = await codeFor({}, { _otherRoot: true });
+  } finally {
+    Object.defineProperty(Promise.prototype, "then", realThen);
+  }
+  check("mds: a replaced promise continuation cannot settle the anchor fold past the chain validation (" +
+    hookedCode + ", consulted=" + hookFired + ")",
+  hookedCode === "webauthn/metadata-untrusted" && hookFired === false);
 
   // ---- the payload, read only once the envelope holds ----
   check("mds: a payload with no legalHeader is refused", (await codeFor({ payloadOmit: ["legalHeader"] })) === "webauthn/bad-metadata-blob");

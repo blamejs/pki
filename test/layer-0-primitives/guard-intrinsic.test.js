@@ -404,13 +404,13 @@ function testWholeFamilyUnderFullPoisoning() {
   check("under full poisoning, guard-encoding still refuses a non-canonical value", r.enc === "x/bad");
 }
 
-function run() {
+async function run() {
   testUncurryContract();
   testEveryComposingGuardHolds();
   testRuntimeReadsAreSnapshotted();
   testKeyEqualsIsSnapshotted();
   testWholeFamilyUnderFullPoisoning();
-  testSelectionsConsultNoConstructionProtocol();
+  await testSelectionsConsultNoConstructionProtocol();
 }
 
 // A capture closes the METHOD and leaves the PROTOCOL the method consults open. `filter` and `map`
@@ -425,7 +425,7 @@ function run() {
 // These three primitives exist for that, and this pins the difference: the captured operations are
 // shown to be steerable in the same breath, so the vector cannot pass by the protocol being
 // unreachable.
-function testSelectionsConsultNoConstructionProtocol() {
+async function testSelectionsConsultNoConstructionProtocol() {
   var realSpecies = Object.getOwnPropertyDescriptor(Array, Symbol.species);
   var src = [1, 2, 3, 4];
   var buf = Buffer.from([9, 8, 7, 6, 5]);
@@ -684,6 +684,188 @@ function testSelectionsConsultNoConstructionProtocol() {
     intrinsic.byteSlice(Buffer.from([1, 2, 3]), 3, 1).length === 0);
   // A fractional bound finds no slot: `list[0.5]` is absent, so the result carries its full length
   // with nothing in it, which reads as a window of absent values rather than as the bad argument.
+  // The continuation primitive invokes its captured method through the uncurried form, so it consults
+  // neither `Promise.prototype.then` nor `Function.prototype.call`. Invoking a capture as
+  // `captured.call(receiver, ...)` reads `call` off the function at that moment, which is one
+  // replaceable operation standing between the capture and its use.
+  var callReplaced = false;
+  var realCall = Function.prototype.call;
+  var seven = Promise.resolve(7);
+  var chained;
+  try {
+    Function.prototype.call = function () { callReplaced = true; throw new Error("call was consulted"); };
+    chained = intrinsic.chain(seven, function (v) { return v + 1; });
+  } finally { Function.prototype.call = realCall; }
+  var chainedValue = await chained;
+  check("intrinsic: chain invokes its capture without reading Function.prototype.call",
+    chainedValue === 8 && callReplaced === false);
+  var thenReplaced = false;
+  var realThenDesc = Object.getOwnPropertyDescriptor(Promise.prototype, "then");
+  var real = Promise.resolve("real");
+  var hooked = Promise.resolve("HOOKED");
+  var chained2;
+  try {
+    Object.defineProperty(Promise.prototype, "then", {
+      value: function () { thenReplaced = true; return hooked; },
+      writable: true, configurable: true,
+    });
+    chained2 = intrinsic.chain(real, function (v) { return v; });
+  } finally { Object.defineProperty(Promise.prototype, "then", realThenDesc); }
+  check("intrinsic: chain does not consult a replaced Promise.prototype.then",
+    (await chained2) === "real" && thenReplaced === false);
+
+  // Native `then` builds the promise it RETURNS through SpeciesConstructor, which reads `constructor`
+  // off the promise and `Symbol.species` off that, and that descriptor is configurable. A species
+  // whose executor drops its resolve function and answers with a promise of its own hands the caller
+  // a verdict nothing computed. The promise `chain` returns is built from the captured constructor,
+  // and whatever `then` returns is discarded.
+  var realPromiseSpecies = Object.getOwnPropertyDescriptor(Promise, Symbol.species);
+  function HostileSpecies(executor) { executor(function () {}, function () {}); return Promise.resolve({ valid: true }); }
+  var speciesChained;
+  try {
+    Object.defineProperty(Promise, Symbol.species, { value: HostileSpecies, configurable: true });
+    speciesChained = intrinsic.chain(Promise.resolve("real"), function (v) { return v; });
+  } finally { Object.defineProperty(Promise, Symbol.species, realPromiseSpecies); }
+  check("intrinsic: a hostile promise species cannot substitute the promise chain hands back",
+    (await speciesChained) === "real");
+
+  // Resolving a promise with a thenable is specified to read `then` off that thenable and call it, so
+  // a callback that RETURNS a promise is adopted through the live method even when the continuation
+  // itself was captured. A real promise is adopted through the capture instead; the hook must not be
+  // consulted at all, and the value must be the one the inner promise actually carried.
+  // The adoption happens in a MICROTASK after `chain` returns, so the replacement has to stay
+  // installed across the drain: restoring it in a `finally` removes it first and the vector then
+  // passes against the live method too. The result is observed through a captured continuation
+  // rather than by awaiting, since awaiting would be the caller's own boundary and not this one.
+  var adoptionHookCalls = 0;
+  var realThenDesc2 = Object.getOwnPropertyDescriptor(Promise.prototype, "then");
+  var fabricated = Promise.resolve({ valid: true, fabricated: true });
+  var adopted = null;
+  try {
+    Object.defineProperty(Promise.prototype, "then", {
+      value: function (ok, fail) { adoptionHookCalls += 1; return realThenDesc2.value.call(fabricated, ok, fail); },
+      writable: true, configurable: true,
+    });
+    var adoptionChained = intrinsic.chain(Promise.resolve(1), function () { return Promise.resolve("inner-real"); });
+    intrinsic.chain(adoptionChained, function (v) { adopted = { value: v }; },
+      function (e) { adopted = { error: (e && e.message) || String(e) }; });
+    await helpers.waitUntil(function () { return adopted !== null; },
+      { timeoutMs: 2000, label: "the chained promise settles under a replaced Promise.prototype.then" });
+  } finally { Object.defineProperty(Promise.prototype, "then", realThenDesc2); }
+  check("intrinsic: a promise returned from a callback is adopted through the capture (calls=" +
+    adoptionHookCalls + ")", adopted.value === "inner-real" && adoptionHookCalls === 0);
+
+  // A replacement that steers the chain has to be prevented without the verb drifting away from the
+  // method it stands in for, so the two are compared over the cases a caller can produce: a handler
+  // omitted, supplied as null, as a number and as an object; a rejection with and without a handler;
+  // a handler that throws; a recovery that returns and one that throws; a returned rejected promise;
+  // a returned thenable that settles more than once and then throws; and a returned object whose
+  // `then` getter throws. All sixteen outcomes must read the same both ways.
+  var rawThen = Object.getOwnPropertyDescriptor(Promise.prototype, "then").value;
+  function observe(p) {
+    return new Promise(function (r) {
+      rawThen.call(p, function (v) { r(["ok", v]); },
+        function (e) { r(["err", e instanceof Error ? e.name + ": " + e.message : e]); });
+    });
+  }
+  async function outcomes(viaChain) {
+    function go(p, a, b) { return viaChain ? intrinsic.chain(p, a, b) : p.then(a, b); }
+    var rows = [];
+    var handlers = [undefined, null, 17, {}];
+    for (var hi = 0; hi < handlers.length; hi++) {
+      rows.push(await observe(go(Promise.resolve(7), handlers[hi], handlers[hi])));
+      rows.push(await observe(go(Promise.reject("bad"), handlers[hi], handlers[hi])));
+    }
+    rows.push(await observe(go(Promise.resolve(1), function () { throw new Error("boom"); }, function () { return "wrong"; })));
+    rows.push(await observe(go(Promise.reject("bad"), undefined, function (e) { return "recovered:" + e; })));
+    rows.push(await observe(go(Promise.reject("bad"), undefined, function () { throw new Error("fail-throw"); })));
+    rows.push(await observe(go(Promise.resolve(), function () { return Promise.reject("inner-bad"); })));
+    rows.push(await observe(go(Promise.resolve(), function () {
+      return { then: function (res, rej) { res(8); rej("late"); res(9); throw new Error("late"); } };
+    })));
+    rows.push(await observe(go(Promise.resolve(), function () { return { get then() { throw new Error("getter"); } }; })));
+    // A `then` getter answering a non-function and then a function: the specified procedure reads it
+    // ONCE, so the first answer decides. Testing it here before settling would read it twice and the
+    // second answer would settle what the first had already ruled out.
+    var reads = 0;
+    rows.push(await observe(go(Promise.resolve(), function () {
+      return { get then() { return ++reads === 1 ? undefined : function (ok) { ok("forged"); }; } };
+    })));
+    // And a microtask between the handler returning a thenable and that thenable settling: the job is
+    // queued, not run in place, so the value it reads is the one current when it runs.
+    var flag = "before";
+    rows.push(await observe(go(Promise.resolve(), function () {
+      queueMicrotask(function () { flag = "after"; });
+      return { then: function (ok) { ok(flag); } };
+    })));
+    return JSON.stringify(rows);
+  }
+  var nativeOutcomes = await outcomes(false);
+  var chainOutcomes = await outcomes(true);
+  check("intrinsic: chain settles exactly as the method it stands in for, over eighteen outcomes",
+    nativeOutcomes === chainOutcomes);
+  // A thenable is accepted in the receiver position, which is what the method it replaces does, and a
+  // value that is no kind of promise is the same TypeError that method raises.
+  var fromThenable = await intrinsic.chain({ then: function (ok) { ok(3); } }, function (v) { return v + 1; });
+  check("intrinsic: chain takes a thenable receiver and refuses a value that is neither",
+    fromThenable === 4 && typeOf(function () { return intrinsic.chain({}, function (v) { return v; }); }) === "TypeError");
+  // A handler that returns the promise its own call hands back is a cycle. The method it replaces
+  // rejects it; waiting on it would leave a verify that never settles and so never refuses.
+  var cyclic;
+  cyclic = intrinsic.chain(Promise.resolve(1), function () { return cyclic; });
+  var cyclicOutcome = await observe(cyclic);
+  check("intrinsic: a handler returning its own result promise is refused rather than waited on",
+    cyclicOutcome[0] === "err" && String(cyclicOutcome[1]).indexOf("TypeError") === 0);
+  // The species is read off the promise's `constructor`, so a getter that throws is the one way a
+  // REAL promise makes the captured call fail. Treating that as "not a promise" and settling through
+  // the resolve function would adopt the promise's own `then` instead, which is the substitution the
+  // capture exists to prevent: the failure is a refusal.
+  var trapped = Promise.resolve("real");
+  Object.defineProperty(trapped, "constructor", { get: function () { throw new Error("species trap"); } });
+  Object.defineProperty(trapped, "then", { value: function (ok) { ok("forged"); }, configurable: true });
+  var trappedOutcome = await observe(intrinsic.chain(Promise.resolve(1), function () { return trapped; }));
+  check("intrinsic: a promise whose constructor read throws is refused, not adopted through its own then",
+    trappedOutcome[0] === "err" && trappedOutcome[1] === "Error: species trap");
+  // An object carrying the promise prototype without a promise's state is refused for the same
+  // reason, where the method it replaces would settle with the object. Both deviations are refusals,
+  // which is the direction a verdict path may deviate in.
+  var protoOnly = Object.create(Promise.prototype, { then: { value: undefined } });
+  var protoOutcome = await observe(intrinsic.chain(Promise.resolve(1), function () { return protoOnly; }));
+  check("intrinsic: an object carrying the promise prototype without its state is refused",
+    protoOutcome[0] === "err" && String(protoOutcome[1]).indexOf("TypeError") === 0);
+  // The classification runs inside the refusal as well. This step is reached from inside a
+  // continuation, so a value whose prototype cannot even be read would otherwise leave the verb
+  // pending with an unhandled rejection beside it, and a verify that never settles never refuses.
+  var trapOutcome = null;
+  var trapChain = intrinsic.chain(Promise.resolve(1), function () {
+    return new Proxy({}, { getPrototypeOf: function () { throw new Error("prototype trap"); } });
+  });
+  intrinsic.chain(trapChain, function (v) { trapOutcome = ["ok", v]; },
+    function (e) { trapOutcome = ["err", (e && e.message) || String(e)]; });
+  await helpers.waitUntil(function () { return trapOutcome !== null; },
+    { timeoutMs: 2000, label: "the chain settles for a value whose prototype read throws" });
+  check("intrinsic: a value whose prototype cannot be read is refused rather than left pending",
+    trapOutcome[0] === "err" && trapOutcome[1] === "prototype trap");
+
+  // A value that is NOT a promise is still handed to the resolve function, because a caller's own
+  // thenable is the thing to call rather than a mechanism to route around.
+  var ownThenableCalled = false;
+  var viaOwnThenable = intrinsic.chain(Promise.resolve(1), function () {
+    return { then: function (res) { ownThenableCalled = true; res("from the caller's thenable"); } };
+  });
+  check("intrinsic: a caller's own thenable is still called",
+    (await viaOwnThenable) === "from the caller's thenable" && ownThenableCalled === true);
+  // And the handler contract is unchanged: a throw rejects, a rejection without a handler passes
+  // through, and a handler that returns settles the chain with its value.
+  var threw = await intrinsic.chain(Promise.resolve(1), function () { throw new Error("boom"); },
+    undefined).then(function () { return "NO-THROW"; }, function (e) { return e.message; });
+  var recovered = await intrinsic.chain(Promise.reject(new Error("nope")), undefined,
+    function (e) { return "recovered: " + e.message; });
+  var passedThrough = await intrinsic.chain(Promise.reject(new Error("unhandled")), function (v) { return v; })
+    .then(function () { return "NO-THROW"; }, function (e) { return e.message; });
+  check("intrinsic: chain keeps the handler contract of the method it replaces",
+    threw === "boom" && recovered === "recovered: nope" && passedThrough === "unhandled");
+
   check("intrinsic: a fractional bound is refused by both windowing verbs",
     typeOf(function () { return intrinsic.copyList([10, 20, 30], 0.5, 2); }) === "TypeError" &&
     typeOf(function () { return intrinsic.byteSlice(Buffer.from([1, 2, 3]), 0.5); }) === "TypeError" &&

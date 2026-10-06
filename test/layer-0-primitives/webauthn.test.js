@@ -511,6 +511,34 @@ async function run() {
   // packed self-attestation whose signature does not verify under the credential key.
   check("verify: packed self-attestation with a non-verifying signature -> webauthn/verify-failed",
     (await codeOfAsync(function () { return pki.webauthn.verify(attObjOf("packed", [[cText("alg"), cInt(-7)], [cText("sig"), cBytes(_B.sequence([_B.integer(1n), _B.integer(1n)]))]], realAuthData), packedHash); })) === "webauthn/verify-failed");
+  // That refusal lives in a promise continuation, and `then` is read off the promise at the call. A
+  // replacement settling the chain without running the callback skips the `if (!ok) throw` and the
+  // statement verifies with a signature nothing checked. The replacement is narrowed to that one
+  // callback by a phrase only it carries; applied to every continuation it breaks an earlier step and
+  // never reaches this one. `consulted` must read false: the route no longer goes through the
+  // prototype. The sibling formats share the verb, so one route proves the capture for all of them.
+  var realThen = Object.getOwnPropertyDescriptor(Promise.prototype, "then");
+  var selfAttCode, thenConsulted = false;
+  try {
+    Object.defineProperty(Promise.prototype, "then", {
+      value: function (onOk, onFail) {
+        if (typeof onOk === "function" && String(onOk).indexOf("packed self-attestation signature") !== -1) {
+          thenConsulted = true;
+          return realThen.value.call(Promise.resolve(true), onOk);
+        }
+        return realThen.value.call(this, onOk, onFail);
+      },
+      writable: true, configurable: true,
+    });
+    selfAttCode = await codeOfAsync(function () {
+      return pki.webauthn.verify(attObjOf("packed", [[cText("alg"), cInt(-7)], [cText("sig"), cBytes(_B.sequence([_B.integer(1n), _B.integer(1n)]))]], realAuthData), packedHash);
+    });
+  } finally {
+    Object.defineProperty(Promise.prototype, "then", realThen);
+  }
+  check("verify: a replaced promise continuation cannot carry a non-verifying signature past the refusal (" +
+    selfAttCode + ", consulted=" + thenConsulted + ")",
+  selfAttCode === "webauthn/verify-failed" && thenConsulted === false);
 
   // ---- tpm statement (WebAuthn 8.3) -----------------------------------------------
   // Rebuild the real tpm KAT with a single overridden field (ver / alg / sig).
