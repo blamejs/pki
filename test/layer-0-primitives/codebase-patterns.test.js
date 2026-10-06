@@ -3857,7 +3857,7 @@ function testGuardReadsRuntimeLive() {
     "lib/acme.js": 177,
     "lib/est.js": 149,
     "lib/cmp-build.js": 125,
-    "lib/crmf-sign.js": 28,
+    "lib/crmf-sign.js": 12,
     /** Still budgeted: the module's own selections and copies are converted and its policy-mapping
      *  copies were an admission, but the 57 counted here are the live prototype reads elsewhere in
      *  it, which item 0v7 carries. */

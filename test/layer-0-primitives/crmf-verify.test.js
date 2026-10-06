@@ -139,6 +139,29 @@ async function testKeySubstitutionIsRefused() {
   var m = await firstOf(swap.der);
   check("a request signed by a key other than the requested one is refused", m.verified === false);
   check("the refusal names a reason", typeof m.reason === "string" && m.reason.length > 0);
+  // The refusal is read in a promise continuation, where the signature answer becomes this message's
+  // verdict. A continuation is read off the promise at the call unless it comes from the capture, so
+  // a replacement settling it hands back a record stating the proof verified and the set-wide verdict
+  // then reports the whole request set as verified. The replacement is narrowed to that callback by a
+  // phrase only it carries, and `consulted` must read false.
+  var realThen = Object.getOwnPropertyDescriptor(Promise.prototype, "then");
+  var hookedSet, thenConsulted = false;
+  try {
+    Object.defineProperty(Promise.prototype, "then", {
+      value: function (onOk, onFail) {
+        if (typeof onOk === "function" && String(onOk).indexOf("cryptographicallyVerified") !== -1) {
+          thenConsulted = true;
+          return realThen.value.call(Promise.resolve({ verified: true, valid: true }), function (v) { return v; });
+        }
+        return realThen.value.call(this, onOk, onFail);
+      },
+      writable: true, configurable: true,
+    });
+    hookedSet = await pki.crmf.verifyPop(swap.der);
+  } finally { Object.defineProperty(Promise.prototype, "then", realThen); }
+  check("a replaced promise continuation cannot report an unverified proof as verified (" +
+    "consulted=" + thenConsulted + ")",
+  hookedSet.verified === false && hookedSet.messages[0].verified === false && thenConsulted === false);
 }
 
 async function testSubjectTamperIsRefused() {
