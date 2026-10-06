@@ -424,6 +424,29 @@ async function run() {
   finally { Buffer.prototype.equals = realEquals; }
   check("CertID mismatch: ...and stays unknown with Buffer.prototype.equals replaced after load",
     wrongCertIdSwapped.status === "unknown");
+  // The CertID itself is built in a promise continuation, and a continuation is read off the promise
+  // at the call unless it comes from the capture. A replacement settling the digest step names
+  // another certificate's identity in a request that is then signed. The replacement is narrowed to
+  // that callback by a phrase only it carries, and `consulted` must read false.
+  var realThenO = Object.getOwnPropertyDescriptor(Promise.prototype, "then");
+  var hookedReq, thenConsultedO = false;
+  try {
+    Object.defineProperty(Promise.prototype, "then", {
+      value: function (onOk, onFail) {
+        if (typeof onOk === "function" && String(onOk).indexOf("Buffer.from(h)") !== -1) {
+          thenConsultedO = true;
+          return realThenO.value.call(Promise.resolve(Buffer.alloc(20, 0x5a)), function (v) { return v; });
+        }
+        return realThenO.value.call(this, onOk, onFail);
+      },
+      writable: true, configurable: true,
+    });
+    hookedReq = await pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer });
+  } finally { Object.defineProperty(Promise.prototype, "then", realThenO); }
+  var plainReq = await pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer });
+  check("the CertID a request names is not settled by a replaced continuation (" +
+    "consulted=" + thenConsultedO + ")",
+  Buffer.compare(hookedReq, plainReq) === 0 && thenConsultedO === false);
 
   // ---- signed request (optionalSignature) + requestorName forms ----
   var signedReq = await pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer },

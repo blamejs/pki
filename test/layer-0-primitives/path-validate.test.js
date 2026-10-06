@@ -1132,6 +1132,189 @@ async function testSelfIssuedAndConstraints() {
   var resNc = await run([interNc, leafNc], { time: T2027, trustAnchors: anchor });
   check("SAN within permitted subtree validates", resNc.valid === true);
 
+  // An EXCLUDED subtree that stops matching is fail-OPEN: the chain is admitted for a name the
+  // issuer forbade. Both the constraint and the host are folded through String.prototype.toLowerCase
+  // before they are compared, so a co-resident replacement sees both strings and chooses what they
+  // compare as. The exclusion must hold whatever that method answers.
+  var exclCa = await mkCert({ subject: "ExclCaseInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i",
+    extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt(null, [gnDns("bad.example")])] });
+  var exclLeaf = await mkCert({ subject: "ExclCaseLeaf", issuer: "ExclCaseInter", signWith: "ed25519i", subjectKeys: "ed25519leaf",
+    extensions: [sanExt([gnDns("www.bad.example")])] });
+  var exclPlain = await run([exclCa, exclLeaf], { time: T2027, trustAnchors: anchor });
+  check("CONTROL a SAN inside an excluded dNSName subtree is refused",
+    exclPlain.valid === false &&
+    failCodes(exclPlain).indexOf("path/name-constraint-excluded") !== -1);
+  var realToLowerCase = String.prototype.toLowerCase;
+  var exclSwapped;
+  try {
+    // The replacement sees `this`, so it mangles the CONSTRAINT alone and leaves the host as it is.
+    // Appending to both would preserve the suffix relation and prove nothing; breaking it on one
+    // side is what a co-resident replacement would actually do. If the exclusion is decided on what
+    // this answers, the forbidden name is admitted.
+    String.prototype.toLowerCase = function () {
+      var s = realToLowerCase.call(this);
+      return s === "bad.example" ? "no-such-suffix" : s;
+    };
+    exclSwapped = await run([exclCa, exclLeaf], { time: T2027, trustAnchors: anchor });
+  } finally {
+    String.prototype.toLowerCase = realToLowerCase;
+  }
+  check("an excluded dNSName subtree still refuses under a replaced toLowerCase (" +
+    exclSwapped.valid + ", " + failCodes(exclSwapped).join(",") + ")",
+    exclSwapped.valid === false);
+
+  // The rfc822 arm asks the same question through String.prototype.indexOf: a constraint naming a
+  // whole MAILBOX is told apart from one naming a domain by whether it contains "@". A replacement
+  // answering -1 routes a mailbox constraint down the domain branch, and the exclusion stops
+  // matching. Converting the dNSName matchers alone left this one live.
+  var exclMailCa = await mkCert({ subject: "ExclMailInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i",
+    extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt(null, [gnEmail("alice@bad.example")])] });
+  var exclMailLeaf = await mkCert({ subject: "ExclMailLeaf", issuer: "ExclMailInter", signWith: "ed25519i", subjectKeys: "ed25519leaf",
+    extensions: [sanExt([gnEmail("alice@bad.example")])] });
+  var exclMailPlain = await run([exclMailCa, exclMailLeaf], { time: T2027, trustAnchors: anchor });
+  check("CONTROL a SAN inside an excluded rfc822 mailbox constraint is refused",
+    exclMailPlain.valid === false &&
+    failCodes(exclMailPlain).indexOf("path/name-constraint-excluded") !== -1);
+  var realIndexOf = String.prototype.indexOf;
+  var exclMailSwapped;
+  try {
+    String.prototype.indexOf = function (needle) {
+      var s = realIndexOf.apply(this, arguments);
+      return (needle === "@" && String(this) === "alice@bad.example") ? -1 : s;
+    };
+    exclMailSwapped = await run([exclMailCa, exclMailLeaf], { time: T2027, trustAnchors: anchor });
+  } finally {
+    String.prototype.indexOf = realIndexOf;
+  }
+  check("an excluded rfc822 constraint still refuses under a replaced indexOf (" +
+    exclMailSwapped.valid + ", " + failCodes(exclMailSwapped).join(",") + ")",
+    exclMailSwapped.valid === false);
+
+  // The third spelling of the same gate: the exclusions are COLLECTED by walking an array. A
+  // replaced Array.prototype.forEach that skips the entry means the exclusion is never recorded, so
+  // there is nothing left to match against and the forbidden name is admitted. Converting the
+  // comparison operations does not cover the walk that feeds them.
+  var realForEach = Array.prototype.forEach;
+  var skips = 0, skipped = [];
+  var exclWalkSwapped;
+  try {
+    Array.prototype.forEach = function (fn, thisArg) {
+      // Skip any lone-entry walk whose entry mentions the excluded name, whatever the record is
+      // shaped like. Matching on the serialized entry rather than a guessed field is what makes the
+      // probe ARRIVE: a condition keyed to the wrong shape never fires and the check passes while
+      // the hole is open.
+      if (this.length === 1) {
+        var seen;
+        try { seen = JSON.stringify(this[0]); } catch (_e) { seen = ""; }
+        if (typeof seen === "string" && seen.indexOf("bad.example") !== -1) {
+          skips += 1; skipped.push(seen.slice(0, 90)); return undefined;
+        }
+      }
+      return realForEach.call(this, fn, thisArg);
+    };
+    exclWalkSwapped = await run([exclCa, exclLeaf], { time: T2027, trustAnchors: anchor });
+  } finally {
+    Array.prototype.forEach = realForEach;
+  }
+  // Two halves, and the first is the stronger claim: no walk over this certificate's own names or
+  // over the subtree lists is reached through the live prototype at all, so the replacement is never
+  // consulted. Asserting only the verdict would pass for a probe that never arrived.
+  check("no name-constraint walk consults a replaced forEach (skips=" + skips +
+    (skipped.length ? " :: " + skipped.join(" | ") : "") + ")", skips === 0);
+  check("and the excluded subtree still refuses (" +
+    exclWalkSwapped.valid + ", " + failCodes(exclWalkSwapped).join(",") + ")",
+    exclWalkSwapped.valid === false);
+
+  // The PERMITTED arm opens in the other direction: it refuses on the ABSENCE of a match, and an
+  // empty filter result reads as "this generation constrains no name of this form", which skips the
+  // check. A replaced Array.prototype.filter answering empty therefore admits a name no subtree
+  // permits. interNc permits only example.com, and permLeaf names something else.
+  var permLeafKp = "ed25519leaf";
+  var permOutside = await mkCert({ subject: "PermOutside", issuer: "NcInter", signWith: "ed25519i", subjectKeys: permLeafKp,
+    extensions: [sanExt([gnDns("www.other.example")])] });
+  var permPlain = await run([interNc, permOutside], { time: T2027, trustAnchors: anchor });
+  check("CONTROL a SAN outside the permitted subtree is refused",
+    permPlain.valid === false &&
+    failCodes(permPlain).indexOf("path/name-constraint-not-permitted") !== -1);
+  var realFilter = Array.prototype.filter;
+  var permFilterCalls = 0;
+  var permSwapped;
+  try {
+    Array.prototype.filter = function (fn, thisArg) {
+      var out = realFilter.call(this, fn, thisArg);
+      if (out.length && out[0] && out[0].base === "example.com") { permFilterCalls += 1; return []; }
+      return out;
+    };
+    permSwapped = await run([interNc, permOutside], { time: T2027, trustAnchors: anchor });
+  } finally {
+    Array.prototype.filter = realFilter;
+  }
+  check("no permitted-subtree filter consults a replaced filter (calls=" + permFilterCalls + ")",
+    permFilterCalls === 0);
+  check("and a SAN outside the permitted subtree is still refused (" +
+    permSwapped.valid + ", " + failCodes(permSwapped).join(",") + ")",
+    permSwapped.valid === false);
+  // Capturing the method is not the whole of it: a captured filter or map still builds its result
+  // through the constructor it reads off the receiver, and that species descriptor is configurable.
+  // MEASURED at the primitive, a species answering with an ordinary object leaves the mapped
+  // constraints on indexed properties with the length at zero, which is a generation a `length > 0`
+  // filter discards and a list verb refuses outright. Either is wrong for a permitted subtree, since
+  // discarding one reads as "this issuer constrains no name of that form". The collection is built
+  // through a value this toolkit constructs itself for that reason.
+  //
+  // The two checks below are CONTROLS: they pass with the collection built either way, because a
+  // global species replacement perturbs enough of the surrounding machinery that this run refuses
+  // before the collection is reached, so it measures that refusal instead. The discriminating vector
+  // is in guard-intrinsic.test.js, which installs the same species and asserts that the captured
+  // operation IS steered while the one used here is not. What these pin is the pair of properties an
+  // operator depends on regardless of mechanism.
+  var realSpeciesP = Object.getOwnPropertyDescriptor(Array, Symbol.species);
+  var permSpecies, permSpeciesThrow = null;
+  try {
+    Object.defineProperty(Array, Symbol.species, {
+      value: function () { return { length: 0 }; }, configurable: true,
+    });
+    permSpecies = await run([interNc, permOutside], { time: T2027, trustAnchors: anchor });
+  } catch (e) {
+    permSpeciesThrow = e;
+    permSpecies = { valid: false };
+  } finally {
+    Object.defineProperty(Array, Symbol.species, realSpeciesP);
+  }
+  check("a hostile array species cannot empty the permitted-subtree collection into an acceptance",
+    permSpecies.valid === false);
+  // And whatever it does instead stays inside the toolkit's own verdict surface. A collection that
+  // comes back as a plain object would reach a list verb that refuses a non-array with a bare
+  // TypeError, and a TypeError escaping this verb is a different defect from the one above: the fuzz
+  // contract is that hostile input either succeeds or throws a PkiError.
+  check("and it does not escape as a non-PkiError",
+    permSpeciesThrow === null || permSpeciesThrow instanceof pki.errors.PkiError);
+  // The certificate list the validation loop runs over is built the same way, and its LENGTH is what
+  // bounds that loop, so it is built here rather than by a built-in projection. This pair is a
+  // CONTROL and not a proven admission: dropping a certificate from a path breaks the issuer chain
+  // across the gap, so a shortened list refuses on the signature before any skipped constraint
+  // matters. It is pinned because a loop bound should not be decidable by a construction a caller can
+  // replace, and because the pair also asserts the refusal stays inside the toolkit's verdict
+  // surface.
+  var realSpeciesN = Object.getOwnPropertyDescriptor(Array, Symbol.species);
+  var shortened, shortenedThrow = null;
+  try {
+    Object.defineProperty(Array, Symbol.species, {
+      value: function () { var a = []; Object.defineProperty(a, "length", { value: 1, writable: true }); return a; },
+      configurable: true,
+    });
+    shortened = await run([interNc, permOutside], { time: T2027, trustAnchors: anchor });
+  } catch (e) {
+    shortenedThrow = e;
+    shortened = { valid: false };
+  } finally {
+    Object.defineProperty(Array, Symbol.species, realSpeciesN);
+  }
+  check("a construction that shortens the certificate list cannot drop a constraining intermediate",
+    shortened.valid === false);
+  check("and that path does not escape as a non-PkiError either",
+    shortenedThrow === null || shortenedThrow instanceof pki.errors.PkiError);
+
   // RFC 5280 sec. 4.2.1.6 forbids a zero-length dNSName in subjectAltName ("subjectAltName
   // extensions with a dNSName of ' ' MUST NOT be used"). Sec. 4.2.1.10 places no length floor on a
   // subtree BASE, and an empty base is how "every name of this form" is written, which is how a
@@ -1405,6 +1588,35 @@ async function testSelfIssuedAndConstraints() {
   var resP = await run([interP, leafP], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true });
   check("explicit policy satisfied validates", resP.valid === true);
   check("policy graph survives", resP.validPolicyGraph !== null && resP.validPolicyGraph !== undefined);
+
+  // The graph is built by walking the certificate's own SIGNED policy entries. That walk reads
+  // `Array.prototype.forEach` off the array at the call unless it comes from the capture, so a
+  // replacement calling the callback with a fabricated identifier builds a node for a policy the
+  // certificate never asserted. With `initialExplicitPolicy` and a `userInitialPolicySet` naming only
+  // that fabricated policy, the chain would then validate for it. The replacement is narrowed to an
+  // array carrying a policy entry, because installing it on every array breaks an earlier step.
+  var P_FAKE = "1.3.6.1.4.1.99999.77";
+  var policyForEachDesc = Object.getOwnPropertyDescriptor(Array.prototype, "forEach");
+  var forgedRes, forEachHooked = false;
+  try {
+    Object.defineProperty(Array.prototype, "forEach", {
+      value: function (fn) {
+        if (this.length === 1 && this[0] && this[0].policyIdentifier === P1) {
+          forEachHooked = true;
+          return policyForEachDesc.value.call([{ policyIdentifier: P_FAKE, qualifiersBytes: null }], fn);
+        }
+        return policyForEachDesc.value.apply(this, arguments);
+      },
+      writable: true, configurable: true,
+    });
+    forgedRes = await run([interP, leafP], { time: T2027, trustAnchors: anchor,
+      initialExplicitPolicy: true, userInitialPolicySet: [P_FAKE] });
+  } finally { Object.defineProperty(Array.prototype, "forEach", policyForEachDesc); }
+  check("a replaced array walk cannot put a policy the certificate never asserted into the graph (" +
+    "consulted=" + forEachHooked + ")", forgedRes.valid === false && forEachHooked === false);
+  check("CONTROL the same chain is invalid for that policy with no replacement installed",
+    (await run([interP, leafP], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true,
+      userInitialPolicySet: [P_FAKE] })).valid === false);
 }
 
 // ---------------------------------------------------------------------------
@@ -1421,6 +1633,30 @@ async function testCoreRejections() {
   });
   var res8 = await run([tampered], { time: T2027, trustAnchors: anchor });
   check("bad signature rejected", res8.valid === false && failCodes(res8).indexOf("path/bad-signature") !== -1);
+  // That refusal is delivered by a promise continuation, and a continuation is read off the promise
+  // at the call unless it comes from the capture. A replacement that settles the key-import step
+  // reports `ok: true` without the signature ever being checked, so this chain validates on a
+  // signature that does not verify. The replacement is narrowed to the callback by a phrase only it
+  // carries; `consulted` must read false, since the verifier no longer reaches the prototype.
+  var realThenP = Object.getOwnPropertyDescriptor(Promise.prototype, "then");
+  var hookedSig, thenConsulted = false;
+  try {
+    Object.defineProperty(Promise.prototype, "then", {
+      value: function (onOk, onFail) {
+        if (typeof onOk === "function" && String(onOk).indexOf("ecdsaDerToP1363") !== -1) {
+          thenConsulted = true;
+          return realThenP.value.call(Promise.resolve(true), function () { return true; });
+        }
+        return realThenP.value.call(this, onOk, onFail);
+      },
+      writable: true, configurable: true,
+    });
+    hookedSig = await run([tampered], { time: T2027, trustAnchors: anchor });
+  } finally { Object.defineProperty(Promise.prototype, "then", realThenP); }
+  check("a replaced promise continuation cannot report a signature verdict nothing computed (" +
+    "consulted=" + thenConsulted + ")",
+  hookedSig.valid === false && failCodes(hookedSig).indexOf("path/bad-signature") !== -1 &&
+    thenConsulted === false);
   // The per-certificate `checks` list is what tells an operator WHICH gate refused, and it is
   // appended to by defining the entry. Writing it by assignment would let a setter at that index
   // take the entry and answer the read with one the validator never produced, so a refusal would

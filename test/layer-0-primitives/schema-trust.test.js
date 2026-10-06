@@ -233,6 +233,38 @@ async function testCertdataPairing() {
   check("T2: an orphan trust object is ignored -- its bits attach to nothing",
     out2c.anchors.length === 1 && out2c.anchors[0].purposes.serverAuth === false);
 
+  // The (issuer, serial) pairing key is an ENCODING of those bytes, so the join is only as byte-exact
+  // as the encoding that produces it. A replaced Buffer.prototype.toString answering the same text for
+  // two different serials makes this orphan's delegator bits attach to the unrelated certificate --
+  // the same result as T1 reading the wrong cert's trust object, reached one operation lower down.
+  // Narrowed to the orphan's own two halves: each answers with the REAL hex of the certificate's
+  // corresponding half, so the two keys collide and nothing else the parse encodes is touched. A
+  // replacement answering a constant for every hex call trips trust/not-a-certificate on the DER
+  // before the join and measures nothing.
+  var realBufToString = Buffer.prototype.toString;
+  var ghostIssuerHex = realBufToString.call(fx.rootB.issuer.bytes, "hex");
+  var ghostSerialHex = realBufToString.call(b.integer(777n), "hex");
+  var certIssuerHex = realBufToString.call(fx.rootA.issuer.bytes, "hex");
+  var certSerialHex = realBufToString.call(serialTlv(fx.rootA), "hex");
+  var out2d;
+  try {
+    Buffer.prototype.toString = function (enc) {
+      var real = realBufToString.apply(this, arguments);
+      if (enc !== "hex") return real;
+      if (real === ghostIssuerHex) return certIssuerHex;
+      if (real === ghostSerialHex) return certSerialHex;
+      return real;
+    };
+    out2d = pki.trust.parseCertdata(t2c);
+  } catch (e) {
+    out2d = e;
+  } finally {
+    Buffer.prototype.toString = realBufToString;
+  }
+  check("T2: a replaced pairing-key ENCODING cannot attach an orphan's bits to a certificate",
+    out2d && out2d.anchors && out2d.anchors.length === 1 &&
+    out2d.anchors[0].purposes.serverAuth === false);
+
   // T3: a cert object with NO trust object -> anchor trusted for nothing,
   // not silently dropped.
   var t3 = certdata([certBlock({ label: "Test Root A", cert: fx.rootA, der: fx.rootADer })]);
@@ -317,6 +349,22 @@ async function testDistrustAfter() {
   check("T9: CKA_NSS_SERVER_DISTRUST_AFTER decodes to the exact instant",
     a9.distrustAfter.serverAuth instanceof Date &&
     a9.distrustAfter.serverAuth.getTime() === Date.UTC(2024, 10, 30, 23, 59, 59));
+  // That instant is produced by a leaf reader reached BY NAME off the ASN.1 module's reader table,
+  // and the reader is the step that turns the bytes into the date a distrust cutoff is compared
+  // against. A replacement answering with a far-future date leaves a root trusted long past the date
+  // the store names. The table is frozen, so the reader cannot be substituted for any of the sixty-odd
+  // modules that reach it this way, which is what capturing it one module at a time cannot do.
+  // The VERDICT assertion comes first, so a run against an unfrozen table reports the admission
+  // rather than stopping at the structural check behind it.
+  var asn1Mod = require("../../lib/asn1-der.js");
+  var swapThrew = false;
+  try { asn1Mod.read.time = function () { return new Date("2099-01-01T00:00:00Z"); }; } catch (_e) { swapThrew = true; }
+  var a9swap = pki.trust.parseCertdata(t9).anchors[0];
+  check("T9: a replaced reader cannot move a stated distrust date",
+    a9swap.distrustAfter.serverAuth.getTime() === Date.UTC(2024, 10, 30, 23, 59, 59));
+  check("T9: the ASN.1 reader and builder tables are frozen",
+    Object.isFrozen(asn1Mod.read) && Object.isFrozen(asn1Mod.build));
+  void swapThrew;
 
   // T9: the 15-byte GeneralizedTime branch (a far-future date).
   var t9b = certdata([
@@ -384,6 +432,40 @@ async function testTrustBits() {
   var a13 = pki.trust.parseCertdata(t13).anchors[0];
   check("T13: MUST_VERIFY_TRUST / NOT_TRUSTED / TRUSTED (non-delegator) -> all false",
     a13.purposes.serverAuth === false && a13.purposes.emailProtection === false && a13.purposes.codeSigning === false);
+
+  // Those tokens are read out of lines the lexer APPENDS to a list, and the lexer now defines each
+  // line as an own property rather than assigning to an index, because an index assignment writes
+  // through Set, which walks the prototype for a numeric setter.
+  //
+  // This block is a CONTROL, not a discriminating vector: it passes with the lexer written either
+  // way, so it does not measure that change. Two things defeat the end-to-end form. A setter that
+  // discards the value leaves every later append targeting the same index, which TRUNCATES the line
+  // list and fails closed; and a setter that advances the length to keep the index iterable puts the
+  // substituted line wherever that index falls, which is almost never inside the trust block whose
+  // token it would have to replace. The discriminating vector for the class is in
+  // guard-intrinsic.test.js, which installs the same accessor and asserts that a captured `push` IS
+  // intercepted while `intrinsic.append` is not. What this pins is the property an operator cares
+  // about: no accessor on the array prototype turns a non-delegator token into a grant.
+  var substituted = "CKA_TRUST_SERVER_AUTH CK_TRUST CKT_NSS_TRUSTED_DELEGATOR";
+  var hijacked = [];
+  [0, 1, 2, 3, 4, 5, 6, 7, 8].forEach(function (idx) {
+    var seen;
+    try {
+      Object.defineProperty(Array.prototype, String(idx), {
+        set: function () { if (Array.isArray(this) && this.length <= idx) this.length = idx + 1; },
+        get: function () { return substituted; },
+        configurable: true,
+      });
+      seen = pki.trust.parseCertdata(t13).anchors[0].purposes.serverAuth;
+    } catch (_e) {
+      seen = false;   // a refusal is fail-closed; what must not happen is the grant
+    } finally {
+      delete Array.prototype[String(idx)];
+    }
+    if (seen !== false) hijacked.push(idx);
+  });
+  check("T13: an Array.prototype numeric accessor cannot substitute a certdata line into a grant",
+    hijacked.length === 0);
 
   // T13: an unrecognized CK_TRUST token fails closed with a typed verdict.
   var t13b = certdata([
@@ -471,6 +553,102 @@ async function testCsvHeaderKeyed() {
     a15.distrustAfter.serverAuth instanceof Date &&
     a15.distrustAfter.serverAuth.getTime() === Date.UTC(2027, 5, 1, 23, 59, 59));
   check("T15: empty S/MIME distrust cell -> absent", !("emailProtection" in a15.distrustAfter));
+
+  // A Trust Bits token is folded through String.prototype.toLowerCase before it is looked up, and the
+  // lookup GRANTS a purpose. Read off the live prototype, a replacement answering with a recognized
+  // token hands an anchor a purpose its CSV row never stated, which is an admission rather than a
+  // denial. The replacement is narrowed to the one token so no other fold in the parse breaks first.
+  var csvEmailOnly = csvOf([
+    CSV_HEADER,
+    ["Test Root A", "Email", "", "", q(pemA)],
+  ]);
+  var plainBits = pki.trust.parseCcadbCsv(csvEmailOnly).anchors[0].purposes;
+  check("CONTROL an Email-only row grants emailProtection and not serverAuth",
+    plainBits.emailProtection === true && plainBits.serverAuth === false);
+  var realLowerC = String.prototype.toLowerCase;
+  var foldedBits;
+  try {
+    String.prototype.toLowerCase = function () {
+      var s = realLowerC.call(this);
+      return s === "email" ? "websites" : s;
+    };
+    foldedBits = pki.trust.parseCcadbCsv(csvEmailOnly).anchors[0].purposes;
+  } finally {
+    String.prototype.toLowerCase = realLowerC;
+  }
+  check("T15: a Trust Bits token is not re-read through a replaced toLowerCase (serverAuth=" +
+    foldedBits.serverAuth + ")", foldedBits.serverAuth === false && foldedBits.emailProtection === true);
+  // The cell is converted to a string before it is split, and that conversion is one more operation
+  // that decides the TOKEN. Converting the split, the trim and the fold without it left the whole
+  // bypass in place: a replaced global String mapping the cell Email to Websites grants serverAuth.
+  var realString = global.String;
+  var stringedBits;
+  try {
+    global.String = function (v) { return realString(v) === "Email" ? "Websites" : realString(v); };
+    global.String.prototype = realString.prototype;
+    stringedBits = pki.trust.parseCcadbCsv(csvEmailOnly).anchors[0].purposes;
+  } finally {
+    global.String = realString;
+  }
+  check("T15: a Trust Bits cell is not converted through a replaced String (serverAuth=" +
+    stringedBits.serverAuth + ")",
+    stringedBits.serverAuth === false && stringedBits.emailProtection === true);
+
+  // A distrust-date cell is trimmed before it is parsed, and an EMPTY cell means there is no distrust
+  // date. Read off the live prototype, a replacement answering with the empty string for a cell the
+  // parser would have refused removes the distrust date instead of failing, which widens what the
+  // anchor is trusted to do and for how long.
+  var csvBadDate = csvOf([
+    CSV_HEADER,
+    ["Test Root A", "Websites", "not-a-date", "", q(pemA)],
+  ]);
+  var badDateCode = (function () {
+    try { pki.trust.parseCcadbCsv(csvBadDate); return "NO-THROW"; } catch (e) { return e.code; }
+  })();
+  check("CONTROL an unparseable distrust date is refused", badDateCode === "trust/bad-csv");
+  var realTrim = String.prototype.trim;
+  var trimmedCode;
+  try {
+    String.prototype.trim = function () {
+      var s = realTrim.call(this);
+      return s === "not-a-date" ? "" : s;
+    };
+    try { pki.trust.parseCcadbCsv(csvBadDate); trimmedCode = "NO-THROW"; }
+    catch (e) { trimmedCode = e.code; }
+  } finally {
+    String.prototype.trim = realTrim;
+  }
+  check("T15: an unparseable distrust date is still refused under a replaced trim (" +
+    trimmedCode + ")", trimmedCode === "trust/bad-csv");
+
+  // The header row decides WHICH column each field is read from, and the names are trimmed first. A
+  // replacement that renames the real Trust Bits header and answers "Trust Bits" for another column
+  // makes the purposes come from that other cell, so a row stating Email yields an anchor carrying
+  // whatever the decoy column says.
+  var csvDecoyCol = csvOf([
+    ["Common Name or Certificate Name", "Trust Bits", "Note", "Distrust for TLS After Date", "Distrust for S/MIME After Date", "PEM Info"],
+    ["Test Root A", "Email", "Websites", "", "", q(pemA)],
+  ]);
+  var plainCol = pki.trust.parseCcadbCsv(csvDecoyCol).anchors[0].purposes;
+  check("CONTROL with the real header the purposes come from the Trust Bits column",
+    plainCol.emailProtection === true && plainCol.serverAuth === false);
+  var realTrim2 = String.prototype.trim;
+  var decoyPurposes;
+  try {
+    String.prototype.trim = function () {
+      var s = realTrim2.call(this);
+      if (s === "Trust Bits") return "Ignored Column";
+      if (s === "Note") return "Trust Bits";
+      return s;
+    };
+    try { decoyPurposes = pki.trust.parseCcadbCsv(csvDecoyCol).anchors[0].purposes; }
+    catch (e) { decoyPurposes = { threw: e.code }; }
+  } finally {
+    String.prototype.trim = realTrim2;
+  }
+  check("T15: the header-to-column mapping is not steerable through a replaced trim (" +
+    JSON.stringify(decoyPurposes) + ")",
+    decoyPurposes.serverAuth === false || typeof decoyPurposes.threw === "string");
 
   // T15: a dash-separated date parses to the same instant (tolerant Y-M-D).
   var csvDash = csvOf([

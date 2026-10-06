@@ -74,6 +74,29 @@ async function testContentModes() {
   // the detached content is genuinely bound: a different content does not verify.
   var wrong = await pki.cms.verify(det, { content: Buffer.from("different content") });
   check("detached + wrong content -> message-digest-mismatch", wrong.valid === false && wrong.signers[0].code === "cms/message-digest-mismatch");
+  // The message digest the signature commits to is produced in a promise continuation, and a
+  // continuation is read off the promise at the call unless it comes from the capture. A replacement
+  // settling that step signs over a digest of bytes nobody hashed, and the signature then commits to
+  // content the signer never saw. The replacement is narrowed to that callback by a phrase only it
+  // carries, and `consulted` must read false.
+  var realThen = Object.getOwnPropertyDescriptor(Promise.prototype, "then");
+  var hookedSig, thenConsulted = false;
+  try {
+    Object.defineProperty(Promise.prototype, "then", {
+      value: function (onOk, onFail) {
+        if (typeof onOk === "function" && String(onOk).indexOf("Buffer.from(d)") !== -1) {
+          thenConsulted = true;
+          return realThen.value.call(Promise.resolve(Buffer.alloc(32, 0x11)), function (v) { return v; });
+        }
+        return realThen.value.call(this, onOk, onFail);
+      },
+      writable: true, configurable: true,
+    });
+    hookedSig = await pki.cms.sign(CONTENT, s);
+  } finally { Object.defineProperty(Promise.prototype, "then", realThen); }
+  var hookedVerdict = await pki.cms.verify(hookedSig);
+  check("a replaced promise continuation cannot sign over a digest nothing computed (" +
+    "consulted=" + thenConsulted + ")", hookedVerdict.valid === true && thenConsulted === false);
 }
 
 // ---- streaming detached sign: async-iterable content (Streaming CMS) ----

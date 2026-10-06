@@ -2167,6 +2167,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/cmp-build.js:<top>", "lib/crmf-sign.js:<top>", "lib/key.js:<top>", "lib/sigstore.js:<top>",
         "lib/ip-utils.js:<top>", "lib/pkcs11-uri.js:<top>", "lib/guard-encoding.js:_alphabet",
         "lib/identity-match.js:<top>", "lib/identity-match.js:E", "lib/tlog.js:<top>",
+        "lib/pki-build.js:<top>",
         "lib/sign-scheme.js:O", "lib/tuf.js:_err", "lib/tuf.js:<top>",
         "lib/related-cert.js:<top>", "lib/related-cert.js:_err",
         "lib/alt-sig.js:<top>", "lib/possession.js:<top>", "lib/possession.js:setEngine",
@@ -3460,11 +3461,20 @@ function testGuardReadsRuntimeLive() {
   // to zero live reads, because this list is an ENUMERATION of names and `pop` was never in it: the
   // read was never counted, so no budget was ever exceeded. `shift`, `unshift` and `splice` move the
   // same boundary from the other end and are added with it.
+  // The NUMERIC READERS are here for the same reason as the mutators. A length or a counter read out
+  // of a wire structure is what the bounds check and the slice after it are computed from, so a
+  // replaced reader decides which bytes a check runs over: a credential-id length read this way
+  // chose the slice the COSE key was then decoded from, and a signature counter read this way
+  // answered the replay rule that compares it with the stored one. Neither was ever counted, because
+  // this list is an ENUMERATION of names and no `read*` was in it.
   var LIVE_METHODS = "(?:forEach|map|filter|every|some|indexOf|sort|push|pop|shift|unshift|splice|" +
-    "reverse|copyWithin|concat|join|" +
+    "reverse|copyWithin|concat|join|reduce|reduceRight|" +
     "toLowerCase|toUpperCase|charAt|charCodeAt|fill|getTime|equals|compare|toString|subarray|" +
     "slice|lastIndexOf|search|test|exec|replace|split|trim|substring|substr|startsWith|endsWith|" +
-    "includes|hasOwnProperty)";
+    "includes|hasOwnProperty|" +
+    "readUInt8|readUInt16BE|readUInt16LE|readUInt32BE|readUInt32LE|readInt8|readInt16BE|" +
+    "readInt16LE|readInt32BE|readInt32LE|readBigUInt64BE|readBigUInt64LE|" +
+    "writeUInt8|writeUInt16BE|writeUInt16LE|writeUInt32BE|writeUInt32LE)";
   var staticRe = new RegExp("\\b(?:" + LIVE_STATICS.join("|") + ")\\s*\\(", "g");
   // A method call whose receiver is NOT a `_`-prefixed capture. The receiver may be a whole member
   // expression: `sanNode.bytes.equals(...)` dispatches off a prototype exactly as `bytes.equals(...)`
@@ -3481,6 +3491,12 @@ function testGuardReadsRuntimeLive() {
   // these survived a migration that had removed every other spelling. One of them decided which
   // hash a digest ran under, so a replaced case fold answered SHA-1 to a caller who asked for
   // SHA-256. The receiver is unnamed here, so the match is reported by its method alone.
+  // An INDEX result is the same receiver one bracket over: `mappedFrom[idp].slice()` reads `slice`
+  // off whatever that element is, exactly as `f(x).slice()` reads it off a call result. This pattern
+  // matches only `)`, so it cannot see that form, and two live `.slice()` calls on an index result
+  // sat in the policy-mapping walk where the copy they produce becomes a node's expectedPolicySet.
+  // Both are converted. Arming the form here is item 0w4: it counts 23 more reads across 11 modules
+  // at once, and a budget raise is what this map refuses, so the arming and that sweep land together.
   var callResultMethodRe = new RegExp("\\)\\s*\\." + LIVE_METHODS + "\\s*\\(", "g");
   // The conversions and predicates called as bare globals. They read as language rather than as
   // code, which is why they outlasted every other read here: an index test is
@@ -3841,17 +3857,16 @@ function testGuardReadsRuntimeLive() {
     "lib/acme.js": 177,
     "lib/est.js": 149,
     "lib/cmp-build.js": 125,
-    "lib/crmf-sign.js": 31,
-    "lib/path-validate.js": 85,
-    "lib/webauthn.js": 138,
+    "lib/crmf-sign.js": 12,
+    /** Still budgeted: the module's own selections and copies are converted and its policy-mapping
+     *  copies were an admission, but the 57 counted here are the live prototype reads elsewhere in
+     *  it, which item 0v7 carries. */
+    "lib/path-validate.js": 25,
     "lib/asn1-der.js": 100,
     "lib/schema-engine.js": 39,
-    "lib/trust.js": 100,
-    "lib/cms-sign.js": 53,
-    "lib/webauthn-mds.js": 87,
+    "lib/cms-sign.js": 51,
     "lib/attrcert-sign.js": 67,
     "lib/tsp-sign.js": 41,
-    "lib/http-digest.js": 73,
     "lib/pkcs12-build.js": 63,
     "lib/ct.js": 62,
     "lib/cms-verify.js": 14,
@@ -3867,7 +3882,7 @@ function testGuardReadsRuntimeLive() {
     /** Entered scope when they took the captures for the promise-construction fix. A module is armed
      *  whole the moment it requires guard-intrinsic, so these are the reads that were always there and
      *  are now counted. Both ratchet DOWN only, like the rest. */
-    "lib/ocsp.js": 92,
+    "lib/ocsp.js": 88,
     "lib/csr-sign.js": 26,
     "lib/schema-attrcert.js": 26,
     "lib/tls-cert-compress.js": 18,
@@ -3877,7 +3892,7 @@ function testGuardReadsRuntimeLive() {
      *  module arms it whole, so these are the reads that were always there and are now counted. Both
      *  ratchet DOWN only, like the rest. */
     "lib/composite-kem.js": 45,
-    "lib/http-transport.js": 117,
+    "lib/http-transport.js": 108,
     /** Entered scope when it took the capture of the URL parser, which decides the host each of its
      *  operations is sent to. Arming a module arms it whole, so this is the count that was always
      *  there and is now counted, and it ratchets DOWN only like the rest. */

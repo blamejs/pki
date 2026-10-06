@@ -82,6 +82,15 @@ async function testConfigGates() {
   check("4 a sub-floor minVersion is refused", (await codeOf(t({ method: "GET", url: "https://ca.example/x", tls: { anchors: [Buffer.from("x")], minVersion: "TLSv1.1" } }))) === "transport/bad-input");
   check("5 a negative maxResponseBytes is refused", (await codeOf(t({ method: "GET", url: "https://ca.example/x", tls: { anchors: [Buffer.from("x")] }, maxResponseBytes: -5 }))) === "transport/bad-input");
   check("6 a maxResponseBytes above the ceiling is refused (tighten-only)", (await codeOf(t({ method: "GET", url: "https://ca.example/x", tls: { anchors: [Buffer.from("x")] }, maxResponseBytes: pki.C.LIMITS.HTTP_MAX_RESPONSE_BYTES + 1 }))) === "transport/bad-input");
+  // The name a TLS handshake is opened under is read again twice after it is accepted: by the TLS
+  // layer for the name sent, and as the identity the server certificate is matched against. A value
+  // that is not already a string converts afresh at each, so one name is sent and another verified.
+  // The proxy arm has always typed this option; the origin arm now does too.
+  var twoFacedSni = { toString: function () { return "ca.example"; } };
+  check("6b1 a non-string tls.servername is refused at request init",
+    (await codeOf(t({ method: "GET", url: "https://ca.example/x", tls: { anchors: [Buffer.from("x")], servername: twoFacedSni } }))) === "transport/bad-input");
+  check("6b2 and so is one supplied as a transport default",
+    (await codeOf(pki.transport.https({ tls: { anchors: [Buffer.from("x")], servername: twoFacedSni } })({ method: "GET", url: "https://ca.example/x" }))) === "transport/bad-input");
   check("6b a missing request object is refused (bad-url)", (await codeOf(t())) === "transport/bad-url");
   check("6c a malformed trust anchor fails closed at request init", (await codeOf(t({ method: "GET", url: "https://ca.example/x", tls: { anchors: [undefined] } }))) === "transport/transport-error");
 }
@@ -104,6 +113,25 @@ async function testHappy() {
     var r = await t({ method: "POST", url: urlFor(s.port), headers: { "content-type": "application/pkcs10" }, body: Buffer.from("PING"),
       tls: { anchors: [tls.certPem], servername: "localhost", cert: tls.certPem, key: tls.keyPem, checkServerIdentity: function () { idChecks++; return undefined; } } });
     check("7 the caller checkServerIdentity hook is invoked", idChecks >= 1);
+    // The identity question is answered through a captured reference, not the writable module export.
+    // node:tls.checkServerIdentity RETURNS A VERDICT, so a replacement answering with no error is the
+    // server-authentication step reporting success for a certificate issued to another host. The
+    // request below asks for a name the server's certificate does not carry.
+    var nodeTlsMod = require("node:tls");
+    var realCSI = nodeTlsMod.checkServerIdentity;
+    var csiCalls = 0;
+    var wrongHostCode;
+    try {
+      nodeTlsMod.checkServerIdentity = function () { csiCalls += 1; return undefined; };
+      wrongHostCode = await codeOf(t({ method: "GET", url: urlFor(s.port),
+        tls: { anchors: [tls.certPem], servername: "not-the-server.example" } }));
+    } finally {
+      nodeTlsMod.checkServerIdentity = realCSI;
+    }
+    check("7 the TLS identity check does not consult a replaced node:tls export (calls=" +
+      csiCalls + ")", csiCalls === 0);
+    check("7 and a certificate for another host is still refused (" + wrongHostCode + ")",
+      wrongHostCode === "transport/server-auth-failed");
     check("7 loopback POST resolves 200", r.status === 200);
     check("7 the body is returned as a Buffer", Buffer.isBuffer(r.body) && r.body.toString() === "PONG");
     check("7 response headers are lowercased", r.headers["content-type"] === "application/pkcs7-mime");
@@ -426,9 +454,40 @@ async function testChunkedBodyAccumulation() {
 async function testResolutionFilterUnits() {
   var ht = require("../../lib/http-transport");
   check("isBlockedIp: v4 special-use (RFC1918/loopback/CGNAT/link-local/benchmark/TEST-NET/6to4/multicast) blocked", ["10.0.0.1", "127.0.0.1", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "224.0.0.1", "198.18.0.1", "192.0.2.1", "198.51.100.1", "203.0.113.1", "192.0.0.1", "192.88.99.1"].every(ht.isBlockedIp));
+  // The literal is divided into octets, and dividing a string on a separator is specified to look a
+  // `Symbol.split` method up on that separator and call it, so the separator's prototype chain is
+  // part of the operation and taking the split from a capture does not close it. A hook answering
+  // with a public address's octets clears this refusal for a loopback literal. MEASURED: this is
+  // engine-dependent -- Node 24.21 performs the lookup and Node 26.9 fast-paths a primitive-string
+  // separator past it -- so the assertion is on the verdict, which must hold on either.
+  var realSplitHook = Object.getOwnPropertyDescriptor(String.prototype, Symbol.split);
+  var hookedV4, hookedV6;
+  try {
+    Object.defineProperty(String.prototype, Symbol.split, {
+      value: function () { return ["93", "184", "216", "34"]; }, configurable: true,
+    });
+    hookedV4 = ht.isBlockedIp("127.0.0.1");
+    hookedV6 = ht.isBlockedIp("fc00::1");
+  } finally {
+    if (realSplitHook) Object.defineProperty(String.prototype, Symbol.split, realSplitHook);
+    else delete String.prototype[Symbol.split];
+  }
+  check("isBlockedIp: an installed @@split hook cannot clear the refusal for a loopback literal", hookedV4 === true);
+  check("isBlockedIp: nor for a unique-local IPv6 literal", hookedV6 === true);
   check("isBlockedIp: v4 global public allowed (range edges)", !ht.isBlockedIp("8.8.8.8") && !ht.isBlockedIp("172.32.0.1") && !ht.isBlockedIp("192.169.0.1") && !ht.isBlockedIp("100.128.0.1") && !ht.isBlockedIp("198.20.0.1"));
   check("isBlockedIp: v6 non-global (loopback/ULA/link-local/site-local/multicast) + in-2000::/3 special-use (6to4/IETF/doc) blocked", ["::1", "::", "::ffff:127.0.0.1", "fc00::1", "fe80::1", "fec0::1", "feff::1", "ff02::1", "2001:db8::1", "2002::1", "2001:2::1", "2001::1", "3fff::1", "3fff:fff::1"].every(ht.isBlockedIp));
   check("isBlockedIp: v6 true global unicast allowed (outside every special-use prefix) + a non-IP is not classified", !ht.isBlockedIp("2606:4700::1") && !ht.isBlockedIp("2001:4860:4860::8888") && !ht.isBlockedIp("3fff:1000::1") && !ht.isBlockedIp("example.com"));
+  // The classifier converts its argument, so a value that is not already a string is converted once
+  // for the family check and again for the octet scan, and the SECOND answer decides. A resolver
+  // supplied through `opts.lookup` reaches this with whatever it yields, and the verb is public, so
+  // a value that cannot be classified is refused rather than measured twice.
+  var coerceReads = 0;
+  var twoFaced = { toString: function () { coerceReads += 1; return coerceReads === 1 ? "127.0.0.1" : "93.184.216.34"; } };
+  check("isBlockedIp: a value converted afresh per read is blocked rather than classified twice",
+    ht.isBlockedIp(twoFaced) === true);
+  check("isBlockedIp: a boxed string is blocked whichever address it holds, and a plain string is unaffected",
+    ht.isBlockedIp(new String("127.0.0.1")) === true && ht.isBlockedIp(new String("8.8.8.8")) === true &&
+    ht.isBlockedIp("8.8.8.8") === false);
   function resolver(err, addr, fam) { return function (h, o, cb) { cb(err, addr, fam); }; }
   function drive(lookupFn) { return new Promise(function (res) { lookupFn("host", {}, function (e, a) { res({ e: e, a: a }); }); }); }
   var errIn = new Error("dns fail");
@@ -468,6 +527,74 @@ async function testBlockPrivateAddresses() {
       (await codeOf(t({ method: "GET", url: "https://127.0.0.1:9/x", blockPrivateAddresses: true }))) === "transport/blocked-address");
     check("blockPrivateAddresses on: an IPv6 private literal host is refused too",
       (await codeOf(t({ method: "GET", url: "https://[fc00::1]:9/x", blockPrivateAddresses: true }))) === "transport/blocked-address");
+    // The IPv6 arm of the blocklist folds the address through String.prototype.toLowerCase before
+    // classifying it, and the classification ADMITS anything inside global unicast. Read off the live
+    // prototype, a replacement that answers with a global-unicast spelling for a private address
+    // turns a refusal into a connection attempt. The replacement is narrowed to the one address so an
+    // earlier step does not break first and hide the gate.
+    // The substitute has to be an address the classifier ADMITS, or the refusal comes from another
+    // rule and the probe measures nothing: 2001:db8:: is the documentation range and is blocked on
+    // its own, while 2606:4700::1 is ordinary global unicast. This control establishes that.
+    check("CONTROL a global-unicast IPv6 literal is not blocked, so it is a valid substitute",
+      (await codeOf(t({ method: "GET", url: "https://[2606:4700::1]:9/x", blockPrivateAddresses: true }))) !== "transport/blocked-address");
+    var realLowerT = String.prototype.toLowerCase;
+    var foldedCode;
+    try {
+      String.prototype.toLowerCase = function () {
+        var s = realLowerT.call(this);
+        return s === "fc00::1" ? "2606:4700::1" : s;
+      };
+      foldedCode = await codeOf(t({ method: "GET", url: "https://[fc00::1]:9/x", blockPrivateAddresses: true }));
+    } finally {
+      String.prototype.toLowerCase = realLowerT;
+    }
+    check("blockPrivateAddresses on: the IPv6 blocklist still refuses under a replaced toLowerCase (" +
+      foldedCode + ")", foldedCode === "transport/blocked-address");
+    // The IPv4 arm splits the literal into octets, so a replaced String.prototype.split answering
+    // with octets of a public address is the same admission in the other family.
+    var realSplit = String.prototype.split;
+    var splitCode;
+    try {
+      String.prototype.split = function (sep) {
+        var parts = realSplit.call(this, sep);
+        return (parts.length === 4 && parts[0] === "127") ? ["93", "184", "216", "34"] : parts;
+      };
+      splitCode = await codeOf(t({ method: "GET", url: "https://127.0.0.1:9/x", blockPrivateAddresses: true }));
+    } finally {
+      String.prototype.split = realSplit;
+    }
+    check("blockPrivateAddresses on: the IPv4 blocklist still refuses under a replaced split (" +
+      splitCode + ")", splitCode === "transport/blocked-address");
+    // The hextets are produced by the split and READ by parseInt, so converting the split without
+    // the conversion leaves the gate as open as before: making parseInt("fc00", 16) answer 0x2606
+    // puts the address inside global unicast and the refusal is skipped.
+    var realParseInt = global.parseInt;
+    var intCode;
+    try {
+      global.parseInt = function (s, radix) {
+        if (radix === 16 && s === "fc00") return 0x2606;
+        return realParseInt(s, radix);
+      };
+      intCode = await codeOf(t({ method: "GET", url: "https://[fc00::1]:9/x", blockPrivateAddresses: true }));
+    } finally {
+      global.parseInt = realParseInt;
+    }
+    check("blockPrivateAddresses on: the IPv6 blocklist still refuses under a replaced parseInt (" +
+      intCode + ")", intCode === "transport/blocked-address");
+    // The family classification is consulted BEFORE any of those operations and comes from a module
+    // export, not a prototype or a global. Answering 0 for a literal makes the blocklist fall through
+    // to "not blocked", so every captured operation after it decides nothing.
+    var nodeNetMod = require("node:net");
+    var realIsIP = nodeNetMod.isIP;
+    var famCode;
+    try {
+      nodeNetMod.isIP = function (s) { return s === "127.0.0.1" ? 0 : realIsIP(s); };
+      famCode = await codeOf(t({ method: "GET", url: "https://127.0.0.1:9/x", blockPrivateAddresses: true }));
+    } finally {
+      nodeNetMod.isIP = realIsIP;
+    }
+    check("blockPrivateAddresses on: the blocklist still refuses under a replaced net.isIP (" +
+      famCode + ")", famCode === "transport/blocked-address");
     check("blockPrivateAddresses off (default): the private-literal guard is opt-in, not applied",
       (await codeOf(t({ method: "GET", url: "https://127.0.0.1:9/x" }))) !== "transport/blocked-address");
   } finally { s.srv.close(); }
@@ -688,8 +815,67 @@ async function testProxyConnect() {
     var pxMd5 = await startConnectProxy({ tls: proxyTls, requireAuth: "digest", username: "u", password: "p",
       challenge: 'Digest realm="proxy", nonce="n0nce", qop="auth", algorithm=MD5' });
     try {
+      var md5Opts = { method: "GET", url: originUrl, proxy: { url: "https://127.0.0.1:" + pxMd5.port, auth: { scheme: "digest", username: "u", password: "p" }, tls: pTrust } };
       check("PX-20 an MD5 Digest challenge is refused by default",
-        (await codeOf(t({ method: "GET", url: originUrl, proxy: { url: "https://127.0.0.1:" + pxMd5.port, auth: { scheme: "digest", username: "u", password: "p" }, tls: pTrust } }))) === "transport/proxy-digest-weak-algorithm");
+        (await codeOf(t(md5Opts))) === "transport/proxy-digest-weak-algorithm");
+      // The challenge the policy is applied to is read through a string conversion. Read off the live
+      // global, a replacement that rewrites the challenge to a strong one makes the weak-algorithm
+      // refusal into an accepted credential, so the policy is applied to text the proxy never sent.
+      var realStringPx = global.String;
+      var rewrittenCode;
+      try {
+        global.String = function (v) {
+          var s = realStringPx(v);
+          return s.indexOf("algorithm=MD5") !== -1
+            ? 'Digest realm="proxy", nonce="n0nce", qop="auth", algorithm=SHA-256' : s;
+        };
+        global.String.prototype = realStringPx.prototype;
+        rewrittenCode = await codeOf(t(md5Opts));
+      } finally {
+        global.String = realStringPx;
+      }
+      check("PX-20 the Digest policy still refuses MD5 under a replaced String (" +
+        rewrittenCode + ")", rewrittenCode === "transport/proxy-digest-weak-algorithm");
+      // The whole auth-param is trimmed before anything slices it, so that outer trim controls what
+      // the algorithm is read from: mapping the segment algorithm=MD5 to algorithm=SHA-256
+      // classifies a weak challenge as strong and the refusal never fires.
+      var realTrimPx = String.prototype.trim;
+      var segCode;
+      try {
+        String.prototype.trim = function () {
+          var s = realTrimPx.call(this);
+          return s === "algorithm=MD5" ? "algorithm=SHA-256" : s;
+        };
+        segCode = await codeOf(t(md5Opts));
+      } finally {
+        String.prototype.trim = realTrimPx;
+      }
+      check("PX-20 the Digest policy still refuses MD5 under a replaced trim (" +
+        segCode + ")", segCode === "transport/proxy-digest-weak-algorithm");
+      // And at the characters: the lexer copies the challenge one character at a time, so a replaced
+      // charAt rewrites MD5 to SHA-256 while the split is copying it and the parse reports a strong
+      // algorithm. Capturing the token handling does not make the parse safe end to end.
+      var realCharAt = String.prototype.charAt;
+      var charCode2;
+      try {
+        // The replacement answers from a rewritten copy of whatever string is being lexed, which is
+        // what a per-character attack amounts to: every index the lexer asks for comes back from the
+        // rewritten text, so the token it assembles says SHA-256.
+        String.prototype.charAt = function (i) {
+          var self = realStringPx(this);
+          var swapped = self.indexOf("algorithm=MD5") !== -1
+            ? self.split("algorithm=MD5").join("algorithm=SHA-256") : self;
+          return realCharAt.call(swapped, i);
+        };
+        charCode2 = await codeOf(t(md5Opts));
+      } finally {
+        String.prototype.charAt = realCharAt;
+      }
+      // This one pins the REASON, not the refusal: measured, the character rewrite does not reach an
+      // accepted credential either way, but without the capture the refusal comes back as
+      // proxy-digest-unsupported-algorithm instead of naming the weak algorithm it actually found.
+      check("PX-20 the Digest refusal still names the weak algorithm under a replaced charAt (" +
+        charCode2 + ")", charCode2 === "transport/proxy-digest-weak-algorithm");
     } finally { pxMd5.srv.close(); }
     var pxMd5Ok = await startConnectProxy({ tls: proxyTls, requireAuth: "digest", username: "u", password: "p",
       challenge: 'Digest realm="proxy", nonce="n0nce", qop="auth", algorithm=MD5' });
@@ -859,6 +1045,26 @@ async function testProxyConnect() {
   check("PX-9d Digest proxy auth over a plaintext http proxy is refused, like Basic", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "http://p:8080", auth: { scheme: "digest", username: "u", password: "p" } } }))) === "transport/proxy-auth-requires-tls");
   check("PX-9d2 a Digest knob on a Basic proxy auth is refused", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "https://p:8080", auth: { scheme: "basic", username: "u", password: "p", allowMD5: true }, tls: { useSystemStore: true } } }))) === "transport/bad-proxy");
   check("PX-9d3 a non-boolean Digest knob is refused", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "https://p:8080", auth: { scheme: "digest", username: "u", password: "p", allowMD5: "yes" }, tls: { useSystemStore: true } } }))) === "transport/bad-proxy");
+  // RFC 7617 sec. 2 forbids a colon in a Basic user-id, and the check asks String.prototype.indexOf.
+  // Read off the live prototype, a replacement answering -1 accepts the configuration, so the
+  // credential this transport would send is one the scheme cannot encode unambiguously.
+  var colonProxy = { method: "GET", url: "https://ca.example/x",
+    proxy: { url: "https://p:8080", auth: { scheme: "basic", username: "a:b", password: "p" }, tls: { useSystemStore: true } } };
+  check("CONTROL a colon in a Basic proxy user-id is refused",
+    (await codeOf(t(colonProxy))) === "transport/bad-proxy");
+  var realIndexOfP = String.prototype.indexOf;
+  var colonCode;
+  try {
+    String.prototype.indexOf = function (needle) {
+      var r = realIndexOfP.apply(this, arguments);
+      return (needle === ":" && String(this) === "a:b") ? -1 : r;
+    };
+    colonCode = await codeOf(t(colonProxy));
+  } finally {
+    String.prototype.indexOf = realIndexOfP;
+  }
+  check("PX-9d5 the Basic user-id colon rule holds under a replaced indexOf (" + colonCode + ")",
+    colonCode === "transport/bad-proxy");
   check("PX-9d4 a non-string Digest password is refused", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "https://p:8080", auth: { scheme: "digest", username: "u", password: 7 }, tls: { useSystemStore: true } } }))) === "transport/bad-proxy");
   check("PX-9d5 an auth record supplying a field through an accessor is refused", (await codeOf((function () {
     var a = { scheme: "digest", username: "u" };

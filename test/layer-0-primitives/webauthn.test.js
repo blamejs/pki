@@ -511,6 +511,34 @@ async function run() {
   // packed self-attestation whose signature does not verify under the credential key.
   check("verify: packed self-attestation with a non-verifying signature -> webauthn/verify-failed",
     (await codeOfAsync(function () { return pki.webauthn.verify(attObjOf("packed", [[cText("alg"), cInt(-7)], [cText("sig"), cBytes(_B.sequence([_B.integer(1n), _B.integer(1n)]))]], realAuthData), packedHash); })) === "webauthn/verify-failed");
+  // That refusal lives in a promise continuation, and `then` is read off the promise at the call. A
+  // replacement settling the chain without running the callback skips the `if (!ok) throw` and the
+  // statement verifies with a signature nothing checked. The replacement is narrowed to that one
+  // callback by a phrase only it carries; applied to every continuation it breaks an earlier step and
+  // never reaches this one. `consulted` must read false: the route no longer goes through the
+  // prototype. The sibling formats share the verb, so one route proves the capture for all of them.
+  var realThen = Object.getOwnPropertyDescriptor(Promise.prototype, "then");
+  var selfAttCode, thenConsulted = false;
+  try {
+    Object.defineProperty(Promise.prototype, "then", {
+      value: function (onOk, onFail) {
+        if (typeof onOk === "function" && String(onOk).indexOf("packed self-attestation signature") !== -1) {
+          thenConsulted = true;
+          return realThen.value.call(Promise.resolve(true), onOk);
+        }
+        return realThen.value.call(this, onOk, onFail);
+      },
+      writable: true, configurable: true,
+    });
+    selfAttCode = await codeOfAsync(function () {
+      return pki.webauthn.verify(attObjOf("packed", [[cText("alg"), cInt(-7)], [cText("sig"), cBytes(_B.sequence([_B.integer(1n), _B.integer(1n)]))]], realAuthData), packedHash);
+    });
+  } finally {
+    Object.defineProperty(Promise.prototype, "then", realThen);
+  }
+  check("verify: a replaced promise continuation cannot carry a non-verifying signature past the refusal (" +
+    selfAttCode + ", consulted=" + thenConsulted + ")",
+  selfAttCode === "webauthn/verify-failed" && thenConsulted === false);
 
   // ---- tpm statement (WebAuthn 8.3) -----------------------------------------------
   // Rebuild the real tpm KAT with a single overridden field (ver / alg / sig).
@@ -564,6 +592,32 @@ async function run() {
     (await codeOfAsync(function () { return pki.webauthn.verify(appleAtt(packedLeaf, realAuthData), packedHash); })) === "webauthn/bad-att-cert");
   check("verify: apple v3 leaf with no extensions -> webauthn/bad-att-cert",
     (await codeOfAsync(function () { return pki.webauthn.verify(appleAtt(appleCert(ecP256Spki(goodEcPoint), null), realAuthData), packedHash); })) === "webauthn/bad-att-cert");
+  // That refusal rests on the extension SELECTION coming back empty, and index 0 of an empty array is
+  // not absence: it reads through to `Array.prototype[0]`. A value installed there answers for an
+  // extension the certificate does not carry, and the nonce the attestation is then compared against
+  // was never in the signed certificate. The selection is only indexed once it holds something.
+  var protoZeroCode;
+  try {
+    // A WELL-FORMED extension carrying the nonce this ceremony's authData and clientDataHash do hash
+    // to, so the probe reaches the acceptance rather than stopping at a decode refusal: the injected
+    // value has to be the one the check would have compared equal.
+    Array.prototype[0] = { critical: false, oid: _oidName("appleAnonymousAttestation"),
+      value: nonceExtFor(realAuthData, packedHash) };
+    protoZeroCode = await codeOfAsync(function () {
+      return pki.webauthn.verify(appleAtt(appleCert(ecP256Spki(goodEcPoint), null), realAuthData), packedHash);
+    });
+  } finally {
+    delete Array.prototype[0];
+  }
+  check("verify: an inherited array index cannot supply an extension the leaf does not carry",
+    protoZeroCode === "webauthn/bad-att-cert");
+  // A captured `filter` would not be enough either: it builds its result through ArraySpeciesCreate,
+  // which reads a constructor off the receiver, and a species returning `{ length: 0 }` takes the
+  // match as property 0 while the length stays zero, so a present extension reads ABSENT and the
+  // hostname check falls back to the common name. The selection is an index loop for that reason.
+  // The property is pinned on the primitive in guard-intrinsic.test.js rather than end to end,
+  // because a global species replacement also breaks the modules on this path that still use a
+  // species-backed selection, so an end-to-end probe measures one of those refusals instead.
   // the anonymous-attestation extension value must decode to SEQUENCE {[1] OCTET STRING}.
   check("verify: apple attestation extension that is not decodable -> webauthn/bad-att-cert",
     (await codeOfAsync(function () { return pki.webauthn.verify(appleAtt(appleCert(ecP256Spki(goodEcPoint), Buffer.from([0x01])), realAuthData), packedHash); })) === "webauthn/bad-att-cert");
@@ -700,6 +754,28 @@ async function run() {
     (await codeOfAsync(function () {
       return pki.webauthn.verify(regObj, { clientDataJSON: createJson, expectedOrigin: "https://example.com.attacker.tld" });
     })) === "webauthn/client-data-mismatch");
+  // An allow-list the caller left EMPTY must admit nothing. A sparse array answers from the prototype
+  // at the index it has a hole at, and a universal test over it skips the hole, so a one-element list
+  // with no origin of its own passed the door and then matched an origin installed on
+  // `Array.prototype`, with the origin reported as checked. The same holds for the top-origin list.
+  var realIndexZero = Object.getOwnPropertyDescriptor(Array.prototype, "0");
+  var sparseOriginCode, sparseTopCode;
+  try {
+    Array.prototype[0] = "https://example.com";
+    sparseOriginCode = await codeOfAsync(function () {
+      return pki.webauthn.verify(regObj, { clientDataJSON: createJson, expectedOrigin: new Array(1) });
+    });
+    sparseTopCode = await codeOfAsync(function () {
+      return pki.webauthn.verify(regObj, { clientDataJSON: createJson, expectedTopOrigin: new Array(1) });
+    });
+  } finally {
+    if (realIndexZero) Object.defineProperty(Array.prototype, "0", realIndexZero);
+    else delete Array.prototype[0];
+  }
+  check("verify: a sparse expectedOrigin admits nothing, whatever sits on the array prototype (" +
+    sparseOriginCode + ")", sparseOriginCode === "webauthn/bad-input");
+  check("verify: and a sparse expectedTopOrigin is refused the same way (" + sparseTopCode + ")",
+    sparseTopCode === "webauthn/bad-input");
   // The digest computed from the JSON is the one the attestation is bound to, so the two doors
   // agree on the same ceremony.
   check("verify: the digest form of the same clientData reaches the same verdict",
@@ -1424,6 +1500,21 @@ async function testTpmObjectAttributePolicy() {
     (await codeOfAsync(function () {
       return pki.webauthn.verify(attObjOf("none", [], noneAuth), clientHash("packed"), { requireCtsProfileMatch: "true" });
     })) === "webauthn/bad-input");
+  // That refusal is reached by WALKING the format-scoped boolean options, so the walk decides it. A
+  // walk that visits nothing leaves `"true"` in place, and the arm that reads it later wants exactly
+  // `true`, so the mistyped value becomes an opt-in the caller never expressed.
+  var realForEach = Array.prototype.forEach;
+  var noWalkCode;
+  try {
+    Array.prototype.forEach = function () { return undefined; };
+    noWalkCode = await codeOfAsync(function () {
+      return pki.webauthn.verify(attObjOf("none", [], noneAuth), clientHash("packed"), { requireCtsProfileMatch: "true" });
+    });
+  } finally {
+    Array.prototype.forEach = realForEach;
+  }
+  check("cts policy: a walk that visits nothing cannot admit a mistyped requireCtsProfileMatch",
+    noWalkCode === "webauthn/bad-input");
   check("cts policy: ...and so is a mistyped verifySafetyNetJws",
     (await codeOfAsync(function () {
       return pki.webauthn.verify(attObjOf("none", [], noneAuth), clientHash("packed"), { verifySafetyNetJws: "yes" });
@@ -1734,11 +1825,23 @@ async function testAndroidSafetyNet() {
       subject: rootName, subjectPublicKey: rootSpki, serialNumber: Buffer.from([1]), notBefore: NB, notAfter: NA,
       extensions: { basicConstraints: { critical: true, cA: true }, keyUsage: ["keyCertSign", "cRLSign"] },
     }, { key: rootKp.privateKey, name: rootName, publicKey: rootSpki });
+    // The SAN host and the commonName are settable SEPARATELY. Minting both from one name is the
+    // config in which this bind cannot fail: the authoritative SAN and the fallback agree, so a
+    // check reading neither correctly still answers right. The two must be able to disagree.
     var host = o.hostname || "attest.android.com";
+    var sanHost = o.sanHost === undefined ? host : o.sanHost;
+    // `cn` sets the commonName independently. It was accepted and IGNORED, so the vector below that
+    // claims a SAN-only leaf verifies "even when the commonName differs" was minting both names from
+    // one string and passing vacuously. That is why a check reading the SAN through a field shape the
+    // decoder never produces went unnoticed: the fallback it silently relied on gave the right answer.
+    var cnHost = o.cn === undefined ? host : o.cn;
     var leafExts = { keyUsage: ["digitalSignature"] };
-    if (!o.noSan) leafExts.subjectAltName = [{ dNSName: host }];
+    // `sanEntries` sets the SAN to arbitrary GeneralName forms, which is how the middle case is
+    // reachable: a SAN that is PRESENT but carries no dNSName at all.
+    if (o.sanEntries) leafExts.subjectAltName = o.sanEntries;
+    else if (!o.noSan) leafExts.subjectAltName = [{ dNSName: sanHost }];
     var leafDer = await pki.x509.sign({
-      subject: [{ commonName: host }], subjectPublicKey: leafSpki, serialNumber: Buffer.from([2]), notBefore: NB, notAfter: NA,
+      subject: [{ commonName: cnHost }], subjectPublicKey: leafSpki, serialNumber: Buffer.from([2]), notBefore: NB, notAfter: NA,
       extensions: leafExts,
     }, { key: rootKp.privateKey, name: rootName, publicKey: rootSpki });
 
@@ -1842,9 +1945,95 @@ async function testAndroidSafetyNet() {
     (await codeFor({ nonce: Buffer.alloc(32, 7).toString("base64") })) === "webauthn/safetynet-nonce-mismatch");
   check("safetynet: the nonce is standard base64, not base64url (bullet 3)",
     (await codeFor({ nonce: "not-the-right-nonce" })) === "webauthn/safetynet-nonce-mismatch");
+  // The nonce bind is what stops a correctly signed response being replayed against other
+  // authenticatorData. The digest is taken with the captured hash and then ENCODED to text before
+  // the comparison, so capturing the hash alone leaves the encoding deciding the operand. Narrow to
+  // a 32-byte buffer asked for base64: that is the digest and nothing else on this path, and a wider
+  // replacement breaks the x5c decode before the gate is reached.
+  var SN_WRONG = Buffer.alloc(32, 7).toString("base64");
+  var realBufToString = Buffer.prototype.toString;
+  var nonceEncCode;
+  try {
+    Buffer.prototype.toString = function (enc) {
+      if (enc === "base64" && this.length === 32) return SN_WRONG;
+      return realBufToString.apply(this, arguments);
+    };
+    nonceEncCode = await codeFor({ nonce: SN_WRONG });
+  } finally {
+    Buffer.prototype.toString = realBufToString;
+  }
+  check("safetynet: a replaced digest ENCODING cannot satisfy the nonce bind (bullet 3)",
+    nonceEncCode === "webauthn/safetynet-nonce-mismatch");
   // A suffix of the expected name must not pass -- the match is exact, never a suffix or wildcard.
+  // The subjectAltName is AUTHORITATIVE and the commonName is only a fallback for a leaf that has
+  // no SAN, so the two must be able to disagree and the SAN must win both ways. Minting both names
+  // from one string hides a check that reads neither correctly: the decoder returns
+  // `{ names, bytes }` with each entry carrying `tagNumber`, so a check looking for a bare array of
+  // `{ type: "dNSName" }` selects nothing and every leaf falls through to the commonName.
+  check("safetynet: a leaf whose SAN names another host is refused, whatever its commonName says",
+    (await codeFor({ sanHost: "other.example" })) === "webauthn/safetynet-bad-hostname");
   check("safetynet: a leaf issued to another hostname is refused (bullet 4)",
     (await codeFor({ hostname: "attest.android.com.evil.test" })) === "webauthn/safetynet-bad-hostname");
+  // The hostname check is an ADMISSION gate, and it folds the leaf's name through
+  // String.prototype.toLowerCase before comparing. Read off the live prototype, a co-resident
+  // replacement that answers with the wanted name admits ANY leaf: the direction that matters is
+  // that this one opens rather than denies.
+  var realLower = String.prototype.toLowerCase;
+  var swappedCode;
+  try {
+    // Narrow to the leaf's own name: replacing the fold for every string breaks an earlier step
+    // (header and algorithm names fold too) and the probe never reaches the gate it is measuring.
+    String.prototype.toLowerCase = function () {
+      var s = realLower.call(this);
+      return s === "other.example" ? "attest.android.com" : s;
+    };
+    swappedCode = await codeFor({ hostname: "other.example" });
+  } finally {
+    String.prototype.toLowerCase = realLower;
+  }
+  check("safetynet: the hostname gate still refuses under a replaced toLowerCase (" +
+    swappedCode + ")", swappedCode === "webauthn/safetynet-bad-hostname");
+  // The fold is not the whole gate: the membership WALK reaches the same `true`. A replaced
+  // Array.prototype.some answering true for the decoded dNSName list passes the requirement whatever
+  // the names compare as, and a replaced filter that drops the dNSName entries sends it down the
+  // commonName fallback instead.
+  var realSome = Array.prototype.some;
+  var someCode, someFired = 0;
+  try {
+    Array.prototype.some = function (fn, thisArg) {
+      // Match on the serialized entry rather than a guessed field name, so the probe ARRIVES: a
+      // condition keyed to the wrong shape never fires and the check passes while the hole is open.
+      // Any membership walk that answers the hostname question. The commonName fallback walks the
+      // leaf's RDNs, so an `noSan` fixture is the one that exercises it; the dNSName branch of the
+      // same function is captured the same way.
+      if (this.length && this[0] && (this[0].type === "dNSName" || Array.isArray(this[0]) ||
+          (this[0].name !== undefined && this[0].value !== undefined))) {
+        someFired += 1; return true;
+      }
+      return realSome.call(this, fn, thisArg);
+    };
+    someCode = await codeFor({ noSan: true, hostname: "other.example" });
+  } finally {
+    Array.prototype.some = realSome;
+  }
+  check("safetynet: no hostname walk consults a replaced some (fired=" + someFired + ")",
+    someFired === 0);
+  check("safetynet: and the hostname gate still refuses (" +
+    someCode + ")", someCode === "webauthn/safetynet-bad-hostname");
+  // The SAN is classified as an array before it is examined, and that classification runs first.
+  // Answering false leaves the entry list empty, so the authoritative SAN is never read and the
+  // commonName fallback decides: a leaf whose SAN names another host while its CN names the wanted
+  // one is then accepted. This fixture is exactly that pair.
+  // The array classification that guards this SAN read is also captured, and it has NO vector here.
+  // Three narrowings were tried and none measured the gate: a condition keyed to the decoded record's
+  // field names never fired, and answering false for every array refuses earlier with
+  // webauthn/safetynet-no-root because the roots list is classified the same way. A probe that is
+  // refused for the wrong reason is indistinguishable from one that found nothing, so no check is
+  // asserted rather than one that would pass whatever the code did. The CONTROL below still pins the
+  // pair this fixture builds: a SAN naming another host beside a commonName naming the wanted one is
+  // refused on the SAN, which is the behavior the classification exists to preserve.
+  check("safetynet: a SAN for another host is refused even when the CN names the wanted one",
+    (await codeFor({ hostname: "other.example", cn: "attest.android.com" })) === "webauthn/safetynet-bad-hostname");
   check("safetynet: a signature that does not verify is refused (bullet 4)",
     (await codeFor({ badSig: true })) === "webauthn/verify-failed");
   check("safetynet: a signature by a key other than the x5c leaf is refused (bullet 4)",
@@ -1973,6 +2162,15 @@ async function testAndroidSafetyNet() {
     sanOnly && sanOnly.attestationVerified === true);
   check("safetynet: a SAN that names another host is refused even when the commonName is right",
     (await codeFor({ hostname: "other.example", cn: "attest.android.com" })) === "webauthn/safetynet-bad-hostname");
+  // The middle case between those two: a SAN that is PRESENT but carries no dNSName. A present SAN
+  // is authoritative whichever forms it holds, so the commonName must not be consulted, and a leaf
+  // whose only name form is a URI does not bind the required host however its commonName reads.
+  check("safetynet: a SAN carrying no dNSName is still authoritative, so the commonName is not read",
+    (await codeFor({ sanEntries: [{ uniformResourceIdentifier: "https://attest.android.com/" }], cn: "attest.android.com" }))
+      === "webauthn/safetynet-bad-hostname");
+  check("safetynet: nor is it read when the SAN holds only an address",
+    (await codeFor({ sanEntries: [{ iPAddress: "10.0.0.1" }], cn: "attest.android.com" }))
+      === "webauthn/safetynet-bad-hostname");
   var noSanOk = await codeFor({ noSan: true });
   check("safetynet: a leaf naming the host only in its commonName verifies",
     noSanOk && noSanOk.attestationVerified === true && noSanOk.attestationType === "Basic");
@@ -2157,6 +2355,28 @@ async function testAssertion() {
   check("assertion: a genuine signature over authenticatorData || SHA-256(clientDataJSON) verifies",
     res.signatureVerified === true && res.signCount === 9);
   check("#78 valid aliases signatureVerified on the webauthn assertion verdict", res.valid === true && res.valid === res.signatureVerified);
+  // Each byte field the verdict is computed over is SNAPSHOTTED by a walk over their names, so a walk
+  // that visits nothing leaves the caller's own buffers in place and they can be rewritten between
+  // this call returning its promise and the verification running. Substituting authenticatorData with
+  // a signature that matches it then verifies, so the verdict describes bytes the call never saw.
+  var walkAd = Buffer.from(ad), walkSig = Buffer.from(sig);
+  var otherAd = _assertAuthData({ signCount: 4096 });
+  var otherSig = _assertSig(otherAd, cd);
+  var realForEachA = Array.prototype.forEach;
+  var swapped;
+  try {
+    Array.prototype.forEach = function () { return undefined; };
+    var p = pki.webauthn.verifyAssertion({ authenticatorData: walkAd, clientDataJSON: cd,
+      signature: walkSig, credentialPublicKey: stored });
+    otherAd.copy(walkAd); otherSig.copy(walkSig);     // the window the snapshot exists to close
+    swapped = await p;
+  } catch (e) {
+    swapped = e.code || e.constructor.name;
+  } finally {
+    Array.prototype.forEach = realForEachA;
+  }
+  check("assertion: a walk that visits nothing cannot leave the verified bytes rewritable",
+    swapped && swapped.signCount === 9);
   // The verdict ends the prototype lookup for `then` on itself, so resolving it does not hand an
   // inherited accessor the verdict as a receiver. verdict-shield.test.js drives that behavior.
   check("the webauthn assertion verdict owns then", Object.prototype.hasOwnProperty.call(res, "then") && res.then === undefined);
