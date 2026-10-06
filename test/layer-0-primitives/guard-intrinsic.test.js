@@ -586,6 +586,44 @@ function testSelectionsConsultNoConstructionProtocol() {
   try { intrinsic.append(shrinkingProxy([1, 2]), 3); } catch (_e) { appendRefused = true; }
   check("intrinsic: append refuses one too", appendRefused === true);
 
+  // Each ELEMENT is read once, so the value a predicate decides on is the value that is kept. Read
+  // twice, an element with a getter answers the test with one value and supplies another, which is
+  // the shape where a selection that gates a refusal admits the very thing the refusal examined.
+  var twoFaced = [];
+  var faceReads = 0;
+  Object.defineProperty(twoFaced, "0", {
+    get: function () { faceReads += 1; return faceReads === 1 ? "SAFE" : "EVIL"; },
+    enumerable: true, configurable: true,
+  });
+  twoFaced.length = 1;
+  var selected = intrinsic.selectList(twoFaced, function (v) { return v === "SAFE"; });
+  check("intrinsic: selectList keeps the value its predicate judged, not a second read of the slot",
+    selected.length === 1 && selected[0] === "SAFE" && faceReads === 1);
+
+  // Each BOUND is coerced once. Read repeatedly by the clamping arithmetic, an object-valued bound
+  // answers differently per read and the window copied is not the one any single read describes.
+  var boundReads = 0;
+  var movingBound = { valueOf: function () { boundReads += 1; return boundReads === 1 ? 1 : 2; } };
+  var copied = intrinsic.copyList([1, 2, 3], movingBound);
+  check("intrinsic: copyList coerces a bound once", boundReads === 1 && copied.length === 2 && copied[0] === 2);
+  check("intrinsic: copyList still matches slice on negative and clamped bounds",
+    JSON.stringify(intrinsic.copyList([1, 2, 3, 4, 5], -2)) === JSON.stringify([1, 2, 3, 4, 5].slice(-2)) &&
+    JSON.stringify(intrinsic.copyList([1, 2, 3], 1, 99)) === JSON.stringify([1, 2, 3].slice(1, 99)));
+
+  // The offset the second operand lands at comes from the COPY. Taken by re-reading the first
+  // operand, an element getter that ran during the copy could have changed that length in between,
+  // so the second operand would overwrite copied entries or leave holes.
+  var shrinkOnRead = [];
+  Object.defineProperty(shrinkOnRead, "0", {
+    get: function () { shrinkOnRead.length = 1; return "a"; }, enumerable: true, configurable: true,
+  });
+  Object.defineProperty(shrinkOnRead, "1", { value: "b", enumerable: true, configurable: true, writable: true });
+  // The copy captured a length of 2 before the getter ran, so it holds two slots; taking the offset
+  // from the shrunken first operand instead puts `z` at index 1, on top of one of them.
+  var joined = intrinsic.concatList(shrinkOnRead, ["z"]);
+  check("intrinsic: concatList places the second operand after what it actually copied",
+    joined.length === 3 && joined[0] === "a" && joined[2] === "z");
+
   // `String.prototype.split` is SPECIFIED to look the separator's `Symbol.split` method up and call
   // it (ES2015 21.1.3.19 step 2), so the separator's prototype chain is part of the operation and
   // capturing `split` does not close it. Hard rule 11 bans `split` in lib/ for that reason.
@@ -615,6 +653,45 @@ function testSelectionsConsultNoConstructionProtocol() {
     JSON.stringify(intrinsic.splitChar("a..b", 46)) === JSON.stringify("a..b".split(".")) &&
     JSON.stringify(intrinsic.splitChar("", 46)) === JSON.stringify("".split(".")) &&
     JSON.stringify(intrinsic.splitChar("Websites;Email", 59)) === JSON.stringify("Websites;Email".split(";")));
+
+  // `charCodeAt` and `slice` each convert their receiver, so a receiver that is not already a string
+  // is scanned as one value and sliced as another: one answering "a.b" for the first two reads and
+  // "XYZ" afterwards returned the fields of a string the delimiter scan never saw. The delimiter has
+  // the mirror of that problem: `===` against a character code never coerces, so an object delimiter
+  // matches nothing and the whole input comes back as one field, which every caller reads as "this
+  // value carries no delimiter". Both are refused rather than answered.
+  var movingRecv = { length: 3, toString: function () { return movingRecv.n++ < 2 ? "a.b" : "XYZ"; }, n: 0 };
+  check("intrinsic: splitChar refuses a receiver that is not a string",
+    typeOf(function () { return intrinsic.splitChar(movingRecv, 46); }) === "TypeError");
+  check("intrinsic: splitChar refuses a delimiter that is not a character code",
+    typeOf(function () { return intrinsic.splitChar("a.b", { valueOf: function () { return 46; } }); }) === "TypeError" &&
+    typeOf(function () { return intrinsic.splitChar("a.b", "."); }) === "TypeError");
+
+  // The clamping arithmetic reads a bound two or three times, and every relational comparison
+  // coerces an object afresh. The same fix `copyList` took has to hold for the byte window: a start
+  // answering 1 for the comparisons and 0 afterwards was compared as 1 and sliced from 0, so the
+  // view returned covered a byte the bound excluded.
+  var byteReads = 0;
+  var movingStart = { valueOf: function () { byteReads += 1; return byteReads <= 3 ? 1 : 0; } };
+  var window40 = intrinsic.byteSlice(Buffer.from([10, 20, 30, 40]), movingStart, 3);
+  var stable40 = intrinsic.byteSlice(Buffer.from([10, 20, 30, 40]), 1, 3);
+  check("intrinsic: byteSlice coerces a bound once, so the view is the window one read describes",
+    byteReads === 1 && window40.length === 2 && window40[0] === 20 && window40[1] === 30 &&
+    stable40.length === 2 && stable40[0] === 20);
+  check("intrinsic: byteSlice still clamps and defaults the way subarray does",
+    intrinsic.byteSlice(Buffer.from([1, 2, 3])).length === 3 &&
+    intrinsic.byteSlice(Buffer.from([1, 2, 3]), 2, 99).length === 1 &&
+    intrinsic.byteSlice(Buffer.from([1, 2, 3]), 3, 1).length === 0);
+  // A fractional bound finds no slot: `list[0.5]` is absent, so the result carries its full length
+  // with nothing in it, which reads as a window of absent values rather than as the bad argument.
+  check("intrinsic: a fractional bound is refused by both windowing verbs",
+    typeOf(function () { return intrinsic.copyList([10, 20, 30], 0.5, 2); }) === "TypeError" &&
+    typeOf(function () { return intrinsic.byteSlice(Buffer.from([1, 2, 3]), 0.5); }) === "TypeError" &&
+    typeOf(function () { return intrinsic.copyList([10, 20, 30], NaN); }) === "TypeError");
+}
+
+function typeOf(fn) {
+  try { fn(); return "NO-THROW"; } catch (e) { return e.constructor.name; }
 }
 
 module.exports = { run: run };

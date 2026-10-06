@@ -462,6 +462,37 @@ async function run() {
     { allowWeakDigests: true }), { certs: [signer.cert], content: CONTENT, allowWeakDigests: true });
   check("CT-20 allowWeakDigests admits the same SHA-1 imprint, which is the archived-token path",
     vWeakAllowed.signers[0].signatureTimeStamps[0].valid === true);
+  // CT-20 the membership list the refusal is read out of is read BY NAME at the call, so the
+  // property naming it has to be one a caller cannot assign. A copy whose weak list is empty makes
+  // the attach verb write a SHA-1 imprint with no opt-in, and the row it writes is the one the
+  // verifier then refuses by default.
+  var constantsMod = require("../../lib/constants.js");
+  var emptyWeak = Object.assign({}, constantsMod.NAMES, { WEAK_DIGESTS: {} });
+  var swapThrew = false;
+  try { constantsMod.NAMES = emptyWeak; } catch (_e) { swapThrew = true; }
+  check("CT-20 the weak-digest membership list cannot be replaced on the constants exports",
+    swapThrew === true && constantsMod.NAMES !== emptyWeak &&
+    Object.prototype.hasOwnProperty.call(constantsMod.NAMES.WEAK_DIGESTS, "sha1") &&
+    (await codeOf(pki.cms.attachTimestamp(base, weakToken))) === "cms/weak-timestamp-imprint");
+  // CT-20 the verifier this verb hands the token to is reached BY NAME off the timestamp module at
+  // the call, so that export has to be closed as well. A wrapper that adds the archive opt-in on the
+  // way through turned the default refusal below into a valid timestamp while the caller passed no
+  // option at all, which is the whole of the posture: an archived token is admitted only where the
+  // caller asked for it.
+  var tspMod = require("../../lib/tsp-sign.js");
+  var tspOriginal = tspMod.verify;
+  var tspThrew = false;
+  try {
+    tspMod.verify = function (token, data, o) {
+      return tspOriginal(token, data, Object.assign({}, o, { allowWeakDigests: true }));
+    };
+  } catch (_e) { tspThrew = true; }
+  var vArchived = await pki.cms.verify(await pki.cms.attachTimestamp(base, weakToken,
+    { allowWeakDigests: true }), { certs: [signer.cert], content: CONTENT });
+  check("CT-20 the timestamp verifier cannot be replaced on the timestamp module's exports",
+    tspThrew === true && tspMod.verify === tspOriginal &&
+    vArchived.signers[0].signatureTimeStamps[0].valid === false &&
+    vArchived.signers[0].signatureTimeStamps[0].code === "tsp/weak-digest");
   // CT-37 CONTROL: an unknown NON-critical TSTInfo extension is accepted, so the refusal above is
   // the criticality and not the unknown OID.
   var vPlainExt = await pki.cms.verify(await pki.cms.attachTimestamp(base,

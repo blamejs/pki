@@ -82,6 +82,15 @@ async function testConfigGates() {
   check("4 a sub-floor minVersion is refused", (await codeOf(t({ method: "GET", url: "https://ca.example/x", tls: { anchors: [Buffer.from("x")], minVersion: "TLSv1.1" } }))) === "transport/bad-input");
   check("5 a negative maxResponseBytes is refused", (await codeOf(t({ method: "GET", url: "https://ca.example/x", tls: { anchors: [Buffer.from("x")] }, maxResponseBytes: -5 }))) === "transport/bad-input");
   check("6 a maxResponseBytes above the ceiling is refused (tighten-only)", (await codeOf(t({ method: "GET", url: "https://ca.example/x", tls: { anchors: [Buffer.from("x")] }, maxResponseBytes: pki.C.LIMITS.HTTP_MAX_RESPONSE_BYTES + 1 }))) === "transport/bad-input");
+  // The name a TLS handshake is opened under is read again twice after it is accepted: by the TLS
+  // layer for the name sent, and as the identity the server certificate is matched against. A value
+  // that is not already a string converts afresh at each, so one name is sent and another verified.
+  // The proxy arm has always typed this option; the origin arm now does too.
+  var twoFacedSni = { toString: function () { return "ca.example"; } };
+  check("6b1 a non-string tls.servername is refused at request init",
+    (await codeOf(t({ method: "GET", url: "https://ca.example/x", tls: { anchors: [Buffer.from("x")], servername: twoFacedSni } }))) === "transport/bad-input");
+  check("6b2 and so is one supplied as a transport default",
+    (await codeOf(pki.transport.https({ tls: { anchors: [Buffer.from("x")], servername: twoFacedSni } })({ method: "GET", url: "https://ca.example/x" }))) === "transport/bad-input");
   check("6b a missing request object is refused (bad-url)", (await codeOf(t())) === "transport/bad-url");
   check("6c a malformed trust anchor fails closed at request init", (await codeOf(t({ method: "GET", url: "https://ca.example/x", tls: { anchors: [undefined] } }))) === "transport/transport-error");
 }
@@ -468,6 +477,17 @@ async function testResolutionFilterUnits() {
   check("isBlockedIp: v4 global public allowed (range edges)", !ht.isBlockedIp("8.8.8.8") && !ht.isBlockedIp("172.32.0.1") && !ht.isBlockedIp("192.169.0.1") && !ht.isBlockedIp("100.128.0.1") && !ht.isBlockedIp("198.20.0.1"));
   check("isBlockedIp: v6 non-global (loopback/ULA/link-local/site-local/multicast) + in-2000::/3 special-use (6to4/IETF/doc) blocked", ["::1", "::", "::ffff:127.0.0.1", "fc00::1", "fe80::1", "fec0::1", "feff::1", "ff02::1", "2001:db8::1", "2002::1", "2001:2::1", "2001::1", "3fff::1", "3fff:fff::1"].every(ht.isBlockedIp));
   check("isBlockedIp: v6 true global unicast allowed (outside every special-use prefix) + a non-IP is not classified", !ht.isBlockedIp("2606:4700::1") && !ht.isBlockedIp("2001:4860:4860::8888") && !ht.isBlockedIp("3fff:1000::1") && !ht.isBlockedIp("example.com"));
+  // The classifier converts its argument, so a value that is not already a string is converted once
+  // for the family check and again for the octet scan, and the SECOND answer decides. A resolver
+  // supplied through `opts.lookup` reaches this with whatever it yields, and the verb is public, so
+  // a value that cannot be classified is refused rather than measured twice.
+  var coerceReads = 0;
+  var twoFaced = { toString: function () { coerceReads += 1; return coerceReads === 1 ? "127.0.0.1" : "93.184.216.34"; } };
+  check("isBlockedIp: a value converted afresh per read is blocked rather than classified twice",
+    ht.isBlockedIp(twoFaced) === true);
+  check("isBlockedIp: a boxed string is blocked whichever address it holds, and a plain string is unaffected",
+    ht.isBlockedIp(new String("127.0.0.1")) === true && ht.isBlockedIp(new String("8.8.8.8")) === true &&
+    ht.isBlockedIp("8.8.8.8") === false);
   function resolver(err, addr, fam) { return function (h, o, cb) { cb(err, addr, fam); }; }
   function drive(lookupFn) { return new Promise(function (res) { lookupFn("host", {}, function (e, a) { res({ e: e, a: a }); }); }); }
   var errIn = new Error("dns fail");
