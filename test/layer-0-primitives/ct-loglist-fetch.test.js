@@ -231,6 +231,13 @@ async function run() {
   check("17. a text/plain JSON GET still resolves by default (lenient)", o17a && Array.isArray(o17a.logs));
   var t17b = ctx.ctFetchOpts(fx, ctx.okRoutes(fx, { json: ctx.resp(200, fx.json, "text/plain") }), { requireJsonContentType: true });
   check("17. requireJsonContentType:true -> ct/bad-content-type on a non-JSON type", (await code(function () { return pki.ct.fetchLogList(t17b.opts); })) === "ct/bad-content-type");
+  // The switch is read as the boolean it documents. A "true" out of a config file is truthy to
+  // JavaScript and unequal to true, so a boundary comparing against true would fetch with the
+  // check off and say nothing about the option it was handed.
+  var t17c = ctx.ctFetchOpts(fx, ctx.okRoutes(fx, { json: ctx.resp(200, fx.json, "text/plain") }), { requireJsonContentType: "true" });
+  check("17. a non-boolean requireJsonContentType is refused rather than read as off",
+    (await code(function () { return pki.ct.fetchLogList(t17c.opts); })) === "ct/bad-input");
+  check("17. and no socket was reached", t17c.transport.calls.length === 0);
 
   // ==== 18. malformed post-verify JSON -- parse runs ONLY after verify (M4) =========================
   var mal = malformedButSigned();

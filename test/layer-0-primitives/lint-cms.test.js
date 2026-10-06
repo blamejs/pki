@@ -88,7 +88,7 @@ async function run() {
     notSigned.map(function (p) { return p[0]; }).join(",") + ")",
   notSigned.every(function (p) {
     var rep = pki.lint.cms(p[1]);
-    return rep.ran.length === 0 && rep.counts.na === 5 && cmsIds(rep).length === 0;
+    return rep.ran.length === 0 && rep.counts.na === 6 && cmsIds(rep).length === 0;
   }));
   // A content type the parser does not read is refused before a row is reached, so it arrives as the
   // parser's own code rather than as five not-applicable rows. Sec. 4's id-data is that case.
@@ -120,11 +120,11 @@ async function run() {
         // No try/catch: the verb's contract is a report, so a throw here is the failure this vector
         // exists to catch and it is more use surfacing with its own stack than as a false return.
         var rep = underPollutedSignerInfos(p[1], function () { return pki.lint.cms(f[1]); });
-        return rep.ran.length === 0 && rep.counts.na === 5 && cmsIds(rep).length === 0;
+        return rep.ran.length === 0 && rep.counts.na === 6 && cmsIds(rep).length === 0;
       });
     }));
   check("Q4d2. CONTROL: the same rows DO run on a real signed-data message, so Q4d is not silence",
-    pki.lint.cms(attached).ran.length === 5);
+    pki.lint.cms(attached).ran.length === 6);
 
   // ---- Q5-Q6: sec. 11.3, the signing-time encoding --------------------------------------------
   var TIME_ID = "lint/rfc5652/signing-time-encoding";
