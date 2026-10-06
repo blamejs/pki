@@ -4,6 +4,27 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.56 — 2026-10-06
+
+Decide a name, an address and a trust bit through the string operations this toolkit captured at load, not the ones a caller can replace.
+
+### Changed
+
+- The remaining case folds in this toolkit read protocol details rather than deciding admissions: a response charset, a challenge flag, the relation name on a `Link` header, a contact's URI scheme. Those are read from a peer that has already been authenticated by the time they are consulted, and they are being converted alongside the rest of the live-operation work rather than as a security fix.
+
+### Fixed
+
+- `pki.path.validate` holds an `excludedSubtrees` name constraint whatever `String.prototype.toLowerCase` answers. The matcher folded both the constraint and the certificate's name before comparing them, so a replacement that mangled the constraint alone made the exclusion stop matching, and a leaf naming `www.bad.example` under an exclusion of `bad.example` was admitted with no failure code at all. The three name-constraint matchers now read the captured fold, along with the captured slice and index operations they mixed with it.
+- `pki.webauthn.verify` holds the android-safetynet hostname requirement of WebAuthn 8.5. The check answers yes when the x5c leaf is issued to `attest.android.com`, and it folded the leaf's name first, so a replacement answering with that name admitted any leaf: an attestation whose leaf named `other.example` verified.
+- `pki.transport.https` keeps refusing a private, loopback or link-local address literal under `blockPrivateAddresses`. Both families were steerable: the IPv6 arm folded the address before classifying it, so a private address answered as a global-unicast one cleared the refusal, and the IPv4 arm split the literal into octets, so a replacement answering with a public address's octets did the same. `127.0.0.1` and `fc00::1` both reached a connection attempt.
+- `pki.trust.parseCcadbCsv` grants an anchor only the purposes its Trust Bits cell names. The cell was split, trimmed and folded through live operations before each token was looked up, and the lookup grants a purpose, so a replacement answering with a recognized token widened what the anchor was trusted for: a row stating only `Email` produced an anchor carrying `serverAuth`.
+- `pki.path.validate` holds a `permittedSubtrees` constraint as well, which opens in the opposite direction from an exclusion: it refuses when no subtree matches, and an empty list of subtrees for a name form reads as "this issuer constrains no name of that form" and skips the check. A replacement that answered with an empty list therefore admitted a name no subtree permits. The subtree selection and the walk over it are both converted, and the test asserts the stronger property that neither consults a replaced operation at all rather than only that the verdict came out right.
+- `pki.path.validate` holds an excluded `rfc822Name` constraint as well. A constraint naming a whole mailbox is told apart from one naming a domain by whether it contains an `@`, so a replacement answering that it does not routed a mailbox constraint down the domain branch and the exclusion stopped matching: a leaf naming `alice@bad.example` under an exclusion of that same mailbox was admitted. The dNSName matchers and this one are now converted together, which is what the first pass should have done.
+- `pki.trust.parseCcadbCsv` still refuses a distrust date it cannot parse. An empty cell means there is no distrust date, and the cell was trimmed through a live operation first, so a replacement answering with the empty string removed the date rather than failing: a row carrying `not-a-date` parsed as an anchor with no distrust date at all.
+- `pki.transport.https` still refuses a colon in a Basic proxy user-id (RFC 7617 sec. 2). The check asked a live index operation, so a replacement answering that the colon is absent accepted a credential the scheme cannot encode unambiguously.
+- `pki.trust.parseCcadbCsv` reads each field from the column its header names. The header names were trimmed through a live operation, so a replacement that renamed the real `Trust Bits` header and answered `Trust Bits` for another column made an anchor's purposes come from that other cell: a row stating `Email` produced an anchor carrying `serverAuth` taken from a decoy column.
+- Every operation `pki.trust` reads a CCADB CSV or an NSS `certdata.txt` through now comes from the toolkit's own captures, rather than the four gates in it that were fixed one at a time first. Fixing those gates individually kept exposing the next one up: the cell readers were safe while the lexer that fed them was not, the lookup was safe while the header-to-column mapping was not, and the pairing check that refuses two disagreeing rows for one root could be answered `true` from outside. A row's purposes, its distrust dates, which column each came from, and the certificate bytes themselves are all decided on captured operations, so the module is no longer steerable a level at a time.
+
 ## v0.8.55 — 2026-10-06
 
 Tell a caller when the path search stopped looking, rather than reporting the chain it had.

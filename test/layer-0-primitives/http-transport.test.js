@@ -468,6 +468,44 @@ async function testBlockPrivateAddresses() {
       (await codeOf(t({ method: "GET", url: "https://127.0.0.1:9/x", blockPrivateAddresses: true }))) === "transport/blocked-address");
     check("blockPrivateAddresses on: an IPv6 private literal host is refused too",
       (await codeOf(t({ method: "GET", url: "https://[fc00::1]:9/x", blockPrivateAddresses: true }))) === "transport/blocked-address");
+    // The IPv6 arm of the blocklist folds the address through String.prototype.toLowerCase before
+    // classifying it, and the classification ADMITS anything inside global unicast. Read off the live
+    // prototype, a replacement that answers with a global-unicast spelling for a private address
+    // turns a refusal into a connection attempt. The replacement is narrowed to the one address so an
+    // earlier step does not break first and hide the gate.
+    // The substitute has to be an address the classifier ADMITS, or the refusal comes from another
+    // rule and the probe measures nothing: 2001:db8:: is the documentation range and is blocked on
+    // its own, while 2606:4700::1 is ordinary global unicast. This control establishes that.
+    check("CONTROL a global-unicast IPv6 literal is not blocked, so it is a valid substitute",
+      (await codeOf(t({ method: "GET", url: "https://[2606:4700::1]:9/x", blockPrivateAddresses: true }))) !== "transport/blocked-address");
+    var realLowerT = String.prototype.toLowerCase;
+    var foldedCode;
+    try {
+      String.prototype.toLowerCase = function () {
+        var s = realLowerT.call(this);
+        return s === "fc00::1" ? "2606:4700::1" : s;
+      };
+      foldedCode = await codeOf(t({ method: "GET", url: "https://[fc00::1]:9/x", blockPrivateAddresses: true }));
+    } finally {
+      String.prototype.toLowerCase = realLowerT;
+    }
+    check("blockPrivateAddresses on: the IPv6 blocklist still refuses under a replaced toLowerCase (" +
+      foldedCode + ")", foldedCode === "transport/blocked-address");
+    // The IPv4 arm splits the literal into octets, so a replaced String.prototype.split answering
+    // with octets of a public address is the same admission in the other family.
+    var realSplit = String.prototype.split;
+    var splitCode;
+    try {
+      String.prototype.split = function (sep) {
+        var parts = realSplit.call(this, sep);
+        return (parts.length === 4 && parts[0] === "127") ? ["93", "184", "216", "34"] : parts;
+      };
+      splitCode = await codeOf(t({ method: "GET", url: "https://127.0.0.1:9/x", blockPrivateAddresses: true }));
+    } finally {
+      String.prototype.split = realSplit;
+    }
+    check("blockPrivateAddresses on: the IPv4 blocklist still refuses under a replaced split (" +
+      splitCode + ")", splitCode === "transport/blocked-address");
     check("blockPrivateAddresses off (default): the private-literal guard is opt-in, not applied",
       (await codeOf(t({ method: "GET", url: "https://127.0.0.1:9/x" }))) !== "transport/blocked-address");
   } finally { s.srv.close(); }
@@ -859,6 +897,26 @@ async function testProxyConnect() {
   check("PX-9d Digest proxy auth over a plaintext http proxy is refused, like Basic", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "http://p:8080", auth: { scheme: "digest", username: "u", password: "p" } } }))) === "transport/proxy-auth-requires-tls");
   check("PX-9d2 a Digest knob on a Basic proxy auth is refused", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "https://p:8080", auth: { scheme: "basic", username: "u", password: "p", allowMD5: true }, tls: { useSystemStore: true } } }))) === "transport/bad-proxy");
   check("PX-9d3 a non-boolean Digest knob is refused", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "https://p:8080", auth: { scheme: "digest", username: "u", password: "p", allowMD5: "yes" }, tls: { useSystemStore: true } } }))) === "transport/bad-proxy");
+  // RFC 7617 sec. 2 forbids a colon in a Basic user-id, and the check asks String.prototype.indexOf.
+  // Read off the live prototype, a replacement answering -1 accepts the configuration, so the
+  // credential this transport would send is one the scheme cannot encode unambiguously.
+  var colonProxy = { method: "GET", url: "https://ca.example/x",
+    proxy: { url: "https://p:8080", auth: { scheme: "basic", username: "a:b", password: "p" }, tls: { useSystemStore: true } } };
+  check("CONTROL a colon in a Basic proxy user-id is refused",
+    (await codeOf(t(colonProxy))) === "transport/bad-proxy");
+  var realIndexOfP = String.prototype.indexOf;
+  var colonCode;
+  try {
+    String.prototype.indexOf = function (needle) {
+      var r = realIndexOfP.apply(this, arguments);
+      return (needle === ":" && String(this) === "a:b") ? -1 : r;
+    };
+    colonCode = await codeOf(t(colonProxy));
+  } finally {
+    String.prototype.indexOf = realIndexOfP;
+  }
+  check("PX-9d5 the Basic user-id colon rule holds under a replaced indexOf (" + colonCode + ")",
+    colonCode === "transport/bad-proxy");
   check("PX-9d4 a non-string Digest password is refused", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "https://p:8080", auth: { scheme: "digest", username: "u", password: 7 }, tls: { useSystemStore: true } } }))) === "transport/bad-proxy");
   check("PX-9d5 an auth record supplying a field through an accessor is refused", (await codeOf((function () {
     var a = { scheme: "digest", username: "u" };

@@ -1132,6 +1132,129 @@ async function testSelfIssuedAndConstraints() {
   var resNc = await run([interNc, leafNc], { time: T2027, trustAnchors: anchor });
   check("SAN within permitted subtree validates", resNc.valid === true);
 
+  // An EXCLUDED subtree that stops matching is fail-OPEN: the chain is admitted for a name the
+  // issuer forbade. Both the constraint and the host are folded through String.prototype.toLowerCase
+  // before they are compared, so a co-resident replacement sees both strings and chooses what they
+  // compare as. The exclusion must hold whatever that method answers.
+  var exclCa = await mkCert({ subject: "ExclCaseInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i",
+    extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt(null, [gnDns("bad.example")])] });
+  var exclLeaf = await mkCert({ subject: "ExclCaseLeaf", issuer: "ExclCaseInter", signWith: "ed25519i", subjectKeys: "ed25519leaf",
+    extensions: [sanExt([gnDns("www.bad.example")])] });
+  var exclPlain = await run([exclCa, exclLeaf], { time: T2027, trustAnchors: anchor });
+  check("CONTROL a SAN inside an excluded dNSName subtree is refused",
+    exclPlain.valid === false &&
+    failCodes(exclPlain).indexOf("path/name-constraint-excluded") !== -1);
+  var realToLowerCase = String.prototype.toLowerCase;
+  var exclSwapped;
+  try {
+    // The replacement sees `this`, so it mangles the CONSTRAINT alone and leaves the host as it is.
+    // Appending to both would preserve the suffix relation and prove nothing; breaking it on one
+    // side is what a co-resident replacement would actually do. If the exclusion is decided on what
+    // this answers, the forbidden name is admitted.
+    String.prototype.toLowerCase = function () {
+      var s = realToLowerCase.call(this);
+      return s === "bad.example" ? "no-such-suffix" : s;
+    };
+    exclSwapped = await run([exclCa, exclLeaf], { time: T2027, trustAnchors: anchor });
+  } finally {
+    String.prototype.toLowerCase = realToLowerCase;
+  }
+  check("an excluded dNSName subtree still refuses under a replaced toLowerCase (" +
+    exclSwapped.valid + ", " + failCodes(exclSwapped).join(",") + ")",
+    exclSwapped.valid === false);
+
+  // The rfc822 arm asks the same question through String.prototype.indexOf: a constraint naming a
+  // whole MAILBOX is told apart from one naming a domain by whether it contains "@". A replacement
+  // answering -1 routes a mailbox constraint down the domain branch, and the exclusion stops
+  // matching. Converting the dNSName matchers alone left this one live.
+  var exclMailCa = await mkCert({ subject: "ExclMailInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i",
+    extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt(null, [gnEmail("alice@bad.example")])] });
+  var exclMailLeaf = await mkCert({ subject: "ExclMailLeaf", issuer: "ExclMailInter", signWith: "ed25519i", subjectKeys: "ed25519leaf",
+    extensions: [sanExt([gnEmail("alice@bad.example")])] });
+  var exclMailPlain = await run([exclMailCa, exclMailLeaf], { time: T2027, trustAnchors: anchor });
+  check("CONTROL a SAN inside an excluded rfc822 mailbox constraint is refused",
+    exclMailPlain.valid === false &&
+    failCodes(exclMailPlain).indexOf("path/name-constraint-excluded") !== -1);
+  var realIndexOf = String.prototype.indexOf;
+  var exclMailSwapped;
+  try {
+    String.prototype.indexOf = function (needle) {
+      var s = realIndexOf.apply(this, arguments);
+      return (needle === "@" && String(this) === "alice@bad.example") ? -1 : s;
+    };
+    exclMailSwapped = await run([exclMailCa, exclMailLeaf], { time: T2027, trustAnchors: anchor });
+  } finally {
+    String.prototype.indexOf = realIndexOf;
+  }
+  check("an excluded rfc822 constraint still refuses under a replaced indexOf (" +
+    exclMailSwapped.valid + ", " + failCodes(exclMailSwapped).join(",") + ")",
+    exclMailSwapped.valid === false);
+
+  // The third spelling of the same gate: the exclusions are COLLECTED by walking an array. A
+  // replaced Array.prototype.forEach that skips the entry means the exclusion is never recorded, so
+  // there is nothing left to match against and the forbidden name is admitted. Converting the
+  // comparison operations does not cover the walk that feeds them.
+  var realForEach = Array.prototype.forEach;
+  var skips = 0, skipped = [];
+  var exclWalkSwapped;
+  try {
+    Array.prototype.forEach = function (fn, thisArg) {
+      // Skip any lone-entry walk whose entry mentions the excluded name, whatever the record is
+      // shaped like. Matching on the serialized entry rather than a guessed field is what makes the
+      // probe ARRIVE: a condition keyed to the wrong shape never fires and the check passes while
+      // the hole is open.
+      if (this.length === 1) {
+        var seen;
+        try { seen = JSON.stringify(this[0]); } catch (_e) { seen = ""; }
+        if (typeof seen === "string" && seen.indexOf("bad.example") !== -1) {
+          skips += 1; skipped.push(seen.slice(0, 90)); return undefined;
+        }
+      }
+      return realForEach.call(this, fn, thisArg);
+    };
+    exclWalkSwapped = await run([exclCa, exclLeaf], { time: T2027, trustAnchors: anchor });
+  } finally {
+    Array.prototype.forEach = realForEach;
+  }
+  // Two halves, and the first is the stronger claim: no walk over this certificate's own names or
+  // over the subtree lists is reached through the live prototype at all, so the replacement is never
+  // consulted. Asserting only the verdict would pass for a probe that never arrived.
+  check("no name-constraint walk consults a replaced forEach (skips=" + skips +
+    (skipped.length ? " :: " + skipped.join(" | ") : "") + ")", skips === 0);
+  check("and the excluded subtree still refuses (" +
+    exclWalkSwapped.valid + ", " + failCodes(exclWalkSwapped).join(",") + ")",
+    exclWalkSwapped.valid === false);
+
+  // The PERMITTED arm opens in the other direction: it refuses on the ABSENCE of a match, and an
+  // empty filter result reads as "this generation constrains no name of this form", which skips the
+  // check. A replaced Array.prototype.filter answering empty therefore admits a name no subtree
+  // permits. interNc permits only example.com, and permLeaf names something else.
+  var permLeafKp = "ed25519leaf";
+  var permOutside = await mkCert({ subject: "PermOutside", issuer: "NcInter", signWith: "ed25519i", subjectKeys: permLeafKp,
+    extensions: [sanExt([gnDns("www.other.example")])] });
+  var permPlain = await run([interNc, permOutside], { time: T2027, trustAnchors: anchor });
+  check("CONTROL a SAN outside the permitted subtree is refused",
+    permPlain.valid === false &&
+    failCodes(permPlain).indexOf("path/name-constraint-not-permitted") !== -1);
+  var realFilter = Array.prototype.filter;
+  var permFilterCalls = 0;
+  var permSwapped;
+  try {
+    Array.prototype.filter = function (fn, thisArg) {
+      var out = realFilter.call(this, fn, thisArg);
+      if (out.length && out[0] && out[0].base === "example.com") { permFilterCalls += 1; return []; }
+      return out;
+    };
+    permSwapped = await run([interNc, permOutside], { time: T2027, trustAnchors: anchor });
+  } finally {
+    Array.prototype.filter = realFilter;
+  }
+  check("no permitted-subtree filter consults a replaced filter (calls=" + permFilterCalls + ")",
+    permFilterCalls === 0);
+  check("and a SAN outside the permitted subtree is still refused (" +
+    permSwapped.valid + ", " + failCodes(permSwapped).join(",") + ")",
+    permSwapped.valid === false);
+
   // RFC 5280 sec. 4.2.1.6 forbids a zero-length dNSName in subjectAltName ("subjectAltName
   // extensions with a dNSName of ' ' MUST NOT be used"). Sec. 4.2.1.10 places no length floor on a
   // subtree BASE, and an empty base is how "every name of this form" is written, which is how a

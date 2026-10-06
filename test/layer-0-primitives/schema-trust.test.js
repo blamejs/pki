@@ -472,6 +472,87 @@ async function testCsvHeaderKeyed() {
     a15.distrustAfter.serverAuth.getTime() === Date.UTC(2027, 5, 1, 23, 59, 59));
   check("T15: empty S/MIME distrust cell -> absent", !("emailProtection" in a15.distrustAfter));
 
+  // A Trust Bits token is folded through String.prototype.toLowerCase before it is looked up, and the
+  // lookup GRANTS a purpose. Read off the live prototype, a replacement answering with a recognized
+  // token hands an anchor a purpose its CSV row never stated, which is an admission rather than a
+  // denial. The replacement is narrowed to the one token so no other fold in the parse breaks first.
+  var csvEmailOnly = csvOf([
+    CSV_HEADER,
+    ["Test Root A", "Email", "", "", q(pemA)],
+  ]);
+  var plainBits = pki.trust.parseCcadbCsv(csvEmailOnly).anchors[0].purposes;
+  check("CONTROL an Email-only row grants emailProtection and not serverAuth",
+    plainBits.emailProtection === true && plainBits.serverAuth === false);
+  var realLowerC = String.prototype.toLowerCase;
+  var foldedBits;
+  try {
+    String.prototype.toLowerCase = function () {
+      var s = realLowerC.call(this);
+      return s === "email" ? "websites" : s;
+    };
+    foldedBits = pki.trust.parseCcadbCsv(csvEmailOnly).anchors[0].purposes;
+  } finally {
+    String.prototype.toLowerCase = realLowerC;
+  }
+  check("T15: a Trust Bits token is not re-read through a replaced toLowerCase (serverAuth=" +
+    foldedBits.serverAuth + ")", foldedBits.serverAuth === false && foldedBits.emailProtection === true);
+
+  // A distrust-date cell is trimmed before it is parsed, and an EMPTY cell means there is no distrust
+  // date. Read off the live prototype, a replacement answering with the empty string for a cell the
+  // parser would have refused removes the distrust date instead of failing, which widens what the
+  // anchor is trusted to do and for how long.
+  var csvBadDate = csvOf([
+    CSV_HEADER,
+    ["Test Root A", "Websites", "not-a-date", "", q(pemA)],
+  ]);
+  var badDateCode = (function () {
+    try { pki.trust.parseCcadbCsv(csvBadDate); return "NO-THROW"; } catch (e) { return e.code; }
+  })();
+  check("CONTROL an unparseable distrust date is refused", badDateCode === "trust/bad-csv");
+  var realTrim = String.prototype.trim;
+  var trimmedCode;
+  try {
+    String.prototype.trim = function () {
+      var s = realTrim.call(this);
+      return s === "not-a-date" ? "" : s;
+    };
+    try { pki.trust.parseCcadbCsv(csvBadDate); trimmedCode = "NO-THROW"; }
+    catch (e) { trimmedCode = e.code; }
+  } finally {
+    String.prototype.trim = realTrim;
+  }
+  check("T15: an unparseable distrust date is still refused under a replaced trim (" +
+    trimmedCode + ")", trimmedCode === "trust/bad-csv");
+
+  // The header row decides WHICH column each field is read from, and the names are trimmed first. A
+  // replacement that renames the real Trust Bits header and answers "Trust Bits" for another column
+  // makes the purposes come from that other cell, so a row stating Email yields an anchor carrying
+  // whatever the decoy column says.
+  var csvDecoyCol = csvOf([
+    ["Common Name or Certificate Name", "Trust Bits", "Note", "Distrust for TLS After Date", "Distrust for S/MIME After Date", "PEM Info"],
+    ["Test Root A", "Email", "Websites", "", "", q(pemA)],
+  ]);
+  var plainCol = pki.trust.parseCcadbCsv(csvDecoyCol).anchors[0].purposes;
+  check("CONTROL with the real header the purposes come from the Trust Bits column",
+    plainCol.emailProtection === true && plainCol.serverAuth === false);
+  var realTrim2 = String.prototype.trim;
+  var decoyPurposes;
+  try {
+    String.prototype.trim = function () {
+      var s = realTrim2.call(this);
+      if (s === "Trust Bits") return "Ignored Column";
+      if (s === "Note") return "Trust Bits";
+      return s;
+    };
+    try { decoyPurposes = pki.trust.parseCcadbCsv(csvDecoyCol).anchors[0].purposes; }
+    catch (e) { decoyPurposes = { threw: e.code }; }
+  } finally {
+    String.prototype.trim = realTrim2;
+  }
+  check("T15: the header-to-column mapping is not steerable through a replaced trim (" +
+    JSON.stringify(decoyPurposes) + ")",
+    decoyPurposes.serverAuth === false || typeof decoyPurposes.threw === "string");
+
   // T15: a dash-separated date parses to the same instant (tolerant Y-M-D).
   var csvDash = csvOf([
     CSV_HEADER,

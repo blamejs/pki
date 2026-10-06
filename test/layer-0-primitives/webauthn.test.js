@@ -1845,6 +1845,25 @@ async function testAndroidSafetyNet() {
   // A suffix of the expected name must not pass -- the match is exact, never a suffix or wildcard.
   check("safetynet: a leaf issued to another hostname is refused (bullet 4)",
     (await codeFor({ hostname: "attest.android.com.evil.test" })) === "webauthn/safetynet-bad-hostname");
+  // The hostname check is an ADMISSION gate, and it folds the leaf's name through
+  // String.prototype.toLowerCase before comparing. Read off the live prototype, a co-resident
+  // replacement that answers with the wanted name admits ANY leaf: the direction that matters is
+  // that this one opens rather than denies.
+  var realLower = String.prototype.toLowerCase;
+  var swappedCode;
+  try {
+    // Narrow to the leaf's own name: replacing the fold for every string breaks an earlier step
+    // (header and algorithm names fold too) and the probe never reaches the gate it is measuring.
+    String.prototype.toLowerCase = function () {
+      var s = realLower.call(this);
+      return s === "other.example" ? "attest.android.com" : s;
+    };
+    swappedCode = await codeFor({ hostname: "other.example" });
+  } finally {
+    String.prototype.toLowerCase = realLower;
+  }
+  check("safetynet: the hostname gate still refuses under a replaced toLowerCase (" +
+    swappedCode + ")", swappedCode === "webauthn/safetynet-bad-hostname");
   check("safetynet: a signature that does not verify is refused (bullet 4)",
     (await codeFor({ badSig: true })) === "webauthn/verify-failed");
   check("safetynet: a signature by a key other than the x5c leaf is refused (bullet 4)",

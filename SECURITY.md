@@ -1479,6 +1479,17 @@ security-only patches after the next major releases.
   caller cannot sign and send a message embedding a request a CA would reject.
   The verdict is awaited through the native promise job rather than a replaceable
   prototype method, so a co-resident cannot force the check to report success.
+- **Admissions decided through captured string operations.** A check that lets
+  something through decides on the operations this toolkit captured when it
+  loaded, not the ones a caller can reassign. That covers the name-constraint
+  comparisons behind `pki.path.validate`, the android-safetynet hostname
+  requirement in `pki.webauthn.verify`, the private-address classification
+  `pki.transport.https` applies under `blockPrivateAddresses` for both address
+  families, and the Trust Bits lookup in `pki.trust.parseCcadbCsv` that grants an
+  anchor its purposes. Each is tested by replacing the operation it reads and
+  asserting the refusal still holds; the replacement in each test is narrowed to
+  the one value under test, because replacing an operation for every string stops
+  an earlier step and the check never reaches the gate.
 - **Signed OCSP request verification (responder side).** `pki.ocsp.verifyRequest`
   lets a responder authenticate a client's signed request (RFC 6960 §4.1.1)
   through the same certification-path signature engine `pki.ocsp.verify` uses for
