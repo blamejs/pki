@@ -4,6 +4,24 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.55 — 2026-10-06
+
+Tell a caller when the path search stopped looking, rather than reporting the chain it had.
+
+### Added
+
+- `pki.path.build` puts `depthLimited: true` on a `{ valid:false }` return when `opts.maxDepth` stopped an expansion that still had candidates waiting. The chain reported alongside it is the best one the search ASSEMBLED, not the best one the pool holds, so a caller treating `valid:false` as a verdict about the certificates should read the field and raise `maxDepth` instead. It is absent from a successful return and from a failing one the search explored to its end, including a chain whose last hop lands exactly on the cap with nothing left to expand: the claim is that the bound truncated the search, not that the search reached it.
+
+### Changed
+
+- `pki.sigstore.verifyBundle` reports `sigstore/chain-incomplete` where it reported `sigstore/chain-invalid`, for a bundle whose Fulcio chain the path search stopped expanding at its depth bound. A rotated CA reissues under one subject name, so a bundle can carry a short branch that assembles and fails beside a long one that reaches an anchor past the bound; the short branch's failure was being published as the verdict on the bundle. The candidate budget already answered this way, and the two bounds now agree. Nothing about a chain that was explored to its end changed: a bundle whose assembled path genuinely fails validation is still `sigstore/chain-invalid`.
+- A reached bound stays a bound rather than becoming a refusal: a bounded depth-first search visits equal-scoring candidates in the order they arrive, so a bundle large enough to exhaust the expansion ceiling can still depend on its own ordering. That is a property of bounding the search at all. Raise `maxDepth` and `maxCandidatesConsidered` for a pool whose shape needs more of the graph walked.
+- `depthLimited` reports a candidate the cap kept the search from expanding, and nothing weaker. A candidate already on the chain is one the cycle check would skip at any depth, so it is not counted: counting it would report a truncated search where the search was exhausted, and turn a chain this toolkit refuses into one it claims it never finished reading. Two cases it does not report, both of which leave the older behavior in place rather than overstating: a chain whose last hop lands on the cap with nothing left to match, and a cap that also suppressed an Authority Information Access fetch for the certificate at that hop. The second needs the fetch's own URL eligibility answered to be certain a fetch was available, so it is left unclaimed rather than guessed at.
+
+### Fixed
+
+- `pki.ct` and `pki.path.build` take their declared options through one shared snapshot instead of two copies of the same loop. Both read every declared name once, before anything derives from one, and both keep an omitted option OMITTED rather than recording it as a name holding `undefined`, which is what lets an absent `transport` still mean "open the connection yourself, under the pinned anchors". Behavior is unchanged at both verbs; what the shared door adds is that the next caller to copy an options bag by hand is caught before it ships.
+
 ## v0.8.54 — 2026-10-06
 
 Refuse the universal tags X.680 assigns to no type, and tell a caller which those are.

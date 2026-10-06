@@ -319,6 +319,50 @@ async function run() {
   var code8c = await codeOf(pki.path.build(leaf8, { candidates: [interA, interMid], trustAnchors: [anchorCert], time: T, maxPathCerts: 2 }));
   check("V-BUILD-8 a chain longer than maxPathCerts fails as path/no-path (not validate's path/bad-input)", code8c === "path/no-path");
 
+  // ---- V-BUILD-8d: a reached DEPTH bound is not a verdict about the chain ----
+  // The bound stopping an expansion and the chain being bad are different outcomes, and the return
+  // said only `valid:false` for both. A decoy named "Mid" issued straight by the anchor assembles at
+  // hop 1 and FAILS (it is no CA), while the real chain leaf8 -> interMid -> interA -> Anchor needs
+  // hop 2, so under maxDepth:1 the valid path is never assembled and the failing one is reported.
+  // A caller cannot tell that from a chain that was fully explored and refused.
+  var decoyMidKp = await freshKeys();
+  var decoyMid = await mkCert({ signer: anchorKp, subjectKp: decoyMidKp, issuerName: "Anchor", subjectName: "Mid" });
+  var depthPool = [decoyMid, interMid, interA];
+  var r8d = await pki.path.build(leaf8, { candidates: depthPool, trustAnchors: [anchorCert], time: T, maxDepth: 1 });
+  check("V-BUILD-8d a failing chain under a reached depth bound reports the bound (" +
+    r8d.valid + ", depthLimited=" + r8d.depthLimited + ")",
+    r8d.valid === false && r8d.depthLimited === true);
+  // CONTROL the same pool with the bound raised finds the valid path, which proves the bound was
+  // the only thing hiding it.
+  var r8dOk = await pki.path.build(leaf8, { candidates: depthPool, trustAnchors: [anchorCert], time: T, maxDepth: 2 });
+  check("V-BUILD-8d CONTROL the same pool at maxDepth:2 is valid, so the bound hid a real path",
+    r8dOk.valid === true && r8dOk.depthLimited === undefined);
+  // CONTROL a chain that is genuinely bad with the bound never reached says nothing about a bound.
+  var badOnlyKp = await freshKeys(), leafBadKp = await freshKeys();
+  var badOnly = await mkCert({ signer: anchorKp, subjectKp: badOnlyKp, issuerName: "Anchor", subjectName: "BadOnly" });
+  var leafBad = await mkCert({ signer: badOnlyKp, subjectKp: leafBadKp, issuerName: "BadOnly", subjectName: "LeafBad" });
+  var rBad = await pki.path.build(leafBad, { candidates: [badOnly], trustAnchors: [anchorCert], time: T, maxDepth: 6 });
+  check("V-BUILD-8d CONTROL a fully explored bad chain carries no depth claim (" +
+    rBad.valid + ", depthLimited=" + rBad.depthLimited + ")",
+    rBad.valid === false && rBad.depthLimited === undefined);
+  // And a chain that ENDS exactly at the bound is not a truncated search: the bound is only reported
+  // when it actually stopped an expansion that had candidates waiting.
+  var rExact = await pki.path.build(leaf8, { candidates: [interMid, interA], trustAnchors: [anchorCert], time: T, maxDepth: 2 });
+  check("V-BUILD-8d CONTROL a chain ending exactly at the bound makes no depth claim",
+    rExact.valid === true && rExact.depthLimited === undefined);
+  // A candidate the CYCLE check would skip is not an expansion the bound stopped: it is already on
+  // the chain, so raising maxDepth cannot reach anything through it. Counting it reported a truncated
+  // search where the search was exhausted, which would turn a chain this toolkit refuses into one it
+  // says it never finished looking at.
+  var cycKp = await freshKeys(), leafCycKp = await freshKeys();
+  var cycRoot = await mkCert({ signer: cycKp, subjectKp: cycKp, issuerName: "CycRoot", subjectName: "CycRoot", extensions: caExts() });
+  var leafCyc = await mkCert({ signer: cycKp, subjectKp: leafCycKp, issuerName: "CycRoot", subjectName: "LeafCyc",
+    notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2026-06-01T00:00:00Z") });
+  var rCyc = await pki.path.build(leafCyc, { candidates: [cycRoot], trustAnchors: [cycRoot], time: T, maxDepth: 1 });
+  check("V-BUILD-8d CONTROL a candidate the cycle check skips is no expansion the bound stopped (" +
+    rCyc.valid + ", depthLimited=" + rCyc.depthLimited + ")",
+    rCyc.valid === false && rCyc.depthLimited === undefined);
+
   // ---- V-BUILD-9: entry-point bad input ----
   check("V-BUILD-9 non-array candidates -> path/bad-input",
     await codeOf(pki.path.build(leaf, { candidates: "nope", trustAnchors: [anchorCert], time: T })) === "path/bad-input");
