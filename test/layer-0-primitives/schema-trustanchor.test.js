@@ -304,6 +304,142 @@ function testTheCertificateMatchRule() {
 
 // ---- the round trip ----------------------------------------------------------------------------
 
+// Every refusal `pki.trustanchor.build` documents, driven through the shipped verb. These are the
+// authoring tier: an operator publishes what this writes, so a bad spec has to fail at the door
+// rather than produce an anchor a reader would then reject. Each arm names the field it refuses, so
+// a spec with two faults cannot pass by having the wrong one reported.
+function testTheBuilderRefusesEveryBadSpec() {
+  function anchorsOf(taInfo) { return { anchors: [{ taInfo: taInfo }] }; }
+  function base(extra) {
+    var info = { pubKey: SPKI, keyId: KEYID };
+    if (extra) Object.keys(extra).forEach(function (k) { info[k] = extra[k]; });
+    return anchorsOf(info);
+  }
+  function buildCode(spec) { return codeOf(function () { return pki.trustanchor.build(spec); }); }
+  function buildMessage(spec) {
+    try { pki.trustanchor.build(spec); return "NO-THROW"; }
+    catch (e) { return String(e.message || ""); }
+  }
+  var BAD = "trustanchor/bad-input";
+
+  check("30a. the spec itself must be a plain object carrying a non-empty anchors array",
+    buildCode(undefined) === BAD && buildCode(null) === BAD && buildCode([]) === BAD &&
+    buildCode({ anchors: [] }) === BAD && buildCode({ anchors: {} }) === BAD);
+  check("30b. an anchor entry must be a plain object naming exactly one of the three forms",
+    buildCode({ anchors: [null] }) === BAD &&
+    buildCode({ anchors: [[]] }) === BAD &&
+    buildCode({ anchors: [{}] }) === BAD &&
+    buildCode({ anchors: [{ taInfo: { pubKey: SPKI, keyId: KEYID }, tbsCert: Buffer.alloc(4) }] }) === BAD);
+  check("30c. the tbsCert form is accepted, which is what makes 30b about the COUNT and not the name",
+    Buffer.isBuffer(pki.trustanchor.build({ anchors: [{ tbsCert: b.sequence([
+      b.explicit(0, b.integer(2n)), b.integer(7n), algId(), nameDer("Issuer"),
+      b.sequence([b.utcTime(NB), b.utcTime(NA)]), nameDer("Example Root"), b.raw(SPKI),
+    ]) }] })));
+
+  check("30d. certPath.policySet must be a non-empty array of dotted-decimal identifiers",
+    buildCode(base({ certPath: { taName: "CN=R", policySet: [] } })) === BAD &&
+    buildCode(base({ certPath: { taName: "CN=R", policySet: "2.23.140.1.2.1" } })) === BAD &&
+    buildCode(base({ certPath: { taName: "CN=R", policySet: [42] } })) === BAD &&
+    buildCode(base({ certPath: { taName: "CN=R", policySet: ["anyPolicy"] } })) === BAD);
+  check("30e. and the refusal names the field rather than the structure under it",
+    buildMessage(base({ certPath: { taName: "CN=R", policySet: [] } })).indexOf("certPath.policySet") !== -1 &&
+    buildMessage(base({ certPath: { taName: "CN=R", policySet: [42] } })).indexOf("certPath.policySet") !== -1);
+
+  check("30f. a policy flag is the boolean it documents, and an unknown flag name is refused",
+    buildCode(base({ certPath: { taName: "CN=R", policySet: ["2.23.140.1.2.1"],
+      policyFlags: { requireExplicitPolicy: "yes" } } })) === BAD &&
+    buildCode(base({ certPath: { taName: "CN=R", policyFlags: { nosuchFlag: true } } })) === BAD);
+  check("30g. CONTROL false and an absent flag are the two off forms, and neither is refused",
+    Buffer.isBuffer(pki.trustanchor.build(base({ certPath: { taName: "CN=R",
+      policyFlags: { requireExplicitPolicy: false, inhibitAnyPolicy: false } } }))) &&
+    Buffer.isBuffer(pki.trustanchor.build(base({ certPath: { taName: "CN=R", policyFlags: {} } }))));
+
+  // Both empty forms are refused, and each by the rule that owns it: an empty relative-name array
+  // is the RFC 5914 sec. 2 rule this module states, while an empty commonName STRING never reaches
+  // it because the name encoder refuses the attribute value first. The codes are asserted exactly,
+  // since the two say different things about where the spec went wrong.
+  check("30h. an empty taName is refused at the door, as RFC 5914 sec. 2 requires of the reader",
+    buildCode(base({ certPath: { taName: [] } })) === BAD &&
+    buildCode(base({ certPath: { taName: "" } })) === "trustanchor/bad-name");
+  check("30i. pathLenConstraint must be a non-negative integer",
+    buildCode(base({ certPath: { taName: "CN=R", pathLenConstraint: -1 } })) === BAD &&
+    buildCode(base({ certPath: { taName: "CN=R", pathLenConstraint: 1.5 } })) === BAD &&
+    buildCode(base({ certPath: { taName: "CN=R", pathLenConstraint: "2" } })) === BAD);
+  check("30j. nameConstr must be well-formed NameConstraints DER",
+    buildCode(base({ certPath: { taName: "CN=R", nameConstr: Buffer.from("0500", "hex") } })) === BAD &&
+    buildCode(base({ certPath: { taName: "CN=R", nameConstr: Buffer.alloc(0) } })) === BAD);
+  check("30k. an unknown certPath field is refused rather than dropped",
+    buildCode(base({ certPath: { taName: "CN=R", nosuchField: 1 } })) === BAD);
+
+  // Three refusals, three codes: the empty key identifier is this module's own rule, bytes that are
+  // not DER at all are its input rule, and DER that is not a SubjectPublicKeyInfo is the SPKI rule
+  // that names the structure. A vector asserting one code for all three would pass on a builder
+  // that had stopped telling them apart.
+  check("30l. keyId must not be empty, and pubKey must be a SubjectPublicKeyInfo",
+    buildCode(base({ keyId: Buffer.alloc(0) })) === BAD &&
+    buildCode(anchorsOf({ pubKey: Buffer.alloc(0), keyId: KEYID })) === BAD &&
+    buildCode(anchorsOf({ pubKey: Buffer.from("0500", "hex"), keyId: KEYID })) === "trustanchor/bad-spki");
+  check("30m. taTitle and taTitleLangTag are strings, and the tag may not be empty",
+    buildCode(base({ taTitle: 42 })) === BAD &&
+    buildCode(base({ taTitle: "R", taTitleLangTag: 42 })) === BAD &&
+    buildCode(base({ taTitle: "R", taTitleLangTag: "" })) === BAD);
+  check("30n. exts must be a non-empty array of well-formed Extensions",
+    buildCode(base({ exts: [] })) === BAD &&
+    buildCode(base({ exts: {} })) === BAD &&
+    buildCode(base({ exts: [Buffer.from("0500", "hex")] })) === BAD);
+  // The four are certificatePolicies, policyConstraints, inhibitAnyPolicy and nameConstraints:
+  // `certPath` states each of them properly, so an `exts` copy is the same claim in a place a
+  // reader is told to ignore. All four are driven, since a set that lost one would still pass a
+  // vector naming only another.
+  var excludedRefused = [];
+  ["certificatePolicies", "policyConstraints", "inhibitAnyPolicy", "nameConstraints"].forEach(function (name) {
+    var ext = b.sequence([b.oid(O(name)), b.octetString(b.sequence([]))]);
+    if (buildCode(base({ exts: [ext] })) !== BAD) excludedRefused.push(name);
+  });
+  check("30o. and an exts entry naming one of the four types RFC 5914 sec. 3 excludes is refused (" +
+    (excludedRefused.join(",") || "all four refused") + ")", excludedRefused.length === 0);
+  check("30o. CONTROL an extension type the section does not exclude is carried",
+    Buffer.isBuffer(pki.trustanchor.build(base({ exts: [
+      b.sequence([b.oid(O("subjectKeyIdentifier")), b.octetString(b.octetString(KEYID))]),
+    ] }))));
+  check("30p. an unknown taInfo field is refused",
+    buildCode(base({ nosuchField: 1 })) === BAD);
+  check("30q. CONTROL the pem option returns the armored form of the same bytes",
+    pki.trustanchor.build(base({ taTitle: "R" }), { pem: true })
+      .indexOf("-----BEGIN TRUST ANCHOR LIST-----") === 0);
+  // A certPath may carry the anchor's own certificate beside the constraints, which is what a root
+  // program publishes when it wants both read from one place. The module is IMPLICIT TAGS, so the
+  // member is re-tagged rather than wrapped, and the round trip is what proves the re-tag: a
+  // wrapper would parse as something else or not at all.
+  function anchorCert(subjectCn, spki, ski) {
+    var exts = ski ? [b.explicit(3, b.sequence([b.sequence([b.oid(O("subjectKeyIdentifier")),
+      b.octetString(b.octetString(ski))])]))] : [];
+    return b.sequence([
+      b.sequence([b.explicit(0, b.integer(2n)), b.integer(7n), algId(), nameDer("Issuer"),
+        b.sequence([b.utcTime(NB), b.utcTime(NA)]), nameDer(subjectCn), b.raw(spki)].concat(exts)),
+      algId(), b.bitString(Buffer.alloc(64), 0),
+    ]);
+  }
+  var withCert = pki.trustanchor.build(base({
+    certPath: { taName: nameDer("Example Root"), certificate: anchorCert("Example Root", SPKI, KEYID) },
+  }));
+  var certBack = pki.schema.trustanchor.parse(withCert).anchors[0].taInfo.certPath;
+  check("30r. a certPath carrying the anchor's certificate builds and reads back as that certificate",
+    Buffer.isBuffer(withCert) && certBack.certificate !== null &&
+    certBack.certificate.subject.dn.indexOf("Example Root") !== -1);
+  check("30r. and bytes that are not a certificate at that member are refused",
+    buildCode(base({ certPath: { taName: "CN=R", certificate: Buffer.from("0500", "hex") } })) !== "NO-THROW");
+  // The builder reads its own output back before returning it, so a spec whose parts disagree fails
+  // the build rather than reaching an operator. The certificate-match rule is the reachable way to
+  // make them disagree: every part here is well formed on its own, and only the pair is wrong.
+  var mismatched = buildMessage(base({
+    certPath: { taName: nameDer("Example Root"), certificate: anchorCert("Other Root", SPKI, KEYID) },
+  }));
+  check("30s. a spec whose certificate contradicts its taName fails the builder's own read-back",
+    mismatched.indexOf("does not parse") !== -1 &&
+    mismatched.indexOf("subject does not match taName") !== -1);
+}
+
 function testTheBuilderIsTheParsersInverse() {
   var der = pki.trustanchor.build({
     anchors: [{
@@ -600,6 +736,7 @@ async function run() {
   testTheTrustAnchorInfoFieldsAndTheirTags();
   testTheNormativeRules();
   testTheCertificateMatchRule();
+  testTheBuilderRefusesEveryBadSpec();
   testTheBuilderIsTheParsersInverse();
   await testTheAnchorsDriveValidation();
   testTheFormatIsDetected();

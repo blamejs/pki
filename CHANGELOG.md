@@ -4,6 +4,18 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.54 — 2026-10-06
+
+Refuse the universal tags X.680 assigns to no type, and tell a caller which those are.
+
+### Added
+
+- `pki.asn1.reservedUniversalTag(tagNumber)` answers whether X.680 reserves a universal tag number, which is the question `pki.asn1.decode` asks before it accepts an element. It returns `false` for every assigned type, including the seven this codec carries no reader for, so it is not a statement about what can be read: a caller deciding whether bytes are worth passing on gets the same answer the decoder will give.
+
+### Changed
+
+- `pki.asn1.decode` refuses a universal tag 15 element and any universal tag from 37 up, with `asn1/reserved-tag` naming the row of X.680 Table 1 that reserves it. Every reader in the toolkit inherits the refusal, so a message carrying such an element is refused at its own verb: `pki.schema.parse` and `pki.schema.detectFormat` report `schema/bad-der` before any format detector reads the children, which matters because a child nothing refuses is a child a detector may count. `pki.inspect.asn1` still prints the header walk beside the refusal, so an operator can see what the bytes claimed. Nothing that was accepted before and is assigned by X.680 changed: the four long-form time types and the two internationalized-resource-identifier types at tags 31 to 36 decode as they did.
+
 ## v0.8.53 — 2026-10-06
 
 Put a copy of a message's algorithm identifiers where its signature or its MAC covers them, and refuse one whose copy disagrees.

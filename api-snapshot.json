@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.8.53",
+  "packageVersion": "0.8.54",
   "surface": {
     "C": {
       "kind": "object",
@@ -1300,6 +1300,10 @@
               "arity": 2
             }
           }
+        },
+        "reservedUniversalTag": {
+          "kind": "function",
+          "arity": 1
         },
         "sequenceTlv": {
           "kind": "function",
@@ -4595,6 +4599,7 @@
     "pki.altSig.signedData": "0.8.43",
     "pki.altSig.subjectAltPublicKey": "0.8.43",
     "pki.altSig.verify": "0.8.43",
+    "pki.asn1.reservedUniversalTag": "0.8.54",
     "pki.asn1.decode": "0.1.0",
     "pki.asn1.read.oid": "0.1.15",
     "pki.asn1.encode": "0.1.0",

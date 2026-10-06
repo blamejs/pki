@@ -71,6 +71,18 @@ function run() {
   check("unknown format → err.code schema/unknown-format", code(function () { pki.schema.parse(b.integer(5n)); }) === "schema/unknown-format");
   check("bad input → err.code schema/bad-input", code(function () { pki.schema.parse(42); }) === "schema/bad-input");
   check("undecodable DER → err.code schema/bad-der", code(function () { pki.schema.parse(Buffer.from([0x30, 0x80])); }) === "schema/bad-der");
+  /* A child nothing refuses is a child a detector may count. Each format's `matches` reads the shape
+     of the root's children to decide where the bytes go, so a universal tag X.680 Table 1 reserves
+     and assigns to no type -- 15, or anything from 37 up -- would be a child that could steer that
+     choice while meaning nothing. The codec refuses the element, so neither the orchestrator nor the
+     detector it dispatches on ever sees one. */
+  var reservedChild = Buffer.from("30040f00" + "0500", "hex");
+  check("a child carrying a reserved universal tag is refused before any detector reads it",
+    code(function () { pki.schema.parse(reservedChild); }) === "schema/bad-der" &&
+    code(function () { pki.schema.detectFormat(reservedChild); }) === "schema/bad-der");
+  var addendaChild = Buffer.from("30051f2500" + "0500", "hex");
+  check("and so is one carrying a tag from the addenda range",
+    code(function () { pki.schema.parse(addendaChild); }) === "schema/bad-der");
 
   // A CertificationRequestInfo missing the mandatory [0] attributes element (only
   // 3 children) is neither a certificate (no Validity) nor a well-formed CSR (no

@@ -13,6 +13,9 @@ var check = helpers.check;
 var vectors = helpers.vectors;
 var guard = require("../../lib/guard-all");
 function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return e.code; } }
+// Two refusals carrying one code are told apart by what each says, which is how a vector asserts
+// WHICH rule answered.
+function msg(fn) { try { fn(); return "NO-THROW"; } catch (e) { return String(e.message || ""); } }
 function hex(buf) { return Buffer.from(buf).toString("hex"); }
 
 function testBuildVectors() {
@@ -159,6 +162,83 @@ function testRejects() {
     code(function () { pki.asn1.decode(Buffer.from("a0020500", "hex")); }) === "NO-THROW");
   check("CONTROL a SEQUENCE carrying a NULL still decodes",
     code(function () { pki.asn1.decode(Buffer.from("30020500", "hex")); }) === "NO-THROW");
+  /* The other tags X.680 RESERVES, read off its own assignment table rather than off this codec's
+     reader list. Table 1 of X.680 (02/2021) clause 8.4 reads, verbatim: "UNIVERSAL 0  Reserved for
+     use by the encoding rules", "UNIVERSAL 15  Reserved for future editions of this Recommendation |
+     International Standard", and "UNIVERSAL 37-...  Reserved for addenda to this Recommendation |
+     International Standard". No ASN.1 type is assigned to any of them, so no DER encoding of any
+     type uses one, and a decoder that hands one back has invented an element.
+
+     The distinction the table forces is the whole point: the reader list is what this codec has
+     READERS for, which is a smaller set than what X.680 ASSIGNS. ObjectDescriptor (7), REAL (9),
+     RELATIVE-OID (13), TIME (14), VideotexString (21), GraphicString (25) and GeneralString (27)
+     are all assigned and all absent from the reader list, and each can legitimately arrive inside an
+     opaque ANY. Refusing "every tag we have no reader for" would refuse those, which is the worse
+     error, so the rule is the table's reserved rows and nothing else. */
+  function longFormTag(n) {
+    var parts = [], v = n;
+    do { parts.unshift(v & 0x7f); v = v >>> 7; } while (v > 0);
+    for (var i = 0; i < parts.length - 1; i++) parts[i] |= 0x80;
+    return Buffer.from([0x1f].concat(parts).concat([0x00]));
+  }
+  check("rejects universal tag 15, which X.680 Table 1 reserves for future editions",
+    code(function () { pki.asn1.decode(Buffer.from("0f00", "hex")); }) === "asn1/reserved-tag" &&
+    code(function () { pki.asn1.decode(Buffer.from("0f0100", "hex")); }) === "asn1/reserved-tag");
+  check("and inside a SEQUENCE and a SET, wherever it sits",
+    code(function () { pki.asn1.decode(Buffer.from("30020f00", "hex")); }) === "asn1/reserved-tag" &&
+    code(function () { pki.asn1.decode(Buffer.from("31020f00", "hex")); }) === "asn1/reserved-tag" &&
+    code(function () { pki.asn1.decode(Buffer.from("30040500" + "0f00", "hex")); }) === "asn1/reserved-tag");
+  var addendaRefused = [], addendaCodes = [];
+  [37, 38, 40, 99, 128, 1000].forEach(function (n) {
+    var got = code(function () { pki.asn1.decode(longFormTag(n)); });
+    if (got !== "asn1/reserved-tag") addendaRefused.push(n + ":" + got);
+    addendaCodes.push(got);
+  });
+  check("rejects every universal tag from 37 up, which the table reserves for addenda (" +
+    (addendaRefused.join(",") || "all refused") + ")", addendaRefused.length === 0);
+  /* The controls are the assigned tags, and they are what a fix aimed at the reserved rows must not
+     touch: the four long-form time types and the two IRI types the table assigns at 31 to 36, and
+     the seven assigned types this codec carries no reader for. */
+  var assignedAdmitted = [];
+  [31, 32, 33, 34, 35, 36].forEach(function (n) {
+    if (code(function () { pki.asn1.decode(longFormTag(n)); }) !== "NO-THROW") assignedAdmitted.push(n);
+  });
+  check("CONTROL universal 31 to 36 are assigned (DATE, TIME-OF-DAY, DATE-TIME, DURATION and the two " +
+    "IRI types) and still decode (" + (assignedAdmitted.join(",") || "all admitted") + ")",
+    assignedAdmitted.length === 0);
+  var readerlessAdmitted = [];
+  [7, 9, 13, 14, 21, 25, 27].forEach(function (n) {
+    if (code(function () { pki.asn1.decode(Buffer.from([n, 0x00])); }) !== "NO-THROW") readerlessAdmitted.push(n);
+  });
+  check("CONTROL the assigned types this codec has no reader for still decode, since one can arrive " +
+    "inside an ANY (" + (readerlessAdmitted.join(",") || "all admitted") + ")",
+    readerlessAdmitted.length === 0);
+  /* The predicate the door asks, driven by name: one table decides, so a reader that wants to know
+     before it tries gets the same answer the decoder gives. The four values below are the ones the
+     documented examples claim. */
+  check("pki.asn1.reservedUniversalTag answers for the two reserved rows",
+    pki.asn1.reservedUniversalTag(15) === true &&
+    pki.asn1.reservedUniversalTag(37) === true &&
+    pki.asn1.reservedUniversalTag(99) === true);
+  check("pki.asn1.reservedUniversalTag answers false for an assigned type, reader or no reader",
+    pki.asn1.reservedUniversalTag(9) === false &&
+    pki.asn1.reservedUniversalTag(31) === false &&
+    pki.asn1.reservedUniversalTag(1) === false &&
+    pki.asn1.reservedUniversalTag(36) === false);
+  /* Tag 0 is the table's third reserved row, so the predicate says so. The door keeps a separate
+     branch for it ahead of the general one, because its refusal cites the end-of-contents encoding
+     X.690 sec. 8.1.5 gives that octet pair, which is the useful thing to report; the ANSWER to "is
+     it reserved" is the same from either place. */
+  check("tag 0 is reserved too, and the door still reports it as the end-of-contents encoding",
+    pki.asn1.reservedUniversalTag(0) === true &&
+    code(function () { pki.asn1.decode(Buffer.from("0000", "hex")); }) === "asn1/reserved-tag" &&
+    msg(function () { pki.asn1.decode(Buffer.from("0000", "hex")); }).indexOf("end-of-contents") !== -1 &&
+    msg(function () { pki.asn1.decode(Buffer.from("0f00", "hex")); }).indexOf("X.680 Table 1") !== -1);
+  /* The size bound on a multi-octet tag is a different rule and fires first, so a tag far above the
+     reserved range is refused for being unreadable rather than for being reserved. Both are
+     refusals; the vector pins WHICH, so the boundary between the two rules stays visible. */
+  check("an over-large multi-octet tag is refused by the size rule, ahead of the reserved rule",
+    code(function () { pki.asn1.decode(Buffer.from("1f8180808000", "hex")); }) === "asn1/tag-too-large");
   // Non-minimal INTEGER: 02 02 00 01 (leading zero not needed).
   check("rejects non-minimal integer", code(function () { pki.asn1.read.integer(pki.asn1.decode(Buffer.from("02020001", "hex"))); }) === "asn1/non-minimal-integer");
   // Non-minimal NEGATIVE INTEGER: 02 02 FF 80 -- a leading 0xFF is redundant when the next

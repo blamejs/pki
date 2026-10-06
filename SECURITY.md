@@ -70,7 +70,14 @@ security-only patches after the next major releases.
   with a typed `Asn1Error`: indefinite length, non-minimal length or tag
   encodings, constructed strings where DER forbids them, and trailing bytes after
   the top-level value. Malformed input costs bounded work and gets a permanent
-  verdict, rather than producing a stack overflow or a half-parsed object.
+  verdict, rather than producing a stack overflow or a half-parsed object. It also
+  refuses an element carrying a universal tag X.680 Table 1 reserves and assigns to
+  no type: tag 0, which is the end-of-contents encoding, tag 15, and every tag from
+  37 up. A child nothing refuses is a child a format detector may count, so
+  `pki.schema.parse` and `pki.schema.detectFormat` never see one. The rule is the
+  table's reserved rows, not the set of types this codec has readers for, which is
+  smaller: an assigned type with no reader here still decodes, since one can arrive
+  inside an `ANY`, and `pki.asn1.reservedUniversalTag` answers which is which.
 - **Adversarial CBOR crashing the parser.** The `pki.cbor` decoder applies the
   same posture to RFC 8949 core-deterministic CBOR: size, depth, and per-bignum
   byte caps before the walk, and a typed `CborError` on every non-canonical
