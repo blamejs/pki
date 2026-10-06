@@ -936,6 +936,7 @@ async function run() {
   testPollutionPlantedBeforeLoad();
   testGlobalScanNoAccessor();
   testAssertCallable();
+  testSnapshotPresentOptions();
   testBooleanOption();
   testOptionsObjectCarriesOnlyWhatTheCallerSet();
   await testConsumersFailClosed();
@@ -1128,12 +1129,10 @@ function testAssertCallable() {
   // syntax instead, which a number silently does nothing to, leaving the name out of the set and
   // the copy never reaching for it.
   var polluting = JSON.parse("{\"alpha\":1,\"__proto__\":{\"polluted\":true}}");
-  var POLL_KNOWN = Object.assign(Object.create(null), { alpha: 1 });
-  Object.defineProperty(POLL_KNOWN, "__proto__", {
-    value: 1, writable: true, enumerable: true, configurable: true,
-  });
+  var POLL_KNOWN = Object.assign(Object.create(null), JSON.parse("{\"alpha\":1,\"__proto__\":1}"));
   check("snapshotOptions: the known set really carries __proto__ as a name",
-    Object.getOwnPropertyNames(POLL_KNOWN).indexOf("__proto__") !== -1);
+    Object.getOwnPropertyNames(POLL_KNOWN).indexOf("__proto__") !== -1 &&
+    Object.getPrototypeOf(POLL_KNOWN) === null);
   var pollSnap = identifier.snapshotOptions(polluting, POLL_KNOWN);
   check("snapshotOptions: the snapshot carries no prototype", Object.getPrototypeOf(pollSnap) === null);
   check("snapshotOptions: a __proto__ option is copied as an ordinary field",
@@ -1148,6 +1147,87 @@ function testAssertCallable() {
     identifier.snapshotOptions(undefined, KNOWN).alpha === undefined &&
     identifier.snapshotOptions(null, KNOWN).alpha === undefined);
 
+}
+
+// snapshotPresentOptions: the same one-read capture, for a caller that tells ABSENT from
+// present-and-undefined. `snapshotOptions` materializes every declared name, which is right for a
+// caller testing `!== undefined` and wrong for one testing `in`: an omitted option becomes an own
+// key holding undefined, and a guard that reads presence then sees an option the caller never passed.
+// Both contracts exist because a caller has to choose between them consciously.
+function testSnapshotPresentOptions() {
+  var KNOWN = Object.assign(Object.create(null), { alpha: 1, beta: 1, gamma: 1 });
+  var take = identifier.snapshotPresentOptions;
+
+  // The property that distinguishes it from snapshotOptions, and the reason CT cannot use that one.
+  var partial = { alpha: 1 };
+  var snap = take(partial, KNOWN);
+  check("snapshotPresentOptions: an option the caller omitted is ABSENT, not an own undefined",
+    !("beta" in snap) && !("gamma" in snap) && snap.beta === undefined);
+  check("snapshotPresentOptions: and snapshotOptions still materializes it, which is its contract",
+    "beta" in identifier.snapshotOptions(partial, KNOWN));
+  check("snapshotPresentOptions: an option the caller DID pass is carried across", snap.alpha === 1);
+  check("snapshotPresentOptions: an option passed as undefined is present and undefined",
+    (function () { var s = take({ alpha: undefined }, KNOWN); return "alpha" in s && s.alpha === undefined; })());
+
+  // Presence consults the prototype chain, because a caller supplying options through a defaults
+  // object is supplying them. An enumeration omits an inherited FUNCTION member, which is how a
+  // copy once dropped a transport and fell through to opening a real connection.
+  var viaDefaults = Object.create({ alpha: "from-proto", beta: function () { return "fn"; } });
+  var inheritedSnap = take(viaDefaults, KNOWN);
+  check("snapshotPresentOptions: an inherited option is captured, value and all",
+    "alpha" in inheritedSnap && inheritedSnap.alpha === "from-proto");
+  check("snapshotPresentOptions: including an inherited FUNCTION member",
+    "beta" in inheritedSnap && typeof inheritedSnap.beta === "function" && inheritedSnap.beta() === "fn");
+
+  // One read of the VALUE per name, which is the whole point of a snapshot: the check and the use
+  // cannot be handed different answers.
+  var reads = 0;
+  var moving = {};
+  Object.defineProperty(moving, "alpha", {
+    enumerable: true, configurable: true,
+    get: function () { reads++; return reads; },
+  });
+  var movingSnap = take(moving, KNOWN);
+  var repeated = [movingSnap.alpha, movingSnap.alpha, movingSnap.alpha];
+  check("snapshotPresentOptions: an accessor-backed option is read once and answers one value (" +
+    repeated.join(",") + ", reads=" + reads + ")",
+    reads === 1 && repeated.every(function (v) { return v === 1; }));
+
+  // Only the named set, no prototype, and a __proto__ option stays an ordinary field.
+  check("snapshotPresentOptions: a name outside the known set is not copied",
+    !("sneaky" in take({ alpha: 1, sneaky: "no" }, KNOWN)));
+  check("snapshotPresentOptions: the snapshot carries no prototype",
+    Object.getPrototypeOf(take({ alpha: 1 }, KNOWN)) === null);
+  // The known set has to carry __proto__ as a DATA name. Written as an object-literal key it is the
+  // prototype syntax instead, which leaves the name out of the set and the copy never reaching for
+  // it; parsed from JSON it is an own key, and assigning it onto a prototype-less target copies it
+  // as one, because there is no inherited setter to intercept it.
+  var POLL_KNOWN = Object.assign(Object.create(null), JSON.parse("{\"alpha\":1,\"__proto__\":1}"));
+  check("snapshotPresentOptions: the known set really carries __proto__ as a name",
+    Object.getOwnPropertyNames(POLL_KNOWN).indexOf("__proto__") !== -1 &&
+    Object.getPrototypeOf(POLL_KNOWN) === null);
+  var pollSnap = take(JSON.parse("{\"alpha\":1,\"__proto__\":{\"polluted\":true}}"), POLL_KNOWN);
+  check("snapshotPresentOptions: a __proto__ option is copied as an ordinary field, polluting nothing",
+    Object.getOwnPropertyNames(pollSnap).indexOf("__proto__") !== -1 &&
+    pollSnap.__proto__.polluted === true && ({}).polluted === undefined);
+  check("snapshotPresentOptions: an absent options object yields an empty snapshot",
+    Object.getOwnPropertyNames(take(undefined, KNOWN)).length === 0 &&
+    Object.getOwnPropertyNames(take(null, KNOWN)).length === 0);
+
+  // The behavioral reason the two cannot be one function: a presence-based guard reads the
+  // materializing snapshot as carrying an option the caller never passed, and refuses it.
+  var omitsTransport = { alpha: 1 };
+  var TRANSPORT_KNOWN = Object.assign(Object.create(null), { alpha: 1, transport: 1 });
+  function callableCode(bag) {
+    try { identifier.assertCallableOption(bag, "transport", E, "t/bad", "opts.transport"); return "NO-THROW"; }
+    catch (e) { return e.code; }
+  }
+  check("assertCallableOption accepts a bag that omits the option",
+    callableCode(omitsTransport) === "NO-THROW");
+  check("and still accepts it after snapshotPresentOptions, which is why CT can use this one",
+    callableCode(take(omitsTransport, TRANSPORT_KNOWN)) === "NO-THROW");
+  check("CONTROL it REFUSES the same bag after snapshotOptions, which is why CT cannot use that one",
+    callableCode(identifier.snapshotOptions(omitsTransport, TRANSPORT_KNOWN)) === "t/bad");
 }
 
 // booleanOption: a switch is the boolean it documents. The two off forms are absence and false;

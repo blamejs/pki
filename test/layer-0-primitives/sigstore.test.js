@@ -1457,6 +1457,21 @@ async function run() {
   check("PATH-BACKTRACK control: the decoy alone assembles no path",
     (await codeOf(pki.sigstore.verifyBundle(decoyOnly.bundle, decoyOnly.trust))) === "sigstore/chain-incomplete");
 
+  // A REACHED DEPTH BOUND is not a verdict about the chain either, which is the third outcome of
+  // `build` that means "stopped looking". The bundle carries a shallow intermediate that assembles
+  // and fails, and a chain of the same subject running deeper than the search's step bound: the
+  // shallow failure used to be reported as `chain-invalid` while the deep branch was never walked to
+  // an anchor. `chain-incomplete` is the honest code, the one the candidate bound already reports.
+  // The links run past PATH_BUILD_MAX_DEPTH (20), so the branch is still expandable when the bound
+  // is reached, which is what makes it a TRUNCATED search rather than an exhausted one.
+  var deepBranch = [synChainCert("mid-ca", "deep-1")];
+  for (var dj = 1; dj <= 26; dj++) { deepBranch.push(synChainCert("deep-" + dj, "deep-" + (dj + 1))); }
+  deepBranch.push(synChainCert("mid-ca", "syn-root"));
+  var depthTruncated = buildSynBundle({ leafIssuer: "mid-ca", extraChain: deepBranch });
+  var depthCode = await codeOf(pki.sigstore.verifyBundle(depthTruncated.bundle, depthTruncated.trust));
+  check("PATH-DEPTH a chain truncated by the search's depth bound is incomplete, not invalid (" +
+    depthCode + ")", depthCode === "sigstore/chain-incomplete");
+
   // Backtracking needs a STEP bound or a bundle of same-subject decoys makes the search combinatorial,
   // which is a parser-DoS rather than a longer search. One large input, timed: a chain of decoys that
   // reaches no anchor must be abandoned promptly rather than explored.
