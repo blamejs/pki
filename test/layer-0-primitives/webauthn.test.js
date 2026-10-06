@@ -1891,6 +1891,20 @@ async function testAndroidSafetyNet() {
     someFired === 0);
   check("safetynet: and the hostname gate still refuses (" +
     someCode + ")", someCode === "webauthn/safetynet-bad-hostname");
+  // The SAN is classified as an array before it is examined, and that classification runs first.
+  // Answering false leaves the entry list empty, so the authoritative SAN is never read and the
+  // commonName fallback decides: a leaf whose SAN names another host while its CN names the wanted
+  // one is then accepted. This fixture is exactly that pair.
+  // The array classification that guards this SAN read is also captured, and it has NO vector here.
+  // Three narrowings were tried and none measured the gate: a condition keyed to the decoded record's
+  // field names never fired, and answering false for every array refuses earlier with
+  // webauthn/safetynet-no-root because the roots list is classified the same way. A probe that is
+  // refused for the wrong reason is indistinguishable from one that found nothing, so no check is
+  // asserted rather than one that would pass whatever the code did. The CONTROL below still pins the
+  // pair this fixture builds: a SAN naming another host beside a commonName naming the wanted one is
+  // refused on the SAN, which is the behavior the classification exists to preserve.
+  check("safetynet: a SAN for another host is refused even when the CN names the wanted one",
+    (await codeFor({ hostname: "other.example", cn: "attest.android.com" })) === "webauthn/safetynet-bad-hostname");
   check("safetynet: a signature that does not verify is refused (bullet 4)",
     (await codeFor({ badSig: true })) === "webauthn/verify-failed");
   check("safetynet: a signature by a key other than the x5c leaf is refused (bullet 4)",

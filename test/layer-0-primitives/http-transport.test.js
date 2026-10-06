@@ -104,6 +104,25 @@ async function testHappy() {
     var r = await t({ method: "POST", url: urlFor(s.port), headers: { "content-type": "application/pkcs10" }, body: Buffer.from("PING"),
       tls: { anchors: [tls.certPem], servername: "localhost", cert: tls.certPem, key: tls.keyPem, checkServerIdentity: function () { idChecks++; return undefined; } } });
     check("7 the caller checkServerIdentity hook is invoked", idChecks >= 1);
+    // The identity question is answered through a captured reference, not the writable module export.
+    // node:tls.checkServerIdentity RETURNS A VERDICT, so a replacement answering with no error is the
+    // server-authentication step reporting success for a certificate issued to another host. The
+    // request below asks for a name the server's certificate does not carry.
+    var nodeTlsMod = require("node:tls");
+    var realCSI = nodeTlsMod.checkServerIdentity;
+    var csiCalls = 0;
+    var wrongHostCode;
+    try {
+      nodeTlsMod.checkServerIdentity = function () { csiCalls += 1; return undefined; };
+      wrongHostCode = await codeOf(t({ method: "GET", url: urlFor(s.port),
+        tls: { anchors: [tls.certPem], servername: "not-the-server.example" } }));
+    } finally {
+      nodeTlsMod.checkServerIdentity = realCSI;
+    }
+    check("7 the TLS identity check does not consult a replaced node:tls export (calls=" +
+      csiCalls + ")", csiCalls === 0);
+    check("7 and a certificate for another host is still refused (" + wrongHostCode + ")",
+      wrongHostCode === "transport/server-auth-failed");
     check("7 loopback POST resolves 200", r.status === 200);
     check("7 the body is returned as a Buffer", Buffer.isBuffer(r.body) && r.body.toString() === "PONG");
     check("7 response headers are lowercased", r.headers["content-type"] === "application/pkcs7-mime");
@@ -777,6 +796,22 @@ async function testProxyConnect() {
       }
       check("PX-20 the Digest policy still refuses MD5 under a replaced String (" +
         rewrittenCode + ")", rewrittenCode === "transport/proxy-digest-weak-algorithm");
+      // The whole auth-param is trimmed before anything slices it, so that outer trim controls what
+      // the algorithm is read from: mapping the segment algorithm=MD5 to algorithm=SHA-256
+      // classifies a weak challenge as strong and the refusal never fires.
+      var realTrimPx = String.prototype.trim;
+      var segCode;
+      try {
+        String.prototype.trim = function () {
+          var s = realTrimPx.call(this);
+          return s === "algorithm=MD5" ? "algorithm=SHA-256" : s;
+        };
+        segCode = await codeOf(t(md5Opts));
+      } finally {
+        String.prototype.trim = realTrimPx;
+      }
+      check("PX-20 the Digest policy still refuses MD5 under a replaced trim (" +
+        segCode + ")", segCode === "transport/proxy-digest-weak-algorithm");
     } finally { pxMd5.srv.close(); }
     var pxMd5Ok = await startConnectProxy({ tls: proxyTls, requireAuth: "digest", username: "u", password: "p",
       challenge: 'Digest realm="proxy", nonce="n0nce", qop="auth", algorithm=MD5' });
