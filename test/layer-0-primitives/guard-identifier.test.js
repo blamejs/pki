@@ -1129,12 +1129,10 @@ function testAssertCallable() {
   // syntax instead, which a number silently does nothing to, leaving the name out of the set and
   // the copy never reaching for it.
   var polluting = JSON.parse("{\"alpha\":1,\"__proto__\":{\"polluted\":true}}");
-  var POLL_KNOWN = Object.assign(Object.create(null), { alpha: 1 });
-  Object.defineProperty(POLL_KNOWN, "__proto__", {
-    value: 1, writable: true, enumerable: true, configurable: true,
-  });
+  var POLL_KNOWN = Object.assign(Object.create(null), JSON.parse("{\"alpha\":1,\"__proto__\":1}"));
   check("snapshotOptions: the known set really carries __proto__ as a name",
-    Object.getOwnPropertyNames(POLL_KNOWN).indexOf("__proto__") !== -1);
+    Object.getOwnPropertyNames(POLL_KNOWN).indexOf("__proto__") !== -1 &&
+    Object.getPrototypeOf(POLL_KNOWN) === null);
   var pollSnap = identifier.snapshotOptions(polluting, POLL_KNOWN);
   check("snapshotOptions: the snapshot carries no prototype", Object.getPrototypeOf(pollSnap) === null);
   check("snapshotOptions: a __proto__ option is copied as an ordinary field",
@@ -1200,9 +1198,14 @@ function testSnapshotPresentOptions() {
     !("sneaky" in take({ alpha: 1, sneaky: "no" }, KNOWN)));
   check("snapshotPresentOptions: the snapshot carries no prototype",
     Object.getPrototypeOf(take({ alpha: 1 }, KNOWN)) === null);
-  var POLL_KNOWN = Object.assign(Object.create(null), { alpha: 1 });
-  Object.defineProperty(POLL_KNOWN, "__proto__",
-    { value: 1, writable: true, enumerable: true, configurable: true });
+  // The known set has to carry __proto__ as a DATA name. Written as an object-literal key it is the
+  // prototype syntax instead, which leaves the name out of the set and the copy never reaching for
+  // it; parsed from JSON it is an own key, and assigning it onto a prototype-less target copies it
+  // as one, because there is no inherited setter to intercept it.
+  var POLL_KNOWN = Object.assign(Object.create(null), JSON.parse("{\"alpha\":1,\"__proto__\":1}"));
+  check("snapshotPresentOptions: the known set really carries __proto__ as a name",
+    Object.getOwnPropertyNames(POLL_KNOWN).indexOf("__proto__") !== -1 &&
+    Object.getPrototypeOf(POLL_KNOWN) === null);
   var pollSnap = take(JSON.parse("{\"alpha\":1,\"__proto__\":{\"polluted\":true}}"), POLL_KNOWN);
   check("snapshotPresentOptions: a __proto__ option is copied as an ordinary field, polluting nothing",
     Object.getOwnPropertyNames(pollSnap).indexOf("__proto__") !== -1 &&
