@@ -568,29 +568,25 @@ function testSelectionsConsultNoConstructionProtocol() {
   // it (ES2015 21.1.3.19 step 2), so the separator's prototype chain is part of the operation and
   // capturing `split` does not close it. Hard rule 11 bans `split` in lib/ for that reason.
   //
-  // MEASURED here rather than asserted: on this runtime V8 fast-paths a primitive-string separator
-  // and does NOT perform that lookup, so a captured split is unaffected by the hook. These checks
-  // therefore do NOT discriminate the scan from a split-based implementation here -- swapping
-  // `splitChar` back to a captured split leaves all four passing. They record the measurement and
-  // pin the delimiter cases; the reason for the scan is that the fast path is an optimisation and
-  // not a guarantee, and a spec-exact engine performs the dispatch.
-  var hookedSplit, hookedScan, hookedObjSep;
+  // Whether a captured `split` ACTUALLY performs that lookup is a property of the engine, not of
+  // this code: Node 24.21, the supported runtime, dispatches to the hook, and Node 26.9 fast-paths
+  // a primitive-string separator past it. So nothing here asserts what `split` does -- an assertion
+  // about that is an assertion about the RUNNER, and one written that way failed on CI while passing
+  // locally. What is asserted is the subject: `splitChar` consults nothing, on every runtime.
+  var hookedScan, hookedObjSep;
   try {
     Object.defineProperty(String.prototype, Symbol.split, {
       value: function () { return ["HOOKED"]; }, configurable: true,
     });
-    hookedSplit = intrinsic.uncurry(String.prototype.split)("127.0.0.1", ".");
     hookedScan = intrinsic.splitChar("127.0.0.1", 46);
   } finally {
     delete String.prototype[Symbol.split];
   }
-  // The dispatch mechanism itself is live in this runtime, which is what makes the fast path the
-  // only thing standing between a captured split and the hook.
+  // The dispatch mechanism is live in every engine for an OBJECT separator, which is what makes the
+  // string-separator fast path an optimisation rather than a guarantee.
   hookedObjSep = "127.0.0.1".split({ [Symbol.split]: function () { return ["HOOKED"]; } });
   check("intrinsic: an object separator carrying @@split IS dispatched to, so the protocol is live",
     hookedObjSep.length === 1 && hookedObjSep[0] === "HOOKED");
-  check("intrinsic: this runtime's split fast-paths a string separator past the @@split hook",
-    hookedSplit.length === 4 && hookedSplit[0] === "127");
   check("intrinsic: splitChar does not consult a separator prototype at all",
     hookedScan.length === 4 && hookedScan[0] === "127" && hookedScan[3] === "1");
   check("intrinsic: splitChar matches split on the delimiter cases these parsers use",
