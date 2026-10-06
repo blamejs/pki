@@ -200,6 +200,38 @@ function testWellFormedUtf16() {
     e.message.indexOf("the value") === 0 && e.message.indexOf("index 0") !== -1);
 }
 
+/* describeThrown reports what was caught, for a message assembled around it. Its contract is that a
+   value answering nothing readable is described by its type, so an EMPTY message is not readable: it
+   left the sentence that interpolates it ending in a colon with nothing after it. */
+function testDescribeThrown() {
+  var d = text.describeThrown;
+  check("a real error answers with its message", d(new Error("boom")) === "boom");
+  check("an empty message is described by its type, not returned as nothing (" +
+    d(new Error("")) + ")", d(new Error("")) === d(Object.create(Error.prototype)) &&
+    d(new Error("")).length > 0);
+  check("a message that is only whitespace is still a message, so it is returned as it is",
+    d(new Error(" ")) === " ");
+  var noMessage = Object.create(Error.prototype);
+  check("so is an error carrying no message at all", d(noMessage).length > 0);
+  check("a thrown non-error is described rather than concatenated",
+    d(null) === "null" && d(42) === "42" && d({}).length > 0);
+  /* The message is read ONCE, so an accessor cannot answer the readability test and the sentence
+     differently, and one that throws does not replace the failure being reported. */
+  var reads = 0;
+  var shifting = new Error("initial");
+  Object.defineProperty(shifting, "message", {
+    get: function () { reads += 1; return reads === 1 ? "first" : "second"; },
+  });
+  var shifted = d(shifting);
+  check("a message accessor is read once (" + shifted + ", reads=" + reads + ")",
+    shifted === "first" && reads === 1);
+  var thrower = { get message() { throw new Error("from the accessor"); } };
+  var described;
+  try { described = d(thrower); } catch (e) { described = "THREW " + e.message; }
+  check("a throwing message accessor does not escape the description (" + described + ")",
+    described.indexOf("THREW") === -1 && described.length > 0);
+}
+
 function run() {
   testDecode();
   testAuthoringBounds();
@@ -207,6 +239,7 @@ function run() {
   testShowValue();
   testKeyOf();
   testWellFormedUtf16();
+  testDescribeThrown();
 }
 
 module.exports = { run: run };
