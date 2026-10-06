@@ -100,6 +100,12 @@ async function testVerdictCarriesTheVerifiedFields() {
   check("the top-level verdict is an object", r !== null && typeof r === "object");
   check("the top-level verified is true when every message verified", r.verified === true);
   check("the verdict carries one entry per message", Array.isArray(r.messages) && r.messages.length === 1);
+  // The list is an ORDINARY array: a caller maps it and iterates it. The aggregate it is assembled
+  // from carries no prototype of its own, so this list has to be a copy rather than that one.
+  check("the verdict's message list is an ordinary array a caller can map and iterate",
+    typeof r.messages.map === "function" && r.messages.map(function (x) { return x.verified; })[0] === true &&
+    Object.getPrototypeOf(r.messages) === Array.prototype &&
+    (function () { var seen = 0; for (var _m of r.messages) seen += 1; return seen; })() === 1);
   var m = r.messages[0];
   check("the message verdict carries certReqId", m.certReqId === 1n);
   check("the message verdict carries the subject", /carried.example/.test(m.subject.dn));

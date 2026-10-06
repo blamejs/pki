@@ -866,6 +866,101 @@ async function testSelectionsConsultNoConstructionProtocol() {
   check("intrinsic: chain keeps the handler contract of the method it replaces",
     threw === "boom" && recovered === "recovered: nope" && passedThrough === "unhandled");
 
+  // `indexOf` and `every` are specified in terms of HasProperty, so both consult the prototype at an
+  // index the list has a HOLE at: membership finds a value the list does not hold, and the universal
+  // test SKIPS the hole and so answers true for a list with no elements of its own. Together that is
+  // an allow-list a caller left empty admitting a value installed on the prototype.
+  var realIndexZero = Object.getOwnPropertyDescriptor(Array.prototype, "0");
+  var ownResult, nativeResult, copyResult;
+  try {
+    Array.prototype[0] = "https://evil.example";
+    var sparse = new Array(1);
+    ownResult = [intrinsic.ownIndexOf(sparse, "https://evil.example"),
+      intrinsic.everyOwn(sparse, function (o) { return typeof o === "string"; })];
+    nativeResult = [sparse.indexOf("https://evil.example"),
+      sparse.every(function (o) { return typeof o === "string"; })];
+    copyResult = intrinsic.copyList(sparse)[0];
+  } finally {
+    if (realIndexZero) Object.defineProperty(Array.prototype, "0", realIndexZero);
+    else delete Array.prototype[0];
+  }
+  check("intrinsic: a hole does not read as an inherited member (native answers " +
+    JSON.stringify(nativeResult) + ")",
+  ownResult[0] === -1 && ownResult[1] === false && nativeResult[0] === 0 && nativeResult[1] === true);
+  check("intrinsic: and a copy of a sparse list carries nothing from the prototype",
+    copyResult === undefined);
+
+  // Capturing `Promise.all` is not enough: it performs GetPromiseResolve on the constructor at EACH
+  // call, so a replaced `Promise.resolve` hands the aggregate its own values and no component is
+  // awaited at all. `allOf` subscribes to each member through the captured continuation instead.
+  var realResolve = Promise.resolve;
+  var allUncurried = intrinsic.uncurry(intrinsic.promiseAll);
+  var falseA = realResolve.call(Promise, false), falseB = realResolve.call(Promise, false);
+  var viaAll, viaAllOf;
+  try {
+    Promise.resolve = function () { return realResolve.call(Promise, true); };
+    viaAll = allUncurried(Promise, [falseA, falseB]);
+    viaAllOf = intrinsic.allOf([falseA, falseB]);
+  } finally { Promise.resolve = realResolve; }
+  var allValues = await viaAll;
+  var allOfValues = await viaAllOf;
+  check("intrinsic: allOf awaits its members where a captured Promise.all takes a replaced resolve " +
+    "(" + JSON.stringify(allValues) + " vs " + JSON.stringify(allOfValues) + ")",
+  allValues[0] === true && allValues[1] === true && allOfValues[0] === false && allOfValues[1] === false);
+  // Settling a promise with a value reads `then` off that value and calls it when it is callable, so
+  // a `then` installed on `Array.prototype` makes every ordinary array a thenable and the aggregate
+  // settles with whatever that replacement answers instead of its result list. The list handed back
+  // inherits nothing, so there is no `then` to find; every consumer reads it through verbs that take
+  // the receiver rather than calling a method on it.
+  // The replacement has to stay installed across the microtask drain, since the settlement that
+  // would read it happens after the call returns. The outcomes are observed through the captured
+  // continuation rather than by awaiting, so the observation is not the thing under test.
+  var realArrayThen = Object.getOwnPropertyDescriptor(Array.prototype, "then");
+  var aggAllValue = null, aggSettledValue = null;
+  try {
+    Array.prototype.then = function (res) { res("forged"); };
+    intrinsic.chain(intrinsic.allOf([Promise.resolve(1)]), function (v) { aggAllValue = v; });
+    intrinsic.chain(intrinsic.settledOf([Promise.resolve(2)]), function (v) { aggSettledValue = v; });
+    await helpers.waitUntil(function () { return aggAllValue !== null && aggSettledValue !== null; },
+      { timeoutMs: 2000, label: "both aggregates settle under an inherited Array.prototype.then" });
+  } finally {
+    if (realArrayThen) Object.defineProperty(Array.prototype, "then", realArrayThen);
+    else delete Array.prototype.then;
+  }
+  check("intrinsic: an inherited `then` cannot replace an aggregate's result list",
+    aggAllValue.length === 1 && aggAllValue[0] === 1 &&
+    aggSettledValue.length === 1 && aggSettledValue[0].status === "fulfilled" && aggSettledValue[0].value === 2);
+
+  // Asking whether an index is the list's own and then reading it are two operations, and a proxy
+  // whose descriptor trap reports the element and deletes it answers the first yes and the second
+  // from the prototype. Existence and value come from one descriptor read.
+  var realIndexZeroB = Object.getOwnPropertyDescriptor(Array.prototype, "0");
+  var trapResult;
+  try {
+    Array.prototype[0] = "inherited";
+    var base = ["real"];
+    var vanishing = new Proxy(base, {
+      getOwnPropertyDescriptor: function (t, k) {
+        var d = Reflect.getOwnPropertyDescriptor(t, k);
+        if (k === "0") delete t[0];
+        return d;
+      },
+    });
+    trapResult = [intrinsic.ownIndexOf(vanishing, "inherited"),
+      intrinsic.everyOwn(vanishing, function (v) { return v === "inherited"; })];
+  } finally {
+    if (realIndexZeroB) Object.defineProperty(Array.prototype, "0", realIndexZeroB);
+    else delete Array.prototype[0];
+  }
+  check("intrinsic: an element that vanishes between the ownership answer and the read is not taken " +
+    "from the prototype", trapResult[0] === -1 && trapResult[1] === false);
+
+  check("intrinsic: allOf keeps member order and rejects on the first rejection",
+    JSON.stringify(await intrinsic.allOf([Promise.resolve(1), Promise.resolve(2), Promise.resolve(3)])) === "[1,2,3]" &&
+    JSON.stringify(await intrinsic.allOf([])) === "[]" &&
+    (await intrinsic.chain(intrinsic.allOf([Promise.resolve(1), Promise.reject(new Error("first"))]),
+      function () { return "NO-THROW"; }, function (e) { return e.message; })) === "first");
+
   check("intrinsic: a fractional bound is refused by both windowing verbs",
     typeOf(function () { return intrinsic.copyList([10, 20, 30], 0.5, 2); }) === "TypeError" &&
     typeOf(function () { return intrinsic.byteSlice(Buffer.from([1, 2, 3]), 0.5); }) === "TypeError" &&

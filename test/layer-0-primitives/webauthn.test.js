@@ -754,6 +754,28 @@ async function run() {
     (await codeOfAsync(function () {
       return pki.webauthn.verify(regObj, { clientDataJSON: createJson, expectedOrigin: "https://example.com.attacker.tld" });
     })) === "webauthn/client-data-mismatch");
+  // An allow-list the caller left EMPTY must admit nothing. A sparse array answers from the prototype
+  // at the index it has a hole at, and a universal test over it skips the hole, so a one-element list
+  // with no origin of its own passed the door and then matched an origin installed on
+  // `Array.prototype`, with the origin reported as checked. The same holds for the top-origin list.
+  var realIndexZero = Object.getOwnPropertyDescriptor(Array.prototype, "0");
+  var sparseOriginCode, sparseTopCode;
+  try {
+    Array.prototype[0] = "https://example.com";
+    sparseOriginCode = await codeOfAsync(function () {
+      return pki.webauthn.verify(regObj, { clientDataJSON: createJson, expectedOrigin: new Array(1) });
+    });
+    sparseTopCode = await codeOfAsync(function () {
+      return pki.webauthn.verify(regObj, { clientDataJSON: createJson, expectedTopOrigin: new Array(1) });
+    });
+  } finally {
+    if (realIndexZero) Object.defineProperty(Array.prototype, "0", realIndexZero);
+    else delete Array.prototype[0];
+  }
+  check("verify: a sparse expectedOrigin admits nothing, whatever sits on the array prototype (" +
+    sparseOriginCode + ")", sparseOriginCode === "webauthn/bad-input");
+  check("verify: and a sparse expectedTopOrigin is refused the same way (" + sparseTopCode + ")",
+    sparseTopCode === "webauthn/bad-input");
   // The digest computed from the JSON is the one the attestation is bound to, so the two doors
   // agree on the same ceremony.
   check("verify: the digest form of the same clientData reaches the same verdict",

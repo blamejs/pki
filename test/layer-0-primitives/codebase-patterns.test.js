@@ -3857,14 +3857,14 @@ function testGuardReadsRuntimeLive() {
     "lib/acme.js": 177,
     "lib/est.js": 149,
     "lib/cmp-build.js": 125,
-    "lib/crmf-sign.js": 31,
+    "lib/crmf-sign.js": 28,
     /** Still budgeted: the module's own selections and copies are converted and its policy-mapping
      *  copies were an admission, but the 57 counted here are the live prototype reads elsewhere in
      *  it, which item 0v7 carries. */
     "lib/path-validate.js": 25,
     "lib/asn1-der.js": 100,
     "lib/schema-engine.js": 39,
-    "lib/cms-sign.js": 53,
+    "lib/cms-sign.js": 51,
     "lib/attrcert-sign.js": 67,
     "lib/tsp-sign.js": 41,
     "lib/pkcs12-build.js": 63,
@@ -3882,7 +3882,7 @@ function testGuardReadsRuntimeLive() {
     /** Entered scope when they took the captures for the promise-construction fix. A module is armed
      *  whole the moment it requires guard-intrinsic, so these are the reads that were always there and
      *  are now counted. Both ratchet DOWN only, like the rest. */
-    "lib/ocsp.js": 92,
+    "lib/ocsp.js": 88,
     "lib/csr-sign.js": 26,
     "lib/schema-attrcert.js": 26,
     "lib/tls-cert-compress.js": 18,
