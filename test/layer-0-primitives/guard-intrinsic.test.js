@@ -563,6 +563,40 @@ function testSelectionsConsultNoConstructionProtocol() {
     refused === 4);
   check("intrinsic: the list verbs still accept an ordinary array",
     intrinsic.mapList([1, 2], function (x) { return x * 3; })[1] === 6);
+
+  // `String.prototype.split` is SPECIFIED to look the separator's `Symbol.split` method up and call
+  // it (ES2015 21.1.3.19 step 2), so the separator's prototype chain is part of the operation and
+  // capturing `split` does not close it. Hard rule 11 bans `split` in lib/ for that reason.
+  //
+  // MEASURED here rather than asserted: on this runtime V8 fast-paths a primitive-string separator
+  // and does NOT perform that lookup, so a captured split is unaffected by the hook. These checks
+  // therefore do NOT discriminate the scan from a split-based implementation here -- swapping
+  // `splitChar` back to a captured split leaves all four passing. They record the measurement and
+  // pin the delimiter cases; the reason for the scan is that the fast path is an optimisation and
+  // not a guarantee, and a spec-exact engine performs the dispatch.
+  var hookedSplit, hookedScan, hookedObjSep;
+  try {
+    Object.defineProperty(String.prototype, Symbol.split, {
+      value: function () { return ["HOOKED"]; }, configurable: true,
+    });
+    hookedSplit = intrinsic.uncurry(String.prototype.split)("127.0.0.1", ".");
+    hookedScan = intrinsic.splitChar("127.0.0.1", 46);
+  } finally {
+    delete String.prototype[Symbol.split];
+  }
+  // The dispatch mechanism itself is live in this runtime, which is what makes the fast path the
+  // only thing standing between a captured split and the hook.
+  hookedObjSep = "127.0.0.1".split({ [Symbol.split]: function () { return ["HOOKED"]; } });
+  check("intrinsic: an object separator carrying @@split IS dispatched to, so the protocol is live",
+    hookedObjSep.length === 1 && hookedObjSep[0] === "HOOKED");
+  check("intrinsic: this runtime's split fast-paths a string separator past the @@split hook",
+    hookedSplit.length === 4 && hookedSplit[0] === "127");
+  check("intrinsic: splitChar does not consult a separator prototype at all",
+    hookedScan.length === 4 && hookedScan[0] === "127" && hookedScan[3] === "1");
+  check("intrinsic: splitChar matches split on the delimiter cases these parsers use",
+    JSON.stringify(intrinsic.splitChar("a..b", 46)) === JSON.stringify("a..b".split(".")) &&
+    JSON.stringify(intrinsic.splitChar("", 46)) === JSON.stringify("".split(".")) &&
+    JSON.stringify(intrinsic.splitChar("Websites;Email", 59)) === JSON.stringify("Websites;Email".split(";")));
 }
 
 module.exports = { run: run };
