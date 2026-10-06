@@ -742,6 +742,78 @@ async function run() {
       === "cms/missing-algorithm-protection");
   check("AP-9 CONTROL and it authenticates without the option",
     (await pki.cms.decrypt(bareAuthed, { kek: kek })).authenticated === true);
+  // AP-26b: the parser refuses in an AuthEnvelopedData what the emitting verbs refuse to put there.
+  // RFC 6211 sec. 2 populates the macAlgorithm arm "only if the attribute is placed in an
+  // AuthenticatedData.authAttrs sequence", and RFC 8933 sec. 6 says the attribute protects nothing
+  // in an AuthEnvelopedData, which has no digest or MAC algorithm field for a copy to name. Our own
+  // verb will not emit one there, so the fixture is spliced: a message from another producer is the
+  // only way this set carries the attribute, and the cardinality and value rules below it would
+  // otherwise never be asked.
+  var aeadBase = await pki.cms.encrypt(CONTENT, [{ kek: kek, kekId: Buffer.from("k") }],
+    { contentEncryptionAlgorithm: "aes-256-gcm" });
+  function withAuthEnvelopedAttr(cmsDer, attrTlv) {
+    var root = pki.asn1.decode(cmsDer);
+    var aed = root.children[1].children[0];
+    var kids = [];
+    aed.children.forEach(function (c, i) {
+      kids.push(c.bytes);
+      var next = aed.children[i + 1];
+      if (c.tagClass === "universal" && c.tagNumber === 16 && next && next.tagNumber === 4) {
+        kids.push(b.contextConstructed(1, attrTlv));   // [1] authAttrs, ahead of the mac
+      }
+    });
+    return b.sequence([root.children[0].bytes, b.explicit(0, b.sequence(kids))]);
+  }
+  var aeadDigestOnly = b.sequence([algId("sha256")]);       // a value with neither arm, which sec. 2 forbids
+  var aeadSpliced = withAuthEnvelopedAttr(aeadBase, attr(OID_PKCS9, [aeadDigestOnly]));
+  check("AP-26b the attribute is refused in an AuthEnvelopedData's authenticated attributes",
+    codeOfSync(function () { pki.schema.cms.parse(aeadSpliced); }) === "cms/misplaced-attr");
+  check("AP-26b and under the registry identifier as well",
+    codeOfSync(function () {
+      pki.schema.cms.parse(withAuthEnvelopedAttr(aeadBase, attr(OID_REGISTRY, [aeadDigestOnly])));
+    }) === "cms/misplaced-attr");
+  check("AP-26b CONTROL the same message parses with that attribute set absent",
+    pki.schema.cms.parse(aeadBase).contentTypeName === "authEnvelopedData");
+  // That set answers to two names, and naming only the narrower one would drop every restriction
+  // the wider one carries. A countersignature is an unsigned attribute and nothing else (RFC 5652
+  // sec. 11.4), which the authenticated-attribute rule already refused.
+  check("AP-26b and the restrictions an authenticated-attribute set already carried still hold there",
+    codeOfSync(function () {
+      pki.schema.cms.parse(withAuthEnvelopedAttr(aeadBase,
+        attr(pki.oid.byName("countersignature"), [b.nullValue()])));
+    }) === "cms/misplaced-attr");
+
+  // AP-26d: which arm the value carries is the validator's question, not the parser's. RFC 6211
+  // sec. 2 says which arm a producer fills; sec. 3.1 and 3.2 give the consequence to whoever
+  // validates, and an attribute holding the other arm is a claim about a structure this is not. The
+  // message parses so an operator can see that, and the verb refuses it. Driven on BOTH content
+  // types, since each has its own arm and its own verb.
+  var sigArmInAuthAttrs = withAuthAttr(authWithAp,
+    attr(OID_PKCS9, [protection(algId("sha256"), algId("ecdsaWithSHA256"), 1)]), "cmsAlgorithmProtection");
+  check("AP-26d a signatureAlgorithm arm in authAttrs parses, so the message can be read",
+    pki.schema.cms.parse(sigArmInAuthAttrs).contentTypeName === "authData");
+  check("AP-26d and pki.cms.decrypt refuses it as the mismatch it is",
+    (await codeOf(pki.cms.decrypt(sigArmInAuthAttrs, { kek: apKek }))) === "cms/algorithm-protection-mismatch");
+
+  // AP-26c: the off forms mean the same thing in bare authentication mode. The attribute cannot ride
+  // in a message with no attribute set, so asking for it there is refused by placement, but saying
+  // "no attribute" is not an unknown option: a caller passing one options object to several messages
+  // should not have to strip a switch it had already turned off.
+  var bareRecipient = [{ kek: kek, kekId: Buffer.from("k") }];
+  check("AP-26c the documented off forms are accepted with authenticatedAttributes: false",
+    (await codeOf(pki.cms.authenticate(CONTENT, bareRecipient,
+      { authenticatedAttributes: false, algorithmProtection: false }))) === "NO-THROW" &&
+    (await codeOf(pki.cms.authenticate(CONTENT, bareRecipient,
+      { authenticatedAttributes: false, algorithmProtection: null }))) === "NO-THROW");
+  check("AP-26c and asking for the attribute there is refused for the placement, not as an unknown option",
+    (await messageOf(pki.cms.authenticate(CONTENT, bareRecipient,
+      { authenticatedAttributes: false, algorithmProtection: true })))
+      .indexOf("algorithmProtection needs authenticated attributes to ride in") === 0);
+  check("AP-26c and a misspelling there is still the value refusal",
+    (await messageOf(pki.cms.authenticate(CONTENT, bareRecipient,
+      { authenticatedAttributes: false, algorithmProtection: "typo" })))
+      .indexOf("algorithmProtection is true for the identifier") === 0);
+
   // AP-6c on this content type: the same switch, read the same way. The MAC over authAttrs alone
   // is what the attribute exists to extend, so a requirement the caller believes is on and is not
   // is the whole exposure this option closes.
@@ -858,6 +930,28 @@ function withOuterMac(authDer, macName) {
     return seen === 1;
   }, b.sequence([b.oid(pki.oid.byName(macName))]));
 }
+// The authenticated attributes of an AuthenticatedData, rebuilt with `extra` added and any
+// attribute of `replaceType` dropped. The MAC covers this set, so a fixture built this way is
+// expected to fail its MAC: these vectors drive the PARSER.
+function withAuthAttr(authDer, extra, replaceType) {
+  var root = pki.asn1.decode(authDer);
+  var ad = root.children[1].children[0];
+  var want = replaceType ? pki.oid.byName(replaceType) : null;
+  var kids = ad.children.map(function (k) {
+    if (!(k.tagClass === "context" && k.tagNumber === 2)) return k.bytes;
+    var kept = [];
+    k.children.forEach(function (a) {
+      if (want && pki.asn1.read.oid(a.children[0]) === want) return;
+      kept.push(a.bytes);
+    });
+    kept.push(extra);
+    var setOf = b.set(kept);
+    var wire = Buffer.from(setOf); wire[0] = 0xA2;      // [2] IMPLICIT, the form authAttrs rides in
+    return wire;
+  });
+  return b.sequence([root.children[0].bytes, b.explicit(0, b.sequence(kids))]);
+}
+
 function _withOuterField(authDer, pick, replacement) {
   var root = pki.asn1.decode(authDer);
   var ad = root.children[1].children[0];
