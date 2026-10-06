@@ -38,6 +38,31 @@ async function run() {
     check("decaps KAT " + t.tcId + " (ss == k)", Buffer.from(ss).length === 32 && Buffer.from(ss).equals(b64(t.k)));
   }
 
+  // 1b. The ML-KEM half of the secret is carried by promise continuations, and a continuation is read
+  // off the promise at the call unless it comes from the capture. A replacement settling the
+  // decapsulation step hands the combiner bytes the key never produced, so the secret this answers
+  // with is not the one the other side derives. The known answer must hold with such a replacement
+  // installed, and `consulted` must read false: the route no longer reaches the prototype.
+  var katRow = composites[0];
+  var realThen = Object.getOwnPropertyDescriptor(Promise.prototype, "then");
+  var hookedSs, thenConsulted = false;
+  try {
+    Object.defineProperty(Promise.prototype, "then", {
+      value: function (onOk, onFail) {
+        if (typeof onOk === "function" && String(onOk).indexOf("decapsulateBits") !== -1) {
+          thenConsulted = true;
+          return realThen.value.call(Promise.resolve(Buffer.alloc(32, 0xaa)), function (v) { return v; });
+        }
+        return realThen.value.call(this, onOk, onFail);
+      },
+      writable: true, configurable: true,
+    });
+    hookedSs = await pki.kem.decapsulate(b64(katRow.dk_pkcs8), b64(katRow.c));
+  } finally { Object.defineProperty(Promise.prototype, "then", realThen); }
+  check("a replaced promise continuation cannot substitute the ML-KEM half of the secret (" +
+    "consulted=" + thenConsulted + ")",
+  Buffer.from(hookedSs).equals(b64(katRow.k)) && thenConsulted === false);
+
   // 2. encapsulate -> decapsulate round-trip (encapsulation is randomized; the secrets must agree).
   for (var j = 0; j < composites.length; j++) {
     var r = composites[j];
