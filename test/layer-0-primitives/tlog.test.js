@@ -632,6 +632,23 @@ function runTilePaths() {
     pki.tlog.tilePath(0, 67n) === "tile/0/067" && pki.tlog.tilePath(3, 0n) === "tile/3/000");
   check("T3: a partial tile carries its width",
     pki.tlog.tilePath(0, 1234067n, 42) === "tile/0/x001/x234/067.p/42");
+  /* The segments are the path a tile is requested from. They were prepended into a list, and a
+     prepend stores at an index, so an accessor inherited there took each segment and the `x` prefix
+     was then applied by a read-modify-write through the hole the store left. The getter below
+     answers with a segment of its own; the counter is the other half, because a store is what leaves
+     the hole. */
+  var realZero = Object.getOwnPropertyDescriptor(Array.prototype, "0");
+  var stores = 0, underAccessor;
+  Object.defineProperty(Array.prototype, "0", { configurable: true,
+    get: function () { return "xEVIL"; }, set: function () { stores += 1; } });
+  try { underAccessor = pki.tlog.tilePath(0, 1234067n); }
+  finally {
+    if (realZero) Object.defineProperty(Array.prototype, "0", realZero);
+    else delete Array.prototype[0];
+  }
+  check("T3a: an accessor at an array index cannot change a tile path (" + underAccessor +
+    ", " + stores + " stores)",
+  underAccessor === "tile/0/x001/x234/067" && stores === 0);
   check("T4: a level is a decimal 0 to 63",
     pki.tlog.tilePath(63, 0n) === "tile/63/000" &&
       codeOf(function () { pki.tlog.tilePath(64, 0n); }) === "tlog/bad-tile" &&

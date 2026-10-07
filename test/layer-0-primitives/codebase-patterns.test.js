@@ -733,9 +733,18 @@ function testNoStoringAppend() {
   //
   // WHAT THIS DOES NOT CLAIM. A lexical check cannot be complete about obtaining a property: a name
   // assembled at runtime, `Reflect.get(Array.prototype, n)`, or a walk over the prototype's own keys
-  // all reach the same function while naming nothing. The claim is narrower and it is the one worth
-  // having: no module WRITES the storing form, in the spellings a person writes. What backs the rest
-  // is that `guard-intrinsic` neither captures nor exports it, so there is nothing to reach for by
+  // all reach the same function while naming nothing. Nor can it be complete about a destructuring
+  // pattern, because what separates `{ push: p }` the PATTERN from `{ push: fn }` the LITERAL is the
+  // position it stands in, and that wants a parser: a pattern in a PARAMETER list
+  // (`function f({ push: p })`, called with `Array.prototype` elsewhere) closes on `)` exactly as an
+  // object literal passed as an argument does, so widening to that would re-report the literal form
+  // this check is measured silent on. The two arms below take the positions that are unambiguous: a
+  // pattern whose close is followed by `=`, and a pattern that opens right after a declaration
+  // keyword, which covers the array-wrapped and for-of spellings
+  // (`const [{ push: p }] = [A]`, `for (const { push: p } of [A])`) and does not depend on where the
+  // brace matcher thinks the close is. The claim is therefore: no module NAMES the storing form in a
+  // property position, and none BINDS it by a declared pattern. What backs the rest is that
+  // `guard-intrinsic` neither captures nor exports either name, so there is nothing to reach for by
   // habit, and the behavioral vectors on `append` and the `*List` builders pin the property itself.
   //
   // THIS CHECK READS A SOURCE WITH COMMENTS STRIPPED AND STRING LITERALS PRESERVED, which is the only
@@ -745,8 +754,14 @@ function testNoStoringAppend() {
   // because each shape needs punctuation a sentence does not carry, and the clean tree is silent on
   // all three: measured, zero, with the object-literal forms (`module.exports = { push: fn }`,
   // `fn({ push: 1 })`) confirmed NOT to fire.
-  var STORING = new RegExp("\\.\\s*push\\b(?!\\s*\\()" +
-    "|\\[\\s*(['\"])push\\1\\s*\\]", "g");
+  // BOTH STORING APPENDS, for one reason: each GROWS the list, so each stores at an index the array
+  // has no own property at. `unshift` is the prepend form and `guard-intrinsic` stopped capturing it
+  // for the same reason it never captured `push`; a module prepending to a list counts its elements
+  // and appends them in order instead (`encodeLength` and `intToDer` in lib/asn1-der.js). The
+  // mutators that remain -- `pop`, `shift`, `splice`, `reverse` -- move or drop elements that already
+  // have own slots, so none of them reaches a prototype accessor on a list built by defining.
+  var STORING = new RegExp("\\.\\s*(?:push|unshift)\\b(?!\\s*\\()" +
+    "|\\[\\s*(['\"])(?:push|unshift)\\1\\s*\\]", "g");
   var files = _libFiles();
   var bad = [];
   for (var i = 0; i < files.length; i++) {
@@ -760,7 +775,7 @@ function testNoStoringAppend() {
       bad.push({
         file: _relPath(files[i]),
         line: subject.slice(0, m.index).split(/\r?\n/).length,
-        content: "obtains the storing append `" + m[0].replace(/\s+/g, "") + "` — a store at an " +
+        content: "obtains a storing append `" + m[0].replace(/\s+/g, "") + "` — a store at an " +
           "index runs a setter inherited from the prototype chain, which takes the element being " +
           "appended, whichever object the method was read off; use `intrinsic.append`, which defines " +
           "the index on the array itself",
@@ -770,13 +785,17 @@ function testNoStoringAppend() {
     // to its own `}`, and a pattern is one whose close is followed by a single `=`. A default
     // initializer or a nested pattern therefore stays inside the span instead of ending it.
     for (var b = subject.indexOf("{"); b !== -1; b = subject.indexOf("{", b + 1)) {
+      // A pattern that opens right after a declaration keyword is a BINDING wherever its close
+      // lands, which is what covers the array-wrapped and for-of spellings. An object literal never
+      // stands in that position, so this arm adds no new way to report one.
+      var declared = /(?:^|[^A-Za-z0-9_$])(?:var|let|const)\s*\[?\s*$/.test(subject.slice(0, b));
       // `_matchingBrace` returns the index OF the closing brace, so what follows a pattern starts
       // one past it.
       var close = _matchingBrace(subject, b + 1);
       if (close <= b || close >= subject.length) continue;
-      if (!/^\s*=(?!=)/.test(subject.slice(close + 1))) continue;
+      if (!declared && !/^\s*=(?!=)/.test(subject.slice(close + 1))) continue;
       var pattern = subject.slice(b, close);
-      if (!/\bpush\b/.test(pattern)) continue;
+      if (!/\b(?:push|unshift)\b/.test(pattern)) continue;
       bad.push({
         file: _relPath(files[i]),
         line: subject.slice(0, b).split(/\r?\n/).length,
@@ -2285,7 +2304,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/cmp-build.js:<top>", "lib/crmf-sign.js:<top>", "lib/key.js:<top>", "lib/sigstore.js:<top>",
         "lib/ip-utils.js:<top>", "lib/pkcs11-uri.js:<top>", "lib/guard-encoding.js:_alphabet",
         "lib/identity-match.js:<top>", "lib/identity-match.js:E", "lib/tlog.js:<top>",
-        "lib/pki-build.js:<top>",
+        "lib/pki-build.js:<top>", "lib/path-validate.js:<top>",
         "lib/sign-scheme.js:O", "lib/tuf.js:_err", "lib/tuf.js:<top>",
         "lib/related-cert.js:<top>", "lib/related-cert.js:_err",
         "lib/alt-sig.js:<top>", "lib/possession.js:<top>", "lib/possession.js:setEngine",
@@ -3983,7 +4002,7 @@ function testGuardReadsRuntimeLive() {
   // budget nobody tightens is a number that stops meaning anything, and the next reader would take
   // it for the real count. A module reaching zero is deleted from the map and held to zero forever.
   var MIGRATING = {
-    "lib/acme.js": 150,
+    "lib/acme.js": 147,
     "lib/est.js": 124,
     "lib/cmp-build.js": 122,
     "lib/crmf-sign.js": 12,
@@ -3991,20 +4010,20 @@ function testGuardReadsRuntimeLive() {
      *  copies were an admission, but the 57 counted here are the live prototype reads elsewhere in
      *  it, which item 0v7 carries. */
     "lib/path-validate.js": 25,
-    "lib/asn1-der.js": 94,
-    "lib/schema-engine.js": 39,
-    "lib/cms-sign.js": 28,
+    "lib/asn1-der.js": 66,
+    "lib/schema-engine.js": 15,
+    "lib/cms-sign.js": 26,
     "lib/attrcert-sign.js": 67,
     "lib/tsp-sign.js": 41,
     "lib/pkcs12-build.js": 63,
     "lib/ct.js": 40,
-    "lib/cms-verify.js": 13,
+    "lib/cms-verify.js": 12,
     "lib/cms-encrypt.js": 66,
-    "lib/crl-sign.js": 61,
+    "lib/crl-sign.js": 59,
     "lib/cmc-build.js": 57,
     "lib/pki-build.js": 33,
     "lib/hpke.js": 32,
-    "lib/cms-decrypt.js": 45,
+    "lib/cms-decrypt.js": 37,
     "lib/composite-sig.js": 29,
     "lib/cmc-verify.js": 32,
     "lib/x509-sign.js": 24,
@@ -4013,7 +4032,7 @@ function testGuardReadsRuntimeLive() {
      *  are now counted. Both ratchet DOWN only, like the rest. */
     "lib/ocsp.js": 88,
     "lib/csr-sign.js": 26,
-    "lib/schema-attrcert.js": 26,
+    "lib/schema-attrcert.js": 24,
     "lib/tls-cert-compress.js": 18,
     "lib/schema-crl.js": 7,
     "lib/schema-ocsp.js": 9,

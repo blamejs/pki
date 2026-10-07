@@ -925,6 +925,21 @@ async function run() {
   var ncBadMask = await caCertWithExts([b.sequence([b.oid(O("nameConstraints")), b.boolean(true), b.octetString(b.sequence([b.contextConstructed(0, b.sequence([b.contextPrimitive(7, Buffer.from([192, 0, 2, 0, 255, 0, 255, 0]))]))]))])]);
   var ncBadMaskEnc = pki.schema.c509.encode(ncBadMask, { issuerCurve: "P-256" });
   check("153. an NC iPAddress with a non-prefix mask (FF 00 FF 00) falls back to ~oid + double-inverts", extPair(ncBadMaskEnc, 26) == null && extOidIds(ncBadMaskEnc).indexOf("551d1e") >= 0 && pki.schema.c509.parse(ncBadMaskEnc).reconstructedDer.equals(ncBadMask));
+  // 153a. The prefix form's octets were prepended into a list, and a prepend stores at an index: an
+  // accessor inherited there took each octet, and the leading one is both the prefix length checked
+  // for range and a byte the subtree base carries. The re-encoding below is byte-identical with such
+  // an accessor installed, and no store reaches it.
+  var ipRealZero = Object.getOwnPropertyDescriptor(Array.prototype, "0");
+  var ipStores = 0, ncIp4Under;
+  Object.defineProperty(Array.prototype, "0", { configurable: true,
+    get: function () { return 0xff; }, set: function () { ipStores += 1; } });
+  try { ncIp4Under = pki.schema.c509.encode(ncIp4, { issuerCurve: "P-256" }); }
+  finally {
+    if (ipRealZero) Object.defineProperty(Array.prototype, "0", ipRealZero);
+    else delete Array.prototype[0];
+  }
+  check("153a. an accessor at an array index cannot change an encoded iPAddress subtree (" +
+    ipStores + " stores)", Buffer.isBuffer(ncIp4Under) && ncIp4Under.equals(ncIp4Enc) && ipStores === 0);
 
   // 10. authorityInfoAccess (extID 9): id-ad-ocsp + id-ad-caIssuers URIs -> [1, uri, 2, uri]; SIA (extID 31) identical;
   //     an unregistered accessMethod -> ~oid; a non-URI accessLocation -> whole-ext fallback.

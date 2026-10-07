@@ -24,6 +24,7 @@ var _check    = require("./check");
 var _wait     = require("./wait");
 var _vectors  = require("./vectors");
 var _detached = require("./detached-bytes");
+var _protoIdx = require("./proto-index-stores");
 
 module.exports = {
   // Toolkit binding + Node stdlib re-exports for ergonomics.
@@ -53,4 +54,8 @@ module.exports = {
   // zero-length, so a boundary that does not re-view them operates on nothing.
   detachedBuffer: _detached.detachedBuffer,
   detachedUint8:  _detached.detachedUint8,
+
+  // Counts stores at Array.prototype indexes while an operation runs -- a store there runs a setter
+  // the array inherits, which takes the element being appended.
+  countIndexStores: _protoIdx.countIndexStores,
 };

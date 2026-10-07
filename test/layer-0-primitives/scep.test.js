@@ -101,6 +101,32 @@ async function testRenewalReqRoundTrip() {
   check("RenewalReq: messageData recovered", Buffer.compare(v.messageData, F.csr) === 0);
 }
 
+// A SUCCESS CertRep's certificates and CRLs are checked one at a time and collected into a list.
+// Assigned at the index, the assignment is a store, and a store walks the prototype chain for a
+// setter: an accessor there took the bytes the parse had just accepted and the list read back
+// whatever its getter answers, so the certificate returned is not the one that was checked. The list
+// is appended to by defining each index now; this drives the shipped parse with such an accessor
+// installed and reads both the returned certificate and whether any store reached it.
+async function testCertRepListUnderIndexAccessor() {
+  var env = await cmsEncrypt.encrypt(certsOnly([F.issuedCert]), [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+  var rep = await buildCertRep({ statusCode: "0", transactionId: "idx", content: env });
+  var opts = { recipientKey: { cert: F.caCert, key: F.caKey } };
+  var clean = await pki.scep.parse(rep, opts);
+  check("CertRep: the clean parse surfaces the issued certificate",
+    clean.certificates.length === 1 && Buffer.compare(clean.certificates[0], F.issuedCert) === 0);
+  var realZero = Object.getOwnPropertyDescriptor(Array.prototype, "0");
+  var stores = 0, under;
+  Object.defineProperty(Array.prototype, "0", { configurable: true,
+    get: function () { return F.caCert; }, set: function () { stores += 1; } });
+  try { under = await pki.scep.parse(rep, opts); }
+  finally {
+    if (realZero) Object.defineProperty(Array.prototype, "0", realZero);
+    else delete Array.prototype[0];
+  }
+  check("CertRep: an accessor at an array index cannot replace a checked certificate (" + stores + " stores)",
+    under.certificates.length === 1 && Buffer.compare(under.certificates[0], F.issuedCert) === 0 && stores === 0);
+}
+
 async function testNoKeyParse() {
   var msg = await pki.scep.build({ messageType: "PKCSReq", messageData: F.csr, recipient: F.caCert, signer: F.signer, transactionId: "t" });
   var v = await pki.scep.parse(msg);
@@ -1550,6 +1576,7 @@ async function main() {
   await testPkcsReqRoundTrip();
   await testRenewalReqRoundTrip();
   await testNoKeyParse();
+  await testCertRepListUnderIndexAccessor();
   await testNonceEcho();
   await testCertRepSuccessParse();
   await testCertRepCrlOnly();

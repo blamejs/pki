@@ -1509,6 +1509,79 @@ function testNamedBitString() {
   check("an inherited index setter cannot take an OID's arcs as they are appended (" +
     dottedUnderSetter + ", setter x" + protoSetterCalls + ")",
   dottedUnderSetter === "1.2.3" && protoSetterCalls === 0);
+
+  // The decoded children of a constructed value are what every format module in this toolkit reads
+  // its fields out of. Appended by storing at the index, the store consulted a setter inherited from
+  // the array prototype, which received each child as it was decoded and could define another node in
+  // its place: measured on a SEQUENCE of two INTEGERs, the first value came back as 9 instead of 1.
+  var seqDer = Buffer.from("3006020101020102", "hex");
+  check("fixture: those bytes are a SEQUENCE of the INTEGERs 1 and 2",
+    pki.asn1.read.integer(pki.asn1.decode(seqDer).children[0]) === 1n &&
+    pki.asn1.read.integer(pki.asn1.decode(seqDer).children[1]) === 2n);
+  var childSetterCalls = 0, decodedUnderSetter;
+  Object.defineProperty(Array.prototype, "0", {
+    configurable: true, enumerable: false,
+    get: function () { return undefined; },
+    set: function (v) {
+      childSetterCalls += 1;
+      Object.defineProperty(this, "0", {
+        value: { tagClass: "universal", tagNumber: 2, content: Buffer.from([9]), children: null, bytes: Buffer.from([2, 1, 9]) },
+        writable: true, enumerable: true, configurable: true,
+      });
+    },
+  });
+  try { decodedUnderSetter = pki.asn1.decode(seqDer); }
+  finally { delete Array.prototype[0]; }
+  check("an inherited index setter cannot replace a decoded child (first INTEGER " +
+    pki.asn1.read.integer(decodedUnderSetter.children[0]) + ", setter x" + childSetterCalls + ")",
+  decodedUnderSetter.children.length === 2 &&
+    pki.asn1.read.integer(decodedUnderSetter.children[0]) === 1n && childSetterCalls === 0);
+
+  // The ENCODER side of the same mechanism. Four of its byte lists were built by prepending or by
+  // assigning at the index, and both are stores: an accessor inherited at an array index took the
+  // octets as they were produced, and the decisions made from those lists -- whether a positive
+  // INTEGER needs a leading zero, which octet carries the continuation bit -- were then read back
+  // through the hole a store leaves. Each list is now written into the output directly, so the
+  // emitted bytes are the ones the value describes.
+  //
+  // The expected encodings are taken BEFORE the accessor is installed, for two reasons: they are the
+  // control, and a getter that calls back into a builder recurses until the stack is gone.
+  var ENC = {
+    "an INTEGER whose top octet has the high bit set": function () { return pki.asn1.build.integer(0x80n); },
+    "an INTEGER of eight content octets": function () { return pki.asn1.build.integer(0x123456789abcdefn); },
+    "a negative INTEGER": function () { return pki.asn1.build.integer(-300n); },
+    "a SEQUENCE with a multi-octet length": function () { return pki.asn1.build.sequence([pki.asn1.build.octetString(Buffer.alloc(300, 7))]); },
+    "an OBJECT IDENTIFIER with multi-octet sub-identifiers": function () { return pki.asn1.build.oid("1.2.840.113549.1.1.11"); },
+    "a high-tag-number identifier": function () { return pki.asn1.encode(0x00, false, 31, Buffer.from([1, 2, 3])); },
+  };
+  // `got` and `threw` are filled with own slots up front for the same reason: assigning at an index
+  // the array has no own property at is itself a store, so a results array built under the accessor
+  // would lose its own first entry to the setter being measured.
+  var encNames = Object.keys(ENC);
+  var want = encNames.map(function (k) { return ENC[k](); });
+  var marker = Buffer.from([0x99]);
+  var encStores = 0;
+  var got = encNames.map(function () { return null; });
+  var threw = encNames.map(function () { return null; });
+  Object.defineProperty(Array.prototype, "0", {
+    configurable: true, enumerable: false,
+    get: function () { return marker; },
+    set: function () { encStores += 1; },
+  });
+  try {
+    for (var ei = 0; ei < encNames.length; ei++) {
+      try { got[ei] = ENC[encNames[ei]](); threw[ei] = null; }
+      catch (e) { got[ei] = null; threw[ei] = e; }
+    }
+  } finally { delete Array.prototype[0]; }
+  for (var ej = 0; ej < encNames.length; ej++) {
+    check("an inherited index setter cannot change the bytes of " + encNames[ej] + " (" +
+      (threw[ej] ? "threw " + threw[ej].constructor.name : got[ej].toString("hex").slice(0, 32)) +
+      ", want " + want[ej].toString("hex").slice(0, 32) + ")",
+    threw[ej] === null && Buffer.isBuffer(got[ej]) && got[ej].equals(want[ej]));
+  }
+  check("and the encoder stored at no array index while it built them (" + encStores + " stores)",
+    encStores === 0);
 }
 
 module.exports = { run: run };

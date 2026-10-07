@@ -332,7 +332,75 @@ function run() {
     plainFnMessage + ")",
   plainFnMessage.indexOf("unknown option") === 0 && plainFnMessage.indexOf("Proxy") === -1);
 
+  // guard.list.firstMatch -- the first element a predicate selects, or null. The written form it
+  // replaces is `list.filter(p)[0]`: that indexes a result which is EMPTY when nothing matched, and
+  // index 0 of an empty array answers from the array prototype, so a value installed there reads at
+  // the call site as a selected element. `filter` also builds its result through the receiver's
+  // Symbol.species, so the array indexed need not be one this toolkit made.
+  var rows = [{ id: "a", n: 1 }, { id: "b", n: 2 }, { id: "b", n: 3 }];
+  check("56. firstMatch returns the first element the predicate selects",
+    guard.list.firstMatch(rows, function (r) { return r.id === "b"; }).n === 2);
+  check("57. firstMatch returns null when nothing matches",
+    guard.list.firstMatch(rows, function (r) { return r.id === "z"; }) === null);
+  var realZeroFm = Object.getOwnPropertyDescriptor(Array.prototype, "0");
+  var planted = { id: "z", n: 99 };
+  Object.defineProperty(Array.prototype, "0", { configurable: true, get: function () { return planted; }, set: function () {} });
+  var underAccessor, viaFilter;
+  try {
+    underAccessor = guard.list.firstMatch(rows, function (r) { return r.id === "z"; });
+    viaFilter = rows.filter(function (r) { return r.id === "z"; })[0];
+  } finally {
+    if (realZeroFm) Object.defineProperty(Array.prototype, "0", realZeroFm);
+    else delete Array.prototype[0];
+  }
+  check("58. a value at Array.prototype[0] does not become a selected element (" +
+    JSON.stringify(underAccessor) + ")", underAccessor === null);
+  check("59. CONTROL the form it replaces does answer with it, so the vector is not vacuous",
+    viaFilter === planted);
+  check("60. firstMatch on an absent list is null, not a prototype value",
+    guard.list.firstMatch(null, function () { return true; }) === null);
+  check("61. firstMatch skips a hole rather than reading through it",
+    guard.list.firstMatch(sparseWithHole(), function (v) { return v !== undefined; }) === "real");
+
+  // guard.list.removeAt -- a removal that returns nothing, so it constructs nothing. `splice(i, 1)`
+  // returns what it removed and builds that result through ArraySpeciesCreate, which reads the
+  // receiver's `constructor` and then its Symbol.species: a getter there is handed the live array.
+  var shrink = ["a", "b", "c", "d"];
+  guard.list.removeAt(shrink, 1);
+  check("62. removeAt drops the element and shifts the tail down (" + shrink.join(",") + ")",
+    shrink.length === 3 && shrink[0] === "a" && shrink[1] === "c" && shrink[2] === "d");
+  check("63. and every surviving index is the array's own",
+    Object.prototype.hasOwnProperty.call(shrink, 0) &&
+      Object.prototype.hasOwnProperty.call(shrink, 2) &&
+      !Object.prototype.hasOwnProperty.call(shrink, 3));
+  var realCtor = Object.getOwnPropertyDescriptor(Array.prototype, "constructor");
+  var ctorReads = 0;
+  Object.defineProperty(Array.prototype, "constructor", { configurable: true, get: function () { ctorReads += 1; return Array; } });
+  var spliced = ["a", "b", "c"], removed = ["a", "b", "c"];
+  try {
+    guard.list.removeAt(removed, 0);
+    spliced.splice(0, 1);
+  } finally {
+    if (realCtor) Object.defineProperty(Array.prototype, "constructor", realCtor);
+    else delete Array.prototype.constructor;
+  }
+  check("64. removeAt consults no construction protocol while splice does (" + ctorReads + " read(s))",
+    ctorReads === 1 && removed.length === 2 && spliced.length === 2);
+  check("65. removeAt refuses an index the array does not hold",
+    threw(function () { guard.list.removeAt(["a"], 1); }) === "RangeError" &&
+      threw(function () { guard.list.removeAt(["a"], -1); }) === "RangeError");
+  check("66. removeAt refuses a receiver that is not an array",
+    threw(function () { guard.list.removeAt({ 0: "a", length: 1 }, 0); }) === "TypeError");
+
   console.log("CHECKS " + helpers.getChecks());
+}
+
+/* A list with a real element after a hole, built by defining only the slots it holds. */
+function sparseWithHole() {
+  var out = [];
+  out.length = 2;
+  Object.defineProperty(out, 1, { value: "real", writable: true, enumerable: true, configurable: true });
+  return out;
 }
 
 module.exports = { run: run };

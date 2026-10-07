@@ -2013,6 +2013,45 @@ async function testPolicyMachinery() {
   var leaf39 = await mkCert({ subject: "L39", issuer: "MapLate", signWith: "ed25519j", subjectKeys: "ed25519leaf", extensions: [cpExt([P2])] });
   var res39 = await run([interClamp, interMapLate, leaf39], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true });
   check("mapping at policy_mapping==0 deletes, not remaps", res39.valid === false && failCodes(res39).indexOf("path/policy-required") !== -1);
+
+  // That deletion is the only place validation REMOVES a policy node, and removing one used to go
+  // through `splice`. `splice` returns what it removed, so it builds that result through
+  // ArraySpeciesCreate, which reads the receiver's `constructor` and then its `Symbol.species`: a
+  // getter on `Array.prototype.constructor` is handed the live child list as its `this`, mid-edit,
+  // with every policy-node record in it. Capturing the method does not close that lookup. The
+  // removal defines the surviving slots and returns nothing now, so the getter is never consulted.
+  // RED without it: the getter fired, holding a reference to the node records while they were
+  // being unlinked.
+  var realCtor = Object.getOwnPropertyDescriptor(Array.prototype, "constructor");
+  var ctorReads = 0, reached = [];
+  Object.defineProperty(Array.prototype, "constructor", {
+    configurable: true,
+    get: function () {
+      /** The count is attributed to the module under test. A species lookup performed by the test
+       *  harness while the accessor is installed says nothing about the library, so only a stack
+       *  carrying a lib frame is counted, and the frame is recorded so a hit names its own site. */
+      var fr = String(new Error("x").stack).split("\n");
+      for (var q = 2; q < fr.length; q++) {
+        if (fr[q].indexOf("path-validate.js") === -1 && fr[q].indexOf("guard-list.js") === -1) continue;
+        ctorReads += 1;
+        if (reached.length < 4) {
+          Object.defineProperty(reached, reached.length, { value: fr[q].trim(), writable: true, enumerable: true, configurable: true });
+        }
+        break;
+      }
+      return Array;
+    },
+  });
+  var res39b;
+  try { res39b = await run([interClamp, interMapLate, leaf39], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true }); }
+  finally {
+    if (realCtor) Object.defineProperty(Array.prototype, "constructor", realCtor);
+    else delete Array.prototype.constructor;
+  }
+  check("a policy-node removal consults no construction protocol (" + ctorReads + " reads" +
+    (reached.length ? ", at " + JSON.stringify(reached) : "") + ")", ctorReads === 0);
+  check("and the verdict is the one the clean run produced",
+    res39b.valid === res39.valid && failCodes(res39b).indexOf("path/policy-required") !== -1);
 }
 
 // ---------------------------------------------------------------------------
@@ -3773,22 +3812,34 @@ async function testRfc5280ConformanceMusts() {
   var leafA11 = await mkCert({ subject: "A11l", issuer: "A11i", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt([P1x])] });
   var resA11 = await run([interA11, leafA11], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true, userInitialPolicySet: [P1x] });
   check("userConstrainedPolicySet computed", resA11.valid === true && Array.isArray(resA11.userConstrainedPolicySet) && resA11.userConstrainedPolicySet.indexOf(P1x) !== -1);
-  // An indexed accessor on Array.prototype reaches every list the validation builds while it runs,
-  // including the policy tree whose nodes decide the user-constrained set. The path that results is
-  // refused rather than accepted on substituted state: the checks that read those lists report the
-  // fabricated content as malformed, and no fabricated policy reaches the user-constrained set.
+  // An indexed accessor on Array.prototype reaches for every list the validation builds while it
+  // runs, including the policy tree whose nodes decide the user-constrained set. It changes nothing:
+  // the verdict and the user-constrained set are the ones the clean run above produced, which is
+  // asserted valid with P1x in it, so this compares against a known-good result rather than against
+  // any refusal. The earlier form of this check pinned a REFUSAL, because the lists were stored into
+  // and the fabricated content reached the readers, which reported it as malformed; the lists are
+  // appended to by defining their indexes now, so the accessor is never consulted and there is
+  // nothing to refuse.
+  // The getter answers with a policy-tree node of its own, which is the sharpest form: the per-depth
+  // policy layers were held in an array, so a depth no node had been placed at yet was a hole and the
+  // read answered from the prototype. The counter is the other half -- a store at index 0 is what
+  // leaves such a hole in the first place, and nothing on this route performs one now.
   var realZeroA11 = Object.getOwnPropertyDescriptor(Array.prototype, "0");
+  var a11Stores = 0;
   var a11Pending = run([interA11, leafA11], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true, userInitialPolicySet: [P1x] });
   Object.defineProperty(Array.prototype, "0", { configurable: true,
     get: function () { return { validPolicy: P1x, expectedPolicySet: [P1x], qualifiers: [], children: [], depth: 0 }; },
-    set: function () {} });
+    set: function () { a11Stores += 1; } });
   var a11poll;
   try { a11poll = await a11Pending; } finally {
     if (realZeroA11) Object.defineProperty(Array.prototype, "0", realZeroA11);
     else delete Array.prototype[0];
   }
-  check("an indexed accessor during validation refuses the path rather than accepting substituted state",
-    a11poll.valid === false && a11poll.userConstrainedPolicySet.length === 0);
+  check("an indexed accessor during validation changes nothing (valid " + a11poll.valid +
+    ", policies " + JSON.stringify(a11poll.userConstrainedPolicySet) + ")",
+  a11poll.valid === resA11.valid &&
+    JSON.stringify(a11poll.userConstrainedPolicySet) === JSON.stringify(resA11.userConstrainedPolicySet));
+  check("and nothing on the validation route stored at index 0 (" + a11Stores + " stores)", a11Stores === 0);
 
   // policy-mapping REPLACES the expected-policy set (§6.1.4(b)(1)): after
   // mapping P1->P2, a leaf asserting the mapped-FROM policy P1 must NOT satisfy

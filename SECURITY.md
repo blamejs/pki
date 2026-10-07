@@ -1518,6 +1518,21 @@ security-only patches after the next major releases.
   leave the request without the trust it asked for. A decode bound is read the
   same way: `min` and `max` are each read once, so a bound validated as an integer
   is the bound a value is compared against.
+  Appending is part of that closure. `push` and `unshift` STORE at an index, and a
+  store walks the prototype chain for a setter, so an accessor at an array index
+  receives each element as it is appended, leaves the array no own property there,
+  and the index reads back whatever the accessor answers; assigning at an index on
+  a fresh array has the same shape. Binding the method does not change it. Every
+  list a parse or an encode reads from is therefore built by defining its index,
+  both the DER and the CBOR codec included: a decoded value's children, the
+  elements of each SEQUENCE OF and SET OF, the fields concatenated into an emitted
+  structure, the length and identifier octets, an INTEGER's content octets and an
+  OID's sub-identifiers. Neither storing append is available in the library, and a
+  static check refuses one written anyway. The tables an allow-list check reads at
+  a character's code carry no prototype, since such a table holds an entry per
+  character it allows and a read at any other code would otherwise answer from the
+  array prototype, and the certificate-policy tree is keyed in a record with no
+  prototype for the same reason.
 - **Signed OCSP request verification (responder side).** `pki.ocsp.verifyRequest`
   lets a responder authenticate a client's signed request (RFC 6960 §4.1.1)
   through the same certification-path signature engine `pki.ocsp.verify` uses for
