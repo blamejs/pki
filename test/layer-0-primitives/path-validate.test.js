@@ -6828,20 +6828,128 @@ async function testFetchingChecker() {
   // with it, and an accessor is refused by the checker's own door when it is constructed.
   var bareChecker = pki.path.fetchingChecker({ transport: stub({}) });
   var parsedPlain = pki.schema.x509.parse(plain);
-  var parsedRoot = pki.schema.x509.parse(
-    await mkCert({ subject: "Root", issuer: "Root", signWith: "ed25519" }));
-  var baseVerdict = await bareChecker.check(parsedPlain, parsedRoot, null);
+  // The issuer record the validator hands a checker, built from the harness's own anchor. Handed a
+  // parsed certificate instead, the checker refuses at its first read and every arm of the vector
+  // short-circuits identically, which reads as a pass while measuring nothing.
+  var issuerRec = { workingIssuerName: anchor.name, workingPublicKey: anchor.publicKey,
+    workingPublicKeyAlgorithm: anchor.algorithm, issuerCert: parsedPlain };
+  var checkCtx = { time: T2027, historicalMode: false, run: {} };
+  var baseVerdict = await bareChecker.check(parsedPlain, issuerRec, checkCtx);
+  check("F61a. the baseline reached the location walk rather than refusing at a read",
+    /names no revocation location/.test(String(baseVerdict.reason)));
   var crafted = [{ oid: pki.oid.byName("authorityInfoAccess"), critical: false, value: Buffer.from([0x00, 0x00]) }];
   var underVerdict;
   try {
     Object.defineProperty(Object.prototype, "extensions", {
       configurable: true, writable: true, enumerable: false, value: crafted,
     });
-    underVerdict = await bareChecker.check(parsedPlain, parsedRoot, null);
+    underVerdict = await bareChecker.check(parsedPlain, issuerRec, checkCtx);
   } finally { delete Object.prototype.extensions; }
   check("F61. an inherited `extensions` list is not decoded for a certificate that carries none",
     underVerdict.status === baseVerdict.status && underVerdict.reason === baseVerdict.reason &&
     String(underVerdict.reason).indexOf("does not decode") === -1);
+
+  // The address-literal test decides whether the blocked-address check runs at all. Read off the
+  // `net` module at call time, a replacement answering 0 made every literal look like a NAME, so the
+  // check was skipped and the transport-declares-it-filters branch allowed a loopback distribution
+  // point instead. The operation is bound when the module loads, so swapping it now changes nothing.
+  var LOOPBACK = "https://127.0.0.1/blocked.crl";
+  var leafLoop = await mkCert({ subject: "LoopLeaf", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 72,
+    extensions: [cdpExt([distPoint(dpnFull([gnUri(LOOPBACK)]))])] });
+  var tLoop = stub({});
+  var nodeNet = require("net");
+  var realIsIP = nodeNet.isIP;
+  var rLoop;
+  try {
+    nodeNet.isIP = function () { return 0; };
+    rLoop = await run([leafLoop], fetching(tLoop));
+  } finally { nodeNet.isIP = realIsIP; }
+  check("F62. a loopback distribution point is refused with `net.isIP` replaced after load",
+    rLoop.valid === false && rowOf(rLoop, 0, "revocation").code === "path/revocation-undetermined");
+  check("...and the transport was never asked for it", tLoop.calls.length === 0);
+
+  // A response body is bytes, a primitive string, or absent. Converted through `String`, an object
+  // body ran its OWN toString and decided the bytes a CRL is then parsed from.
+  var leafCdp2 = await mkCert({ subject: "CoerceLeaf", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 73,
+    extensions: [cdpExt([distPoint(dpnFull([gnUri(CRL_URL)]))])] });
+  var objectBody = { toString: function () { return "not a CRL"; } };
+  var tObj = (function () { var o = {}; o[CRL_URL] = { status: 200, headers: { "content-type": "application/pkix-crl" }, body: objectBody }; return stub(o); })();
+  var rObj = await run([leafCdp2], fetching(tObj));
+  check("F63. a body that is neither bytes nor a string is refused rather than converted",
+    rObj.valid === false && rowOf(rObj, 0, "revocation").code === "path/revocation-undetermined" &&
+    /neither bytes nor a string/.test(rowOf(rObj, 0, "revocation").reason));
+
+  // A content-type header holding an object named the media type from that object's own toString.
+  // The media type is reported as a note when it is present and not the expected one, so an object
+  // whose toString answers a DIFFERENT type is what separates the two readings: converted, the note
+  // names `text/plain`; read as absent, there is no note to name.
+  // Read at the verb that owns the verdict, since the note travels on the checker's reason.
+  var objectType = { toString: function () { return "text/plain"; } };
+  var parsedCdp2 = pki.schema.x509.parse(leafCdp2);
+  var cdpIssuer = { workingIssuerName: anchor.name, workingPublicKey: anchor.publicKey,
+    workingPublicKeyAlgorithm: anchor.algorithm, issuerCert: parsedCdp2 };
+  async function typeReason(headerValue) {
+    var o = {};
+    o[CRL_URL] = { status: 200, headers: { "content-type": headerValue }, body: cleanCrl };
+    var checker = pki.path.fetchingChecker({ transport: stub(o) });
+    var v = await checker.check(parsedCdp2, cdpIssuer, { time: T2027, historicalMode: false, run: {} });
+    return { status: v.status, reason: String(v.reason) };
+  }
+  var asString = await typeReason("text/plain");
+  check("F64. a STRING content-type that is not the expected one is reported, which is the control",
+    /carried content-type/.test(asString.reason));
+  var asObject = await typeReason(objectType);
+  check("...and the same type supplied as an object reads as absent rather than through its toString",
+    !/carried content-type/.test(asObject.reason));
+  check("...with the CRL itself answering the same either way, so the header was what was measured",
+    asObject.status === asString.status);
+
+  // The blocked-address check itself. `isIP` decides whether it runs and this decides what it says,
+  // so binding one and leaving the other reads as closed while the second still answers live.
+  var httpTransportMod = require("../../lib/http-transport");
+  var realBlocked = httpTransportMod.isBlockedIp;
+  var tLoop2 = stub({});
+  var rLoop2;
+  try {
+    httpTransportMod.isBlockedIp = function () { return false; };
+    rLoop2 = await run([leafLoop], fetching(tLoop2));
+  } finally { httpTransportMod.isBlockedIp = realBlocked; }
+  check("F65. a loopback distribution point is refused with `isBlockedIp` replaced after load",
+    rLoop2.valid === false && rowOf(rLoop2, 0, "revocation").code === "path/revocation-undetermined");
+  check("...and that transport was never asked either", tLoop2.calls.length === 0);
+
+  // A response is read for the fields it OWNS. Carrying none of them, every read answered from the
+  // prototype, so an inherited 200 with an inherited body and headers was accepted as a response.
+  // Built clean and driven through `check`, because an inherited `status` reads as an unknown OPTION
+  // at the checker's and the validator's option doors, which would refuse before the fetch and
+  // measure those doors instead of this read.
+  var tInherit = (function () { var o = {}; o[CRL_URL] = {}; return stub(o); })();
+  var inheritChecker = pki.path.fetchingChecker({ transport: tInherit });
+  var vInherit;
+  try {
+    Object.defineProperty(Object.prototype, "status", { configurable: true, writable: true, enumerable: false, value: 200 });
+    Object.defineProperty(Object.prototype, "headers", { configurable: true, writable: true, enumerable: false, value: { "content-type": "application/pkix-crl" } });
+    Object.defineProperty(Object.prototype, "body", { configurable: true, writable: true, enumerable: false, value: cleanCrl });
+    vInherit = await inheritChecker.check(parsedCdp2, cdpIssuer, { time: T2027, historicalMode: false, run: {} });
+  } finally {
+    delete Object.prototype.status;
+    delete Object.prototype.headers;
+    delete Object.prototype.body;
+  }
+  check("F66. a response carrying none of its own fields is not accepted from the prototype",
+    vInherit.status === "unknown" && /returned HTTP/.test(String(vInherit.reason)));
+
+  // An object status is reported through the safe formatter rather than concatenated, which ran its
+  // own toString during the refusal.
+  var statusToStringRan = false;
+  var objectStatus = { toString: function () { statusToStringRan = true; return "200"; } };
+  var tObjStatus = (function () { var o = {}; o[CRL_URL] = { status: objectStatus, headers: {}, body: cleanCrl }; return stub(o); })();
+  var rObjStatus = await run([leafCdp2], fetching(tObjStatus));
+  check("F67. a non-numeric status is refused",
+    rObjStatus.valid === false && rowOf(rObjStatus, 0, "revocation").code === "path/revocation-undetermined");
+  check("...without running the status object's own toString", statusToStringRan === false);
 }
 
 /** The DER of an OCSP request that rode in a GET URL, per RFC 6960 Appendix A.1. */
