@@ -672,6 +672,49 @@ function testNoFailOpenVerify() {
   _report("no fail-open verify/parse (a catch that returns a success verdict)", bad);
 }
 
+function testNoStoringAppend() {
+  // class: append-by-store
+  // `Array.prototype.push` STORES at the index, and a store walks the prototype chain looking for a
+  // setter, so an accessor installed at an array index receives each element as it is appended and
+  // can define something else in its place. Capturing the method closes WHO push is, not what push
+  // DOES, so a captured push is exactly as steerable: measured through `pki.asn1.read.oid`, the
+  // content octets of `1.2.3` rendered `0.1.3`, and an OBJECT IDENTIFIER is what selects an
+  // algorithm.
+  //
+  // So no module in lib/ may OBTAIN the storing form, under any spelling: `guard-intrinsic` neither
+  // captures nor exports it, and this catches a module that reaches for `Array.prototype.push`
+  // itself or keeps a stale `intrinsic.push` reference. The line has no exemptions, which is why it
+  // is drawn here rather than discriminated: `intrinsic.append` defines the index on the array
+  // itself, and `concatList` / `copyList` / `selectList` / `mapList` build their results the same
+  // way, so every append in lib/ has a non-storing form available.
+  //
+  // Anchored on the PROTOTYPE MEMBER and on the guard's own export name, neither of which a local
+  // rename can move. A live `receiver.push(` dispatch is a different class, counted by the
+  // captured-operation budget above; this one is about the form a module binds at load.
+  var STORING = /\bArray\s*\.\s*prototype\s*\.\s*push\b|\bintrinsic\s*\.\s*push\b/g;
+  var files = _libFiles();
+  var bad = [];
+  for (var i = 0; i < files.length; i++) {
+    var content;
+    try { content = fs.readFileSync(files[i], "utf8"); }
+    catch (_e) { continue; }
+    var subject = _stripCommentsAndLiterals(content);
+    STORING.lastIndex = 0;
+    var m;
+    while ((m = STORING.exec(subject)) !== null) {
+      bad.push({
+        file: _relPath(files[i]),
+        line: subject.slice(0, m.index).split(/\r?\n/).length,
+        content: "obtains the storing append `" + m[0].replace(/\s+/g, "") + "` — a store at an " +
+          "index runs a setter inherited from the prototype chain, which takes the element being " +
+          "appended; use `intrinsic.append`, which defines the index on the array itself",
+      });
+    }
+  }
+  bad = _filterMarkers(bad, "append-by-store");
+  _report("no module in lib/ obtains the storing form of append", bad);
+}
+
 // ---------------------------------------------------------------------------
 // (h) comment-block coverage — every primitive is documented at its source
 // ---------------------------------------------------------------------------
@@ -3475,7 +3518,15 @@ function testGuardReadsRuntimeLive() {
     "includes|hasOwnProperty|" +
     "readUInt8|readUInt16BE|readUInt16LE|readUInt32BE|readUInt32LE|readInt8|readInt16BE|" +
     "readInt16LE|readInt32BE|readInt32LE|readBigUInt64BE|readBigUInt64LE|" +
-    "writeUInt8|writeUInt16BE|writeUInt16LE|writeUInt32BE|writeUInt32LE)";
+    // The VARIABLE-width and BigInt forms belong here with the fixed-width ones: a method list is
+    // the other half of a receiver grammar, and leaving these out left `b.writeUIntBE(` unseen while
+    // `b.writeUInt16BE(` was caught. A bound's own `valueOf` runs inside the comparison a length is
+    // checked by, which is a window to replace the write that states it: measured, a byte-writer
+    // vector declared a length of 0 over a payload of two bytes that way.
+    "readUIntBE|readUIntLE|readIntBE|readIntLE|readBigInt64BE|readBigInt64LE|" +
+    "writeUInt8|writeUInt16BE|writeUInt16LE|writeUInt32BE|writeUInt32LE|" +
+    "writeUIntBE|writeUIntLE|writeIntBE|writeIntLE|writeInt8|writeInt16BE|writeInt16LE|" +
+    "writeInt32BE|writeInt32LE|writeBigUInt64BE|writeBigUInt64LE|writeBigInt64BE|writeBigInt64LE)";
   var staticRe = new RegExp("\\b(?:" + LIVE_STATICS.join("|") + ")\\s*\\(", "g");
   // A method call whose receiver is NOT a `_`-prefixed capture. The receiver may be a whole member
   // expression: `sanNode.bytes.equals(...)` dispatches off a prototype exactly as `bytes.equals(...)`
@@ -3867,11 +3918,11 @@ function testGuardReadsRuntimeLive() {
     "lib/path-validate.js": 25,
     "lib/asn1-der.js": 94,
     "lib/schema-engine.js": 39,
-    "lib/cms-sign.js": 51,
+    "lib/cms-sign.js": 28,
     "lib/attrcert-sign.js": 67,
     "lib/tsp-sign.js": 41,
     "lib/pkcs12-build.js": 63,
-    "lib/ct.js": 59,
+    "lib/ct.js": 58,
     "lib/cms-verify.js": 13,
     "lib/cms-encrypt.js": 66,
     "lib/crl-sign.js": 61,
@@ -4866,6 +4917,7 @@ function run() {
   testNoAiAttribution();
   testNoDeferralMarkers();
   testNoFailOpenVerify();
+  testNoStoringAppend();
   testPrimitiveCommentBlocks();
   testWikiPortAgreesAcrossArtifacts();
   testPublishPathRunsCiStaticGates();

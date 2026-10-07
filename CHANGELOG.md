@@ -4,6 +4,20 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.60 — 2026-10-07
+
+Build every list this toolkit assembles by defining its indexes, so an accessor inherited from the array prototype cannot take an element as it is added.
+
+### Changed
+
+- The library no longer has a storing append to reach for, and a check refuses one: a module that obtains `Array.prototype.push` under any spelling fails the static gates with the non-storing form named in the message. The property had been documented and tested for some time, and ninety-two call sites used the storing form regardless, so the option is gone rather than discouraged.
+
+### Fixed
+
+- Every list this build assembles is appended to by defining the index rather than by storing at it. That covers the lists a decision is read back from: a message's signed attributes, its certificate set and its signer infos in `pki.cms.sign`; the parsed members every format module reads its fields from; an object identifier's arcs; a certificate's extension rows in the CSR, CRL and CRMF readers; the byte strings an HPKE key schedule is computed over; the peer chain `pki.transport.peerChain` returns; and the lists `pki.acme`, `pki.cmp`, `pki.est`, `pki.ct`, `pki.tuf`, `pki.tlog`, `pki.jose`, `pki.webcrypto` and the PKCS#11 URI reader build while they work.
+- A countersignature's own attributes and fields are appended the same way. `pki.cms.countersign` built its signing-time attribute, its signed-attribute bytes, its signature algorithm and its signature through the storing form, so an accessor inherited at an array index could replace any of the four as they were assembled into the SignerInfo that is then signed.
+- A length-prefixed vector declares the bytes it writes. `pki.ct`'s wire writer, which produces the signed-certificate-timestamp list, measured the caller's view and then wrote from that same view, so a body on a resizable buffer could shrink in between: the frame then declared more bytes than it carried, and the concatenation that assembles the output failed with an error from the runtime rather than a verdict from the writer. The body is copied into the writer's own allocation before it is measured, and the bounds are converted up front, so the bound, the declared length and the written bytes all describe one byte string that nothing else holds. Every integer test, allocation and concatenation the writer decides a field's width and contents with is bound when the module loads.
+
 ## v0.8.59 — 2026-10-07
 
 Render an object identifier, match a header name and read a media type through operations a replacement cannot answer.
