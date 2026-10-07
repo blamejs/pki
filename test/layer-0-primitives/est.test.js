@@ -239,6 +239,26 @@ function testServerKeygen() {
   var trick = "--bnd\r\nContent-Type: text/plain\r\n\r\nhello\r\n--bndX still body\r\nmore\r\n--bnd--\r\n";
   var tparts = pki.est.splitMultipartMixed(trick, 'multipart/mixed; boundary="bnd"');
   check("46d. non-delimiter --boundaryX stays body", tparts.length === 1 && /--bndX still body/.test(tparts[0].body));
+  // 46i. The boundary is the parameter that decides where a response body is divided, and the media
+  // type decides which reader each part goes to. Both were produced by operations read off the live
+  // prototype and the live global: a replaced `Array.prototype.push` turned a `boundary=wire` header
+  // into `forged`, and a replaced global `String` turned `text/plain` into `application/pkcs8`.
+  var realPushE = Array.prototype.push;
+  var realStringE = global.String;
+  var boundaryParts, pushSeen = 0, stringSeen = 0;
+  try {
+    // Pass-through counters rather than forged answers: a `String` that answers one value for every
+    // argument refuses at the outer media-type check and the probe never reaches the boundary.
+    Array.prototype.push = function () { pushSeen += 1; return realPushE.apply(this, arguments); };
+    global.String = function (v) { stringSeen += 1; return realStringE(v); };
+    boundaryParts = pki.est.splitMultipartMixed(trick, 'multipart/mixed; boundary="bnd"');
+  } finally {
+    Array.prototype.push = realPushE;
+    global.String = realStringE;
+  }
+  check("46i. the boundary and the part media type are read through captured operations (" +
+    boundaryParts.length + " part(s), push x" + pushSeen + ", String x" + stringSeen + ")",
+  boundaryParts.length === 1 && pushSeen === 0 && stringSeen === 0);
   // 46g/46h. RFC 2045 sec. 5.1 gives a parameter at most one value. Two boundaries
   // name two different splits of the same body, and two smime-types on a part leave
   // which part it is undecided -- neither is resolvable by taking the first, since

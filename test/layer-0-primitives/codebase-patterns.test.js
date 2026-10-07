@@ -3493,12 +3493,14 @@ function testGuardReadsRuntimeLive() {
   // hash a digest ran under, so a replaced case fold answered SHA-1 to a caller who asked for
   // SHA-256. The receiver is unnamed here, so the match is reported by its method alone.
   // An INDEX result is the same receiver one bracket over: `mappedFrom[idp].slice()` reads `slice`
-  // off whatever that element is, exactly as `f(x).slice()` reads it off a call result. This pattern
-  // matches only `)`, so it cannot see that form, and two live `.slice()` calls on an index result
-  // sat in the policy-mapping walk where the copy they produce becomes a node's expectedPolicySet.
-  // Both are converted. Arming the form here is item 0w4: it counts 23 more reads across 11 modules
-  // at once, and a budget raise is what this map refuses, so the arming and that sweep land together.
-  var callResultMethodRe = new RegExp("\\)\\s*\\." + LIVE_METHODS + "\\s*\\(", "g");
+  // off whatever that element is, exactly as `f(x).slice()` reads it off a call result. Both forms
+  // are matched. Matching only `)` hid two live `.slice()` calls on an index result in the
+  // policy-mapping walk, where the copy they produce becomes a node's expectedPolicySet, so a
+  // construction substituting an element there maps an issuer policy to one the certificate never
+  // authorized and the path reports valid. A receiver grammar is a list of SHAPES: every instrument
+  // that has one carries the same list, which is the gap that let this one survive after the
+  // scratchpad enumerator had already been corrected.
+  var callResultMethodRe = new RegExp("(?:\\)|\\])\\s*\\." + LIVE_METHODS + "\\s*\\(", "g");
   // The conversions and predicates called as bare globals. They read as language rather than as
   // code, which is why they outlasted every other read here: an index test is
   // `String(Number(k)) === k`, an arc bound is a bound on `BigInt(part)`, a JSON number is refused
@@ -3855,22 +3857,22 @@ function testGuardReadsRuntimeLive() {
   // budget nobody tightens is a number that stops meaning anything, and the next reader would take
   // it for the real count. A module reaching zero is deleted from the map and held to zero forever.
   var MIGRATING = {
-    "lib/acme.js": 177,
-    "lib/est.js": 149,
-    "lib/cmp-build.js": 125,
+    "lib/acme.js": 150,
+    "lib/est.js": 124,
+    "lib/cmp-build.js": 122,
     "lib/crmf-sign.js": 12,
     /** Still budgeted: the module's own selections and copies are converted and its policy-mapping
      *  copies were an admission, but the 57 counted here are the live prototype reads elsewhere in
      *  it, which item 0v7 carries. */
     "lib/path-validate.js": 25,
-    "lib/asn1-der.js": 100,
+    "lib/asn1-der.js": 94,
     "lib/schema-engine.js": 39,
     "lib/cms-sign.js": 51,
     "lib/attrcert-sign.js": 67,
     "lib/tsp-sign.js": 41,
     "lib/pkcs12-build.js": 63,
-    "lib/ct.js": 62,
-    "lib/cms-verify.js": 14,
+    "lib/ct.js": 59,
+    "lib/cms-verify.js": 13,
     "lib/cms-encrypt.js": 66,
     "lib/crl-sign.js": 61,
     "lib/cmc-build.js": 57,
