@@ -276,6 +276,42 @@ async function run() {
   var hdrKids = asn1.decode(asn1.decode(withTime).children[0].bytes).children;
   check("7c. header messageTime is [0] EXPLICIT (0xA0)", hdrKids[3].bytes[0] === 0xa0);
   check("7d. header protectionAlg is [1] EXPLICIT (0xA1)", hdrKids.some(function (k) { return k.bytes[0] === 0xa1; }));
+  // 7e. The header's fields are collected into a list whose first three slots are the literal
+  // pvno/sender/recipient, so every OPTIONAL field is appended at index 3 onward. Appended by
+  // storing, the store walks the prototype chain for a setter, and an accessor at that index takes
+  // the field as it is added and answers with its own when the list is read back. The header is then
+  // protected and self-parsed, so the message returned carries a field the caller never asked for
+  // under a valid protection.
+  //
+  // The index is chosen so the vector measures THIS list and nothing else. Driven with a genm body
+  // and a header carrying messageTime and transactionID, the stores land at 3 (messageTime), 4
+  // (protectionAlg) and 5 (transactionID), and index 3 is also stored at by the extra-certificate
+  // collection and by node's own key import, which is what made a first attempt report
+  // `crmf/bad-input` from an unrelated refusal. Index 5 belongs to this list alone, and the
+  // transactionID is the field that binds a CMP exchange together.
+  var genmMsg = { header: Object.assign({ messageTime: new Date("2001-02-03T04:05:06Z") }, HDR),
+    body: { genm: [{ infoType: "caCerts" }] } };
+  var cleanGenm = parse(await pki.cmp.build(genmMsg, SIG));
+  check("7e. fixture: the transactionID round-trips without the accessor",
+    Buffer.isBuffer(cleanGenm.header.transactionID) &&
+      cleanGenm.header.transactionID.equals(Buffer.alloc(16, 7)));
+  var realFive = Object.getOwnPropertyDescriptor(Array.prototype, "5");
+  var plantedTxid = pki.asn1.build.explicit(4, pki.asn1.build.octetString(Buffer.alloc(16, 0xee)));
+  var fiveStores = 0;
+  Object.defineProperty(Array.prototype, "5", {
+    configurable: true, get: function () { return plantedTxid; }, set: function () { fiveStores += 1; },
+  });
+  var underAccessor, threw = null;
+  try { underAccessor = await pki.cmp.build(genmMsg, SIG); }
+  catch (e) { threw = e; } finally {
+    if (realFive) Object.defineProperty(Array.prototype, "5", realFive);
+    else delete Array.prototype[5];
+  }
+  var builtTxid = threw ? null : parse(underAccessor).header.transactionID;
+  check("7f. an accessor at an array index cannot change the transactionID a built header carries (" +
+    (threw ? "threw " + (threw.code || threw.constructor.name) : String(builtTxid && builtTxid.toString("hex").slice(0, 8))) +
+    ", " + fiveStores + " stores)",
+  threw === null && Buffer.isBuffer(builtTxid) && builtTxid.equals(Buffer.alloc(16, 7)) && fiveStores === 0);
 
   // 8. header optional order: ascending, at most once.
   var full = await pki.cmp.build({ header: Object.assign({ senderNonce: Buffer.alloc(16, 5), recipNonce: Buffer.alloc(16, 6) }, HDR), body: irMsg.body }, SIG);

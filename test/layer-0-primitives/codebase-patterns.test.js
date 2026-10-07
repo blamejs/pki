@@ -868,11 +868,82 @@ function testNoStoringAppend() {
       var quotedName = _propertyName(m[2]);
       if (quotedName !== null && STORING_NAMES[quotedName] === 1 && m[2] !== quotedName) report(m.index, "[" + m[1] + quotedName + m[1] + "]");
     }
+    // An escaped name in the CALL position too, for a file that carries an escape: a converted
+    // module has to hold no storing append in any spelling, called or not.
+    _MEMBER_CALL.lastIndex = 0;
+    while ((m = _MEMBER_CALL.exec(subject)) !== null) {
+      var calledName = _propertyName(m[1]);
+      if (calledName !== null && STORING_NAMES[calledName] === 1 && m[1] !== calledName) {
+        report(m.index, "." + calledName + "(");
+      }
+    }
     _destructuringArm(subject, files[i], bad, lineAt, true);
   }
   bad = _filterMarkers(bad, "append-by-store");
   _report("no module in lib/ obtains the storing form of append", bad);
   _assertDecodesEscapedAppends();
+  _assertNoDirectStoringAppendCalls();
+}
+
+/** THE CALL POSITION, held to a per-module budget that ratchets DOWN. `recv.push(x)` stores at an
+ *  index exactly as a bound `push` does, and the bound form being gone did not touch the ordinary
+ *  calls: 617 of them were left when the binding was removed, and they are the majority of the
+ *  class. MEASURED through the shipped door on one of them: `_encodeHeader` in lib/cmp-build.js
+ *  appended the header's optional fields by storing, so an accessor at `Array.prototype[5]` took the
+ *  transactionID as it was added, and `pki.cmp.build` returned a PROTECTED message carrying
+ *  `eeee...` where the caller had asked for `0707...`.
+ *
+ *  A check that reports 469 times is not a gate, so this is a budget rather than a line: a module at
+ *  zero is absent from the table and a new call in it fails immediately, and a module still listed
+ *  cannot grow. It reports in BOTH directions, so converting calls without lowering the figure fails
+ *  too, which is what keeps the number meaning the real count. The reporting verbs are last by
+ *  design: `inspect` and `lint` build report lines, where a substituted element is a wrong
+ *  diagnostic rather than a wrong signature. Delete the table when it empties and the line is drawn
+ *  with no exemptions. */
+function _assertNoDirectStoringAppendCalls() {
+  var PUSH_BUDGET = {
+    "lib/inspect.js": 284,
+    "lib/lint.js": 132,
+    "lib/smime.js": 14,
+    "lib/est.js": 10,
+    "lib/cmp-session.js": 9,
+    "lib/mime.js": 5,
+    "lib/scep.js": 4,
+    "lib/shbs.js": 3,
+    "lib/pbes2.js": 2,
+    "lib/validator-tls.js": 2,
+    "lib/acme.js": 1,
+    "lib/validator-keydesc.js": 1,
+    "lib/webcrypto.js": 1,
+  };
+  var CALL = new RegExp("\\.\\s*(?:push|unshift)\\s*\\(", "g");
+  var files = _libFiles();
+  var bad = [];
+  for (var i = 0; i < files.length; i++) {
+    var content;
+    try { content = fs.readFileSync(files[i], "utf8"); }
+    catch (_e) { continue; }
+    var rel = _relPath(files[i]).replace(/\\/g, "/");
+    var subject = _stripCommentsOnly(content);
+    var n = 0;
+    CALL.lastIndex = 0;
+    while (CALL.exec(subject) !== null) n++;
+    var budget = Object.prototype.hasOwnProperty.call(PUSH_BUDGET, rel) ? PUSH_BUDGET[rel] : 0;
+    if (n === budget) continue;
+    bad.push({
+      file: rel, line: 1,
+      content: n > budget
+        ? "calls the storing append " + n + " time(s) against a budget of " + budget +
+          " — a store at an index runs a setter inherited from the prototype chain, which takes the " +
+          "element being appended; bind `var _push = intrinsic.append;` (or `guard.list.append`) and " +
+          "write `_push(list, value)`"
+        : "calls the storing append " + n + " time(s) against a stale budget of " + budget +
+          " — lower the figure to " + n + " (or delete the entry at zero), so the number keeps " +
+          "naming the real count",
+    });
+  }
+  bad = _filterMarkers(bad, "append-by-store");
+  _report("every lib module holds the storing append to its declared budget, and a converted one to zero", bad);
 }
 
 /** The name shapes a property position can hold, compiled ONCE. Built per call they were a regex
@@ -881,6 +952,7 @@ var _NAME_CHAR = "(?:[A-Za-z0-9_$]|\\\\u[0-9a-fA-F]{4}|\\\\u\\{[0-9a-fA-F]+\\})"
 var _MEMBER = new RegExp("\\.\\s*(" + _NAME_CHAR + "+)(?!\\s*\\()", "g");
 var _QUOTED = new RegExp("\\[\\s*(['\"`])((?:\\\\[\\s\\S]|[^'\"`\\\\])*)\\1\\s*\\]", "g");
 var _NAME_TOKEN = new RegExp(_NAME_CHAR + "+", "g");
+var _MEMBER_CALL = new RegExp("\\.\\s*(" + _NAME_CHAR + "+)\\s*\\(", "g");
 
 /** The destructuring arm, matched by BRACES rather than by a brace-free span: every `{` is walked to
  *  its own `}`, and a pattern is one whose close is followed by a single `=`, or one that opens right
@@ -891,12 +963,27 @@ var _NAME_TOKEN = new RegExp(_NAME_CHAR + "+", "g");
  *  same question for the cost of one regex rather than one decode per name-shaped token. */
 function _destructuringArm(subject, file, bad, lineAt, decodeKeys) {
   for (var b = subject.indexOf("{"); b !== -1; b = subject.indexOf("{", b + 1)) {
-    var declared = /(?:^|[^A-Za-z0-9_$])(?:var|let|const)\s*\[?\s*$/.test(subject.slice(0, b));
+    // BOUNDED WINDOWS, both sides. Read from the start of the file, this test sliced and scanned the
+    // whole prefix once per opening brace: 20492 braces against about 5.2 MB of sources is quadratic,
+    // and it drove this gate past 50 s and about 1.3 GB of resident memory. The longest thing either
+    // side has to see is a declaration keyword with an optional `[` (`const [`) or a short run of
+    // closing brackets, so a fixed window answers the same question in constant time. A window that
+    // falls short can only miss a report, never invent one.
+    var declared = /(?:^|[^A-Za-z0-9_$])(?:var|let|const)\s*\[?\s*$/.test(subject.slice(b > 64 ? b - 64 : 0, b));
     // `_matchingBrace` returns the index OF the closing brace, so what follows a pattern starts one
     // past it.
     var close = _matchingBrace(subject, b + 1);
     if (close <= b || close >= subject.length) continue;
-    if (!declared && !/^\s*=(?!=)/.test(subject.slice(close + 1))) continue;
+    // AN ASSIGNMENT PATTERN NEEDS NO DECLARATION, and its close need not be followed by `=` either:
+    // `[{ push: p }] = [Array.prototype]` closes on `]`, and `for ({ push: p } of [A])` on ` of `.
+    // So the tail is read past any run of `]`, `)`, `,` and whitespace before the test. The skip
+    // deliberately stops at an IDENTIFIER: admitting one would read `var a = [{ push: 1 }], b = 2;`
+    // as a pattern, which is an ordinary array of object literals followed by another declarator.
+    // The residuals that leaves are a pattern with a following element (`[{ push: p }, q] = arr`)
+    // and an object literal written as a computed key (`obj[{ push: 1 }] = v`), which is not code
+    // anyone writes since the key stringifies.
+    var afterBrackets = subject.slice(close + 1, close + 121).replace(/^[\s\]),]*/, "");
+    if (!declared && !/^=(?!=)/.test(afterBrackets) && !/^(?:of|in)\b/.test(afterBrackets)) continue;
     var pattern = subject.slice(b, close);
     var binds = /\b(?:push|unshift)\b/.test(pattern);
     if (!binds && decodeKeys) {
@@ -4197,7 +4284,7 @@ function testGuardReadsRuntimeLive() {
   var MIGRATING = {
     "lib/acme.js": 147,
     "lib/est.js": 124,
-    "lib/cmp-build.js": 122,
+    "lib/cmp-build.js": 90,
     "lib/crmf-sign.js": 12,
     /** Still budgeted: the module's own selections and copies are converted and its policy-mapping
      *  copies were an admission, but the 57 counted here are the live prototype reads elsewhere in
@@ -4206,25 +4293,25 @@ function testGuardReadsRuntimeLive() {
     "lib/asn1-der.js": 66,
     "lib/schema-engine.js": 15,
     "lib/cms-sign.js": 26,
-    "lib/attrcert-sign.js": 67,
+    "lib/attrcert-sign.js": 51,
     "lib/tsp-sign.js": 41,
-    "lib/pkcs12-build.js": 63,
+    "lib/pkcs12-build.js": 52,
     "lib/ct.js": 40,
     "lib/cms-verify.js": 12,
-    "lib/cms-encrypt.js": 66,
-    "lib/crl-sign.js": 59,
-    "lib/cmc-build.js": 57,
-    "lib/pki-build.js": 33,
+    "lib/cms-encrypt.js": 50,
+    "lib/crl-sign.js": 44,
+    "lib/cmc-build.js": 48,
+    "lib/pki-build.js": 23,
     "lib/hpke.js": 32,
     "lib/cms-decrypt.js": 37,
     "lib/composite-sig.js": 29,
     "lib/cmc-verify.js": 32,
-    "lib/x509-sign.js": 24,
+    "lib/x509-sign.js": 9,
     /** Entered scope when they took the captures for the promise-construction fix. A module is armed
      *  whole the moment it requires guard-intrinsic, so these are the reads that were always there and
      *  are now counted. Both ratchet DOWN only, like the rest. */
-    "lib/ocsp.js": 88,
-    "lib/csr-sign.js": 26,
+    "lib/ocsp.js": 66,
+    "lib/csr-sign.js": 24,
     "lib/schema-attrcert.js": 24,
     "lib/tls-cert-compress.js": 18,
     "lib/schema-crl.js": 7,
