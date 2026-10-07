@@ -718,12 +718,18 @@ function testNoStoringAppend() {
   //
   // ENUMERATING THE RECEIVER LOSES: naming the dotted form missed `Array["prototype"]["push"]`,
   // naming `Array.prototype` and the guard namespace still missed `uncurry([].push)`, bracket arms on
-  // those receivers still missed `[]["push"]`, and all of it missed
-  // `var { push: p } = Array.prototype`. There is always another object to read the method off, so
-  // the anchor is the METHOD NAME in the three positions source can name it from: read as a VALUE
-  // rather than called, quoted inside brackets, or bound by a destructuring pattern. Measured: zero
-  // in lib/ today, while the 764 `receiver.push(` CALLS are the captured-operation budget's class
-  // above, so the line costs no exemption and does not overlap.
+  // those receivers still missed `[]["push"]`, and a brace-free destructuring arm still missed
+  // `var { push: p = function () {} } = Array.prototype`. There is always another object to read the
+  // method off and another way to spell the binding, so the anchor is the METHOD NAME in the
+  // positions where it names a PROPERTY: read as a value rather than called, quoted inside brackets,
+  // or bound by a destructuring pattern (found by matching braces, not by a brace-free span, so a
+  // nested pattern or a default initializer cannot hide the name). The 764 `receiver.push(` CALLS are
+  // the captured-operation budget's class above, so this does not overlap.
+  //
+  // A PROPERTY POSITION IS THE ANCHOR BECAUSE THE BARE NAME CANNOT BE. Measured: 17 `push` tokens in
+  // lib/ are local helper FUNCTIONS named `push` and their bare calls (`crl-sign`, `est`), which have
+  // nothing to do with the array method; keying on the identifier alone would owe them exemptions,
+  // and exemptions are what this check exists to avoid.
   //
   // WHAT THIS DOES NOT CLAIM. A lexical check cannot be complete about obtaining a property: a name
   // assembled at runtime, `Reflect.get(Array.prototype, n)`, or a walk over the prototype's own keys
@@ -740,8 +746,7 @@ function testNoStoringAppend() {
   // all three: measured, zero, with the object-literal forms (`module.exports = { push: fn }`,
   // `fn({ push: 1 })`) confirmed NOT to fire.
   var STORING = new RegExp("\\.\\s*push\\b(?!\\s*\\()" +
-    "|\\[\\s*(['\"])push\\1\\s*\\]" +
-    "|\\{[^{}]*\\bpush\\b[^{}]*\\}\\s*=", "g");
+    "|\\[\\s*(['\"])push\\1\\s*\\]", "g");
   var files = _libFiles();
   var bad = [];
   for (var i = 0; i < files.length; i++) {
@@ -759,6 +764,25 @@ function testNoStoringAppend() {
           "index runs a setter inherited from the prototype chain, which takes the element being " +
           "appended, whichever object the method was read off; use `intrinsic.append`, which defines " +
           "the index on the array itself",
+      });
+    }
+    // The destructuring arm, matched by BRACES rather than by a brace-free span: every `{` is walked
+    // to its own `}`, and a pattern is one whose close is followed by a single `=`. A default
+    // initializer or a nested pattern therefore stays inside the span instead of ending it.
+    for (var b = subject.indexOf("{"); b !== -1; b = subject.indexOf("{", b + 1)) {
+      // `_matchingBrace` returns the index OF the closing brace, so what follows a pattern starts
+      // one past it.
+      var close = _matchingBrace(subject, b + 1);
+      if (close <= b || close >= subject.length) continue;
+      if (!/^\s*=(?!=)/.test(subject.slice(close + 1))) continue;
+      var pattern = subject.slice(b, close);
+      if (!/\bpush\b/.test(pattern)) continue;
+      bad.push({
+        file: _relPath(files[i]),
+        line: subject.slice(0, b).split(/\r?\n/).length,
+        content: "binds the storing append by destructuring — a store at an index runs a setter " +
+          "inherited from the prototype chain, which takes the element being appended; use " +
+          "`intrinsic.append`, which defines the index on the array itself",
       });
     }
   }
