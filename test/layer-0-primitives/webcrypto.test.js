@@ -8,6 +8,7 @@
  * Node's native crypto (an independent implementation path).
  */
 
+var cryptoTap = require("../helpers/crypto-tap");
 var helpers = require("../helpers");
 var pki = helpers.pki;
 var check = helpers.check;
@@ -416,17 +417,17 @@ async function testDerive() {
   // Concurrent PBKDF2 derivations are CAPPED so many jobs cannot monopolize the libuv worker pool (CWE-400):
   // wrap crypto.pbkdf2 to track the peak concurrent derivations while 8 jobs run, and assert the peak never
   // exceeds the cap (UV_THREADPOOL_SIZE - 2, floored at 1) -- unlimited, all 8 would be in flight at once.
-  var nodeCryptoMod = require("node:crypto");
-  var origPbkdf2 = nodeCryptoMod.pbkdf2, inFlight = 0, peak = 0;
-  nodeCryptoMod.pbkdf2 = function (p, s, it, kl, dg, cb) {
+  var inFlight = 0, peak = 0;
+  var restorePbkdf2 = cryptoTap.on("pbkdf2", function (realFn, args) {
     inFlight++; if (inFlight > peak) peak = inFlight;
-    return origPbkdf2(p, s, it, kl, dg, function (e, k) { inFlight--; cb(e, k); });
-  };
+    var cb = args[5];
+    return realFn(args[0], args[1], args[2], args[3], args[4], function (e, k) { inFlight--; cb(e, k); });
+  });
   try {
     var jobs = [];
     for (var j = 0; j < 8; j++) jobs.push(subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: Buffer.from("NaCl"), iterations: 300000 }, pw, 256));
     await Promise.all(jobs);
-  } finally { nodeCryptoMod.pbkdf2 = origPbkdf2; }
+  } finally { restorePbkdf2(); }
   var cap = Math.max(1, (parseInt(process.env.UV_THREADPOOL_SIZE, 10) || 4) - 2);
   check("PBKDF2 concurrency is capped so the libuv worker pool is not monopolized", peak >= 1 && peak <= cap);
   // A SYNCHRONOUS PBKDF2 argument fault (iterations 0 -> crypto.pbkdf2 throws before the callback) must RELEASE
@@ -1001,6 +1002,56 @@ async function testWrapUnsupportedAndJwk() {
 // EdDSA public key each import with the right shape; a bogus format, a malformed
 // raw EC point, and a raw RSA request each fail closed; an RSA import with no
 // hash carries an undefined algorithm.hash.
+/* The import's job is to bind the algorithm a caller NAMED to the key they supplied, and it settles
+   that by asking the key which family it belongs to. That answer comes from a getter on a node
+   prototype, so reading it at call time let a replacement answer for a key it is not: one returning
+   "rsa" made an Ed25519 SPKI import as RSA-PSS, and every later operation then ran under an algorithm
+   the key does not belong to. The accessor is captured when the engine loads, so this drives the
+   shipped verb with the getter replaced and asserts the refusal still stands. */
+async function testAReplacedKeyTypeAccessorCannotRebindAnImport() {
+  var ed = await subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
+  var edSpki = await subtle.exportKey("spki", ed.publicKey);
+  var cleanCode = await code(function () {
+    return subtle.importKey("spki", edSpki, { name: "RSA-PSS", hash: "SHA-256" }, true, ["verify"]);
+  });
+  check("CONTROL an Ed25519 SPKI is refused as RSA-PSS with nothing replaced (" + cleanCode + ")",
+    cleanCode === "webcrypto/data");
+
+  // The accessor sits on the shared asymmetric parent, between KeyObject.prototype and the two key
+  // prototypes, which is where the engine captured it from.
+  var keyProto = Object.getPrototypeOf(nodeCrypto.generateKeyPairSync("ed25519").publicKey);
+  var holder = null, descriptor = null;
+  for (var cur = keyProto; cur !== null && cur !== Object.prototype; cur = Object.getPrototypeOf(cur)) {
+    var d = Object.getOwnPropertyDescriptor(cur, "asymmetricKeyType");
+    if (d && typeof d.get === "function") { holder = cur; descriptor = d; break; }
+  }
+  check("CONTROL the asymmetricKeyType accessor was located to replace", holder !== null);
+
+  var underCode, liveAnswer;
+  try {
+    Object.defineProperty(holder, "asymmetricKeyType", { get: function () { return "rsa"; }, configurable: true });
+    liveAnswer = nodeCrypto.generateKeyPairSync("ed25519").publicKey.asymmetricKeyType;
+    underCode = await code(function () {
+      return subtle.importKey("spki", edSpki, { name: "RSA-PSS", hash: "SHA-256" }, true, ["verify"]);
+    });
+  } finally {
+    Object.defineProperty(holder, "asymmetricKeyType", descriptor);
+  }
+  check("CONTROL the replaced accessor answers \"rsa\" for an Ed25519 key through the live read (" +
+    liveAnswer + ")", liveAnswer === "rsa");
+  check("a replaced asymmetricKeyType accessor cannot make importKey accept an Ed25519 key as " +
+    "RSA-PSS (" + underCode + ")", underCode === "webcrypto/data");
+
+  // The same question asked of a forged plain object: the duck-typed form this check used was
+  // satisfied by any object carrying the field, so one could pass as a key and be used as one.
+  var forgedCode = await code(function () {
+    return subtle.importKey("node.keyObject", { asymmetricKeyType: "rsa", type: "public" },
+      { name: "RSA-PSS", hash: "SHA-256" }, true, ["verify"]);
+  });
+  check("a plain object carrying an asymmetricKeyType field is not accepted as a key (" + forgedCode + ")",
+    forgedCode !== "NO-THROW");
+}
+
 async function testImportKeyEdges() {
   var ecdh = await subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
   var spki = await subtle.exportKey("spki", ecdh.publicKey);
@@ -1375,6 +1426,7 @@ async function run() {
   await testEncryptDecryptUnsupported();
   await testDeriveUnsupportedAlg();
   await testWrapUnsupportedAndJwk();
+  await testAReplacedKeyTypeAccessorCannotRebindAnImport();
   await testImportKeyEdges();
   await testExportKeyEdges();
   await testHkdfInfoAndDeriveKeyKdfLength();

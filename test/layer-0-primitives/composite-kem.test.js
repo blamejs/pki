@@ -9,6 +9,7 @@
 // randomized, so it is exercised by an encapsulate -> decapsulate round-trip whose
 // two shared secrets must agree.
 
+var cryptoTap = require("../helpers/crypto-tap");
 var fs = require("fs");
 var path = require("path");
 var helpers = require("../helpers");
@@ -297,20 +298,18 @@ async function run() {
   // draft sec. 3.5: the rejected non-32-byte plaintext is itself key material and is wiped before the
   // rejection. Alias the decrypted plaintext into an ArrayBuffer (Buffer.from(ArrayBuffer) shares memory
   // with the module's ss buffer) and confirm it is all-zero after the reject.
-  var nodeCryptoMod = require("node:crypto");
-  var origPrivDec = nodeCryptoMod.privateDecrypt;
   var ptAb = null;
-  nodeCryptoMod.privateDecrypt = function () {
-    var pt = origPrivDec.apply(this, arguments);
+  var restorePrivDec = cryptoTap.on("privateDecrypt", function (realFn, args) {
+    var pt = realFn.apply(null, args);
     if (ptAb === null && pt.length !== 32) {   // the non-conforming 16-byte plaintext
       ptAb = pt.buffer.slice(pt.byteOffset, pt.byteOffset + pt.byteLength);
       return ptAb;
     }
     return pt;
-  };
+  });
   try {
     await codeOf(pki.kem.decapsulate(b64(rsa.dk_pkcs8), shortPtComposite));
-  } finally { nodeCryptoMod.privateDecrypt = origPrivDec; }
+  } finally { restorePrivDec(); }
   var ptObserved = ptAb === null ? null : Buffer.from(ptAb);
   check("decapsulate: the rejected RSA-OAEP plaintext is wiped (draft sec. 3.5)",
     ptObserved !== null && ptObserved.length === 16 && ptObserved.every(function (byte) { return byte === 0; }));
@@ -374,14 +373,15 @@ async function run() {
   // draft sec. 3.5 binds the RSA encapsulation secret: the random 32-byte secret is allocated before the
   // RSA public operation, so if that operation fails the secret must be wiped, not left readable. Force
   // publicEncrypt to throw, capturing the secret buffer it was handed, and confirm it is all-zero after.
-  var nodeCryptoMod2 = require("node:crypto");
-  var origPubEnc = nodeCryptoMod2.publicEncrypt;
   var capEncSs = null;
-  nodeCryptoMod2.publicEncrypt = function (opts, data) { capEncSs = data; throw new Error("forced encrypt failure"); };
+  var restorePubEnc = cryptoTap.on("publicEncrypt", function (realFn, args) {
+    capEncSs = args[1];
+    throw new Error("forced encrypt failure");
+  });
   var encWipeCode;
   try {
     encWipeCode = await codeOf(pki.kem.encapsulate(spkiFrom(rsa.tcId, b64(rsa.ek))));
-  } finally { nodeCryptoMod2.publicEncrypt = origPubEnc; }
+  } finally { restorePubEnc(); }
   check("draft sec. 3.5: the RSA encapsulation secret is wiped when publicEncrypt fails",
     encWipeCode === "kem/bad-key" && capEncSs !== null && capEncSs.length === 32 && capEncSs.every(function (byte) { return byte === 0; }));
 
@@ -562,12 +562,12 @@ async function run() {
     // key-octet wipes do not cover, so it is wiped where it is made. Observed through the buffer the
     // point generation is handed.
     var seenScalar = null;
-    var origSetPrivateKey = nodeCrypto.ECDH.prototype.setPrivateKey;
-    nodeCrypto.ECDH.prototype.setPrivateKey = function (buf) {
-      seenScalar = buf; return origSetPrivateKey.apply(this, arguments);
-    };
+    var restoreScalar = cryptoTap.on("ECDH.setPrivateKey", function (realFn, args) {
+      seenScalar = args[0];
+      return realFn.apply(this, args);
+    });
     try { await pki.key.publicFromPrivate(b64(ecRow.dk_pkcs8)); }
-    finally { nodeCrypto.ECDH.prototype.setPrivateKey = origSetPrivateKey; }
+    finally { restoreScalar(); }
     check("the EC scalar copy taken to generate the point is wiped",
       seenScalar !== null && seenScalar.length > 0 && seenScalar.every(function (byte) { return byte === 0; }));
 

@@ -25,41 +25,12 @@
  * anywhere -- the runtime makes copies no JS can reach.
  */
 
+/* Every operation a secret is born in, and every method that hands one back, is one
+   lib/guard-crypto.js captures when it LOADS, so a wrapper installed afterwards never sees it. They
+   come from the shared seam, which is required before pki for that reason: its wrappers stay in place
+   for the lifetime of the process, and `tap()` only decides whether one is recording. */
+var cryptoTap = require("../helpers/crypto-tap");
 var nodeCrypto = require("node:crypto");
-
-/* The KeyObject export runs through an operation the package captures when it LOADS, so a wrapper
-   installed afterwards never sees it. This one is installed BEFORE the require below, which is what
-   makes the capture the package takes be this wrapper: every export the engine performs then reaches
-   `_exportTap` for the lifetime of the process, and `tap()` only decides whether one is recording. */
-var _secretKeyProto = Object.getPrototypeOf(nodeCrypto.createSecretKey(Buffer.alloc(32)));
-var _realSecretExport = _secretKeyProto.export;
-var _exportTap = null;
-Object.defineProperty(_secretKeyProto, "export", {
-  value: function () {
-    var out = _realSecretExport.apply(this, arguments);
-    if (_exportTap !== null) _exportTap(out);
-    return out;
-  },
-  writable: true, configurable: true,
-});
-
-/* The key imports are captured at load for the same reason, so these wrappers are installed before the
-   require too. They are the last place a toolkit-allocated private-key or raw-key copy can be held: a
-   caller's Uint8Array or PEM becomes a copy inside the signing and recipient paths, and that copy is
-   what owes the wipe. `_importTap` records the buffer each import was handed. */
-var _realCreatePrivateKey = nodeCrypto.createPrivateKey;
-var _realCreateSecretKey = nodeCrypto.createSecretKey;
-var _importTap = null;
-nodeCrypto.createPrivateKey = function (spec) {
-  if (_importTap !== null && spec !== null && typeof spec === "object" && spec.key !== undefined) {
-    _importTap("import.pkcs8", spec.key);
-  }
-  return _realCreatePrivateKey.apply(this, arguments);
-};
-nodeCrypto.createSecretKey = function (material) {
-  if (_importTap !== null) _importTap("import.raw", material);
-  return _realCreateSecretKey.apply(this, arguments);
-};
 
 var helpers = require("../helpers");
 var check = helpers.check;
@@ -72,17 +43,12 @@ var bld = pki.asn1.build;
 var MSG = Buffer.from("secret-lifetime round-trip payload");
 
 // ---- the tap ----------------------------------------------------------------
-// Wraps the three points where a provider hands back secret bytes. Returns a handle
-// whose restore() MUST run in a finally: leaving node:crypto patched would corrupt
-// every later suite in the same process.
+// Switches on the recorders the load-time wrappers above report to. Returns a handle
+// whose restore() MUST run in a finally: leaving a recorder on would make a later
+// suite in the same process collect this one's captures.
 function tap() {
   var caps = [];
-  var real = {
-    encapsulate: nodeCrypto.encapsulate,
-    decapsulate: nodeCrypto.decapsulate,
-    diffieHellman: nodeCrypto.diffieHellman,
-    createSecretKey: nodeCrypto.createSecretKey,
-  };
+  var real = {};
   function grab(label, buf) {
     if (Buffer.isBuffer(buf) || ArrayBuffer.isView(buf)) {
       caps.push({
@@ -93,48 +59,57 @@ function tap() {
     }
     return buf;
   }
-  nodeCrypto.encapsulate = function () {
-    var r = real.encapsulate.apply(this, arguments);
-    if (r && r.sharedKey) grab("kem.encap", r.sharedKey);
-    return r;
-  };
-  nodeCrypto.decapsulate = function () { return grab("kem.decap", real.decapsulate.apply(this, arguments)); };
-  nodeCrypto.diffieHellman = function () { return grab("dh.z", real.diffieHellman.apply(this, arguments)); };
-  // A cipher or KDF copies its key material out of the KeyObject via export(); that copy is
-  // toolkit-owned and owes the same wipe as a shared secret. The wrapper installed at the top of this
-  // file is what the engine's captured export resolves to, so recording is switched on here and off
-  // again in restore(); the capture catches the copy wherever the key was created, including keys the
-  // CMS paths build internally and a test could not otherwise reach.
-  _exportTap = function (out) { grab("key.export", out); };
-  _importTap = function (label, buf) { if (buf !== null && typeof buf === "object") grab(label, buf); };
-  // The classic PKCS#12 KDF (RFC 7292 App. B) is a JS loop, not a node primitive, so the only view
-  // of the key it derives is the moment it is handed to a cipher or HMAC.
-  real.createHmac = nodeCrypto.createHmac;
-  nodeCrypto.createHmac = function (alg, key) { grab("hmac.key", key); return real.createHmac.apply(this, arguments); };
-  real.createDecipheriv = nodeCrypto.createDecipheriv;
-  // A decipher's update() returns recovered plaintext, and it returns it BEFORE final() decides
-  // whether the message was authentic. Buffer.concat then copies those bytes into the result, so
-  // the update buffer is a second, redundant copy on the success path and the ONLY copy on the
-  // failure path -- where RFC 5083 sec. 1 requires the plaintext be destroyed, not merely withheld.
-  // Capturing it here is the only view of that buffer a test can hold.
-  nodeCrypto.createDecipheriv = function (alg, key) {
-    grab("cipher.key", key);
-    var d = real.createDecipheriv.apply(this, arguments);
-    var realUpdate = d.update.bind(d);
-    d.update = function () {
-      var out = realUpdate.apply(null, arguments);
+  // Each hook names the label its captures carry. randomBytes is how the CEK is born, and IVs,
+  // nonces and salts come from it too, so those captures are labeled by length and the CEK
+  // assertions select the content-key size explicitly. The classic PKCS#12 KDF (RFC 7292 App. B) is
+  // a JS loop rather than a node primitive, so the only view of the key it derives is the moment it
+  // is handed to a cipher or an HMAC. A decipher's update() returns recovered plaintext BEFORE
+  // final() decides whether the message was authentic, and Buffer.concat then copies those bytes
+  // into the result, so the update buffer is a second, redundant copy on the success path and the
+  // ONLY copy on the failure path, where RFC 5083 sec. 1 requires the plaintext be destroyed rather
+  // than merely withheld; capturing it is the only view of that buffer a test can hold.
+  var restoreOps = cryptoTap.onAll({
+    encapsulate: function (realFn, args) {
+      var r = realFn.apply(null, args);
+      if (r && r.sharedKey) grab("kem.encap", r.sharedKey);
+      return r;
+    },
+    decapsulate: function (realFn, args) { return grab("kem.decap", realFn.apply(null, args)); },
+    diffieHellman: function (realFn, args) { return grab("dh.z", realFn.apply(null, args)); },
+    createHmac: function (realFn, args) { grab("hmac.key", args[1]); return realFn.apply(null, args); },
+    pbkdf2Sync: function (realFn, args) {
+      grab("pbkdf2.pw", args[0]);
+      return grab("pbkdf2.kek", realFn.apply(null, args));
+    },
+    randomBytes: function (realFn, args) { return grab("random." + args[0], realFn.apply(null, args)); },
+    // The key imports are the last place a toolkit-allocated private-key or raw-key copy can be
+    // held: a caller's Uint8Array or PEM becomes a copy inside the signing and recipient paths, and
+    // that copy is what owes the wipe.
+    createPrivateKey: function (realFn, args) {
+      var spec = args[0];
+      if (spec !== null && typeof spec === "object" && spec.key !== undefined) grab("import.pkcs8", spec.key);
+      return realFn.apply(null, args);
+    },
+    createSecretKey: function (realFn, args) { grab("import.raw", args[0]); return realFn.apply(null, args); },
+    createDecipheriv: function (realFn, args) { grab("cipher.key", args[1]); return realFn.apply(null, args); },
+    // The plaintext is captured on the PROTOTYPE, not on the instance the construction returned: the
+    // engine reaches `update` as an uncurried function, so a wrapper on the instance is never
+    // consulted and the capture would silently collect nothing.
+    "Decipheriv.update": function (realFn, args) {
+      var out = realFn.apply(this, args);
       if (Buffer.isBuffer(out) && out.length) grab("decipher.update", out);
       return out;
-    };
-    return d;
-  };
-  // pbkdf2Sync returns the password-derived KEK / content key the CMS layer holds directly.
-  real.pbkdf2Sync = nodeCrypto.pbkdf2Sync;
-  nodeCrypto.pbkdf2Sync = function (pw) { grab("pbkdf2.pw", pw); return grab("pbkdf2.kek", real.pbkdf2Sync.apply(this, arguments)); };
-  // randomBytes is how the CEK is born; IVs, nonces and salts come from it too, so captures are
-  // labeled by length and the CEK assertions select the content-key size explicitly.
-  real.randomBytes = nodeCrypto.randomBytes;
-  nodeCrypto.randomBytes = function (n) { return grab("random." + n, real.randomBytes.apply(this, arguments)); };
+    },
+  });
+  // A cipher or KDF copies its key material out of the KeyObject via export(); that copy is
+  // toolkit-owned and owes the same wipe as a shared secret. The capture catches the copy wherever
+  // the key was created, including keys the CMS paths build internally and a test could not
+  // otherwise reach. Only the raw export carries secret bytes, so only that prototype is taped.
+  var restoreExport = cryptoTap.on("SecretKeyObject.export", function (realFn, args) {
+    var out = realFn.apply(this, args);
+    grab("key.export", out);
+    return out;
+  });
   // A KEK the CMS layer derives is Buffer.from(<the ArrayBuffer deriveBits returned>) -- a VIEW, so
   // wiping the CMS-side Buffer clears this ArrayBuffer and the capture observes it. Nothing at the
   // node:crypto layer sees these, which is why the engine tap alone cannot cover the CMS wipes.
@@ -177,15 +152,10 @@ function tap() {
     caps: caps,
     of: function (label) { return caps.filter(function (c) { return c.label === label; }); },
     restore: function () {
-      nodeCrypto.encapsulate = real.encapsulate;
-      nodeCrypto.decapsulate = real.decapsulate;
-      nodeCrypto.diffieHellman = real.diffieHellman;
-      _exportTap = null;
-      _importTap = null;
-      nodeCrypto.pbkdf2Sync = real.pbkdf2Sync;
-      nodeCrypto.randomBytes = real.randomBytes;
-      nodeCrypto.createHmac = real.createHmac;
-      nodeCrypto.createDecipheriv = real.createDecipheriv;
+      // The shared wrappers stay installed for the life of the process, which is what makes the
+      // package's own capture be them; taking the hooks off is what ends this suite's taping.
+      restoreOps();
+      restoreExport();
       real._restoreDerive();
     },
   };

@@ -18,6 +18,9 @@
  * backing store. The vectors below pin what the guard does, not a stronger claim.
  */
 
+// Required before guard-secret: the transform methods it drives are captured when guard-crypto loads,
+// so a wrapper installed afterwards is never consulted. See test/helpers/crypto-tap.js.
+var cryptoTap = require("../helpers/crypto-tap");
 var nodeCrypto = require("crypto");
 var secret = require("../../lib/guard-secret");
 var errors = require("../../lib/framework-error");
@@ -108,12 +111,16 @@ function run() {
   // The contract, held directly rather than through a format module: the two buffers the
   // update/final pair produces are cleared whether the transform completes or throws, and the
   // buffer the caller receives is a separate copy that is NOT cleared.
+  /* A REAL transform, with the intermediates collected on the two prototypes rather than on a
+     stand-in object carrying an `update` and a `final`. The guard reaches those methods as uncurried
+     functions, so an instance wrapper is never consulted, and it asks the transform's PROTOTYPE which
+     direction it is, so a duck-typed stand-in is refused outright. The seam that wraps the prototypes
+     is required before this module's own require for the same reason. */
   var seen = [];
-  function tapped(real) {
-    return {
-      update: function (x) { var b2 = real.update(x); seen.push(b2); return b2; },
-      final: function () { var b2 = real.final(); seen.push(b2); return b2; },
-    };
+  function collect(realFn, args) {
+    var b2 = realFn.apply(this, args);
+    if (Buffer.isBuffer(b2)) seen.push(b2);
+    return b2;
   }
   function allZero(b2) { return Array.prototype.every.call(b2, function (x) { return x === 0; }); }
 
@@ -121,7 +128,10 @@ function run() {
   var plain = Buffer.from("attack at dawn, bring the keys!!", "utf8");
   var encd = nodeCrypto.createCipheriv("aes-256-cbc", aesKey, aesIv);
   seen = [];
-  var out = secret.cipherFinish(tapped(encd), plain, TestError, "test/bad-secret", "probe");
+  var restoreEnc = cryptoTap.onAll({ "Cipheriv.update": collect, "Cipheriv.final": collect });
+  var out;
+  try { out = secret.cipherFinish(encd, plain, TestError, "test/bad-secret", "probe"); }
+  finally { restoreEnc(); }
   check("cipherFinish returns a buffer that is not one of its intermediates",
     seen.length === 2 && seen.indexOf(out) === -1 && !allZero(out));
   check("cipherFinish clears both intermediates on the success path",
@@ -134,11 +144,22 @@ function run() {
   var decd = nodeCrypto.createDecipheriv("aes-256-cbc", aesKey, aesIv);
   seen = [];
   var threw = null;
-  try { secret.cipherFinish(tapped(decd), forged, TestError, "test/bad-secret", "probe"); }
+  var restoreDec = cryptoTap.onAll({ "Decipheriv.update": collect, "Decipheriv.final": collect });
+  try { secret.cipherFinish(decd, forged, TestError, "test/bad-secret", "probe"); }
   catch (e) { threw = e; }
+  finally { restoreDec(); }
   check("cipherFinish propagates the transform's own failure rather than absorbing it", threw !== null);
   check("cipherFinish clears the candidate plaintext when the transform rejects the input",
     seen.length >= 1 && seen.every(allZero));
+  // A stand-in carrying only an `update` and a `final` is refused: the guard asks the prototype which
+  // direction the transform is, so a shape that merely looks like one cannot drive it.
+  var duckThrew = null;
+  try {
+    secret.cipherFinish({ update: function () { return Buffer.alloc(4); }, final: function () { return Buffer.alloc(0); } },
+      plain, TestError, "test/bad-secret", "probe");
+  } catch (e2) { duckThrew = e2; }
+  check("cipherFinish refuses an object that is not a node:crypto transform",
+    duckThrew !== null && duckThrew instanceof TypeError);
 
   console.log("CHECKS " + helpers.getChecks());
 }

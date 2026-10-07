@@ -1533,6 +1533,25 @@ security-only patches after the next major releases.
   character it allows and a read at any other code would otherwise answer from the
   array prototype, and the certificate-policy tree is keyed in a record with no
   prototype for the same reason.
+  The platform's own crypto is reached the same way. `node:crypto` is an ordinary
+  module object, the objects it returns carry their methods on ordinary
+  prototypes, and a key answers which key it is through an accessor, so every one
+  of those is a call a replacement installed after load would answer. Each returns
+  or decides a value no later check recovers: a key agreement returns the
+  traditional half of a shared secret, an encapsulation the post-quantum half, the
+  randomness the content-encryption key itself, a derivation the key a password
+  unwraps, an RSA transform the key-transport ciphertext or the secret inside one,
+  and an authentication tag decides which tag a message is checked against. A key's
+  algorithm family is the single question an import exists to settle, and an
+  accessor answering `rsa` for an Ed25519 key made that key import as RSA-PSS. The
+  key construction, export, agreement, encapsulation, randomness, derivations, RSA
+  transforms, hash and MAC construction, AEAD transform methods, point derivation
+  and the four key-identity accessors are all taken through operations captured
+  when the module loaded; twelve modules no longer reach the crypto module at all;
+  and a static check carrying one shape per operation refuses a library function
+  that reaches any of them directly, including in a module not yet written. Where
+  a key's type decides two things, the type is read once, so a `pki.key.export`
+  PEM label cannot name one thing while the bytes in the block are another.
 - **Signed OCSP request verification (responder side).** `pki.ocsp.verifyRequest`
   lets a responder authenticate a client's signed request (RFC 6960 §4.1.1)
   through the same certification-path signature engine `pki.ocsp.verify` uses for

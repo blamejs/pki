@@ -12,6 +12,10 @@
  */
 
 var vectors = require("../fixtures/hpke/rfc9180-vectors.json");
+
+// Required before pki: lib/guard-crypto.js captures the node:crypto operations it uses at load, so a
+// wrapper installed afterwards is a property nothing in lib/ reads. See test/helpers/crypto-tap.js.
+var cryptoTap = require("../helpers/crypto-tap");
 var pki = require("../../index.js");
 var helpers = require("../helpers");
 var check = helpers.check;
@@ -989,19 +993,25 @@ function testNoKemSilentlyIgnoresAFixedEphemeralKey() {
 // A hybrid encapsulation produces the ML-KEM shared secret before it generates the traditional half's
 // ephemeral key. A fault in that generation must still wipe the secret already in hand.
 function testHybridEncapWipesPqSecretOnAnEphemeralFault() {
-  var crypto = require("crypto");
   var kem = S.KEM.MLKEM768_X25519;
   var kp = pki.hpke.generateKeyPair(kem);
-  var realEncap = crypto.encapsulate, realGen = crypto.generateKeyPairSync;
   var captured = [], threw = "";
-  crypto.encapsulate = function (k) { var r = realEncap.call(crypto, k); captured.push(r.sharedKey); return r; };
-  crypto.generateKeyPairSync = function (t, o) {
-    if (t === "x25519") throw new Error("injected key-generation failure");
-    return o === undefined ? realGen.call(crypto, t) : realGen.call(crypto, t, o);
-  };
+  // One hook observes the ML-KEM secret, the other faults the traditional half's generation. Both
+  // must come off in the finally, or every later x25519 key this file makes would fault too.
+  var restore = cryptoTap.onAll({
+    encapsulate: function (realFn, args) {
+      var r = realFn.apply(null, args);
+      captured.push(r.sharedKey);
+      return r;
+    },
+    generateKeyPairSync: function (realFn, args) {
+      if (args[0] === "x25519") throw new Error("injected key-generation failure");
+      return realFn.apply(null, args);
+    },
+  });
   try { pki.hpke.encap(kem, kp.publicKey); }
   catch (e) { threw = e.message; }
-  finally { crypto.encapsulate = realEncap; crypto.generateKeyPairSync = realGen; }
+  finally { restore(); }
   var wiped = captured.length === 1 && captured[0].every(function (b) { return b === 0; });
   check("the ML-KEM shared secret is wiped when the hybrid's ephemeral generation faults (" +
     captured.length + " captured, threw \"" + threw + "\")",
