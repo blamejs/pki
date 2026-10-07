@@ -2171,6 +2171,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/sign-scheme.js:O", "lib/tuf.js:_err", "lib/tuf.js:<top>",
         "lib/related-cert.js:<top>", "lib/related-cert.js:_err",
         "lib/alt-sig.js:<top>", "lib/possession.js:<top>", "lib/possession.js:setEngine",
+        "lib/http-transport.js:<top>",
       ],
       mode: "family-subset",
       reason: "The per-module capture header binds each module's subset of guard-intrinsic to local names at load. The repeated shape is a deliberate convention so the set is comparable across modules; the subsets differ per module and a shared indirection would put back the call-site property read the capture removes. The regex-free character scanners (the IP-literal parser, the base-N alphabet-table builder) share the same captured-primitive binding run and char-code-loop idiom while doing genuinely different work.",
@@ -3892,7 +3893,6 @@ function testGuardReadsRuntimeLive() {
      *  module arms it whole, so these are the reads that were always there and are now counted. Both
      *  ratchet DOWN only, like the rest. */
     "lib/composite-kem.js": 45,
-    "lib/http-transport.js": 108,
     /** Entered scope when it took the capture of the URL parser, which decides the host each of its
      *  operations is sent to. Arming a module arms it whole, so this is the count that was always
      *  there and is now counted, and it ratchets DOWN only like the rest. */

@@ -188,6 +188,266 @@ async function testDerAnchor() {
 
 // a DER anchor whose own bytes contain the "-----BEGIN" marker (in the subject) must still be wrapped:
 // PEM is detected by the armor PREFIX, never an anywhere-substring that a DER field could spoof.
+// The decisions this module makes are read through the operations it captured at load, so a
+// co-resident replacement cannot answer them. Both vectors drive the shipped verb against a real
+// loopback server whose certificate is trusted ONLY by the anchor the caller names, so losing the
+// anchor is observable as a failed handshake rather than as an internal difference.
+async function testCapturedOperations() {
+  var tls = await selfSigned("Captured Ops");
+  var s = await startServer(tls, function (req, res) { res.end("captured"); });
+  var realConcat = Array.prototype.concat;
+  try {
+    var t = pki.transport.https({});
+    /** The anchor list is built by appending to an empty array. Through the live prototype, a
+     *  replacement answering [] for an empty receiver left the list empty, nothing was assigned to
+     *  node's `ca`, and the connection fell back to the system store: a caller that named an anchor
+     *  got an unpinned handshake instead. Narrowed to an empty receiver so the rest of the request
+     *  still runs and the vector measures this call and not an earlier one. */
+    var hijacked = 0;
+    Array.prototype.concat = function () {
+      if (this.length === 0) { hijacked += 1; return []; }
+      return realConcat.apply(this, arguments);
+    };
+    var r1 = await t({ method: "GET", url: urlFor(s.port), tls: { anchors: [tls.certPem], servername: "localhost" } });
+    Array.prototype.concat = realConcat;
+    // The anchor still reaches the handshake AND the replacement was never asked: a verdict alone
+    // could come out right while the module still read the prototype on some other path.
+    check("14g a replaced Array.prototype.concat is never consulted for the anchor list (" + hijacked + " call(s))",
+      r1.status === 200 && r1.body.toString() === "captured" && hijacked === 0);
+
+    /** `tls` is read ONCE. Read twice, the second read decided: a value present to the test and
+     *  absent to the use left the TLS record undefined and the anchor read threw a raw TypeError out
+     *  of the verb, which is neither this module's typed refusal nor a connection. */
+    var tlsReads = 0;
+    var twoFacedRequest = { method: "GET", url: urlFor(s.port) };
+    Object.defineProperty(twoFacedRequest, "tls", {
+      enumerable: true,
+      get: function () {
+        tlsReads += 1;
+        return tlsReads === 1 ? { anchors: [tls.certPem], servername: "localhost" } : undefined;
+      },
+    });
+    var out2 = await codeOf(t(twoFacedRequest));
+    check("14g a tls record read twice cannot throw untyped out of the verb (" + out2 + ", " + tlsReads + " read(s))",
+      out2 === "NO-THROW" && tlsReads === 1);
+
+    /** The settings a refusal is decided on are read once each. Each of these answered one value to
+     *  the presence test and another to the use, so the check and the connection disagreed: the
+     *  private-address refusal was asked for and not applied, the identity the handshake is accepted
+     *  under was swapped after it was checked, and the caller's identity hook disappeared after it
+     *  had been found to be a function. */
+    var blockReads = 0;
+    var twoFacedBlock = { method: "GET", url: urlFor(s.port), tls: { anchors: [tls.certPem], servername: "localhost" } };
+    Object.defineProperty(twoFacedBlock, "blockPrivateAddresses", {
+      enumerable: true,
+      get: function () { blockReads += 1; return blockReads === 1; },
+    });
+    var blocked = await codeOf(t(twoFacedBlock));
+    check("14i a blockPrivateAddresses read twice still refuses the loopback address (" + blocked + ")",
+      blocked === "transport/blocked-address" && blockReads === 1);
+
+    var sniReads = 0;
+    var twoFacedSniTls = { anchors: [tls.certPem] };
+    Object.defineProperty(twoFacedSniTls, "servername", {
+      enumerable: true,
+      get: function () { sniReads += 1; return sniReads === 1 ? "localhost" : "other.example"; },
+    });
+    var sniOut = await codeOf(t({ method: "GET", url: urlFor(s.port), tls: twoFacedSniTls }));
+    check("14i a servername read twice is the one the handshake was checked against (" + sniOut + ")",
+      sniOut === "NO-THROW" && sniReads === 1);
+
+    var csiReads = 0, csiCalled = 0;
+    var twoFacedCsiTls = { anchors: [tls.certPem], servername: "localhost" };
+    Object.defineProperty(twoFacedCsiTls, "checkServerIdentity", {
+      enumerable: true,
+      get: function () {
+        csiReads += 1;
+        return csiReads === 1 ? function () { csiCalled += 1; return new Error("refused by the caller's hook"); } : undefined;
+      },
+    });
+    var csiOut = await codeOf(t({ method: "GET", url: urlFor(s.port), tls: twoFacedCsiTls }));
+    check("14i an identity hook read twice is the one that runs (" + csiOut + ", called " + csiCalled + ")",
+      csiReads === 1 && csiCalled === 1 && csiOut !== "NO-THROW");
+
+    /** A sparse anchor list is refused rather than read. A descriptor walk cannot see a HOLE, so a
+     *  gap answered by an accessor on Array.prototype was validated as one anchor and converted as
+     *  another. */
+    var sparse = [tls.certPem, tls.certPem, tls.certPem];
+    sparse.length = 4;
+    var protoReads = 0;
+    // The accessor answers only for THIS array, and an assignment still defines an own property, so
+    // node's own arrays keep working while the probe runs: a bare getter on the prototype makes
+    // every `push` past index 2 anywhere in the process throw.
+    Object.defineProperty(Array.prototype, "3", {
+      configurable: true, enumerable: false,
+      get: function () {
+        if (this !== sparse) return undefined;
+        protoReads += 1;
+        return protoReads === 1 ? tls.certPem : "-----BEGIN CERTIFICATE-----\nUSED\n-----END CERTIFICATE-----\n";
+      },
+      set: function (v) { Object.defineProperty(this, "3", { value: v, writable: true, enumerable: true, configurable: true }); },
+    });
+    var sparseOut;
+    try {
+      sparseOut = await codeOf(t({ method: "GET", url: urlFor(s.port),
+        tls: { anchors: [tls.certPem], servername: "localhost" },
+        proxy: { url: "https://127.0.0.1:1/", tls: { anchors: sparse } } }));
+    } finally { delete Array.prototype[3]; }
+    check("14i a sparse proxy anchor list is refused rather than read through the prototype (" + sparseOut + ")",
+      sparseOut === "transport/bad-proxy");
+
+    /** The address the blocklist cleared is the address the socket layer is handed. The resolver's
+     *  own entry was forwarded, so an entry whose `address` answered a public value to the check and
+     *  a loopback one afterwards reached loopback with the private-address block in force. */
+    var transportMod = require("../../lib/http-transport");
+    var addrReads = 0;
+    var guarded = transportMod._makeGuardedLookup(function (host, opts, cb) {
+      var entry = {};
+      Object.defineProperty(entry, "address", {
+        enumerable: true,
+        get: function () { addrReads += 1; return addrReads === 1 ? "93.184.216.34" : "127.0.0.1"; },
+      });
+      entry.family = 4;
+      cb(null, [entry]);
+    });
+    var handed = await new Promise(function (res) {
+      guarded("host.example", { all: true }, function (err, out) { res(err ? ("ERR:" + (err.pkiBlockedAddress ? "blocked" : "other")) : out); });
+    });
+    var handedAddr = Array.isArray(handed) ? handed[0].address : handed;
+    check("14i the address the blocklist cleared is the one handed on (" + handedAddr + ", " + addrReads + " read(s))",
+      handedAddr === "93.184.216.34" && addrReads === 1);
+
+    /** The bytes the caller reads are the bytes that arrived. `Buffer.prototype.copy` moved both the
+     *  received bytes and each arriving chunk, so a replacement installed after load decided what
+     *  the response body holds. */
+    var realBufCopy = Buffer.prototype.copy;
+    var copyCalls = 0;
+    var bodyOut;
+    try {
+      Buffer.prototype.copy = function () { copyCalls += 1; return realBufCopy.apply(this, arguments); };
+      var rBody = await t({ method: "GET", url: urlFor(s.port), tls: { anchors: [tls.certPem], servername: "localhost" } });
+      bodyOut = rBody.body.toString();
+    } finally { Buffer.prototype.copy = realBufCopy; }
+    check("14i the response body is framed without the live Buffer.prototype.copy (" + bodyOut + ", " + copyCalls + " call(s))",
+      bodyOut === "captured" && copyCalls === 0);
+
+    /** A trust list is assembled without consulting a spreading hook. `Array.prototype.concat` is
+     *  specified to read `Symbol.isConcatSpreadable` on each argument, so capturing the method left
+     *  an inherited hook able to replace a validated anchor. */
+    var spreadReads = 0;
+    Object.defineProperty(Array.prototype, Symbol.isConcatSpreadable, {
+      configurable: true, enumerable: false,
+      get: function () { spreadReads += 1; return false; },
+    });
+    var spreadOut;
+    try {
+      spreadOut = await codeOf(t({ method: "GET", url: urlFor(s.port), tls: { anchors: [tls.certPem], servername: "localhost" } }));
+    } finally { delete Array.prototype[Symbol.isConcatSpreadable]; }
+    check("14i a spreading hook is never consulted while the trust list is built (" + spreadOut + ", " + spreadReads + " read(s))",
+      spreadOut === "NO-THROW" && spreadReads === 0);
+
+    /** The body is as long as the bytes that were counted. Built with `Buffer.from` over the received
+     *  view, the LENGTH came from that object's own `valueOf` and `length`, so a replacement returned
+     *  more bytes than arrived and more than the cap allowed. */
+    var realValueOf = Buffer.prototype.valueOf;
+    var capOut, capLen;
+    try {
+      // Answers hostilely only for a buffer the size of this response, so the rest of the request
+      // keeps working and the vector measures the body rather than an earlier step.
+      Buffer.prototype.valueOf = function () {
+        return this.length === 8 ? Buffer.alloc(64, 0x58) : realValueOf.call(this);
+      };
+      var rCap = await t({ method: "GET", url: urlFor(s.port), tls: { anchors: [tls.certPem], servername: "localhost" } });
+      capLen = rCap.body.length;
+      capOut = rCap.body.toString();
+    } finally { Buffer.prototype.valueOf = realValueOf; }
+    check("14i the body is the bytes that were counted, whatever valueOf answers (" + capLen + " bytes)",
+      capOut === "captured" && capLen === 8);
+
+    /** The arriving chunk is measured from its bytes. Read off a `length` property, a value answering
+     *  one size to the cap and another to the accounting resolved a response longer than the bytes
+     *  that arrived and longer than the cap allowed. */
+    var chunkOut, chunkLen;
+    var realOn = require("node:http").IncomingMessage.prototype.on;
+    try {
+      require("node:http").IncomingMessage.prototype.on = function (ev, fn) {
+        if (ev !== "data") return realOn.call(this, ev, fn);
+        return realOn.call(this, ev, function (chunk) {
+          var real = chunk.byteLength;
+          try {
+            Object.defineProperty(chunk, "length", {
+              configurable: true,
+              get: function () { return real * 2; },
+            });
+          } catch (_e) { /* a chunk that refuses the redefinition is measured as it is */ }
+          return fn(chunk);
+        });
+      };
+      var rChunk = await t({ method: "GET", url: urlFor(s.port), tls: { anchors: [tls.certPem], servername: "localhost" } });
+      chunkLen = rChunk.body.length;
+      chunkOut = rChunk.body.toString();
+    } finally { require("node:http").IncomingMessage.prototype.on = realOn; }
+    check("14i a chunk whose length overstates its bytes cannot lengthen the response (" + chunkLen + " bytes)",
+      chunkLen === 8 && chunkOut === "captured");
+
+    /** The socket is this module's to open. `agent: false` still left the construction on the agent
+     *  prototype, so a replacement there returned a connection to another destination and the
+     *  request went out over it: an `https:` request reached a plaintext listener that presented no
+     *  certificate. */
+    var httpsAgentProto = require("node:https").Agent.prototype;
+    var realCreate = httpsAgentProto.createConnection;
+    var agentCalls = 0, agentOut;
+    try {
+      httpsAgentProto.createConnection = function () {
+        agentCalls += 1;
+        return realCreate.apply(this, arguments);
+      };
+      var rAgent = await t({ method: "GET", url: urlFor(s.port), tls: { anchors: [tls.certPem], servername: "localhost" } });
+      agentOut = rAgent.body.toString();
+    } finally { httpsAgentProto.createConnection = realCreate; }
+    check("14i the agent's connection builder is never consulted (" + agentOut + ", " + agentCalls + " call(s))",
+      agentOut === "captured" && agentCalls === 0);
+
+    /** The CONNECT socket is opened the same way, which matters more there: the request that carries
+     *  `Proxy-Authorization` would otherwise be dispatched through the replaced builder, which can
+     *  answer with a raw socket in place of the proxy's TLS connection. */
+    var httpAgentProto = require("node:http").Agent.prototype;
+    var realHttpCreate = httpAgentProto.createConnection;
+    var realHttpsCreate = httpsAgentProto.createConnection;
+    var proxyAgentCalls = 0, proxyOut;
+    try {
+      httpAgentProto.createConnection = function () { proxyAgentCalls += 1; return realHttpCreate.apply(this, arguments); };
+      httpsAgentProto.createConnection = function () { proxyAgentCalls += 1; return realHttpsCreate.apply(this, arguments); };
+      proxyOut = await codeOf(t({ method: "GET", url: urlFor(s.port),
+        tls: { anchors: [tls.certPem], servername: "localhost" },
+        proxy: { url: "http://127.0.0.1:1/" }, timeout: 1500 }));
+    } finally {
+      httpAgentProto.createConnection = realHttpCreate;
+      httpsAgentProto.createConnection = realHttpsCreate;
+    }
+    check("14i nor on the proxy CONNECT path (" + proxyOut + ", " + proxyAgentCalls + " call(s))",
+      proxyOut === "transport/proxy-connect-failed" && proxyAgentCalls === 0);
+
+    /** The transport's default identity hook is read only where the request supplied none. Read
+     *  anyway, an accessor the per-request override opted out of still ran and could refuse the
+     *  request before it connected. */
+    var defaultCsiReads = 0;
+    var defaultTls = { anchors: [tls.certPem] };
+    Object.defineProperty(defaultTls, "checkServerIdentity", {
+      enumerable: true,
+      get: function () { defaultCsiReads += 1; throw new Error("the default hook must not be read when the request overrides it"); },
+    });
+    var tDefaults = pki.transport.https({ tls: defaultTls });
+    var overrideOut = await codeOf(tDefaults({ method: "GET", url: urlFor(s.port),
+      tls: { anchors: [tls.certPem], servername: "localhost", checkServerIdentity: function () { return undefined; } } }));
+    check("14i a per-request identity hook keeps the default from being read (" + overrideOut + ", " + defaultCsiReads + " read(s))",
+      overrideOut === "NO-THROW" && defaultCsiReads === 0);
+  } finally {
+    Array.prototype.concat = realConcat;
+    s.srv.close();
+  }
+}
+
 async function testDerAnchorWithArmorBytes() {
   var tls = await selfSigned("-----BEGIN sneaky");   // the subject CN embeds the PEM armor bytes
   check("14f fixture: the DER anchor really contains the -----BEGIN marker", tls.certDer.indexOf("-----BEGIN") > 0);
@@ -1306,6 +1566,7 @@ async function main() {
   await testTlsDefaultsHonored();
   await testServernameNullOverride();
   await testDerAnchor();
+  await testCapturedOperations();
   await testDerAnchorWithArmorBytes();
   await testIpv6BracketHost();
   await testServerAuthFailed();
