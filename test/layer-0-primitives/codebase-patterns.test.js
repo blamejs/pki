@@ -1078,6 +1078,56 @@ function _assertBraceWalkHandlesLiterals() {
   }
 
   _report("the brace walk reads nested templates, reports an unpairable brace, and keys its cache by mode", bad);
+  _assertDestructuringArmReadsTargets();
+}
+
+/** The destructuring arm pinned on the forms that decide whether a pattern is an assignment TARGET,
+ *  each one executed JavaScript. The arm reports a capture only inside a target, so a target it fails
+ *  to recognize is a capture it never looks at, and nothing fails: the gate stays green while the
+ *  bound name is the storing method. Both directions are pinned, because widening this is how the
+ *  ordinary `var a = [{ push: 1 }], b = 2;` starts being reported as a capture. */
+function _assertDestructuringArmReadsTargets() {
+  var bad = [];
+  function fail(what) {
+    bad.push({ file: "test/layer-0-primitives/codebase-patterns.test.js", line: 1, content: what });
+  }
+  // [source, must it report, why]
+  var CASES = [
+    ["var p; ({ push: p } = Array.prototype);", true, "a parenthesized object pattern"],
+    ["var p; [{ push: p }] = [Array.prototype];", true, "an array-wrapped pattern"],
+    ["var p, q; [{ push: p }, q] = [Array.prototype, 0];", true, "a pattern with a SIBLING element after it"],
+    ["var p, q; [q, { push: p }] = [0, Array.prototype];", true, "a pattern with a sibling element before it"],
+    ["var { push: p } = Array.prototype;", true, "a declared pattern"],
+    ["for ({ push: p } of [Array.prototype]) { break; }", true, "a for-of pattern"],
+    ["var p, q; [[{ push: p }, q]] = [[Array.prototype, 0]];", true, "a pattern nested two groups deep"],
+    ["var p, q; for ([{ push: p }, q] of [[Array.prototype, 0]]) { break; }", true, "a for-of over a sibling-bearing pattern"],
+    ["var a = [{ push: 1 }], b = 2;", false, "an array of object literals with a further declarator"],
+    ["var a = { push: 1 };", false, "an ordinary object literal"],
+    ["send({ push: 1 });", false, "an object literal passed as an argument"],
+    ["var obj = {}; obj[{ push: 1 }] = 2;", false, "an object literal used as a computed member key"],
+    ["var a = { push: 1 } in {};", false, "a relational `in` outside a for header"],
+    ["var p; try { throw Array.prototype; } catch ({ push: p }) { void p; }", true, "a catch parameter"],
+    ["var p, A = Array.prototype; ({ push: p } /* a comment longer than any fixed tail window */ = A);", true, "a comment between the pattern and the ="],
+    ["var o = {}; ({ x = { push: 1 } } = o);", false, "an object literal used as a default inside a pattern"],
+    ["var o = {}; ({ x = { push: Array } } = o);", false, "a default whose literal value is an identifier"],
+    ["var o = [{ push: Array }, \"] =\"];", false, "an object literal beside a string holding `] =`"],
+    ["var { [\"push\"]: p } = Array.prototype;", true, "a computed string key"],
+    ["var { push = null } = Array.prototype;", true, "a shorthand with a default"],
+    ["var { \"\\x70ush\": p } = Array.prototype;", true, "a hex-escaped quoted key"],
+    ["var p; (function ({ push }) { p = push; })(Array.prototype);", true, "a function parameter pattern"],
+  ];
+  for (var i = 0; i < CASES.length; i++) {
+    var found = [];
+    // Blanked the way the arm's real caller blanks it, comments to spaces and literals kept, or the
+    // probe hands it an input the shipped path never produces.
+    _destructuringArm(_lexBlank(CASES[i][0], false), "canary.js", found, function () { return 1; }, true);
+    var reported = found.length > 0;
+    if (reported !== CASES[i][1]) {
+      fail("the destructuring arm " + (reported ? "REPORTED" : "did not report") + " " + CASES[i][2] +
+        " (" + JSON.stringify(CASES[i][0]) + "), and it must " + (CASES[i][1] ? "report it" : "not"));
+    }
+  }
+  _report("the destructuring arm reads every assignment-target form and no object literal", bad);
 }
 
 /** The brace walk reports a file whose braces and quotes do not both close. It reads no regex
@@ -1227,7 +1277,9 @@ function _assertNoDirectStoringAppendCalls() {
 
 /** The name shapes a property position can hold, compiled ONCE. Built per call they were a regex
  *  compile at every `{` in every file, which is the other half of the cost the escape pass added. */
-var _NAME_CHAR = "(?:[A-Za-z0-9_$]|\\\\u[0-9a-fA-F]{4}|\\\\u\\{[0-9a-fA-F]+\\})";
+// The HEX form is here because `_propertyName` decodes it: `{ "\x70ush": p }` is the property `push`,
+// and a token pattern that stops at the backslash never hands that key to the decoder at all.
+var _NAME_CHAR = "(?:[A-Za-z0-9_$]|\\\\x[0-9a-fA-F]{2}|\\\\u[0-9a-fA-F]{4}|\\\\u\\{[0-9a-fA-F]+\\})";
 var _MEMBER = new RegExp("\\.\\s*(" + _NAME_CHAR + "+)(?!\\s*\\()", "g");
 var _QUOTED = new RegExp("\\[\\s*(['\"`])((?:\\\\[\\s\\S]|[^'\"`\\\\])*)\\1\\s*\\]", "g");
 var _NAME_TOKEN = new RegExp(_NAME_CHAR + "+", "g");
@@ -1240,6 +1292,178 @@ var _MEMBER_CALL = new RegExp("\\.\\s*(" + _NAME_CHAR + "+)\\s*\\(", "g");
  *
  *  `decodeKeys` is false for a file carrying no escape at all, where the plain name test answers the
  *  same question for the cost of one regex rather than one decode per name-shaped token. */
+/** The index OF the closing quote of a string literal starting at `at`, or the bound. The subject
+ *  this walks keeps its literals, because a quoted key is the evidence for one of these checks, so a
+ *  bracket or an `=` inside a literal is TEXT rather than syntax: `var o = [{ push: Array }, "] ="];`
+ *  read the quoted `] =` as a group close followed by an assignment and reported an object literal as
+ *  a capture. */
+function _skipString(text, at, limit) {
+  var quote = text.charAt(at);
+  var i = at + 1;
+  while (i < limit) {
+    var c = text.charAt(i);
+    if (c === "\\") { i += 2; continue; }
+    if (c === quote) return i;
+    i += 1;
+  }
+  return limit;
+}
+
+/** A destructuring pattern's text with every DEFAULT VALUE blanked, so only binding positions are
+ *  left for a name test to read. A default is the span from a `=` to the next `,` or `}` at the same
+ *  brace depth, and it is an ordinary expression: `{ x = { push: Array } }` binds `x`, and the keys
+ *  inside its default are an object literal's keys. Shorthand defaults keep their NAME, since
+ *  `{ push = null }` does bind `push`: only the text after the `=` is dropped. */
+function _bindingPositions(pattern) {
+  var out = "";
+  var i = 0;
+  while (i < pattern.length) {
+    var ch = pattern.charAt(i);
+    if (ch === "=" && pattern.charAt(i + 1) !== "=" && pattern.charAt(i + 1) !== ">" &&
+        pattern.charAt(i - 1) !== "=" && pattern.charAt(i - 1) !== "!" &&
+        pattern.charAt(i - 1) !== "<" && pattern.charAt(i - 1) !== ">") {
+      // Keep the `=` so a shorthand default still reads as one, then blank its value.
+      out += "=";
+      i += 1;
+      var valueDepth = 0;
+      while (i < pattern.length) {
+        var vc = pattern.charAt(i);
+        if (vc === "{" || vc === "[" || vc === "(") valueDepth += 1;
+        else if (vc === "}" || vc === "]" || vc === ")") {
+          if (valueDepth === 0) break;
+          valueDepth -= 1;
+        } else if (vc === "," && valueDepth === 0) break;
+        out += vc === "\n" ? "\n" : " ";
+        i += 1;
+      }
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
+
+/** Is the object pattern spanning `b`..`close` an assignment TARGET, rather than an object literal?
+ *
+ *  The arm reports a capture only inside a target, so a target this fails to recognize is a capture
+ *  nothing looks at, and nothing fails: the gate stays green while the bound name is the storing
+ *  method. Widening it has the opposite cost, a gate that reports ordinary code. Every form below was
+ *  a counterexample someone ran, in one direction or the other.
+ *
+ *  A target, four ways:
+ *    - a declaration keyword before it, with an optional `[` or `(` for a wrapped pattern;
+ *    - an `=` after it, reached by closing however many groups the pattern sits inside, so
+ *      `[[{ push: p }, q]] = [[A, 0]]` is read as well as `[{ push: p }] = [A]`;
+ *    - a sibling element after it, which is why the walk looks for the group's close rather than
+ *      stopping at the first identifier: `[{ push: p }, q] = [A, 0]` is a valid assignment;
+ *    - a `for (` header using `of` or `in`.
+ *
+ *  Not a target, and each of these was reported once:
+ *    - an ordinary object literal, or one passed as an argument;
+ *    - a computed member KEY, `obj[{ push: 1 }] = 2`, where the `=` belongs to the member
+ *      assignment. Told apart by what precedes the enclosing `[`: an identifier or a closing bracket
+ *      means a member access rather than an array pattern;
+ *    - a relational `in` outside a for header, `var a = { push: 1 } in {}`.
+ *
+ *  Every scan is bounded, so this costs the same whatever the statement's length.
+ *
+ *  WHAT THIS IS, AND IS NOT. It is a bounded lexical walk, not a parser, and three successive
+ *  refutation rounds each produced a form it had wrong, in both directions. The twenty-two rows in
+ *  `_assertDestructuringArmReadsTargets` are every form that has been put to it; a form nobody has
+ *  tried yet may still be read wrong, and the direction that matters is a MISSED target, since that
+ *  is a capture nothing looks at. The known residual is the BACKWARD walk, which does not skip a
+ *  string literal, so a quoted bracket before the pattern can misidentify the enclosing group.
+ *
+ *  What the library actually rests on is not this: `guard-intrinsic` exports neither name, so there
+ *  is nothing to bind by habit; the call-position check holds every module to a declared figure; and
+ *  the non-storing primitives carry behavioral vectors. No module in lib/ destructures from
+ *  `Array.prototype` at all. If this walk ever reports ordinary code again, replace it with a real
+ *  parse rather than adding another case. */
+function _isAssignmentTarget(subject, b, close, declared) {
+  if (declared) return true;
+  var WINDOW = 400;
+  var backFrom = b > WINDOW ? b - WINDOW : 0;
+  var before = subject.slice(backFrom, b);
+
+  // A `{` whose own left neighbor is `=` is a VALUE, never a target: an initializer
+  // (`var a = { push: 1 }`) or a default inside a pattern (`({ x = { push: 1 } } = {})`). The second
+  // was reported as a capture, because the pattern it sits in really is a target and the walk below
+  // finds that target's `=`.
+  if (/(?:[^=!<>]|^)=\s*$/.test(before)) return false;
+
+  // The innermost group the pattern sits inside, and what precedes its opener.
+  var openerIsMember = false;
+  var openerIsCatch = false;
+  var openerIsParam = false;
+  var depthBack = 0;
+  for (var k = b - 1; k >= backFrom; k--) {
+    var cb = subject.charAt(k);
+    if (cb === "]" || cb === ")" || cb === "}") { depthBack += 1; continue; }
+    if (cb === "[" || cb === "(") {
+      if (depthBack === 0) {
+        var lead = subject.slice(backFrom, k).replace(/\s+$/, "");
+        openerIsMember = cb === "[" && /[A-Za-z0-9_$\])]$/.test(lead);
+        // A catch parameter is a binding pattern: `try { throw A; } catch ({ push: p }) {}` binds
+        // the thrown value's method, and the tail after the pattern is `)` with no `=` anywhere.
+        openerIsCatch = cb === "(" && /(?:^|[^A-Za-z0-9_$])catch$/.test(lead);
+        // A function PARAMETER is a binding pattern too, and its tail is `)` with no `=` anywhere:
+        // `(function ({ push }) { ... })(Array.prototype)` binds the storing method.
+        openerIsParam = cb === "(" &&
+          /(?:^|[^A-Za-z0-9_$])function(?:\s+[A-Za-z_$][A-Za-z0-9_$]*)?$/.test(lead);
+        break;
+      }
+      depthBack -= 1;
+      continue;
+    }
+    if (cb === "{") { if (depthBack === 0) break; depthBack -= 1; continue; }
+    if (cb === ";") break;
+  }
+  if (openerIsMember) return false;
+  if (openerIsCatch || openerIsParam) return true;
+
+  // A `for (` with no `;` since it, so `of` / `in` after the pattern is a loop header rather than a
+  // relational operator.
+  var forHeader = /(?:^|[^A-Za-z0-9_$])for\s*\(\s*[^;]*$/.test(before);
+
+  // The IMMEDIATE tail decides the unwrapped forms, where the token sits inside the enclosing group:
+  // `({ push: p } = A)` and `for ({ push: p } of A)`. Walking out of the group first would step past
+  // both and read the statement after it.
+  // Whitespace SKIPPED rather than sliced. A fixed 32-character slice put the token out of reach
+  // whenever a comment sat between the pattern and the `=`, since the lexer blanks a comment to a run
+  // of spaces as long as the comment was.
+  var after = close + 1;
+  while (after < subject.length && /\s/.test(subject.charAt(after))) after += 1;
+  var immediate = subject.slice(after, after + 8);
+  if (/^=(?!=)/.test(immediate)) return true;
+  if (forHeader && /^(?:of|in)\b/.test(immediate)) return true;
+
+  // Otherwise out of every group the pattern sits inside, then the deciding token. A sibling element
+  // or a further nesting level puts it past the closes rather than next to the pattern.
+  var depth = 0;
+  var j = close + 1;
+  var limit = close + WINDOW < subject.length ? close + WINDOW : subject.length;
+  for (; j < limit; j++) {
+    var ch = subject.charAt(j);
+    if (ch === "'" || ch === "\"" || ch === "`") { j = _skipString(subject, j, limit); continue; }
+    if (ch === "[" || ch === "(" || ch === "{") { depth += 1; continue; }
+    if (ch === "]" || ch === ")" || ch === "}") {
+      if (depth === 0) {
+        j += 1;
+        while (j < limit && /[\s\])]/.test(subject.charAt(j))) j += 1;
+        break;
+      }
+      depth -= 1;
+      continue;
+    }
+    if (ch === ";") break;
+  }
+  var tail = subject.slice(j, j + 8).replace(/^\s+/, "");
+  if (/^=(?!=)/.test(tail)) return true;
+  if (forHeader && /^(?:of|in)\b/.test(tail)) return true;
+  return false;
+}
+
 function _destructuringArm(subject, file, bad, lineAt, decodeKeys) {
   for (var b = subject.indexOf("{"); b !== -1; b = subject.indexOf("{", b + 1)) {
     // BOUNDED WINDOWS, both sides. Read from the start of the file, this test sliced and scanned the
@@ -1258,13 +1482,17 @@ function _destructuringArm(subject, file, bad, lineAt, decodeKeys) {
     // So the tail is read past any run of `]`, `)`, `,` and whitespace before the test. The skip
     // deliberately stops at an IDENTIFIER: admitting one would read `var a = [{ push: 1 }], b = 2;`
     // as a pattern, which is an ordinary array of object literals followed by another declarator.
-    // The residuals that leaves are a pattern with a following element (`[{ push: p }, q] = arr`)
-    // and an object literal written as a computed key (`obj[{ push: 1 }] = v`), which is not code
-    // anyone writes since the key stringifies.
-    var afterBrackets = subject.slice(close + 1, close + 121).replace(/^[\s\]),]*/, "");
-    if (!declared && !/^=(?!=)/.test(afterBrackets) && !/^(?:of|in)\b/.test(afterBrackets)) continue;
-    var pattern = subject.slice(b, close);
-    var binds = /\b(?:push|unshift)\b/.test(pattern);
+    if (!_isAssignmentTarget(subject, b, close, declared)) continue;
+    // The pattern's BINDING positions only. A default's VALUE is an ordinary expression, so
+    // `({ x = { push: Array } } = o)` binds `x` and nothing else, and reading the whole span reported
+    // it as a capture. Each default is dropped from the text the name test then reads.
+    var pattern = _bindingPositions(subject.slice(b, close));
+    // A BOUND name, not merely the word somewhere in the span: the key carries an identifier value
+    // (`{ push: p }`), or is a shorthand (`{ push }`), or a shorthand with a default
+    // (`{ push = null }`). An optional quote and an optional `]` are allowed, since a key may be
+    // written `{ "push": p }` or `{ ["push"]: p }`.
+    var BOUND = /\b(?:push|unshift)\b["'`]?\s*\]?\s*(?::\s*[A-Za-z_$]|=|[,}]|$)/;
+    var binds = BOUND.test(pattern);
     if (!binds && decodeKeys) {
       // Every name-shaped token in the pattern, decoded, so `{ push: p }` is read as the key it
       // is. A key written as a quoted string inside a pattern is covered by the same decode.
@@ -1272,7 +1500,11 @@ function _destructuringArm(subject, file, bad, lineAt, decodeKeys) {
       var key;
       while ((key = _NAME_TOKEN.exec(pattern)) !== null) {
         var decodedKey = _propertyName(key[0]);
-        if (decodedKey === "push" || decodedKey === "unshift") { binds = true; break; }
+        if (decodedKey !== "push" && decodedKey !== "unshift") continue;
+        // The same bound-name test as above, applied where the escaped token ENDS, so a decoded key
+        // inside a nested default value is not read as a binding either.
+        var restAfterKey = pattern.slice(key.index + key[0].length, key.index + key[0].length + 12);
+        if (/^["'`]?\s*(?::\s*[A-Za-z_$]|[,}]|$)/.test(restAfterKey)) { binds = true; break; }
       }
     }
     if (!binds) continue;
