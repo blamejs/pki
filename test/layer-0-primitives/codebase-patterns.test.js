@@ -760,8 +760,14 @@ function testNoStoringAppend() {
   // and appends them in order instead (`encodeLength` and `intToDer` in lib/asn1-der.js). The
   // mutators that remain -- `pop`, `shift`, `splice`, `reverse` -- move or drop elements that already
   // have own slots, so none of them reaches a prototype accessor on a list built by defining.
+  // THREE QUOTES IN THE BRACKET ARM, not two. A no-substitution template literal is a property name
+  // like any other, so `Array.prototype[`push`]` and `[][`unshift`]` reach the same function;
+  // accepting only `'` and `"` left that spelling legal while every static check stayed green. The
+  // backreference keeps the pair matched, so a quote character inside a differently-quoted name is
+  // not a close. A template literal carrying a substitution is a runtime-assembled name, which is
+  // the limit this check already states rather than a spelling it can match.
   var STORING = new RegExp("\\.\\s*(?:push|unshift)\\b(?!\\s*\\()" +
-    "|\\[\\s*(['\"])(?:push|unshift)\\1\\s*\\]", "g");
+    "|\\[\\s*(['\"`])(?:push|unshift)\\1\\s*\\]", "g");
   var files = _libFiles();
   var bad = [];
   for (var i = 0; i < files.length; i++) {
