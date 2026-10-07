@@ -75,6 +75,49 @@ function run() {
   check("31. vector with a 5-byte length prefix -> w/bad", fault(function () { W().vector(5, 0, null, Buffer.alloc(1)); }) === "w/bad");
   check("32. vector with a non-integer length prefix width -> w/bad", fault(function () { W().vector(2.5, 0, null, Buffer.alloc(1)); }) === "w/bad");
 
+  // ---- the declared length and the written bytes describe one byte string -------------------
+  // A length prefix that outlives its payload is a framing lie: a reader takes the declared count
+  // and consumes whatever follows. The body is copied before it is measured, so a backing buffer
+  // that shrinks between the measurement and the write cannot separate the two. The bound's own
+  // `valueOf` is the window, because it runs inside the comparison the length is checked by.
+  // Resizable buffers are the point of this vector, and the engine floor has them; the fallback
+  // keeps the file runnable where they are absent instead of constructing something meaningless.
+  var canResize = typeof ArrayBuffer.prototype.resize === "function";
+  var resizable = canResize ? new ArrayBuffer(2, { maxByteLength: 2 }) : new ArrayBuffer(2);
+  var shrinking = Buffer.from(resizable, 0, 2);
+  shrinking[0] = 0xaa; shrinking[1] = 0xbb;
+  var hostileMin = { valueOf: function () { if (canResize) resizable.resize(1); return 0; } };
+  var framed;
+  try { framed = W().vector(1, hostileMin, null, shrinking).build(); }
+  catch (e) { framed = "THROW:" + ((e && e.code) || "UNTYPED:" + (e && e.message)); }
+  // The frame must be self-consistent, or the writer must refuse it with ITS OWN code. Measuring the
+  // caller's view instead left neither: the shrink took the body out of bounds and the concatenation
+  // threw a raw TypeError out of `build()`, which is not this writer's verdict about its input.
+  check("33. a body whose buffer shrinks mid-call frames consistently or is refused typed (" +
+    (Buffer.isBuffer(framed) ? framed.toString("hex") : framed) + ")",
+  Buffer.isBuffer(framed)
+    ? (framed.length === framed[0] + 1 && framed[1] === 0xaa)
+    : framed.indexOf("THROW:w/") === 0);
+
+  // ---- a bound's own valueOf cannot replace the write that states the length -----------------
+  // The bound is converted inside the comparison the length is checked by, so its `valueOf` runs
+  // before the prefix is written: through the live prototype that was a window to replace the write
+  // itself, and the vector declared a length of 0 over a payload of two bytes.
+  var realWriteUIntBE = Buffer.prototype.writeUIntBE;
+  var swapped = 0, swapOut;
+  var swappingMin = {
+    valueOf: function () {
+      Buffer.prototype.writeUIntBE = function () { swapped += 1; return realWriteUIntBE.call(this, 0, 0, 1); };
+      return 0;
+    },
+  };
+  try { swapOut = W().vector(1, swappingMin, 255, Buffer.from([0xaa, 0xbb])).build(); }
+  catch (e) { swapOut = "THROW:" + ((e && e.code) || "UNTYPED"); }
+  finally { Buffer.prototype.writeUIntBE = realWriteUIntBE; }
+  check("34. a bound that replaces the length write mid-call cannot mis-state the length (" +
+    (Buffer.isBuffer(swapOut) ? swapOut.toString("hex") : swapOut) + ", swapped x" + swapped + ")",
+  Buffer.isBuffer(swapOut) && swapOut.toString("hex") === "02aabb" && swapped === 0);
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

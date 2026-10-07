@@ -1145,6 +1145,27 @@ async function testPreEncodedExtProfile() {
   check("a pre-encoded entry extension forces v2", pe.version === 2);
 }
 
+/** The same producer check the certificate and request signers run, reached through `pki.crl.sign`.
+ *  It reads its findings out of a list, and a store at an index runs a setter inherited from the
+ *  prototype chain, so a benign finding installed on `Array.prototype` stood in for the error finding
+ *  and the CRL was signed past the check. A CRL carrying no crlNumber is what this refuses. */
+async function testProducerCheckUnderIndexAccessor() {
+  var s = makeSigner("ed25519");
+  var spec = { thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 0x1234n, revocationDate: RD }] };
+  check("a CRL with no crlNumber is refused by the producer check",
+    await codeOf(pki.crl.sign(spec, issuerOf(s))) === "crl/profile-violation");
+
+  var benign = { severity: "info", id: "probe/benign", citation: "probe", message: "probe" };
+  var run = await helpers.substituteIndex(0, benign, function () { return pki.crl.sign(spec, issuerOf(s)); });
+  check("...and it is still refused with a benign finding inherited at an array index",
+    run.error !== null && run.error.code === "crl/profile-violation");
+  check("...naming the rule the spec violates",
+    run.error !== null && String(run.error.message).indexOf("lint/rfc5280-crl/crl-number-missing") !== -1);
+  check("...and no CRL was returned", run.value === null);
+  check("...and no finding was taken by the accessor on the way (" + run.swallowed + " swallowed)",
+    run.swallowed === 0);
+}
+
 async function main() {
   await testRoundTrip();
   await testEmptyListOmitsRevoked();
@@ -1164,6 +1185,7 @@ async function main() {
   await testDeltaAndFreshest();
   await testDeltaRequiresCrlNumber();
   await testIssuerCertCrlSign();
+  await testProducerCheckUnderIndexAccessor();
   await testPreEncodedExtProfile();
   await testPemAndIsRevoked();
   await testFailClosed();

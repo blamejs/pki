@@ -434,6 +434,21 @@ async function testChallenges() {
   check("51a. token with = rejected", (await acode(function () { return pki.acme.keyAuthorization("DGyRejmCefe7v4NfDGDKf=", jwk); })) === "acme/bad-token");
   check("51b. token with + rejected", (await acode(function () { return pki.acme.keyAuthorization("DGyRejmCefe7v4NfDGDK+A", jwk); })) === "acme/bad-token");
   check("51c. 21-char token rejected", (await acode(function () { return pki.acme.keyAuthorization("DGyRejmCefe7v4NfDGDKf", jwk); })) === "acme/bad-token");
+  // 51d. The character set the token is checked against is a table holding an entry per character it
+  // allows and nothing at the codes it does not. Built as an array literal, every code outside the
+  // set was a hole, and a read at a hole answers from the array prototype: with `Array.prototype[47]`
+  // installed, `/` read as allowed and a token carrying it was accepted. The table has no prototype
+  // now, so there is nothing to inherit. A value at 47 and at 43 (`+`, also outside the set) leaves
+  // both refusals in place.
+  var slashToken = "DGyRejmCefe7v4NfDGDKf/";
+  var underProto;
+  Object.defineProperty(Array.prototype, "47", { configurable: true, value: true, writable: true });
+  Object.defineProperty(Array.prototype, "43", { configurable: true, value: true, writable: true });
+  try {
+    underProto = await acode(function () { return pki.acme.keyAuthorization(slashToken, jwk); });
+  } finally { delete Array.prototype[47]; delete Array.prototype[43]; }
+  check("51d. a value installed at an array index cannot make a disallowed token character pass (" +
+    underProto + ")", underProto === "acme/bad-token");
   // 56. keyAuthorization = token.thumbprint; changing the account key changes it.
   var ka = await pki.acme.keyAuthorization(TOKEN, jwk);
   var tp = await pki.jose.thumbprint(jwk);

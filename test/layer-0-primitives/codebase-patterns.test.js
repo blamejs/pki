@@ -262,13 +262,7 @@ function _scanLib(regex, opts) {
 // literals from source so a structural scan does not fire on prose in a
 // docstring or a token that only appears inside a quoted example.
 function _stripCommentsAndLiterals(content) {
-  var out = content
-    .replace(/\/\*[\s\S]*?\*\//g, function (m) { return m.replace(/[^\n]/g, " "); })
-    .replace(/(^|[^:])\/\/[^\n]*/g, "$1")
-    .replace(/"(?:[^"\\]|\\.)*"/g, '""')
-    .replace(/'(?:[^'\\]|\\.)*'/g, "''")
-    .replace(/`(?:[^`\\]|\\.)*`/g, "``");
-  return out;
+  return _lexBlank(content, true);
 }
 
 // Enumerate the comments in a JS source, string- and template-aware so a `//` inside a "http://" literal
@@ -344,6 +338,25 @@ function _detectorClassSource() {
     out.push(line);
   }
   return out.join("\n");
+}
+
+/** Every lib module loaded, so the checks that consult the LOADED MODULE GRAPH answer for all of
+ *  them rather than for the ones something happened to pull in. `index.js` reaches almost every
+ *  module, but one sits behind a lazy inline require: `lib/revocation-fetch.js` was absent from the
+ *  graph, so `_takesCaptures` answered that it does not take the captures while it takes them on its
+ *  own line 10, and the live-read check never looked at it. A check that cannot see a file reports
+ *  nothing about it, which reads exactly like a file with nothing to report. */
+function _ensureLibLoaded() {
+  var files = _libFiles();
+  var failed = [];
+  for (var i = 0; i < files.length; i++) {
+    if (require.cache[files[i]]) continue;
+    try { require(files[i]); }
+    catch (e) { failed.push({ file: _relPath(files[i]), line: 1,
+      content: "could not be loaded, so every check that reads the module graph passes over it: " +
+        String(e && e.message).slice(0, 120) }); }
+  }
+  return failed;
 }
 
 function _takesCaptures(absPath) {
@@ -603,16 +616,90 @@ function testNoDeferralMarkers() {
 // (g) fail-open verify/parse shape — `return true` inside a catch
 // ---------------------------------------------------------------------------
 
-// The index just past the `}` that closes a block whose body starts at `from`. Falls back to the
-// end of the string when the braces do not balance -- a scan that cannot find the end reports the
-// whole remainder rather than nothing, so unparseable input is loud instead of silently exempt.
-function _matchingBrace(text, from) {
-  var depth = 1;
-  for (var i = from; i < text.length; i++) {
-    if (text[i] === "{") depth++;
-    else if (text[i] === "}" && --depth === 0) return i;
+/** Every `{` paired with its `}` in ONE pass, so a brace's partner is a lookup rather than a scan.
+ *  Scanned forward per brace, each enclosing block re-read the same suffix: on this tree that drove
+ *  the gate to about 91 s and 1.76 GB resident, which a small CI worker does not have.
+ *
+ *  `quoteAware` is set for the subject that KEEPS its string literals, which is the one the
+ *  destructuring arm reads. A `}` inside a literal closed the pattern early there, so
+ *  `var { x = "}", push: p } = Array.prototype;` ended the span before `push` and the gate stayed
+ *  green on a capture it exists to report. Template literals nest: `${` opens a brace whose `}`
+ *  returns the walk to the template text it sat in.
+ *
+ *  It is NOT set for the subject with literals removed, where every remaining quote character sits
+ *  inside a regex literal, which this walk deliberately does not read: telling one from a division
+ *  needs a parser it does not carry. Reading those as string openers swallowed the code after them
+ *  and unbalanced five files. Either way `_assertSourcesParseBalanced` reports a file that does not
+ *  close, so a mis-parse fails a check instead of exempting the file quietly. */
+var _braceTableFor = null;
+var _braceTableMode = null;
+var _braceTableCache = null;
+function _braceTable(text, quoteAware) {
+  // The MODE is part of the key. Keyed on the text alone, a file carrying neither a comment nor a
+  // literal produces the same subject from both strippers, and whichever walk ran first answered for
+  // the other: primed with the quote-blind table, the destructuring walk read a pattern as closing at
+  // the `}` inside a string literal and reported nothing.
+  if (_braceTableFor === text && _braceTableMode === !!quoteAware) return _braceTableCache;
+  var table = Object.create(null);
+  // A `}` arriving with nothing open means the walk is reading braces that are not blocks, so every
+  // span it hands out afterwards is measured from the wrong place. Discarded silently, it closed a
+  // block early and left the balance check reporting nothing.
+  var stray = false;
+  var braces = [];        // open-brace positions, each flagged when it opened a `${`
+  var modes = ["code"];   // innermost last: code, sq, dq, tpl
+  for (var i = 0; i < text.length; i++) {
+    var ch = text.charAt(i);
+    if (ch === "\\") { i++; continue; }
+    var mode = modes[modes.length - 1];
+    if (mode === "sq" || mode === "dq") {
+      if (ch === (mode === "sq" ? "'" : "\"")) modes.pop();
+      continue;
+    }
+    if (mode === "tpl") {
+      if (ch === "`") { modes.pop(); continue; }
+      if (ch === "$" && text.charAt(i + 1) === "{") {
+        braces.push({ at: i + 1, subst: true });
+        modes.push("code");
+        i++;
+      }
+      continue;
+    }
+    if (quoteAware) {
+      if (ch === "'") { modes.push("sq"); continue; }
+      if (ch === "\"") { modes.push("dq"); continue; }
+      if (ch === "`") { modes.push("tpl"); continue; }
+    }
+    if (ch === "{") { braces.push({ at: i, subst: false }); continue; }
+    if (ch === "}") {
+      var open = braces.pop();
+      if (!open) { stray = true; continue; }
+      table[open.at] = i;
+      if (open.subst) modes.pop();
+      continue;
+    }
   }
-  return text.length;
+  _braceTableCache = {
+    table: table,
+    balanced: braces.length === 0 && modes.length === 1 && !stray,
+    // Where it went wrong, so the report names a line instead of only a file. The innermost brace
+    // left open is the one whose partner was consumed; an unclosed quote is reported at the file's
+    // end, since the walk cannot know which quote character opened the run it never left.
+    openAt: braces.length ? braces[braces.length - 1].at : -1,
+    openMode: modes.length > 1 ? modes[modes.length - 1] : null,
+    stray: stray,
+  };
+  _braceTableFor = text;
+  _braceTableMode = !!quoteAware;
+  return _braceTableCache;
+}
+
+// The index OF the `}` that closes a block whose body starts at `from`, so `from - 1` is its `{`.
+// Falls back to the end of the string when that brace has no partner -- a scan that cannot find the
+// end reports the whole remainder rather than nothing, so unparseable input is loud instead of
+// silently exempt. `quoteAware` says whether the subject still carries its string literals.
+function _matchingBrace(text, from, quoteAware) {
+  var close = _braceTable(text, quoteAware).table[from - 1];
+  return close === undefined ? text.length : close;
 }
 
 function testNoFailOpenVerify() {
@@ -658,7 +745,7 @@ function testNoFailOpenVerify() {
     var opener;
     while ((opener = CATCH_OPENER.exec(subject)) !== null) {
       var bodyStart = opener.index + opener[0].length;
-      var body = subject.slice(bodyStart, _matchingBrace(subject, bodyStart));
+      var body = subject.slice(bodyStart, _matchingBrace(subject, bodyStart, false));
       if (!VERDICT.test(body)) continue;
       bad.push({
         file: _relPath(files[i]),
@@ -670,6 +757,576 @@ function testNoFailOpenVerify() {
   }
   bad = _filterMarkers(bad, "fail-open-verify");
   _report("no fail-open verify/parse (a catch that returns a success verdict)", bad);
+}
+
+/** Comments removed, STRING LITERALS KEPT. The shared walk blanks both, which is right for a check
+ *  that must not read a docstring example, and wrong for one whose evidence IS a property name in a
+ *  literal: `obj["push"]` survives this and not that. Newlines inside a removed comment are kept so
+ *  a reported line number still points at the source line. */
+function _stripCommentsOnly(src) {
+  return _lexBlank(src, false);
+}
+
+/** ONE pass that knows a comment from a literal, blanking comments always and literal CONTENTS when
+ *  asked. Both strippers share it, so neither can drift into reading the other's shapes.
+ *
+ *  The literal-blanking form used to be four independent regex passes, and they could not tell the
+ *  two apart. The `//` pass deleted the `//` inside the literal on
+ *  `authority = "//" + userinfo + host + port;`, its only guard being a preceding character other
+ *  than `:`, which left the line holding one unpaired `"`. The double-quote pass then paired that
+ *  quote with the next one further down the file, and since its body matched newlines too, it
+ *  collapsed everything between onto one line. Every span measured in lib/guard-name.js after that
+ *  line was therefore measured against a different file, and the fail-open walk read a block that
+ *  does not exist. A stripper that mis-reads its input hides the shape the gate exists to find, and
+ *  it hides it silently, which is why `_assertSourcesParseBalanced` now reports a subject that does
+ *  not close.
+ *
+ *  lib/ carries no regex literal (project rule 11, enforced by `testNoRegexInLib`), so a `/` in code
+ *  position opens a comment or divides, and the walk needs no regex lexing. Length is preserved
+ *  exactly, newlines included, so an offset into the subject still names its source line. */
+// The four line terminators JavaScript recognizes: LF, CR, LINE SEPARATOR and PARAGRAPH SEPARATOR.
+function _isLineTerminator(ch) {
+  return ch === "\n" || ch === "\r" || ch === " " || ch === " ";
+}
+
+function _lexBlank(src, blankLiterals) {
+  var out = "", i = 0, n = src.length;
+  // The innermost context last. `code` and `tpl` alternate through a `${` and its `}`; a quoted
+  // string never nests. Scanning a template to the next backtick instead treated the OPENING backtick
+  // of a nested template as the outer one's end: on "`a${`}`}`" the subject was cut short, the
+  // fail-open walk closed a catch 19 characters early, and a `return true` after it went unseen.
+  var modes = ["code"];
+  // The brace depth inside each open `${`, so an object literal in a substitution does not end it.
+  var substDepth = [];
+  function literalChar(ch) { return blankLiterals ? (ch === "\n" ? "\n" : " ") : ch; }
+  while (i < n) {
+    var mode = modes[modes.length - 1];
+    var c = src[i], d = src[i + 1];
+    if (mode === "code") {
+      // A line comment ends at ANY line terminator the language recognizes. Stopped at "\n" alone, a
+      // comment ended by a bare carriage return or by U+2028 / U+2029 ran on and blanked the
+      // executable code after it, which is a check going quiet rather than reporting.
+      if (c === "/" && d === "/") { while (i < n && !_isLineTerminator(src[i])) { out += " "; i++; } continue; }
+      if (c === "/" && d === "*") {
+        i += 2; out += "  ";
+        while (i < n && !(src[i] === "*" && src[i + 1] === "/")) { out += src[i] === "\n" ? "\n" : " "; i++; }
+        if (i < n) { out += "  "; i += 2; }
+        continue;
+      }
+      if (c === "'") { modes.push("sq"); out += c; i++; continue; }
+      if (c === '"') { modes.push("dq"); out += c; i++; continue; }
+      if (c === "`") { modes.push("tpl"); out += c; i++; continue; }
+      if (c === "{" && substDepth.length) { substDepth[substDepth.length - 1] += 1; out += c; i++; continue; }
+      if (c === "}" && substDepth.length) {
+        if (substDepth[substDepth.length - 1] > 0) { substDepth[substDepth.length - 1] -= 1; }
+        else { substDepth.pop(); modes.pop(); }   // back to the template text this substitution sat in
+        out += c; i++; continue;
+      }
+      out += c; i++; continue;
+    }
+    // The escape and the character it escapes travel together: blanked as two, kept as two. A line
+    // continuation keeps its newline either way, so the line count does not shift.
+    if (c === "\\") {
+      out += blankLiterals ? " " : c; i++;
+      if (i < n) { out += literalChar(src[i]); i++; }
+      continue;
+    }
+    if (mode === "tpl") {
+      if (c === "`") { modes.pop(); out += c; i++; continue; }
+      if (c === "$" && d === "{") { modes.push("code"); substDepth.push(0); out += "${"; i += 2; continue; }
+      out += literalChar(c); i++; continue;
+    }
+    if (c === (mode === "sq" ? "'" : "\"")) { modes.pop(); out += c; i++; continue; }
+    out += literalChar(c); i++;
+  }
+  return out;
+}
+
+/** ONE PROPERTY NAME decoded to the characters it denotes, for comparing against a fixed set.
+ *  `Array.prototype.push` and `Array.prototype["\x70ush"]` are the property `push`: the
+ *  language resolves an escape in an IDENTIFIER and in a STRING the same way, so both reach the same
+ *  function, and a scan of the raw spelling matches neither. MEASURED: each of the three forms
+ *  (identifier, string, template) compares `=== Array.prototype.push`, and the captured function
+ *  still ran an accessor inherited at index 0 and left the array no own property there. An escape is
+ *  a static spelling of one fixed name, so it is inside "the spellings a person writes" rather than
+ *  the runtime-assembled name this check states as its limit.
+ *
+ *  THE DECODE IS SCOPED TO THE NAME, NOT RUN OVER THE FILE, because a whole-file pass INVENTS
+ *  evidence. Both were measured: in `Array.prototype['push\x27]']` the real key is `push']`, and
+ *  decoding the file turns `\x27` into a quote that closes the literal early, so the text reads as
+ *  `['push']` and reports a capture the source does not contain; in the regex literal `/\x2epush/`,
+ *  `\x2e` becomes the dot of a member access the same way. Decoding only a captured name can do
+ *  neither: the body of `'push\x27]'` decodes to `push']`, which is not `push`. It also needs no
+ *  offset map, since the line comes from the raw match.
+ *
+ *  Returns null when the text is not one name: a malformed escape, or a code point above the Unicode
+ *  maximum, is not a name the language accepts. A line continuation (a backslash before a line
+ *  terminator) denotes nothing and is dropped, which is how `"pu\<newline>sh"` is the key `push`. */
+function _propertyName(text) {
+  var out = "", i = 0, n = text.length;
+  while (i < n) {
+    if (text[i] !== "\\") { out += text[i]; i += 1; continue; }
+    var next = text[i + 1];
+    if (next === undefined) return null;
+    if (next === "\n" || next === "\r" || next === " " || next === " ") {
+      i += (next === "\r" && text[i + 2] === "\n") ? 3 : 2;
+      continue;
+    }
+    var hex = null, width = 0;
+    if (next === "x" && /^[0-9a-fA-F]{2}$/.test(text.slice(i + 2, i + 4))) {
+      hex = text.slice(i + 2, i + 4); width = 4;
+    } else if (next === "u" && text[i + 2] === "{") {
+      var close = text.indexOf("}", i + 3);
+      var inner = close === -1 ? "" : text.slice(i + 3, close);
+      // Any number of hex digits, since leading zeros are legal: `\u{00000070}` is `p`.
+      if (close !== -1 && /^[0-9a-fA-F]+$/.test(inner)) { hex = inner; width = close + 1 - i; }
+    } else if (next === "u" && /^[0-9a-fA-F]{4}$/.test(text.slice(i + 2, i + 6))) {
+      hex = text.slice(i + 2, i + 6); width = 6;
+    }
+    if (hex === null) {
+      // Every other escape denotes its own character, which is what the language does with one it
+      // has no meaning for. `\\` lands here too, so a doubled backslash is one backslash.
+      out += next; i += 2; continue;
+    }
+    var code = parseInt(hex, 16);
+    if (code > 0x10ffff) return null;
+    out += String.fromCodePoint(code);
+    i += width;
+  }
+  return out;
+}
+
+function testNoStoringAppend() {
+  // class: append-by-store
+  // `Array.prototype.push` STORES at the index, and a store walks the prototype chain looking for a
+  // setter, so an accessor installed at an array index receives each element as it is appended and
+  // can define something else in its place. Capturing the method closes WHO push is, not what push
+  // DOES, so a captured push is exactly as steerable: measured through `pki.asn1.read.oid`, the
+  // content octets of `1.2.3` rendered `0.1.3`, and an OBJECT IDENTIFIER is what selects an
+  // algorithm.
+  //
+  // So no module in lib/ may WRITE the storing form: `guard-intrinsic` neither captures nor exports
+  // it, and this catches a module that reaches for `Array.prototype.push` itself or keeps a stale
+  // `intrinsic.push` reference. The line has no exemptions, which is why it is drawn here rather than
+  // discriminated: `intrinsic.append` defines the index on the array itself, and `concatList` /
+  // `copyList` / `selectList` / `mapList` build their results the same way, so every append in lib/
+  // has a non-storing form available.
+  //
+  // Anchored on the PROTOTYPE MEMBER and on the guard's own export name, neither of which a local
+  // rename can move. A live `receiver.push(` dispatch is a different class, counted by the
+  // captured-operation budget above; this one is about the form a module binds at load.
+  //
+  // ENUMERATING THE RECEIVER LOSES: naming the dotted form missed `Array["prototype"]["push"]`,
+  // naming `Array.prototype` and the guard namespace still missed `uncurry([].push)`, bracket arms on
+  // those receivers still missed `[]["push"]`, and a brace-free destructuring arm still missed
+  // `var { push: p = function () {} } = Array.prototype`. There is always another object to read the
+  // method off and another way to spell the binding, so the anchor is the METHOD NAME in the
+  // positions where it names a PROPERTY: read as a value rather than called, quoted inside brackets,
+  // or bound by a destructuring pattern (found by matching braces, not by a brace-free span, so a
+  // nested pattern or a default initializer cannot hide the name). The 764 `receiver.push(` CALLS are
+  // the captured-operation budget's class above, so this does not overlap.
+  //
+  // A PROPERTY POSITION IS THE ANCHOR BECAUSE THE BARE NAME CANNOT BE. Measured: 17 `push` tokens in
+  // lib/ are local helper FUNCTIONS named `push` and their bare calls (`crl-sign`, `est`), which have
+  // nothing to do with the array method; keying on the identifier alone would owe them exemptions,
+  // and exemptions are what this check exists to avoid.
+  //
+  // WHAT THIS DOES NOT CLAIM. A lexical check cannot be complete about obtaining a property: a name
+  // assembled at runtime, `Reflect.get(Array.prototype, n)`, or a walk over the prototype's own keys
+  // all reach the same function while naming nothing. Nor can it be complete about a destructuring
+  // pattern, because what separates `{ push: p }` the PATTERN from `{ push: fn }` the LITERAL is the
+  // position it stands in, and that wants a parser: a pattern in a PARAMETER list
+  // (`function f({ push: p })`, called with `Array.prototype` elsewhere) closes on `)` exactly as an
+  // object literal passed as an argument does, so widening to that would re-report the literal form
+  // this check is measured silent on. The two arms below take the positions that are unambiguous: a
+  // pattern whose close is followed by `=`, and a pattern that opens right after a declaration
+  // keyword, which covers the array-wrapped and for-of spellings
+  // (`const [{ push: p }] = [A]`, `for (const { push: p } of [A])`) and does not depend on where the
+  // brace matcher thinks the close is. The claim is therefore: no module NAMES the storing form in a
+  // property position, and none BINDS it by a declared pattern. What backs the rest is that
+  // `guard-intrinsic` neither captures nor exports either name, so there is nothing to reach for by
+  // habit, and the behavioral vectors on `append` and the `*List` builders pin the property itself.
+  //
+  // THIS CHECK READS A SOURCE WITH COMMENTS STRIPPED AND STRING LITERALS PRESERVED, which is the only
+  // reason the computed spelling is visible at all: the shared walk blanks literals, so
+  // `Array.prototype["push"]` reaches it as `Array.prototype[ ]` with no `push` text left to match.
+  // The evidence a check matches on cannot be removed before the match. Keeping literals is safe
+  // because each shape needs punctuation a sentence does not carry, and the clean tree is silent on
+  // all three: measured, zero, with the object-literal forms (`module.exports = { push: fn }`,
+  // `fn({ push: 1 })`) confirmed NOT to fire.
+  // BOTH STORING APPENDS, for one reason: each GROWS the list, so each stores at an index the array
+  // has no own property at. `unshift` is the prepend form and `guard-intrinsic` stopped capturing it
+  // for the same reason it never captured `push`; a module prepending to a list counts its elements
+  // and appends them in order instead (`encodeLength` and `intToDer` in lib/asn1-der.js). The
+  // mutators that remain -- `pop`, `shift`, `splice`, `reverse` -- move or drop elements that already
+  // have own slots, so none of them reaches a prototype accessor on a list built by defining.
+  // THREE QUOTES IN THE BRACKET ARM, not two. A no-substitution template literal is a property name
+  // like any other, so `Array.prototype[`push`]` and `[][`unshift`]` reach the same function;
+  // accepting only `'` and `"` left that spelling legal while every static check stayed green. The
+  // backreference keeps the pair matched, so a quote character inside a differently-quoted name is
+  // not a close. A template literal carrying a substitution is a runtime-assembled name, which is
+  // the limit this check already states rather than a spelling it can match.
+  // TWO ARMS, AND THE EXPENSIVE ONE IS ANCHORED ON THE ESCAPE. The literal spellings are found by
+  // one pass that matches the names directly. The escaped spellings need a capture-then-decode pass,
+  // and running that at every property position is work with nothing to find: there are 81654 dots
+  // in `lib/` and ZERO `\u` or `\x` escapes, so it ran 81654 times for a spelling that occurs
+  // nowhere. MEASURED over all of lib/: 12 ms for the decode pass against 1 ms for the literal one,
+  // and the containment test that now gates it is under a millisecond. So the decode runs only on a
+  // file that CONTAINS an escape, which is the only place it can match, and the 4 files that do pay
+  // the thorough pass.
+  var STORING = new RegExp("\\.\\s*(?:push|unshift)\\b(?!\\s*\\()" +
+    "|\\[\\s*(['\"`])(?:push|unshift)\\1\\s*\\]", "g");
+  var STORING_NAMES = { push: 1, unshift: 1 };
+  var files = _libFiles();
+  var bad = [];
+  for (var i = 0; i < files.length; i++) {
+    var content;
+    try { content = fs.readFileSync(files[i], "utf8"); }
+    catch (_e) { continue; }
+    // Comments out, string literals kept: the evidence a check matches on cannot be removed before
+    // the match, and a property name inside a literal IS the evidence.
+    var subject = _stripCommentsOnly(content);
+    // A bare carriage return is a line terminator of its own, so a file written with one would
+    // otherwise report every line as the first.
+    function lineAt(at) { return subject.slice(0, at).split(/\r\n|\r|\n/).length; }
+    function report(at, shown) {
+      bad.push({
+        file: _relPath(files[i]),
+        line: lineAt(at),
+        content: "obtains a storing append `" + shown.replace(/\s+/g, "") + "` — a store at an " +
+          "index runs a setter inherited from the prototype chain, which takes the element being " +
+          "appended, whichever object the method was read off; use `intrinsic.append`, which defines " +
+          "the index on the array itself",
+      });
+    }
+    var hasEscape = subject.indexOf("\\u") !== -1 || subject.indexOf("\\x") !== -1;
+    var m;
+    STORING.lastIndex = 0;
+    while ((m = STORING.exec(subject)) !== null) report(m.index, m[0]);
+    // A BINDING of either name is reported by `pki/no-storing-append-binding` in eslint.config.mjs,
+    // which asks the parser rather than the text. The question is grammatical: a method's parameter
+    // list `m({ push: p }) {}` and the call `m({ push: 1 })` are the same characters, so no walk over
+    // the text can tell a binding from an argument, and four rounds of refutation against a lexical
+    // version each produced another form it had wrong. An `ObjectPattern` node is produced only where
+    // the object IS a pattern, so every binding form is covered and no literal can match. What
+    // remains here is the READ positions, which are lexical questions and stay lexical.
+    if (!hasEscape) continue;
+    _MEMBER.lastIndex = 0;
+    while ((m = _MEMBER.exec(subject)) !== null) {
+      var memberName = _propertyName(m[1]);
+      if (memberName !== null && STORING_NAMES[memberName] === 1 && m[1] !== memberName) report(m.index, "." + memberName);
+    }
+    _QUOTED.lastIndex = 0;
+    while ((m = _QUOTED.exec(subject)) !== null) {
+      var quotedName = _propertyName(m[2]);
+      if (quotedName !== null && STORING_NAMES[quotedName] === 1 && m[2] !== quotedName) report(m.index, "[" + m[1] + quotedName + m[1] + "]");
+    }
+    // An escaped name in the CALL position too, for a file that carries an escape: a converted
+    // module has to hold no storing append in any spelling, called or not.
+    _MEMBER_CALL.lastIndex = 0;
+    while ((m = _MEMBER_CALL.exec(subject)) !== null) {
+      var calledName = _propertyName(m[1]);
+      if (calledName !== null && STORING_NAMES[calledName] === 1 && m[1] !== calledName) {
+        report(m.index, "." + calledName + "(");
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "append-by-store");
+  _report("no module in lib/ obtains the storing form of append", bad);
+  _assertDecodesEscapedAppends();
+  _assertNoDirectStoringAppendCalls();
+  _assertBudgetedModulesAreUnread();
+  _assertBraceWalkHandlesLiterals();
+  _assertSourcesParseBalanced();
+}
+
+/** The brace walk pinned on the shapes that defeated it, each one executed JavaScript that node
+ *  accepts. A walk that closes a block early does not report anything: it hands out a shorter span
+ *  and every check reading that span goes quiet, which is the failure that looks like a pass. */
+function _assertBraceWalkHandlesLiterals() {
+  var BT = String.fromCharCode(96);
+  var bad = [];
+  function fail(what) {
+    bad.push({ file: "test/layer-0-primitives/codebase-patterns.test.js", line: 1, content: what });
+  }
+
+  // A nested template inside a substitution. Scanned to the next backtick, the outer template ended
+  // at the INNER one's opener and the rest of the line stopped being code.
+  var nested = "function f(){try {} catch(e) { const t = " + BT + "a${" + BT + "}" + BT + "}" + BT + "; return true; }}";
+  var strippedNested = _lexBlank(nested, true);
+  if (strippedNested.length !== nested.length) fail("_lexBlank changed the length of a nested template");
+  if (strippedNested.indexOf("return true") === -1) {
+    fail("_lexBlank lost the code after a nested template literal, so the fail-open walk cannot see it");
+  }
+  var nestedCatch = strippedNested.indexOf("catch(e) {") + "catch(e) {".length;
+  var nestedClose = _matchingBrace(strippedNested, nestedCatch, false);
+  if (strippedNested.slice(nestedCatch, nestedClose).indexOf("return true") === -1) {
+    fail("the catch block after a nested template closed before its `return true`");
+  }
+
+  // A brace a walk that does not read regex literals cannot pair. It must report rather than close a
+  // block early: project rule 11 keeps these out of lib/, and this check is what makes a breach loud.
+  var strayBrace = "function f(){try {} catch(e) { /[}]/; return true; }}";
+  if (_braceTable(_lexBlank(strayBrace, true), false).balanced) {
+    fail("a `}` that pairs with nothing was discarded instead of reported");
+  }
+
+  // The same subject asked for in both modes. A file with no comment and no literal produces one
+  // subject from both strippers, so a cache keyed on the text alone answered in the wrong mode.
+  var pattern = "var { x = " + JSON.stringify("}") + ", push: p } = Array.prototype;";
+  var blind = _braceTable(pattern, false).table[pattern.indexOf("{")];
+  var aware = _braceTable(pattern, true).table[pattern.indexOf("{")];
+  if (blind === aware) {
+    fail("the brace table answered the same in both modes, so the quote-aware walk is not running");
+  }
+  if (pattern.slice(0, aware).indexOf("push") === -1) {
+    fail("the quote-aware table closed the pattern before its `push`, which is the capture to report");
+  }
+
+  _report("the brace walk reads nested templates, reports an unpairable brace, and keys its cache by mode", bad);
+}
+
+/** The brace walk reports a file whose braces and quotes do not both close. It reads no regex
+ *  literal, so a lone `{`, `}` or quote character inside one unbalances the walk, and every span
+ *  taken from that file afterwards is measured from the wrong place. Reported, that is a failing
+ *  check naming the file; unreported, it is a gate that silently stops seeing the shape it exists to
+ *  find. Both subjects are walked, because the two arms read different ones. */
+function _assertSourcesParseBalanced() {
+  var files = _libFiles();
+  var bad = [];
+  for (var i = 0; i < files.length; i++) {
+    var content;
+    try { content = fs.readFileSync(files[i], "utf8"); }
+    catch (_e) { continue; }
+    var subjects = [
+      ["comments removed, literals kept", _stripCommentsOnly(content), true],
+      ["comments and literals removed", _stripCommentsAndLiterals(content), false],
+    ];
+    for (var s = 0; s < subjects.length; s++) {
+      var walk = _braceTable(subjects[s][1], subjects[s][2]);
+      if (walk.balanced) continue;
+      var where = walk.openAt >= 0
+        ? subjects[s][1].slice(0, walk.openAt).split(/\r?\n/).length
+        : 1;
+      bad.push({
+        file: _relPath(files[i]), line: where,
+        content: "braces or quotes do not close when read with " + subjects[s][0] +
+          (walk.openMode ? " (inside an unclosed " + walk.openMode + " run)" : "") +
+          (walk.stray ? " (a `}` arrived with no block open)" : "") +
+          " — a span taken from this file is measured from the wrong place, so the walk reads the " +
+          "remainder of the file instead of the block. A regex literal holding a lone brace or quote " +
+          "character is the usual cause: write it as a character class the walk balances, or escape it",
+      });
+    }
+  }
+  _report("every lib source parses with its braces and quotes balanced", bad);
+}
+
+/** THE CALL POSITION, held to a per-module budget that ratchets DOWN. `recv.push(x)` stores at an
+ *  index exactly as a bound `push` does, and the bound form being gone did not touch the ordinary
+ *  calls: 617 of them were left when the binding was removed, and they are the majority of the
+ *  class. MEASURED through the shipped door on one of them: `_encodeHeader` in lib/cmp-build.js
+ *  appended the header's optional fields by storing, so an accessor at `Array.prototype[5]` took the
+ *  transactionID as it was added, and `pki.cmp.build` returned a PROTECTED message carrying
+ *  `eeee...` where the caller had asked for `0707...`.
+ *
+ *  A check that reports 469 times is not a gate, so this is a budget rather than a line: a module at
+ *  zero is absent from the table and a new call in it fails immediately, and a module still listed
+ *  cannot grow. It reports in BOTH directions, so converting calls without lowering the figure fails
+ *  too, which is what keeps the number meaning the real count. A module is last only while nothing
+ *  else in the library reads it, which `_assertBudgetedModulesAreUnread` is what enforces. Delete the
+ *  table when it empties and the line is drawn with no exemptions. */
+var _STORING_APPEND_BUDGET = {
+  "lib/inspect.js": 284,
+};
+
+/** A budget is an exemption, and an exemption travels to whoever reads the module. So a budgeted
+ *  module must be one nothing else in lib/ requires: `inspect` is a public verb no module reads, and
+ *  a substituted element in it is a wrong report line.
+ *
+ *  `lint` was budgeted on that same reading and was required by the certificate, CSR and CRL signers,
+ *  which call `lint.assertBuildClean` as a producer check before they sign. MEASURED through the
+ *  shipped door: `_runLints` collected each finding by storing at an index, so a benign finding
+ *  inherited from `Array.prototype` stood in for the error finding, and `pki.x509.sign` emitted a CA
+ *  certificate whose key usage omits keyCertSign, which is the artifact the check exists to refuse.
+ *  A report builder that another module reads is a gate, whatever it is called.
+ *
+ *  The rule is structural rather than a list, so it answers for a budget entry nobody has written
+ *  yet: budget a module that anything requires and this fires, naming the readers. */
+function _assertBudgetedModulesAreUnread() {
+  var files = _libFiles();
+  var budgeted = Object.keys(_STORING_APPEND_BUDGET);
+  var bad = [];
+  // Asked of the LOADED MODULE GRAPH rather than of the text, the same way `_takesCaptures` asks it.
+  // Matched lexically, this answered for exactly one spelling: `require('./inspect')`,
+  // `require( "./inspect" )`, `require("./inspect.js")`, `require("./" + "inspect")`,
+  // `require/* c */("./inspect")`, a key naming a subdirectory, and a reader reached through a
+  // re-exporting bridge all loaded the module and reported nothing. Node records what each module
+  // actually required, so no way of writing an import or of hiding one changes the answer.
+  for (var u = 0; u < files.length; u++) {
+    if (require.cache[files[u]]) continue;
+    bad.push({
+      file: _relPath(files[u]), line: 1,
+      content: "is not in the loaded module graph, so whether it reads a budgeted module cannot be " +
+        "answered — require it from the suite, or the budget check passes over it silently",
+    });
+  }
+  for (var i = 0; i < budgeted.length; i++) {
+    var rel = budgeted[i];
+    var abs = path.join(REPO_ROOT, rel.split("/").join(path.sep));
+    var readers = [];
+    for (var f = 0; f < files.length; f++) {
+      if (files[f] === abs) continue;
+      var entry = require.cache[files[f]];
+      if (!entry) continue;
+      for (var c = 0; c < entry.children.length; c++) {
+        if (entry.children[c].filename !== abs) continue;
+        readers.push(_relPath(files[f]).replace(/\\/g, "/"));
+        break;
+      }
+    }
+    if (!readers.length) continue;
+    bad.push({
+      file: rel, line: 1,
+      content: "is budgeted for the storing append and is required by " + readers.join(", ") +
+        " — a store at an index runs a setter inherited from the prototype chain, which takes the " +
+        "element being appended, so the reader decides on a value the accessor supplied. A module " +
+        "another module reads is not a report builder: convert its calls to `_push(list, value)` " +
+        "over `intrinsic.append` (or `guard.list.append`) and drop its entry from the budget",
+    });
+  }
+  bad = _filterMarkers(bad, "append-by-store");
+  _report("every module budgeted for the storing append is one nothing else in lib/ reads", bad);
+}
+
+function _assertNoDirectStoringAppendCalls() {
+  var PUSH_BUDGET = _STORING_APPEND_BUDGET;
+  var CALL = new RegExp("\\.\\s*(?:push|unshift)\\s*\\(", "g");
+  var files = _libFiles();
+  var bad = [];
+  for (var i = 0; i < files.length; i++) {
+    var content;
+    try { content = fs.readFileSync(files[i], "utf8"); }
+    catch (_e) { continue; }
+    var rel = _relPath(files[i]).replace(/\\/g, "/");
+    var subject = _stripCommentsOnly(content);
+    var n = 0;
+    CALL.lastIndex = 0;
+    while (CALL.exec(subject) !== null) n++;
+    var budget = Object.prototype.hasOwnProperty.call(PUSH_BUDGET, rel) ? PUSH_BUDGET[rel] : 0;
+    if (n === budget) continue;
+    bad.push({
+      file: rel, line: 1,
+      content: n > budget
+        ? "calls the storing append " + n + " time(s) against a budget of " + budget +
+          " — a store at an index runs a setter inherited from the prototype chain, which takes the " +
+          "element being appended; bind `var _push = intrinsic.append;` (or `guard.list.append`) and " +
+          "write `_push(list, value)`"
+        : "calls the storing append " + n + " time(s) against a stale budget of " + budget +
+          " — lower the figure to " + n + " (or delete the entry at zero), so the number keeps " +
+          "naming the real count",
+    });
+  }
+  bad = _filterMarkers(bad, "append-by-store");
+  _report("every lib module holds the storing append to its declared budget, and a converted one to zero", bad);
+}
+
+/** The name shapes a property position can hold, compiled ONCE. Built per call they were a regex
+ *  compile at every `{` in every file, which is the other half of the cost the escape pass added. */
+// The HEX form is here because `_propertyName` decodes it: `{ "\x70ush": p }` is the property `push`,
+// and a token pattern that stops at the backslash never hands that key to the decoder at all.
+var _NAME_CHAR = "(?:[A-Za-z0-9_$]|\\\\x[0-9a-fA-F]{2}|\\\\u[0-9a-fA-F]{4}|\\\\u\\{[0-9a-fA-F]+\\})";
+var _MEMBER = new RegExp("\\.\\s*(" + _NAME_CHAR + "+)(?!\\s*\\()", "g");
+var _QUOTED = new RegExp("\\[\\s*(['\"`])((?:\\\\[\\s\\S]|[^'\"`\\\\])*)\\1\\s*\\]", "g");
+var _MEMBER_CALL = new RegExp("\\.\\s*(" + _NAME_CHAR + "+)\\s*\\(", "g");
+
+/** The destructuring arm, matched by BRACES rather than by a brace-free span: every `{` is walked to
+ *  its own `}`, and a pattern is one whose close is followed by a single `=`, or one that opens right
+ *  after a declaration keyword. A default initializer or a nested pattern therefore stays inside the
+ *  span instead of ending it.
+ *
+ *  `decodeKeys` is false for a file carrying no escape at all, where the plain name test answers the
+ *  same question for the cost of one regex rather than one decode per name-shaped token. */
+/** The name decoding, proven on the spellings it exists for AND on the ones it must not invent.
+ *  A CANARY rather than a planted file: the source here stays pure ASCII, so every backslash is
+ *  built with `fromCharCode(92)`. That matters because a fixture written with a real `u` in it
+ *  reached the file as plain `u` while this was being written, and a vector that cannot hold the
+ *  spelling it tests passes by testing nothing.
+ *
+ *  Each row names what JavaScript itself resolves the spelling to, which is the oracle: the
+ *  identifier, string and template forms were each measured `=== Array.prototype.push`, and the
+ *  captured function still ran an accessor inherited at index 0. */
+function _assertDecodesEscapedAppends() {
+  var BS = String.fromCharCode(92);
+  var LF = String.fromCharCode(10);
+  var bad = [];
+  function fail(what) {
+    bad.push({ file: "test/layer-0-primitives/codebase-patterns.test.js", line: 1, content: what });
+  }
+  // What one captured name denotes. `null` means "not a name the language accepts".
+  var names = [
+    ["a four-digit escape", "p" + BS + "u0075sh", "push"],
+    ["a hex escape", BS + "x70ush", "push"],
+    ["a braced code point", BS + "u{75}nshift", "unshift"],
+    ["a braced code point with leading zeros", BS + "u{00000070}ush", "push"],
+    ["every character escaped", BS + "x70" + BS + "x75" + BS + "x73" + BS + "x68", "push"],
+    ["a line continuation", "pu" + BS + LF + "sh", "push"],
+    ["a doubled backslash", "pu" + BS + BS + "sh", "pu" + BS + "sh"],
+    ["an unknown escape", "pu" + BS + "sh", "push"],
+    ["a malformed hex escape", "pu" + BS + "x7h", "pux7h"],
+    ["a code point above the maximum", BS + "u{110000}ush", null],
+    ["a key carrying a quote", "push" + BS + "x27]", "push']"],
+    ["a surrogate pair", BS + "ud835" + BS + "udc29" + "ush", String.fromCodePoint(0x1d429) + "ush"],
+  ];
+  for (var i = 0; i < names.length; i++) {
+    var got = _propertyName(names[i][1]);
+    if (got !== names[i][2]) {
+      fail("_propertyName read " + names[i][0] + " (" + JSON.stringify(names[i][1]) + ") as " +
+        JSON.stringify(got) + " rather than " + JSON.stringify(names[i][2]));
+    }
+  }
+  // And the two shapes that must NOT be reported, because the name they would produce is not in the
+  // source. Both were executed counterexamples against a whole-file decode.
+  var mustBeSilent = [
+    ["a quote produced inside a string body", "x = y['push" + BS + "x27]'];"],
+    ["a dot produced inside a regex literal", "var re = /" + BS + "x2epush/;"],
+  ];
+  // The SAME two patterns the check uses, so this cannot pass against a copy that drifted.
+  function hits(text) {
+    var out = [], m;
+    _MEMBER.lastIndex = 0;
+    while ((m = _MEMBER.exec(text)) !== null) {
+      var mn = _propertyName(m[1]);
+      if (mn === "push" || mn === "unshift") out[out.length] = "." + mn;
+    }
+    _QUOTED.lastIndex = 0;
+    while ((m = _QUOTED.exec(text)) !== null) {
+      var qn = _propertyName(m[2]);
+      if (qn === "push" || qn === "unshift") out[out.length] = "[" + qn + "]";
+    }
+    return out;
+  }
+  for (var s = 0; s < mustBeSilent.length; s++) {
+    var found = hits(mustBeSilent[s][1]);
+    if (found.length !== 0) {
+      fail("the check reports " + mustBeSilent[s][0] + " (" + JSON.stringify(mustBeSilent[s][1]) +
+        "), a name the source does not contain: " + JSON.stringify(found));
+    }
+  }
+  // And the forms that must be reported, through the same two arms the check uses.
+  var mustFire = [
+    ["an escaped member read", "var p = Array.prototype.p" + BS + "u0075sh;", ".push"],
+    ["an escaped quoted key", 'var p = Array.prototype["' + BS + 'x70ush"];', "[push]"],
+    ["an escaped templated key", "var p = Array.prototype[`" + BS + "u{75}nshift`];", "[unshift]"],
+  ];
+  for (var f = 0; f < mustFire.length; f++) {
+    var fired = hits(mustFire[f][1]);
+    if (fired.indexOf(mustFire[f][2]) === -1) {
+      fail("the check does not report " + mustFire[f][0] + " (" + JSON.stringify(mustFire[f][1]) +
+        "); it found " + JSON.stringify(fired));
+    }
+  }
+  _report("the append check reads an escaped property name as the name it denotes, and invents none", bad);
 }
 
 // ---------------------------------------------------------------------------
@@ -2167,7 +2824,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/cmp-build.js:<top>", "lib/crmf-sign.js:<top>", "lib/key.js:<top>", "lib/sigstore.js:<top>",
         "lib/ip-utils.js:<top>", "lib/pkcs11-uri.js:<top>", "lib/guard-encoding.js:_alphabet",
         "lib/identity-match.js:<top>", "lib/identity-match.js:E", "lib/tlog.js:<top>",
-        "lib/pki-build.js:<top>",
+        "lib/pki-build.js:<top>", "lib/path-validate.js:<top>",
         "lib/sign-scheme.js:O", "lib/tuf.js:_err", "lib/tuf.js:<top>",
         "lib/related-cert.js:<top>", "lib/related-cert.js:_err",
         "lib/alt-sig.js:<top>", "lib/possession.js:<top>", "lib/possession.js:setEngine",
@@ -3475,7 +4132,15 @@ function testGuardReadsRuntimeLive() {
     "includes|hasOwnProperty|" +
     "readUInt8|readUInt16BE|readUInt16LE|readUInt32BE|readUInt32LE|readInt8|readInt16BE|" +
     "readInt16LE|readInt32BE|readInt32LE|readBigUInt64BE|readBigUInt64LE|" +
-    "writeUInt8|writeUInt16BE|writeUInt16LE|writeUInt32BE|writeUInt32LE)";
+    // The VARIABLE-width and BigInt forms belong here with the fixed-width ones: a method list is
+    // the other half of a receiver grammar, and leaving these out left `b.writeUIntBE(` unseen while
+    // `b.writeUInt16BE(` was caught. A bound's own `valueOf` runs inside the comparison a length is
+    // checked by, which is a window to replace the write that states it: measured, a byte-writer
+    // vector declared a length of 0 over a payload of two bytes that way.
+    "readUIntBE|readUIntLE|readIntBE|readIntLE|readBigInt64BE|readBigInt64LE|" +
+    "writeUInt8|writeUInt16BE|writeUInt16LE|writeUInt32BE|writeUInt32LE|" +
+    "writeUIntBE|writeUIntLE|writeIntBE|writeIntLE|writeInt8|writeInt16BE|writeInt16LE|" +
+    "writeInt32BE|writeInt32LE|writeBigUInt64BE|writeBigUInt64LE|writeBigInt64BE|writeBigInt64LE)";
   var staticRe = new RegExp("\\b(?:" + LIVE_STATICS.join("|") + ")\\s*\\(", "g");
   // A method call whose receiver is NOT a `_`-prefixed capture. The receiver may be a whole member
   // expression: `sanNode.bytes.equals(...)` dispatches off a prototype exactly as `bytes.equals(...)`
@@ -3857,37 +4522,37 @@ function testGuardReadsRuntimeLive() {
   // budget nobody tightens is a number that stops meaning anything, and the next reader would take
   // it for the real count. A module reaching zero is deleted from the map and held to zero forever.
   var MIGRATING = {
-    "lib/acme.js": 150,
-    "lib/est.js": 124,
-    "lib/cmp-build.js": 122,
+    "lib/acme.js": 146,
+    "lib/est.js": 114,
+    "lib/cmp-build.js": 90,
     "lib/crmf-sign.js": 12,
     /** Still budgeted: the module's own selections and copies are converted and its policy-mapping
      *  copies were an admission, but the 57 counted here are the live prototype reads elsewhere in
      *  it, which item 0v7 carries. */
-    "lib/path-validate.js": 25,
-    "lib/asn1-der.js": 94,
-    "lib/schema-engine.js": 39,
-    "lib/cms-sign.js": 51,
-    "lib/attrcert-sign.js": 67,
+    "lib/path-validate.js": 24,
+    "lib/asn1-der.js": 66,
+    "lib/schema-engine.js": 15,
+    "lib/cms-sign.js": 26,
+    "lib/attrcert-sign.js": 51,
     "lib/tsp-sign.js": 41,
-    "lib/pkcs12-build.js": 63,
-    "lib/ct.js": 59,
-    "lib/cms-verify.js": 13,
-    "lib/cms-encrypt.js": 66,
-    "lib/crl-sign.js": 61,
-    "lib/cmc-build.js": 57,
-    "lib/pki-build.js": 33,
+    "lib/pkcs12-build.js": 52,
+    "lib/ct.js": 40,
+    "lib/cms-verify.js": 12,
+    "lib/cms-encrypt.js": 50,
+    "lib/crl-sign.js": 44,
+    "lib/cmc-build.js": 48,
+    "lib/pki-build.js": 23,
     "lib/hpke.js": 32,
-    "lib/cms-decrypt.js": 45,
+    "lib/cms-decrypt.js": 37,
     "lib/composite-sig.js": 29,
     "lib/cmc-verify.js": 32,
-    "lib/x509-sign.js": 24,
+    "lib/x509-sign.js": 9,
     /** Entered scope when they took the captures for the promise-construction fix. A module is armed
      *  whole the moment it requires guard-intrinsic, so these are the reads that were always there and
      *  are now counted. Both ratchet DOWN only, like the rest. */
-    "lib/ocsp.js": 88,
-    "lib/csr-sign.js": 26,
-    "lib/schema-attrcert.js": 26,
+    "lib/ocsp.js": 66,
+    "lib/csr-sign.js": 24,
+    "lib/schema-attrcert.js": 24,
     "lib/tls-cert-compress.js": 18,
     "lib/schema-crl.js": 7,
     "lib/schema-ocsp.js": 9,
@@ -3898,7 +4563,12 @@ function testGuardReadsRuntimeLive() {
     /** Entered scope when it took the capture of the URL parser, which decides the host each of its
      *  operations is sent to. Arming a module arms it whole, so this is the count that was always
      *  there and is now counted, and it ratchets DOWN only like the rest. */
-    "lib/scep.js": 91,
+    "lib/scep.js": 89,
+    /** Entered scope when it took the own-property read and the defining write that keep a finding's
+     *  severity off `Object.prototype`. Arming a module arms it whole, and this is the largest module
+     *  in the library, so this is the count that was always there and is now counted. It ratchets
+     *  DOWN only, like the rest. */
+    "lib/lint.js": 662,
   };
   var counts = {};
   bad.forEach(function (b) { counts[b.file] = (counts[b.file] || 0) + 1; });
@@ -4858,6 +5528,7 @@ function testNoOptionNamedThen() {
 
 function run() {
   _allViolations = [];
+  _report("every lib module loads, so the module-graph checks answer for all of them", _ensureLibLoaded());
   testNoOptionNamedThen();
   testSourceHeaders();
   testShippedSourceIsAscii();
@@ -4866,6 +5537,7 @@ function run() {
   testNoAiAttribution();
   testNoDeferralMarkers();
   testNoFailOpenVerify();
+  testNoStoringAppend();
   testPrimitiveCommentBlocks();
   testWikiPortAgreesAcrossArtifacts();
   testPublishPathRunsCiStaticGates();

@@ -160,4 +160,5 @@ jobs:
             crash-*
             leak-*
             timeout-*
+            oom-*
           if-no-files-found: ignore

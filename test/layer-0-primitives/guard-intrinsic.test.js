@@ -528,8 +528,11 @@ async function testSelectionsConsultNoConstructionProtocol() {
       get: function () { return "SUBSTITUTED"; },
       configurable: true,
     });
+    // The storing form is captured HERE rather than taken from the guard, because the guard neither
+    // captures nor offers it: this is the hazard the absence exists for, so the demonstration owns it.
+    var storingPush = Function.prototype.call.bind(Array.prototype.push);
     var viaPush = [];
-    intrinsic.push(viaPush, "auth-int");
+    storingPush(viaPush, "auth-int");
     pushRes = viaPush[0];
     var viaAppend = [];
     intrinsic.append(viaAppend, "auth-int");
@@ -540,6 +543,29 @@ async function testSelectionsConsultNoConstructionProtocol() {
   }
   check("intrinsic: an Array.prototype numeric setter intercepts a captured push",
     pushRes === "SUBSTITUTED" && taken >= 1);
+  check("intrinsic: the storing form is not offered, so no module can reach for it",
+    intrinsic.push === undefined);
+  // `Array.prototype.concat` builds its result through the SPECIES constructor, so capturing the
+  // method leaves the construction replaceable: a species answering with a Proxy took the element
+  // being inserted, and the merged list went out without it. This is how the countersignature
+  // attribute was dropped from a signer's unsigned attributes. `concatList` copies own indexes into
+  // an array it made itself, so nothing on the species path is consulted.
+  var realArraySpecies = Object.getOwnPropertyDescriptor(Array, Symbol.species);
+  var viaConcat, viaConcatList;
+  try {
+    Object.defineProperty(Array, Symbol.species, {
+      configurable: true,
+      get: function () {
+        return function () { return new Proxy([], { get: function (t, k) { return k === "length" ? 0 : t[k]; } }); };
+      },
+    });
+    viaConcat = Array.prototype.concat.call(["kept"], ["added"]).length;
+    viaConcatList = intrinsic.concatList(["kept"], ["added"]);
+  } finally { Object.defineProperty(Array, Symbol.species, realArraySpecies); }
+  check("intrinsic: a hostile Array species empties a native concat (length " + viaConcat + ")",
+    viaConcat === 0);
+  check("intrinsic: concatList keeps both operands whatever the species answers",
+    viaConcatList.length === 2 && viaConcatList[0] === "kept" && viaConcatList[1] === "added");
   check("intrinsic: append writes an own property the setter cannot intercept", appendRes === "auth-int");
   check("intrinsic: selectList writes own properties the setter cannot intercept", selRes === "auth-int");
 

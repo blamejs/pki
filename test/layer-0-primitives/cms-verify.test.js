@@ -513,6 +513,23 @@ async function testBadSignedAttrs() {
 
   // a valid content-type but no message-digest attribute at all.
   await rejects("signedAttrs without message-digest", function () { return pki.cms.verify(_withSignedAttrs([_ctAttr()])); }, "cms/missing-message-digest");
+  // The same message with a value installed at an array index. The attribute is found by selecting
+  // it out of the decoded set, and a selection that matches nothing is an EMPTY array, so reading
+  // its index 0 answers from the array prototype: an object shaped like an attribute would stand in
+  // for the one the message does not carry. The refusal has to hold with one installed.
+  var mdMissing = _withSignedAttrs([_ctAttr()]);
+  var standIn = { type: oidMessageDigest(), values: [b.octetString(Buffer.alloc(32))], valuesBytes: [Buffer.alloc(32)] };
+  var realZeroMd = Object.getOwnPropertyDescriptor(Array.prototype, "0");
+  Object.defineProperty(Array.prototype, "0", { configurable: true, get: function () { return standIn; }, set: function () {} });
+  var mdCode = "NO-THROW";
+  try { await pki.cms.verify(mdMissing); }
+  catch (e) { mdCode = (e && e.code) || ("RAW:" + e.constructor.name); }
+  finally {
+    if (realZeroMd) Object.defineProperty(Array.prototype, "0", realZeroMd);
+    else delete Array.prototype[0];
+  }
+  check("a value at an array index cannot stand in for a missing message-digest attribute (" + mdCode + ")",
+    mdCode === "cms/missing-message-digest");
   // a message-digest attribute carrying more than one value.
   await rejects("message-digest with two values", function () { return pki.cms.verify(_withSignedAttrs([_ctAttr(), _attr(oidMessageDigest(), [b.octetString(Buffer.alloc(32)), b.octetString(Buffer.alloc(32))])])); }, "cms/bad-message-digest-attr");
   // a message-digest attribute whose value is not an OCTET STRING.

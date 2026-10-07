@@ -732,8 +732,80 @@ function testCombinatorDefaultOpts() {
     walk(trailSpec, b.sequence([b.integer(1n), b.contextPrimitive(0, Buffer.from([1]))])).result === true);
 }
 
+// An accessor at an array index is reached by a STORE, because `push` writes through [[Set]] and a
+// store walks the prototype chain for a setter. Every repeat the engine walks (SEQUENCE OF, SET OF)
+// collects its elements into a fresh array, and every structure the engine encodes collects its
+// fields into one, so a list built by storing at the index holds a hole at 0 and reads back whatever
+// the accessor answers. The three vectors below are the parse side, the "was it even consulted"
+// side, and the encode side.
+function testPrototypeIndexAccessorCannotTakeARepeatElement() {
+  // A real certificate, because the repeat under test is the Name: a DN is a SEQUENCE OF RDN whose
+  // first element is this fixture's `C=US`. Reading index 0 off the prototype replaces it.
+  var certDer = pki.schema.x509.pemDecode(helpers.vectors.CERT_EC_PEM);
+  var expectDn = helpers.vectors.CERT_EC_EXPECT.subjectDn;
+  var marker = Buffer.from("deadbeef", "hex");
+  var taken = 0, dn = null, thrown = null;
+  Object.defineProperty(Array.prototype, "0", {
+    configurable: true, set: function () { taken++; }, get: function () { return marker; },
+  });
+  try { dn = pki.schema.x509.parse(certDer).subject.dn; }
+  catch (e) { thrown = e; }
+  finally { delete Array.prototype[0]; }
+  check("an accessor at Array.prototype[0] does not change the DN a certificate parses to (" +
+    (thrown ? "threw " + (thrown.code || thrown.constructor.name) : JSON.stringify(dn)) + ")",
+    thrown === null && dn === expectDn);
+  check("and no element of a walked repeat was stored at an index (" + taken + " stores)", taken === 0);
+
+  // The same question with a setter that DEFINES the own property the store was meant to create:
+  // nothing is lost, so the parse succeeds either way and the only thing the vector reads is
+  // whether a store happened at all. This is the rename-proof half -- it fails on any list that
+  // goes back to storing, whatever the consequence turns out to be.
+  var stores = 0;
+  Object.defineProperty(Array.prototype, "1", {
+    configurable: true,
+    set: function (v) { stores++; Object.defineProperty(this, "1", { value: v, writable: true, enumerable: true, configurable: true }); },
+    get: function () { return undefined; },
+  });
+  var dn2;
+  try { dn2 = pki.schema.x509.parse(certDer).subject.dn; }
+  finally { delete Array.prototype[1]; }
+  check("a certificate parse stores at no array index (" + stores + " stores, dn " + JSON.stringify(dn2) + ")",
+    stores === 0 && dn2 === expectDn);
+
+  // The engine's own repeat walk, driven directly: `m.items` is what every build() reads its
+  // elements out of, so a hole at 0 hands the build the accessor's value in place of the element.
+  var seqOf = S.seqOf(S.integerLeaf(), {
+    assert: "sequence", code: "t/bad",
+    build: function (m) { return m.items[0].value; },
+  });
+  var der = b.sequence([b.integer(1n), b.integer(2n)]);
+  var first = null, walkThrew = null;
+  Object.defineProperty(Array.prototype, "0", {
+    configurable: true, set: function () {}, get: function () { return { value: 99n }; },
+  });
+  try { first = walk(seqOf, der).result; } catch (e) { walkThrew = e; } finally { delete Array.prototype[0]; }
+  check("a repeat's first element is the decoded one, not the accessor's (" +
+    (walkThrew ? "threw " + walkThrew.constructor.name : String(first)) + ")",
+    walkThrew === null && first === 1n);
+
+  // The encode side: a structure's fields are collected into one array and then concatenated in
+  // order, so a hole at 0 puts the accessor's bytes where the first field belongs.
+  var spec = S.seq([S.field("a", S.integerLeaf()), S.field("c", S.integerLeaf())],
+    { assert: "sequence", code: "t/bad" });
+  var clean = S.encode(spec, { a: 1n, c: 2n }, NS);
+  var dirty = null, encThrew = null;
+  Object.defineProperty(Array.prototype, "0", {
+    configurable: true, set: function () {}, get: function () { return b.integer(99n); },
+  });
+  try { dirty = S.encode(spec, { a: 1n, c: 2n }, NS); } catch (e) { encThrew = e; } finally { delete Array.prototype[0]; }
+  check("an encoded structure carries its own first field (" +
+    (encThrew ? "threw " + encThrew.constructor.name : dirty.toString("hex")) + ")",
+    encThrew === null && dirty.equals(clean));
+}
+
 function run() {
   testLeaves();
+  testPrototypeIndexAccessorCannotTakeARepeatElement();
   testEmbeddedDer();
   testRepeatMax();
   testOpenChoiceIdiom();
