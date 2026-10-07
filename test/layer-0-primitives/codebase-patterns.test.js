@@ -672,6 +672,30 @@ function testNoFailOpenVerify() {
   _report("no fail-open verify/parse (a catch that returns a success verdict)", bad);
 }
 
+/** Comments removed, STRING LITERALS KEPT. The shared walk blanks both, which is right for a check
+ *  that must not read a docstring example, and wrong for one whose evidence IS a property name in a
+ *  literal: `obj["push"]` survives this and not that. Newlines inside a removed comment are kept so
+ *  a reported line number still points at the source line. */
+function _stripCommentsOnly(src) {
+  var out = "", i = 0, n = src.length;
+  while (i < n) {
+    var c = src[i], d = src[i + 1];
+    if (c === "/" && d === "/") { while (i < n && src[i] !== "\n") { out += " "; i++; } continue; }
+    if (c === "/" && d === "*") {
+      i += 2; out += "  ";
+      while (i < n && !(src[i] === "*" && src[i + 1] === "/")) { out += src[i] === "\n" ? "\n" : " "; i++; }
+      i += 2; out += "  "; continue;
+    }
+    if (c === '"' || c === "'" || c === "`") {
+      var q = c; out += c; i++;
+      while (i < n && src[i] !== q) { if (src[i] === "\\") { out += src[i]; i++; } out += src[i] || ""; i++; }
+      out += src[i] || ""; i++; continue;
+    }
+    out += c; i++;
+  }
+  return out;
+}
+
 function testNoStoringAppend() {
   // class: append-by-store
   // `Array.prototype.push` STORES at the index, and a store walks the prototype chain looking for a
@@ -692,27 +716,29 @@ function testNoStoringAppend() {
   // rename can move. A live `receiver.push(` dispatch is a different class, counted by the
   // captured-operation budget above; this one is about the form a module binds at load.
   //
-  // ENUMERATING THE RECEIVER LOSES, and it lost twice: a dotted-only form missed
-  // `Array["prototype"]["push"]`, and naming `Array.prototype` and the guard namespace still missed
-  // `uncurry([].push)`. There is always another object to read the method off. So the anchor is the
-  // METHOD NAME together with the ABSENCE OF A CALL: obtaining `push` as a VALUE is the thing no
-  // module in lib/ has any reason to do, whoever owns it. Measured: zero such reads in lib/ today,
-  // while 764 `receiver.push(` CALLS remain (those are the captured-operation budget's class, not
-  // this one), so the line costs no exemption and does not overlap.
+  // ENUMERATING THE RECEIVER LOSES, and it lost three times: a dotted-only form missed
+  // `Array["prototype"]["push"]`; naming `Array.prototype` and the guard namespace still missed
+  // `uncurry([].push)`; and bracket arms on those two receivers still missed `[]["push"]`. There is
+  // always another object to read the method off, so the anchor is the METHOD NAME together with the
+  // ABSENCE OF A CALL. Obtaining that method as a VALUE is the thing no module in lib/ has a reason
+  // to do, whoever owns it: measured, zero such reads today, while the 764 `receiver.push(` CALLS are
+  // the captured-operation budget's class above, so the line costs no exemption and does not overlap.
   //
-  // The two bracket arms stay for the computed form whose property NAME the walk blanks: stripped,
-  // `Array["prototype"]["push"]` reads `Array[ ][ ]`, where there is no `push` text left to match.
-  // Indexing `Array` or the guard namespace has no legitimate use here either (measured: zero).
+  // THIS CHECK READS A SOURCE WITH COMMENTS STRIPPED AND STRING LITERALS PRESERVED, which is the only
+  // reason the computed spellings are visible: the shared walk blanks literals, so
+  // `Array.prototype["push"]` reaches it as `Array.prototype[ ]` with no `push` text left to match.
+  // The evidence a check matches on cannot be removed before the match. Preserving literals is safe
+  // here because both shapes require punctuation a sentence does not carry (`.push` with no call, or
+  // a quoted name inside brackets), and the clean tree is silent on both: measured, zero.
   var STORING = new RegExp("\\.\\s*push\\b(?!\\s*\\()" +
-    "|\\bArray\\s*\\[" +
-    "|\\bintrinsic\\s*\\[", "g");
+    "|\\[\\s*(['\"])push\\1\\s*\\]", "g");
   var files = _libFiles();
   var bad = [];
   for (var i = 0; i < files.length; i++) {
     var content;
     try { content = fs.readFileSync(files[i], "utf8"); }
     catch (_e) { continue; }
-    var subject = _stripCommentsAndLiterals(content);
+    var subject = _stripCommentsOnly(content);
     STORING.lastIndex = 0;
     var m;
     while ((m = STORING.exec(subject)) !== null) {
