@@ -326,6 +326,24 @@ async function run() {
   check("Q13c. an unregistered format draws the same notice with no name",
     !!unregRow && unregRow.context.otherRevInfoFormatName === null &&
     unregRow.context.otherRevInfoFormat === "1.3.6.1.5.5.7.16.99");
+  // Q13d: the row answers "was the revocation information read", not "was the format recognized". An
+  // id-ri-ocsp-response entry whose OCSPResponse states a responseType this build does not decode is
+  // recognized and still unread, so it draws the notice, with responseType naming the cause. Keyed to
+  // the presence of `ocspResponse` the row stayed silent on it and the report claimed a reading it
+  // never did.
+  var opaqueResp = b.sequence([b.enumerated(0n), b.contextConstructed(0,
+    b.sequence([b.oid("1.3.6.1.5.5.7.48.1.99"),
+      b.octetString(Buffer.from("a response format this build does not read", "ascii"))]))]);
+  var opaqueRow = pki.lint.cms(riMessage("1.3.6.1.5.5.7.16.2", opaqueResp))
+    .findings.filter(function (f) { return f.id === RI_ROW; })[0];
+  check("Q13d. an OCSP entry whose responseType is unread draws the notice, naming the type",
+    !!opaqueRow && opaqueRow.severity === "notice" &&
+    opaqueRow.context.otherRevInfoFormatName === "id-ri-ocsp-response" &&
+    opaqueRow.context.responseType === "1.3.6.1.5.5.7.48.1.99");
+  // Q13e PIN: and a read entry still reports no responseType, so the field marks the unread case
+  // rather than appearing on every row.
+  check("Q13e. PIN a read entry draws no finding and so carries no responseType",
+    !has(pki.lint.cms(riMessage("1.3.6.1.5.5.7.16.2", ocspResp)), RI_ROW));
 
   console.log("CHECKS " + helpers.getChecks());
 }

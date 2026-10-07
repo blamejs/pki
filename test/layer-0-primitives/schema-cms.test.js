@@ -1197,6 +1197,62 @@ async function testOtherRevocationInfo() {
   var standalone = pki.schema.ocsp.parseResponse(b.sequence([b.enumerated(3n)]));
   check("RI-D4 PIN the standalone OCSP door still accepts a tryLater response",
     standalone.responseStatus.name === "tryLater");
+  // D5: RFC 6960 sec. 4.2.1 dispatches the response body on responseType, and sec. 3 of RFC 5940
+  // requires a successful status, not a body this build can read. So a successful response whose
+  // responseType is some other registered or future format keeps its envelope surfaced and its body
+  // opaque: the message parses, and the bytes are handed over unread rather than decoded as a
+  // BasicOCSPResponse they are not. The body here is not DER at all, which is what proves no decode
+  // was attempted on it.
+  var T_FUTURE = "1.3.6.1.5.5.7.48.1.99";
+  var OPAQUE_BODY = Buffer.from("a response format this build does not read", "ascii");
+  var respFuture = b.sequence([b.enumerated(0n),
+    b.contextConstructed(0, b.sequence([b.oid(T_FUTURE), b.octetString(OPAQUE_BODY)]))]);
+  var future = parse(cms({ version: b.integer(5n), crls: [ori(F_OCSP, respFuture)] }));
+  var futureResp = future.crls[0].ocspResponse;
+  check("RI-D5 a successful response in an unsupported responseType keeps its body opaque",
+    futureResp != null && futureResp.responseStatus.code === 0 &&
+    futureResp.responseBytes.responseType === T_FUTURE &&
+    futureResp.responseBytes.response.equals(OPAQUE_BODY) &&
+    futureResp.basicResponse === null);
+  // D6 PIN: and the standalone door still refuses those same bytes, because a client that asked a
+  // responder for an answer it cannot read needs to be told rather than handed an empty one.
+  check("RI-D6 PIN the standalone OCSP door still refuses an unsupported responseType",
+    code(function () { pki.schema.ocsp.parseResponse(respFuture); }) === "ocsp/unsupported-response-type");
+  // D7: the tolerance is scoped to the response TYPE. A body that claims id-pkix-ocsp-basic and is
+  // not one is still refused here, so an unreadable basic response cannot ride in as an opaque one.
+  var brokenBasic = b.sequence([b.enumerated(0n),
+    b.contextConstructed(0, b.sequence([b.oid("1.3.6.1.5.5.7.48.1.1"), b.octetString(OPAQUE_BODY)]))]);
+  check("RI-D7 a malformed id-pkix-ocsp-basic body is still refused",
+    parseCode(cms({ version: b.integer(5n), crls: [ori(F_OCSP, brokenBasic)] })) === "ocsp/bad-der");
+  // D8: the opaque record still renders, naming the type it could not read.
+  var futureReport = pki.inspect.ocspResponse(futureResp);
+  check("RI-D8 the opaque record renders its response type and says the body is unread",
+    futureReport.indexOf("Response Type: " + T_FUTURE) !== -1 &&
+    futureReport.indexOf("(no basic response to render)") !== -1);
+  // D9: and the record is still a record. A null basicResponse does not cost it its provenance, so
+  // the verifier takes it rather than answering `path/bad-input`. What the verifier then DECIDES about
+  // an unread body is measured in path-validate.test.js against a chain that reaches the evaluation;
+  // this pair cannot, so a status asserted here would measure the fixture (see A5).
+  var d9 = await verdictOf(futureResp);
+  check("RI-D9 the opaque record keeps its provenance and reaches the verifier (" + d9 + ")",
+    d9.indexOf("status:") === 0);
+  // M4: and every verb named as taking the record takes it. `pki.ocsp.verify` accepts the record and
+  // hands its RE-DERIVATION to `pki.path.verifyOcspResponse`, so the record has to survive being
+  // re-derived once. While it did not, three doors took the record and the fourth answered
+  // path/bad-input, which is the one shape a caller reads as "this record is a forgery".
+  async function doorOf(fn) { try { await fn(); return "ok"; } catch (e) { return (e && e.code) || "RAW"; } }
+  var readableRec = m.crls[0].ocspResponse;
+  var m4 = [
+    ["ocsp.verify", await doorOf(function () { return pki.ocsp.verify(readableRec, { cert: s.cert, issuer: s.cert, time: at5 }); })],
+    ["path.verifyOcspResponse", await doorOf(function () { return pki.path.verifyOcspResponse(readableRec, s.cert, s.cert, at5); })],
+    ["path.ocspChecker", await doorOf(function () { return pki.path.ocspChecker([readableRec]); })],
+    ["lint.ocsp", await doorOf(function () { return pki.lint.ocsp(readableRec); })],
+  ];
+  check("RI-M4 every verb documented as taking the embedded record takes it (" +
+    m4.map(function (p) { return p[0] + ":" + p[1]; }).join(" ") + ")",
+    m4.every(function (p) { return p[1] === "ok"; }));
+  check("RI-M4 and so does the one whose body went unread",
+    (await doorOf(function () { return pki.ocsp.verify(futureResp, { cert: s.cert, issuer: s.cert, time: at5 }); })) === "ok");
 
   // ---- E. version and cross-field rules, on all four content types ----
   // E1 asserts the decoded shape POSITIVELY. Written as `ocspResponse !== null` it passes on the

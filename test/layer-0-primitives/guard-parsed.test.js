@@ -335,6 +335,61 @@ async function run() {
   check("sourceOf answers null for a result whose fields no longer match the parse",
     guard.sourceOf(edited) === null);
 
+  // ---- a re-derived record is still a record ----------------------------------
+  // fromTrustedSource answers a recorded result by RE-DERIVING it from the bytes it recorded, which
+  // is what discards a caller's edits. The re-derivation has to carry the same provenance the first
+  // one did, because verbs stack: a door that accepts a record and hands the re-derivation to a
+  // second door makes that second door the one that sees it. recordingWalker's derive called the bare
+  // walk function, so its re-derivation was unrecorded and the second door refused it as rebuilt,
+  // while recordingParser's survived only because the parse it wraps records on its own.
+  // Driven on the primitive with a kind of its own, so the rule is pinned for every walker rather
+  // than for whichever format module happens to stack two doors today.
+  var walkerCalls = 0;
+  var toyWalk = guard.recordingWalker("toyKind",
+    function (node) { walkerCalls++; return { seen: node.bytes.length, lead: node.bytes[0] }; },
+    function (src) { return { bytes: src }; });
+  function toyDoor(input) {
+    return guard.fromTrustedSource(input, "toyKind", ["seen"], function () {
+      throw E("x/reparsed", "the door fell through to parsing bytes");
+    }, E, "x/bad", "rebuilt");
+  }
+  var walked = toyWalk({ bytes: Buffer.from([0x05, 0x00]) }, null);
+  var derived = toyDoor(walked);
+  check("a walked record re-derived by one door is accepted by the next",
+    codeOf(function () { toyDoor(derived); }) === "NO-THROW");
+  check("the re-derivation is a fresh object carrying the same values",
+    derived !== walked && derived.seen === walked.seen && derived.lead === walked.lead);
+  check("and each pass through a door re-derives rather than returning the caller's object",
+    walkerCalls === 3);
+  // The claim-bearing object with no provenance is still refused, so the acceptance above is
+  // provenance and not a shape that any object carrying `seen` can present.
+  check("an object that merely claims the kind is still refused",
+    codeOf(function () { toyDoor({ seen: 2, lead: 5 }); }) === "x/bad");
+
+  // ---- the recorded bytes do not escape to the parse that reads them ----------
+  // A door answers a record by handing the bytes it recorded to a parse. Those bytes are the one
+  // account of what was parsed, so a parse that keeps its argument must not be holding them: a write
+  // through a kept reference would change what the NEXT re-derivation reads, after the record was
+  // accepted. sourceOf copies for the same reason.
+  // The door's own parse is what receives them, which is the recorded-PARSER branch: a walked record
+  // carries its own derive and the door's parse is never called, so a vector written on the walker
+  // measures nothing here.
+  var toyParse = guard.recordingParser("toyBytesKind", function (src) {
+    return { seen: src.length, lead: src[0] };
+  }, TestError, "x/bad", "toy bytes");
+  var parsedRec = toyParse(Buffer.from([0x04, 0x01]));
+  function bytesDoor(input, onBytes) {
+    return guard.fromTrustedSource(input, "toyBytesKind", ["seen"], onBytes, E, "x/bad", "rebuilt");
+  }
+  var kept = [];
+  bytesDoor(parsedRec, function (src) { kept.push(src); return { seen: src.length, lead: src[0] }; });
+  check("the door hands its parse the recorded bytes", kept.length === 1 && Buffer.isBuffer(kept[0]));
+  kept[0][0] = 0x99;
+  check("a parse that keeps those bytes cannot change the recorded source",
+    guard.sourceOf(parsedRec)[0] === 0x04);
+  check("nor what the next acceptance of the same record reads",
+    bytesDoor(parsedRec, function (src) { return { seen: src.length, lead: src[0] }; }).lead === 0x04);
+
   // ---- the kind is a programming error, not an input fault --------------------
   // A misspelled kind is a bug in the composing module and must not read as a
   // malformed input from the operator.

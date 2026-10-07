@@ -4526,6 +4526,37 @@ async function testOcspRevocation() {
   check("M2 and the uncovered certificate is undetermined rather than a parse failure",
     undetermined(await run([leaf], { time: T2027, trustAnchors: anchor,
       revocationChecker: pki.path.ocspChecker([riOtherParsed.crls[0].ocspResponse]) })));
+  // M3: a carried response whose responseType is one this build does not read keeps its envelope and
+  // leaves its body unread (RFC 6960 sec. 4.2.1 dispatches the body on that OID). The checker is
+  // handed a record with no BasicOCSPResponse, so it determines nothing and the leaf stays
+  // undetermined. M1 is the control: the identical carriage with a readable body answers valid.
+  var riOpaqueResp = b.sequence([b.enumerated(0n), b.contextConstructed(0,
+    b.sequence([b.oid("1.3.6.1.5.5.7.48.1.99"),
+      b.octetString(Buffer.from("a response format this build does not read", "ascii"))]))]);
+  var riOpaqueArm = b.contextConstructed(1, Buffer.concat([b.oid("1.3.6.1.5.5.7.16.2"), riOpaqueResp]));
+  var riOpaqueMsg = b.sequence([b.oid("1.2.840.113549.1.7.2"), b.explicit(0, b.sequence([
+    b.integer(5n), b.set([]), b.sequence([b.oid("1.2.840.113549.1.7.1")]),
+    b.contextConstructed(1, riOpaqueArm), b.set([])]))]);
+  var riOpaque = pki.schema.cms.parse(riOpaqueMsg).crls[0].ocspResponse;
+  check("M3 a carried response in an unread responseType surfaces its envelope and no body",
+    riOpaque !== null && riOpaque.responseStatus.code === 0 && riOpaque.basicResponse === null &&
+    riOpaque.responseBytes.responseType === "1.3.6.1.5.5.7.48.1.99");
+  check("M3 and the checker determines nothing from a body it never read",
+    undetermined(await run([leaf], { time: T2027, trustAnchors: anchor,
+      revocationChecker: pki.path.ocspChecker([riOpaque]) })));
+  // M4: pki.ocsp.verify takes the carried record too, and the pair discriminates. It accepts a
+  // record and hands the RE-DERIVATION of it to pki.path.verifyOcspResponse, so a record that lost
+  // its provenance on the way through read as a forgery: this answered path/bad-input for a record
+  // the other three verbs took. The readable one must reach `good` on its merits, which is what
+  // makes the opaque one's `unknown` a measurement rather than a restatement of the fixture.
+  var rootDer = await mkCert({ subject: "Root", issuer: "Root", signWith: "ed25519" });
+  var vRead = await pki.ocsp.verify(harvested[0], { cert: leaf, issuer: rootDer, time: T2027 });
+  check("M4 pki.ocsp.verify determines good from the carried record (" + vRead.status + ")",
+    vRead.status === "good" && vRead.valid === true && vRead.signatureValid === true);
+  var vOpaque = await pki.ocsp.verify(riOpaque, { cert: leaf, issuer: rootDer, time: T2027 });
+  check("M4 and determines nothing from the one whose body it could not read (" + vOpaque.status + ")",
+    vOpaque.status === "unknown" && vOpaque.valid === false && vOpaque.signatureValid === false &&
+    vOpaque.matched === false);
 
   // O5 — revoked.
   var o5 = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle({ status: "revoked", revocationReason: 1 })] });
