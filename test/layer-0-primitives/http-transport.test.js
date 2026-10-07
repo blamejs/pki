@@ -311,7 +311,7 @@ async function testCapturedOperations() {
       cb(null, [entry]);
     });
     var handed = await new Promise(function (res) {
-      guarded("host.example", { all: true }, function (err, out) { res(err ? ("ERR:" + (err && err.pkiBlockedAddress ? "blocked" : "other")) : out); });
+      guarded("host.example", { all: true }, function (err, out) { res(err ? ("ERR:" + (err.pkiBlockedAddress ? "blocked" : "other")) : out); });
     });
     var handedAddr = Array.isArray(handed) ? handed[0].address : handed;
     check("14i the address the blocklist cleared is the one handed on (" + handedAddr + ", " + addrReads + " read(s))",
@@ -407,6 +407,41 @@ async function testCapturedOperations() {
     } finally { httpsAgentProto.createConnection = realCreate; }
     check("14i the agent's connection builder is never consulted (" + agentOut + ", " + agentCalls + " call(s))",
       agentOut === "captured" && agentCalls === 0);
+
+    /** The CONNECT socket is opened the same way, which matters more there: the request that carries
+     *  `Proxy-Authorization` would otherwise be dispatched through the replaced builder, which can
+     *  answer with a raw socket in place of the proxy's TLS connection. */
+    var httpAgentProto = require("node:http").Agent.prototype;
+    var realHttpCreate = httpAgentProto.createConnection;
+    var realHttpsCreate = httpsAgentProto.createConnection;
+    var proxyAgentCalls = 0, proxyOut;
+    try {
+      httpAgentProto.createConnection = function () { proxyAgentCalls += 1; return realHttpCreate.apply(this, arguments); };
+      httpsAgentProto.createConnection = function () { proxyAgentCalls += 1; return realHttpsCreate.apply(this, arguments); };
+      proxyOut = await codeOf(t({ method: "GET", url: urlFor(s.port),
+        tls: { anchors: [tls.certPem], servername: "localhost" },
+        proxy: { url: "http://127.0.0.1:1/" }, timeout: 1500 }));
+    } finally {
+      httpAgentProto.createConnection = realHttpCreate;
+      httpsAgentProto.createConnection = realHttpsCreate;
+    }
+    check("14i nor on the proxy CONNECT path (" + proxyOut + ", " + proxyAgentCalls + " call(s))",
+      proxyOut === "transport/proxy-connect-failed" && proxyAgentCalls === 0);
+
+    /** The transport's default identity hook is read only where the request supplied none. Read
+     *  anyway, an accessor the per-request override opted out of still ran and could refuse the
+     *  request before it connected. */
+    var defaultCsiReads = 0;
+    var defaultTls = { anchors: [tls.certPem] };
+    Object.defineProperty(defaultTls, "checkServerIdentity", {
+      enumerable: true,
+      get: function () { defaultCsiReads += 1; throw new Error("the default hook must not be read when the request overrides it"); },
+    });
+    var tDefaults = pki.transport.https({ tls: defaultTls });
+    var overrideOut = await codeOf(tDefaults({ method: "GET", url: urlFor(s.port),
+      tls: { anchors: [tls.certPem], servername: "localhost", checkServerIdentity: function () { return undefined; } } }));
+    check("14i a per-request identity hook keeps the default from being read (" + overrideOut + ", " + defaultCsiReads + " read(s))",
+      overrideOut === "NO-THROW" && defaultCsiReads === 0);
   } finally {
     Array.prototype.concat = realConcat;
     s.srv.close();
