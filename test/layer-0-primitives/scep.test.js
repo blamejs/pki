@@ -266,6 +266,85 @@ async function testCertRepFailureParse() {
   check("CertRep FAILURE: failInfoText surfaced", v.failInfoText === "policy rejected the request");
 }
 
+// A FAILURE CertRep's failInfo is a SIGNED attribute: the attribute list is handed to the CMS signer
+// as `additionalSignedAttributes`, so whatever the list holds is what the response commits to.
+// Collected by storing at the index, the store walks the prototype chain for a setter, and the
+// failInfo lands on the first index past the five attributes a CertRep always carries. An accessor
+// there takes it as it is added and answers with its own, so the library would sign a FAILURE
+// response stating a different reason than the caller asked for, or none at all.
+async function testCertRepFailureAttrsUnderIndexAccessor() {
+  // A CertRep must echo the request's senderNonce, so one is supplied; the five attributes a CertRep
+  // always carries are what put the failInfo on the sixth slot.
+  var FAIL_RN = nodeCrypto.randomBytes(16);
+  var clean = await pki.scep.build({
+    messageType: "CertRep", pkiStatus: "FAILURE", failInfo: "badRequest",
+    failInfoText: "policy rejected the request", recipientNonce: FAIL_RN,
+    signer: F.signer, transactionId: "f-acc",
+  });
+  var cleanParsed = await pki.scep.parse(clean);
+  check("CertRep FAILURE: fixture, the reason round-trips without the accessor",
+    cleanParsed.failInfo === "badRequest" && cleanParsed.pkiStatus === "FAILURE");
+  // Where the stores happen, measured rather than assumed: a DEFINING setter records each one
+  // without losing it, so the build runs to completion. The count is attributed to this module,
+  // because node's own key import stores at index 3 while loading the signing key, and an
+  // unattributed count would report the runtime rather than the subject.
+  var seen = [];
+  var probes = [];
+  for (var p = 0; p < 10; p++) probes[p] = Object.getOwnPropertyDescriptor(Array.prototype, String(p));
+  for (var q = 0; q < 10; q++) {
+    Object.defineProperty(Array.prototype, String(q), {
+      configurable: true,
+      get: function () { return undefined; },
+      set: (function (ix) {
+        return function (val) {
+          if (String(new Error("x").stack).indexOf("scep.js") !== -1) {
+            Object.defineProperty(seen, seen.length, { value: ix, writable: true, enumerable: true, configurable: true });
+          }
+          Object.defineProperty(this, ix, { value: val, writable: true, enumerable: true, configurable: true });
+        };
+      })(q),
+    });
+  }
+  try {
+    await pki.scep.build({
+      messageType: "CertRep", pkiStatus: "FAILURE", failInfo: "badRequest",
+      failInfoText: "policy rejected the request", recipientNonce: FAIL_RN,
+      signer: F.signer, transactionId: "f-acc2",
+    });
+  } finally {
+    for (var r = 0; r < 10; r++) {
+      delete Array.prototype[String(r)];
+      if (probes[r]) Object.defineProperty(Array.prototype, String(r), probes[r]);
+    }
+  }
+  check("CertRep FAILURE: building one stores at no array index (" + seen.length + " stores" +
+    (seen.length ? " at " + JSON.stringify(seen) : "") + ")", seen.length === 0);
+  // And the reason is the caller's with a substituting accessor installed across the whole build.
+  // Shaped exactly as the module's own attribute record is, so the substitution is the one a real
+  // accessor would make: `{ type, values }` with a single encoded value. `"0"` is badAlg, so the
+  // signed response would state a different reason than the caller asked for.
+  var planted = { type: O("scepFailInfo"), values: [b.printable("0")] };
+  var realFive = Object.getOwnPropertyDescriptor(Array.prototype, "5");
+  Object.defineProperty(Array.prototype, "5", {
+    configurable: true, get: function () { return planted; }, set: function () {},
+  });
+  var under = null, threw = null;
+  try {
+    under = await pki.scep.build({
+      messageType: "CertRep", pkiStatus: "FAILURE", failInfo: "badRequest",
+      failInfoText: "policy rejected the request", recipientNonce: FAIL_RN,
+      signer: F.signer, transactionId: "f-acc3",
+    });
+  } catch (e) { threw = e; } finally {
+    if (realFive) Object.defineProperty(Array.prototype, "5", realFive);
+    else delete Array.prototype[5];
+  }
+  var reason = threw ? null : (await pki.scep.parse(under)).failInfo;
+  check("CertRep FAILURE: an accessor at an array index cannot change the signed reason (" +
+    (threw ? "threw " + (threw.code || threw.constructor.name) : String(reason)) + ")",
+  threw === null && reason === "badRequest");
+}
+
 async function testCertRepPendingParse() {
   var rep = await buildCertRep({ statusCode: "3", transactionId: "p-1" });
   var v = await pki.scep.parse(rep);
@@ -1583,6 +1662,7 @@ async function main() {
   await testRequestPayloadValidated();
   await testCertRepSuccessValidatesPayload();
   await testCertRepFailureParse();
+  await testCertRepFailureAttrsUnderIndexAccessor();
   await testCertRepPendingParse();
   await testMissingMandatoryAttributes();
   await testUnknownEnumerants();

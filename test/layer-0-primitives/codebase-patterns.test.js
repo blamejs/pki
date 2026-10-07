@@ -901,20 +901,13 @@ function testNoStoringAppend() {
  *  diagnostic rather than a wrong signature. Delete the table when it empties and the line is drawn
  *  with no exemptions. */
 function _assertNoDirectStoringAppendCalls() {
+  // The two report builders, and nothing else. Every other module in lib/ is held to zero, so a new
+  // call anywhere outside these two fails immediately. These lists become report lines, where a
+  // substituted element is a wrong diagnostic rather than a wrong signature, which is why they are
+  // last rather than exempt.
   var PUSH_BUDGET = {
     "lib/inspect.js": 284,
     "lib/lint.js": 132,
-    "lib/smime.js": 14,
-    "lib/est.js": 10,
-    "lib/cmp-session.js": 9,
-    "lib/mime.js": 5,
-    "lib/scep.js": 4,
-    "lib/shbs.js": 3,
-    "lib/pbes2.js": 2,
-    "lib/validator-tls.js": 2,
-    "lib/acme.js": 1,
-    "lib/validator-keydesc.js": 1,
-    "lib/webcrypto.js": 1,
   };
   var CALL = new RegExp("\\.\\s*(?:push|unshift)\\s*\\(", "g");
   var files = _libFiles();
@@ -4282,8 +4275,8 @@ function testGuardReadsRuntimeLive() {
   // budget nobody tightens is a number that stops meaning anything, and the next reader would take
   // it for the real count. A module reaching zero is deleted from the map and held to zero forever.
   var MIGRATING = {
-    "lib/acme.js": 147,
-    "lib/est.js": 124,
+    "lib/acme.js": 146,
+    "lib/est.js": 114,
     "lib/cmp-build.js": 90,
     "lib/crmf-sign.js": 12,
     /** Still budgeted: the module's own selections and copies are converted and its policy-mapping
@@ -4323,7 +4316,7 @@ function testGuardReadsRuntimeLive() {
     /** Entered scope when it took the capture of the URL parser, which decides the host each of its
      *  operations is sent to. Arming a module arms it whole, so this is the count that was always
      *  there and is now counted, and it ratchets DOWN only like the rest. */
-    "lib/scep.js": 91,
+    "lib/scep.js": 89,
   };
   var counts = {};
   bad.forEach(function (b) { counts[b.file] = (counts[b.file] || 0) + 1; });
