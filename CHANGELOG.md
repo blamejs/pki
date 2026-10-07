@@ -10,7 +10,7 @@ Build every list this toolkit assembles by defining its indexes, so an accessor 
 
 ### Changed
 
-- The library no longer has a storing append to reach for, and a check refuses one: a module that obtains `Array.prototype.push`, by name or through a computed member, fails the static gates with the non-storing form named in the message. The property had been documented and tested for some time, and ninety-two call sites used the storing form regardless, so the option is gone rather than discouraged.
+- The library no longer has a storing append to reach for, and a check refuses one that is written anyway: a module that names `Array.prototype.push`, reads it as a value, quotes it inside brackets or binds it by destructuring fails the static gates with the non-storing form named in the message. The property had been documented and tested for some time, and ninety-two call sites used the storing form regardless, so the option is gone rather than discouraged. The check covers the spellings a person writes, not every way a property can be reached at runtime; what the rest rests on is that nothing offers the storing form and that the non-storing primitives carry the tests for the behavior.
 - The same check now recognizes the variable-width and 64-bit integer writes (`writeUIntBE` and its siblings) alongside the fixed-width ones it already knew, so a module that reads one of those off the prototype at the moment it writes a field is reported like any other.
 
 ### Fixed

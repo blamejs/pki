@@ -705,33 +705,43 @@ function testNoStoringAppend() {
   // content octets of `1.2.3` rendered `0.1.3`, and an OBJECT IDENTIFIER is what selects an
   // algorithm.
   //
-  // So no module in lib/ may OBTAIN the storing form, under any spelling: `guard-intrinsic` neither
-  // captures nor exports it, and this catches a module that reaches for `Array.prototype.push`
-  // itself or keeps a stale `intrinsic.push` reference. The line has no exemptions, which is why it
-  // is drawn here rather than discriminated: `intrinsic.append` defines the index on the array
-  // itself, and `concatList` / `copyList` / `selectList` / `mapList` build their results the same
-  // way, so every append in lib/ has a non-storing form available.
+  // So no module in lib/ may WRITE the storing form: `guard-intrinsic` neither captures nor exports
+  // it, and this catches a module that reaches for `Array.prototype.push` itself or keeps a stale
+  // `intrinsic.push` reference. The line has no exemptions, which is why it is drawn here rather than
+  // discriminated: `intrinsic.append` defines the index on the array itself, and `concatList` /
+  // `copyList` / `selectList` / `mapList` build their results the same way, so every append in lib/
+  // has a non-storing form available.
   //
   // Anchored on the PROTOTYPE MEMBER and on the guard's own export name, neither of which a local
   // rename can move. A live `receiver.push(` dispatch is a different class, counted by the
   // captured-operation budget above; this one is about the form a module binds at load.
   //
-  // ENUMERATING THE RECEIVER LOSES, and it lost three times: a dotted-only form missed
-  // `Array["prototype"]["push"]`; naming `Array.prototype` and the guard namespace still missed
-  // `uncurry([].push)`; and bracket arms on those two receivers still missed `[]["push"]`. There is
-  // always another object to read the method off, so the anchor is the METHOD NAME together with the
-  // ABSENCE OF A CALL. Obtaining that method as a VALUE is the thing no module in lib/ has a reason
-  // to do, whoever owns it: measured, zero such reads today, while the 764 `receiver.push(` CALLS are
-  // the captured-operation budget's class above, so the line costs no exemption and does not overlap.
+  // ENUMERATING THE RECEIVER LOSES: naming the dotted form missed `Array["prototype"]["push"]`,
+  // naming `Array.prototype` and the guard namespace still missed `uncurry([].push)`, bracket arms on
+  // those receivers still missed `[]["push"]`, and all of it missed
+  // `var { push: p } = Array.prototype`. There is always another object to read the method off, so
+  // the anchor is the METHOD NAME in the three positions source can name it from: read as a VALUE
+  // rather than called, quoted inside brackets, or bound by a destructuring pattern. Measured: zero
+  // in lib/ today, while the 764 `receiver.push(` CALLS are the captured-operation budget's class
+  // above, so the line costs no exemption and does not overlap.
+  //
+  // WHAT THIS DOES NOT CLAIM. A lexical check cannot be complete about obtaining a property: a name
+  // assembled at runtime, `Reflect.get(Array.prototype, n)`, or a walk over the prototype's own keys
+  // all reach the same function while naming nothing. The claim is narrower and it is the one worth
+  // having: no module WRITES the storing form, in the spellings a person writes. What backs the rest
+  // is that `guard-intrinsic` neither captures nor exports it, so there is nothing to reach for by
+  // habit, and the behavioral vectors on `append` and the `*List` builders pin the property itself.
   //
   // THIS CHECK READS A SOURCE WITH COMMENTS STRIPPED AND STRING LITERALS PRESERVED, which is the only
-  // reason the computed spellings are visible: the shared walk blanks literals, so
+  // reason the computed spelling is visible at all: the shared walk blanks literals, so
   // `Array.prototype["push"]` reaches it as `Array.prototype[ ]` with no `push` text left to match.
-  // The evidence a check matches on cannot be removed before the match. Preserving literals is safe
-  // here because both shapes require punctuation a sentence does not carry (`.push` with no call, or
-  // a quoted name inside brackets), and the clean tree is silent on both: measured, zero.
+  // The evidence a check matches on cannot be removed before the match. Keeping literals is safe
+  // because each shape needs punctuation a sentence does not carry, and the clean tree is silent on
+  // all three: measured, zero, with the object-literal forms (`module.exports = { push: fn }`,
+  // `fn({ push: 1 })`) confirmed NOT to fire.
   var STORING = new RegExp("\\.\\s*push\\b(?!\\s*\\()" +
-    "|\\[\\s*(['\"])push\\1\\s*\\]", "g");
+    "|\\[\\s*(['\"])push\\1\\s*\\]" +
+    "|\\{[^{}]*\\bpush\\b[^{}]*\\}\\s*=", "g");
   var files = _libFiles();
   var bad = [];
   for (var i = 0; i < files.length; i++) {
