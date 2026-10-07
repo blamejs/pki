@@ -4,6 +4,30 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.61 — 2026-10-07
+
+Take every cryptographic operation, and every question about which key a key is, through an operation captured when the toolkit loads, so a replacement installed afterwards cannot decide a secret, a tag, a key type or a verdict.
+
+### Added
+
+- The internal crypto guard gained the operations the library needed to stop reading `node:crypto` at call time: randomness, the password-based and extract-and-expand derivations, the RSA transforms, the elliptic-curve point derivation and conversion, the AEAD transform methods, the hash handle for a caller that cannot hold its whole input, and the four key-identity accessors. The digest primitive takes input and output encodings. None of this is on the public surface.
+
+### Changed
+
+- `pki.webcrypto.subtle.exportKey` and `pki.key.export` read a key's type at most twice per call, once to admit the key and once for every decision that follows. Nothing in the public surface changed shape, and no error code was added or removed.
+
+### Fixed
+
+- An imported key is bound to the algorithm the caller named it under. `pki.webcrypto.subtle.importKey` settles that by asking the key which algorithm family it belongs to, and that answer came from an accessor on a node prototype, read at the moment of the check. An accessor answering `rsa` for an Ed25519 key therefore made the import accept it as RSA-PSS, and every later operation ran under an algorithm the key does not belong to. The accessor is captured when the engine loads. The same read also decided a curve, a modulus length and whether a key pair corresponds, across `pki.key`, `pki.tuf`, `pki.tlog`, `pki.sigstore`, `pki.cmc`, `pki.crmf`, `pki.ct` and the signature-scheme check that matches a signer to a certificate.
+- A plain object carrying an `asymmetricKeyType` field is no longer accepted as a key. The sites that asked whether a caller had handed them a key object tested for that one field, which any object can carry, so a forged object passed the test and was then used as a key. The question is asked of the object's prototype now, and the answer settles both whether it is a key and which kind.
+- A shared secret is derived through the agreement the toolkit captured, not one replaced afterwards. `crypto.diffieHellman` returns the traditional half of a hybrid secret outright, so a replacement supplies that half: driving `pki.hpke.decap` with one returning a fixed buffer derived a secret from the value the replacement chose. The post-quantum half, through `encapsulate` and `decapsulate`, had the same shape, as did the key generation that decides the ephemeral key an encapsulation is made under. `pki.hpke`, `pki.kem`, `pki.key`, `pki.cms` and `pki.webcrypto` all take these through operations captured at load.
+- A content-encryption key, a MAC key, an IV, a nonce and a salt are drawn through the randomness the toolkit captured. Twenty-seven sites read it off the module handle when they needed it, so a replacement returning a value it already knows handed it every message those protect, and nothing downstream can tell a chosen key from a random one.
+- An AEAD message is authenticated against the tag it carries. The tag is set and read through methods on the cipher object, which were reached through that object: a replacement decides which tag a ciphertext is checked against, so the verdict stops being a function of the message. The additional authenticated data, the padding mode, and the bytes a transform produces are reached the same way and are now taken through operations captured at load. The streaming paths in `pki.webcrypto` already did this; the one-shot encrypt and decrypt did not.
+- A key-transport ciphertext is produced, and the secret inside one recovered, through the RSA transforms captured at load. A password-derived key-encryption key, an HKDF expansion, and the elliptic-curve point a scalar generates are the same shape: each returns a value rather than a claim about one, so a replacement returning a fixed value makes every password open the message or puts a point of its own choosing where a public key was expected.
+- `pki.key.export` emits a PEM label that agrees with the bytes in the block. It asked the key its type once to choose the label and again to choose the encoding, and on a `CryptoKey` from node's own WebCrypto that is an accessor, so an accessor answering differently across those reads picked the two separately and a public key came back inside a `PRIVATE KEY` block. The type is read once and every decision in an export comes from that one answer.
+- A digest is computed through the hash operation the toolkit captured, across every path that takes one: the certificate and CRL digests, the CMS message digests and countersignature imprints, the transparency-log identifiers, the PKCS#12 key derivation, the hash-based signature trees, the WebAuthn attestation comparisons and the HTTP Digest credential. `pki.scep`'s check that a named digest is available goes through the same operation, so the name it accepts is the name it would use.
+- The RFC 7616 HTTP Digest credential is computed over the octets of the latin1 encoding the specification names, through one operation rather than a copy of the hash construction kept in the module. Three modules held their own copy of what the digest primitive already does; all three route through it now, and the input and output encodings are named at the call rather than defaulted.
+
 ## v0.8.60 — 2026-10-07
 
 Build every list a parse or an encode reads from by defining its indexes, so an accessor inherited from the array prototype cannot take an element as it is added.

@@ -11,6 +11,7 @@
  * Rekor inclusion + signed root, in-toto subject) each pin a RED vector.
  */
 
+var cryptoTap = require("../helpers/crypto-tap");
 var pki = require("../../index.js");
 var helpers = require("../helpers");
 var check = helpers.check;
@@ -2050,13 +2051,23 @@ async function runMessageSignature(TM) {
      The count is capped at TLOG_MAX_COUNT, which bounds the factor rather than removing it: a 100 MB
      artifact was read 32 times. COUNTED, by the difference between one entry and the ceiling, so the
      digests every other part of the verification takes are not what the vector measures. */
+  /* Counts the hashings OF THE ARTIFACT, not the digests the verification takes in total. The two
+     were the same number while this module read `createHash` off the module handle, because a hook on
+     that property then saw only this module's own calls. The toolkit takes every digest through one
+     captured operation now, so a hook on the construction sees the certificate, Merkle and signature
+     digests as well, and those legitimately scale with the entries a bundle lists. The claim is about
+     the artifact, so the instrument matches the bytes handed to `update`. */
   function countHashes(bundleObj, artifactBytes) {
-    var realCreate = crypto.createHash, n = 0;
-    crypto.createHash = function () { n++; return realCreate.apply(crypto, arguments); };
+    var n = 0;
+    var restore = cryptoTap.on("Hash.update", function (realFn, args) {
+      var chunk = args[0];
+      if (Buffer.isBuffer(chunk) && chunk.length === artifactBytes.length && chunk.equals(artifactBytes)) n++;
+      return realFn.apply(this, args);
+    });
     return pki.sigstore.verifyBundle(bundleObj,
       { fulcioRoots: trust.fulcioRoots, rekorKeys: trust.rekorKeys, artifact: artifactBytes })
-      .then(function () { crypto.createHash = realCreate; return n; },
-        function () { crypto.createHash = realCreate; return n; });
+      .then(function () { restore(); return n; },
+        function () { restore(); return n; });
   }
   function msWithEntries(n) {
     var b = clone(msBundle("v0.3"));
@@ -2070,6 +2081,10 @@ async function runMessageSignature(TM) {
   var otherArtifact = Buffer.alloc(ARTIFACT.length, 0x7a);
   var hashesOne = await countHashes(msWithEntries(1), otherArtifact);
   var hashesMany = await countHashes(msWithEntries(C_LIMITS.TLOG_MAX_COUNT), otherArtifact);
+  // CONTROL first: a difference of zero is also what a counter observing NOTHING reports, so the
+  // instrument has to show it saw the verification before the difference means anything.
+  check("CONTROL the digest counter observes the verification at all (" + hashesOne + " digests)",
+    hashesOne > 0 && hashesMany > 0);
   check("a bundle listing " + C_LIMITS.TLOG_MAX_COUNT + " entries reads the artifact the same number " +
     "of times as one listing a single entry (" + hashesOne + " vs " + hashesMany + " digests)",
   hashesMany - hashesOne <= 1);
@@ -2204,17 +2219,16 @@ async function runMessageSignature(TM) {
   twoAlgBuilt.bundle.messageSignature.messageDigest = { algorithm: "SHA2_512",
     digest: crypto.createHash("sha512").update(ARTIFACT).digest().toString("base64") };
   var algCounts = Object.create(null);
-  var realCreateHash = crypto.createHash;
-  crypto.createHash = function (name) {
-    algCounts[String(name)] = (algCounts[String(name)] || 0) + 1;
-    return realCreateHash.apply(crypto, arguments);
-  };
+  var restoreHashCount = cryptoTap.on("createHash", function (realFn, args) {
+    algCounts[String(args[0])] = (algCounts[String(args[0])] || 0) + 1;
+    return realFn.apply(null, args);
+  });
   var twoAlgOut = null, twoAlgErr = null;
   try {
     twoAlgOut = await pki.sigstore.verifyBundle(twoAlgBuilt.bundle, {
       fulcioRoots: twoAlgBuilt.trust.fulcioRoots, rekorKeys: twoAlgBuilt.trust.rekorKeys,
       artifact: ARTIFACT });
-  } catch (e2) { twoAlgErr = e2; } finally { crypto.createHash = realCreateHash; }
+  } catch (e2) { twoAlgErr = e2; } finally { restoreHashCount(); }
   check("the two-algorithm bundle verifies and checks the messageDigest the bundle carries (" +
     (twoAlgErr && twoAlgErr.code) + ")",
   twoAlgErr === null && twoAlgOut !== null && twoAlgOut.verified === true &&

@@ -15,6 +15,7 @@
 // attached-public export (#12) and caller attributes-on-export (#20) are deferred: the delegating export
 // never re-encodes a PKCS#8, and both would require it (the biconditional is already enforced on parse).
 
+var cryptoTap = require("../helpers/crypto-tap");
 var helpers = require("../helpers");
 var signing = require("../helpers/signing");
 var pki = helpers.pki;
@@ -621,11 +622,9 @@ async function testCorrespondsTo(keyInternal) {
   // the encapsulated and decapsulated ML-KEM secrets, and both sides of the X25519 agreement. The
   // runtime verbs are wrapped to keep the buffers they returned, then read back after the call.
   var made = [];
-  var realEncapsulate = nodeCrypto.encapsulate, realDecapsulate = nodeCrypto.decapsulate, realDiffieHellman = nodeCrypto.diffieHellman;
   function keep(out) { if (out && out.sharedKey) made.push(out.sharedKey); else if (Buffer.isBuffer(out)) made.push(out); return out; }
-  nodeCrypto.encapsulate = function () { return keep(realEncapsulate.apply(nodeCrypto, arguments)); };
-  nodeCrypto.decapsulate = function () { return keep(realDecapsulate.apply(nodeCrypto, arguments)); };
-  nodeCrypto.diffieHellman = function () { return keep(realDiffieHellman.apply(nodeCrypto, arguments)); };
+  function keeper(realFn, args) { return keep(realFn.apply(null, args)); }
+  var restoreKeep = cryptoTap.onAll({ encapsulate: keeper, decapsulate: keeper, diffieHellman: keeper });
   var allZero = function (list) { return list.length > 0 && list.every(function (buf) { return buf.every(function (x) { return x === 0; }); }); };
   try {
     var mlkem = nodeCrypto.generateKeyPairSync("ml-kem-768"), mlkemOther = nodeCrypto.generateKeyPairSync("ml-kem-768");
@@ -639,11 +638,71 @@ async function testCorrespondsTo(keyInternal) {
     check("correspondsTo wipes every ML-KEM and X25519 probe secret after deciding, matched or not (" + made.length + " buffers)",
       verdicts.join() === "true,false,true,false" && made.length === 8 && allZero(made));
   } finally {
-    nodeCrypto.encapsulate = realEncapsulate; nodeCrypto.decapsulate = realDecapsulate; nodeCrypto.diffieHellman = realDiffieHellman;
+    restoreKeep();
   }
 }
 
 // ---- import / generate / publicFromPrivate verbs ---------------------------
+/* An export asks the key which type it is, and that one answer picks the PEM label AND the encoding
+   the bytes come back in. On node's own CryptoKey the answer comes from a getter, so asking it once
+   per decision let a replacement answer "private" where the label was chosen and "public" where the
+   bytes were: a public key came back inside a `PRIVATE KEY` block, which every tool that reads the
+   label then believes. The verbs take one read and pass it down, so the two cannot disagree. */
+async function testAnExportLabelAndItsBytesComeFromOneRead(keyInternal) {
+  void keyInternal;
+  var nodeSubtle = nodeCrypto.webcrypto.subtle;
+  var pair = await nodeSubtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  var cleanPem = await pki.key.export(pair.publicKey, { format: "pem" });
+  check("CONTROL a public CryptoKey exports under a PUBLIC KEY label with nothing replaced",
+    cleanPem.indexOf("-----BEGIN PUBLIC KEY-----") === 0);
+
+  // The native CryptoKey's `type` is a getter on its own prototype, which is a different object from
+  // the KeyObject prototypes. It answers "private" once and then truthfully, which is what makes the
+  // label and the bytes disagree.
+  var nativeProto = null, descriptor;
+  for (var cur = Object.getPrototypeOf(pair.publicKey); cur !== null && cur !== Object.prototype;
+    cur = Object.getPrototypeOf(cur)) {
+    var d = Object.getOwnPropertyDescriptor(cur, "type");
+    if (d !== undefined && typeof d.get === "function") { nativeProto = cur; descriptor = d; break; }
+  }
+  check("CONTROL the native CryptoKey type accessor was located to replace", nativeProto !== null);
+  /* The invariant, counted: an export asks the key its type at most twice, once for the shape check
+     that admits it and once for the answer every decision comes from. A third read is a second
+     authority, and a getter that answers differently across reads then picks the label and the bytes
+     separately. Counting is the instrument because the disagreement is between reads rather than in
+     any one of them. */
+  var calls = 0;
+  var pemCounted;
+  try {
+    Object.defineProperty(nativeProto, "type", {
+      get: function () { calls += 1; return descriptor.get.call(this); },
+      configurable: true,
+    });
+    pemCounted = await pki.key.export(pair.publicKey, { format: "pem" });
+  } finally {
+    Object.defineProperty(nativeProto, "type", descriptor);
+  }
+  check("CONTROL the replaced accessor was reached during the export (" + calls + " call(s))", calls > 0);
+  check("an export reads the key's type at most twice, so its label and its bytes come from one " +
+    "answer (" + calls + " read(s))", calls <= 2);
+  check("and the counted export still carries the right label",
+    pemCounted.indexOf("-----BEGIN PUBLIC KEY-----") === 0);
+
+  // A getter that lies on the authoritative read makes the label and the encoding agree on the same
+  // wrong answer, so the export fails rather than handing back a mislabeled key.
+  var pemUnder = null, threw = null;
+  try {
+    Object.defineProperty(nativeProto, "type", { get: function () { return "private"; }, configurable: true });
+    try { pemUnder = await pki.key.export(pair.publicKey, { format: "pem" }); }
+    catch (e) { threw = (e && e.code) || "throw"; }
+  } finally {
+    Object.defineProperty(nativeProto, "type", descriptor);
+  }
+  check("an export never hands back a public key wearing a PRIVATE KEY label (" +
+    (threw !== null ? "refused " + threw : "label " + String(pemUnder).slice(0, 27)) + ")",
+  threw !== null || pemUnder.indexOf("-----BEGIN PRIVATE KEY-----") !== 0);
+}
+
 async function testVerbs() {
   var ed = await pki.key.generate("Ed25519");
   var p8 = await pki.key.export(ed.privateKey);
@@ -658,6 +717,7 @@ async function testVerbs() {
   // was planted in the structure.
   var keyInternal = require("../../lib/key.js");
   await testCorrespondsTo(keyInternal);
+  await testAnExportLabelAndItsBytesComeFromOneRead(keyInternal);
 
   // import fails closed for an ambiguous algorithm (RSA / EC): guards never guess.
   var rsa = await pki.key.generate({ name: "RSA-PSS", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" });
