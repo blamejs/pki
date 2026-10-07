@@ -28,6 +28,29 @@ function testCap() {
   // opts bounds + typed-error currency.
   check("opts.min binds", typeErr(function () { limits.cap(0, "k", 7, { E: E, code: "x/oob", min: 1 }); }) === "x/oob");
   check("opts.max binds", typeErr(function () { limits.cap(8, "k", 7, { E: E, code: "x/oob", min: 0, max: 7 }); }) === "x/oob");
+  // The bound is read ONCE, into the value both the integer check and the comparison use. Read
+  // twice, the check saw one bound and the comparison another, so an `opts` whose `max` answers a
+  // valid small integer to the type check and a large one to the comparison configured a cap that
+  // admitted a value above the bound it had just been validated against. Every call site in lib/
+  // passes an inline literal, so this was not reachable through any shipped verb; the guard is the
+  // thing that has to hold for the next call site.
+  var maxReads = 0;
+  var steerable = { E: E, code: "x/oob", min: 0 };
+  Object.defineProperty(steerable, "max", {
+    enumerable: true,
+    get: function () { maxReads += 1; return maxReads === 1 ? 7 : 1e9; },
+  });
+  check("a steerable opts.max cannot admit a value above the validated bound",
+    typeErr(function () { limits.cap(8, "k", 7, steerable); }) === "x/oob");
+  check("and the bound was read once (" + maxReads + ")", maxReads === 1);
+  var minReads = 0;
+  var steerableMin = { E: E, code: "x/oob", max: 1000 };
+  Object.defineProperty(steerableMin, "min", {
+    enumerable: true,
+    get: function () { minReads += 1; return minReads === 1 ? 0 : 1e9; },
+  });
+  check("a steerable opts.min cannot refuse a value the validated bound admits",
+    limits.cap(5, "k", 7, steerableMin) === 5);
   check("in-bounds value passes with opts", limits.cap(3, "k", 7, { E: E, code: "x/oob", min: 1, max: 7 }) === 3);
 }
 

@@ -1505,6 +1505,19 @@ security-only patches after the next major releases.
   asserting the refusal still holds; each replacement is narrowed to the one
   value under test, because replacing an operation for every string stops an
   earlier step and the check never reaches the gate.
+  The same holds where a check does not refuse but ASSEMBLES what a later one
+  decides on. `pki.transport.https` builds the TLS trust list for a connection by
+  appending to an empty array, so the operation that appends decides which
+  certificates the handshake will accept: answered by a replacement, the list
+  stayed empty, no trust list was handed to the TLS layer, and a request that
+  named an anchor was completed against the platform's own certificate store.
+  Every operation that module uses to reach a socket is now bound at load, and
+  each per-request setting (`tls`, its anchors, `useSystemStore`, `timeout`,
+  `maxResponseBytes`) is read once into the value both the presence test and the
+  use see, so a value present to the test and absent to the use can no longer
+  leave the request without the trust it asked for. A decode bound is read the
+  same way: `min` and `max` are each read once, so a bound validated as an integer
+  is the bound a value is compared against.
 - **Signed OCSP request verification (responder side).** `pki.ocsp.verifyRequest`
   lets a responder authenticate a client's signed request (RFC 6960 §4.1.1)
   through the same certification-path signature engine `pki.ocsp.verify` uses for
