@@ -196,7 +196,57 @@ function run() {
   testLoadGeneratesOnlyApprovedKeys();
   testEveryCapturedOperationIsImmuneToReplacement();
   testTheSeamCoversEveryOperationThisGuardCaptures();
+  testTheKeyIdentityVerbsAnswerForEachKeyKind();
   return testEveryTransformMethodIsImmuneToReplacement();
+}
+
+/* A secret KeyObject is a KeyObject, and it is not one the asymmetric accessors belong to: node
+   refuses them for that receiver. So a verb admitting all three kinds and then reaching for one of
+   them turns a caller's wrong key kind into a raw TypeError, where the module it was called from had
+   promised a typed refusal. The tolerant verbs answer `undefined` for a secret key, which is what the
+   accessor itself answered before it was captured, and the strict ones refuse it naming the guard
+   rather than letting node's own message out. */
+function testTheKeyIdentityVerbsAnswerForEachKeyKind() {
+  var pair = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var secret = crypto.createSecretKey(Buffer.alloc(32));
+  var forged = { asymmetricKeyType: "rsa", type: "public" };
+
+  check("CONTROL the accessor itself answers undefined for a secret key, which is the contract the " +
+    "tolerant verbs keep", secret.asymmetricKeyType === undefined);
+
+  check("keyTypeOf answers for an asymmetric key", guard.keyTypeOf(pair.publicKey) === "ec" &&
+    guard.keyTypeOf(pair.privateKey) === "ec");
+  check("keyTypeOf answers undefined for a secret key rather than throwing",
+    guard.keyTypeOf(secret) === undefined);
+  check("keyDetailsOf answers undefined for a secret key rather than throwing",
+    guard.keyDetailsOf(secret) === undefined);
+  check("keyTypeOf and keyDetailsOf answer undefined for a forged object carrying the field",
+    guard.keyTypeOf(forged) === undefined && guard.keyDetailsOf(forged) === undefined);
+  check("keyTypeOf answers undefined for a non-object",
+    guard.keyTypeOf(null) === undefined && guard.keyTypeOf("pem") === undefined &&
+    guard.keyTypeOf(Buffer.alloc(4)) === undefined);
+
+  // keyKindOf covers all three kinds, because `type` is the one accessor every KeyObject carries.
+  check("keyKindOf answers for all three key kinds",
+    guard.keyKindOf(pair.publicKey) === "public" && guard.keyKindOf(pair.privateKey) === "private" &&
+    guard.keyKindOf(secret) === "secret");
+  check("keyKindOf answers undefined for a forged object", guard.keyKindOf(forged) === undefined);
+
+  // The strict verbs name the guard they belong to, so a wrong key kind reads as a caller fault
+  // rather than as an internal invariant of the runtime.
+  function refusalOf(fn) {
+    try { fn(); return null; } catch (e) { return (e instanceof TypeError) ? e.message : "not-a-TypeError"; }
+  }
+  var strictSecret = refusalOf(function () { return guard.keyType(secret); });
+  check("keyType refuses a secret key and names itself (" + strictSecret + ")",
+    strictSecret !== null && strictSecret.indexOf("guard.crypto.keyType") === 0);
+  var strictDetails = refusalOf(function () { return guard.keyDetails(secret); });
+  check("keyDetails refuses a secret key and names itself",
+    strictDetails !== null && strictDetails.indexOf("guard.crypto.keyDetails") === 0);
+  var strictSize = refusalOf(function () { return guard.secretKeySize(pair.publicKey); });
+  check("secretKeySize refuses an asymmetric key and names itself",
+    strictSize !== null && strictSize.indexOf("guard.crypto.secretKeySize") === 0);
+  check("and secretKeySize answers for the kind it belongs to", guard.secretKeySize(secret) === 32);
 }
 
 /* The seam at test/helpers/crypto-tap.js exists because this module's captures make a wrapper
