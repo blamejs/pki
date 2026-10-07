@@ -692,14 +692,18 @@ function testNoStoringAppend() {
   // rename can move. A live `receiver.push(` dispatch is a different class, counted by the
   // captured-operation budget above; this one is about the form a module binds at load.
   //
-  // The COMPUTED spellings count too, and the dotted-only form missed them: `Array["prototype"]["push"]`
-  // obtains the same function while reading as nothing of the kind. The walk blanks string literals
-  // before matching, which would hide the property NAMES, so the anchor is the BRACKET on these two
-  // receivers rather than what is inside it: stripped, that line still reads `Array[ ][ ]`. Indexing
-  // `Array` or the guard namespace has no legitimate use in lib/ (measured: zero occurrences outside
-  // a comment), so this costs no exemption.
-  var STORING = new RegExp("\\bArray\\s*\\.\\s*prototype\\s*\\.\\s*push\\b" +
-    "|\\bintrinsic\\s*\\.\\s*push\\b" +
+  // ENUMERATING THE RECEIVER LOSES, and it lost twice: a dotted-only form missed
+  // `Array["prototype"]["push"]`, and naming `Array.prototype` and the guard namespace still missed
+  // `uncurry([].push)`. There is always another object to read the method off. So the anchor is the
+  // METHOD NAME together with the ABSENCE OF A CALL: obtaining `push` as a VALUE is the thing no
+  // module in lib/ has any reason to do, whoever owns it. Measured: zero such reads in lib/ today,
+  // while 764 `receiver.push(` CALLS remain (those are the captured-operation budget's class, not
+  // this one), so the line costs no exemption and does not overlap.
+  //
+  // The two bracket arms stay for the computed form whose property NAME the walk blanks: stripped,
+  // `Array["prototype"]["push"]` reads `Array[ ][ ]`, where there is no `push` text left to match.
+  // Indexing `Array` or the guard namespace has no legitimate use here either (measured: zero).
+  var STORING = new RegExp("\\.\\s*push\\b(?!\\s*\\()" +
     "|\\bArray\\s*\\[" +
     "|\\bintrinsic\\s*\\[", "g");
   var files = _libFiles();
@@ -717,7 +721,8 @@ function testNoStoringAppend() {
         line: subject.slice(0, m.index).split(/\r?\n/).length,
         content: "obtains the storing append `" + m[0].replace(/\s+/g, "") + "` — a store at an " +
           "index runs a setter inherited from the prototype chain, which takes the element being " +
-          "appended; use `intrinsic.append`, which defines the index on the array itself",
+          "appended, whichever object the method was read off; use `intrinsic.append`, which defines " +
+          "the index on the array itself",
       });
     }
   }
