@@ -696,6 +696,60 @@ function _stripCommentsOnly(src) {
   return out;
 }
 
+/** ONE PROPERTY NAME decoded to the characters it denotes, for comparing against a fixed set.
+ *  `Array.prototype.push` and `Array.prototype["\x70ush"]` are the property `push`: the
+ *  language resolves an escape in an IDENTIFIER and in a STRING the same way, so both reach the same
+ *  function, and a scan of the raw spelling matches neither. MEASURED: each of the three forms
+ *  (identifier, string, template) compares `=== Array.prototype.push`, and the captured function
+ *  still ran an accessor inherited at index 0 and left the array no own property there. An escape is
+ *  a static spelling of one fixed name, so it is inside "the spellings a person writes" rather than
+ *  the runtime-assembled name this check states as its limit.
+ *
+ *  THE DECODE IS SCOPED TO THE NAME, NOT RUN OVER THE FILE, because a whole-file pass INVENTS
+ *  evidence. Both were measured: in `Array.prototype['push\x27]']` the real key is `push']`, and
+ *  decoding the file turns `\x27` into a quote that closes the literal early, so the text reads as
+ *  `['push']` and reports a capture the source does not contain; in the regex literal `/\x2epush/`,
+ *  `\x2e` becomes the dot of a member access the same way. Decoding only a captured name can do
+ *  neither: the body of `'push\x27]'` decodes to `push']`, which is not `push`. It also needs no
+ *  offset map, since the line comes from the raw match.
+ *
+ *  Returns null when the text is not one name: a malformed escape, or a code point above the Unicode
+ *  maximum, is not a name the language accepts. A line continuation (a backslash before a line
+ *  terminator) denotes nothing and is dropped, which is how `"pu\<newline>sh"` is the key `push`. */
+function _propertyName(text) {
+  var out = "", i = 0, n = text.length;
+  while (i < n) {
+    if (text[i] !== "\\") { out += text[i]; i += 1; continue; }
+    var next = text[i + 1];
+    if (next === undefined) return null;
+    if (next === "\n" || next === "\r" || next === " " || next === " ") {
+      i += (next === "\r" && text[i + 2] === "\n") ? 3 : 2;
+      continue;
+    }
+    var hex = null, width = 0;
+    if (next === "x" && /^[0-9a-fA-F]{2}$/.test(text.slice(i + 2, i + 4))) {
+      hex = text.slice(i + 2, i + 4); width = 4;
+    } else if (next === "u" && text[i + 2] === "{") {
+      var close = text.indexOf("}", i + 3);
+      var inner = close === -1 ? "" : text.slice(i + 3, close);
+      // Any number of hex digits, since leading zeros are legal: `\u{00000070}` is `p`.
+      if (close !== -1 && /^[0-9a-fA-F]+$/.test(inner)) { hex = inner; width = close + 1 - i; }
+    } else if (next === "u" && /^[0-9a-fA-F]{4}$/.test(text.slice(i + 2, i + 6))) {
+      hex = text.slice(i + 2, i + 6); width = 6;
+    }
+    if (hex === null) {
+      // Every other escape denotes its own character, which is what the language does with one it
+      // has no meaning for. `\\` lands here too, so a doubled backslash is one backslash.
+      out += next; i += 2; continue;
+    }
+    var code = parseInt(hex, 16);
+    if (code > 0x10ffff) return null;
+    out += String.fromCodePoint(code);
+    i += width;
+  }
+  return out;
+}
+
 function testNoStoringAppend() {
   // class: append-by-store
   // `Array.prototype.push` STORES at the index, and a store walks the prototype chain looking for a
@@ -766,26 +820,46 @@ function testNoStoringAppend() {
   // backreference keeps the pair matched, so a quote character inside a differently-quoted name is
   // not a close. A template literal carrying a substitution is a runtime-assembled name, which is
   // the limit this check already states rather than a spelling it can match.
-  var STORING = new RegExp("\\.\\s*(?:push|unshift)\\b(?!\\s*\\()" +
-    "|\\[\\s*(['\"`])(?:push|unshift)\\1\\s*\\]", "g");
+  // THE NAME IS CAPTURED AND THEN DECODED, rather than the file being normalized first: the two
+  // arms below capture whatever occupies a property position and `_propertyName` says which name it
+  // denotes, so `Array.prototype.push` and `Array.prototype["\x70ush"]` are reported while a
+  // quote or a dot produced by an escape inside some other literal cannot invent one.
+  var NAME_CHAR = "(?:[A-Za-z0-9_$]|\\\\u[0-9a-fA-F]{4}|\\\\u\\{[0-9a-fA-F]+\\})";
+  var MEMBER = new RegExp("\\.\\s*(" + NAME_CHAR + "+)(?!\\s*\\()", "g");
+  var QUOTED = new RegExp("\\[\\s*(['\"`])((?:\\\\[\\s\\S]|[^'\"`\\\\])*)\\1\\s*\\]", "g");
+  var STORING_NAMES = { push: 1, unshift: 1 };
   var files = _libFiles();
   var bad = [];
   for (var i = 0; i < files.length; i++) {
     var content;
     try { content = fs.readFileSync(files[i], "utf8"); }
     catch (_e) { continue; }
+    // Comments out, string literals kept: the evidence a check matches on cannot be removed before
+    // the match, and a property name inside a literal IS the evidence.
     var subject = _stripCommentsOnly(content);
-    STORING.lastIndex = 0;
-    var m;
-    while ((m = STORING.exec(subject)) !== null) {
+    // A bare carriage return is a line terminator of its own, so a file written with one would
+    // otherwise report every line as the first.
+    function lineAt(at) { return subject.slice(0, at).split(/\r\n|\r|\n/).length; }
+    function report(at, shown) {
       bad.push({
         file: _relPath(files[i]),
-        line: subject.slice(0, m.index).split(/\r?\n/).length,
-        content: "obtains a storing append `" + m[0].replace(/\s+/g, "") + "` — a store at an " +
+        line: lineAt(at),
+        content: "obtains a storing append `" + shown.replace(/\s+/g, "") + "` — a store at an " +
           "index runs a setter inherited from the prototype chain, which takes the element being " +
           "appended, whichever object the method was read off; use `intrinsic.append`, which defines " +
           "the index on the array itself",
       });
+    }
+    var m;
+    MEMBER.lastIndex = 0;
+    while ((m = MEMBER.exec(subject)) !== null) {
+      var memberName = _propertyName(m[1]);
+      if (memberName !== null && STORING_NAMES[memberName] === 1) report(m.index, "." + memberName);
+    }
+    QUOTED.lastIndex = 0;
+    while ((m = QUOTED.exec(subject)) !== null) {
+      var quotedName = _propertyName(m[2]);
+      if (quotedName !== null && STORING_NAMES[quotedName] === 1) report(m.index, "[" + m[1] + quotedName + m[1] + "]");
     }
     // The destructuring arm, matched by BRACES rather than by a brace-free span: every `{` is walked
     // to its own `}`, and a pattern is one whose close is followed by a single `=`. A default
@@ -801,10 +875,18 @@ function testNoStoringAppend() {
       if (close <= b || close >= subject.length) continue;
       if (!declared && !/^\s*=(?!=)/.test(subject.slice(close + 1))) continue;
       var pattern = subject.slice(b, close);
-      if (!/\b(?:push|unshift)\b/.test(pattern)) continue;
+      // Every name-shaped token in the pattern, decoded, so `{ push: p }` is read as the key
+      // it is. A key written as a quoted string inside a pattern is covered by the same decode.
+      var keyRe = new RegExp(NAME_CHAR + "+", "g");
+      var key, names = {};
+      while ((key = keyRe.exec(pattern)) !== null) {
+        var decodedKey = _propertyName(key[0]);
+        if (decodedKey !== null) names[decodedKey] = 1;
+      }
+      if (names.push !== 1 && names.unshift !== 1) continue;
       bad.push({
         file: _relPath(files[i]),
-        line: subject.slice(0, b).split(/\r?\n/).length,
+        line: lineAt(b),
         content: "binds the storing append by destructuring — a store at an index runs a setter " +
           "inherited from the prototype chain, which takes the element being appended; use " +
           "`intrinsic.append`, which defines the index on the array itself",
@@ -813,6 +895,91 @@ function testNoStoringAppend() {
   }
   bad = _filterMarkers(bad, "append-by-store");
   _report("no module in lib/ obtains the storing form of append", bad);
+  _assertDecodesEscapedAppends();
+}
+
+/** The name decoding, proven on the spellings it exists for AND on the ones it must not invent.
+ *  A CANARY rather than a planted file: the source here stays pure ASCII, so every backslash is
+ *  built with `fromCharCode(92)`. That matters because a fixture written with a real `u` in it
+ *  reached the file as plain `u` while this was being written, and a vector that cannot hold the
+ *  spelling it tests passes by testing nothing.
+ *
+ *  Each row names what JavaScript itself resolves the spelling to, which is the oracle: the
+ *  identifier, string and template forms were each measured `=== Array.prototype.push`, and the
+ *  captured function still ran an accessor inherited at index 0. */
+function _assertDecodesEscapedAppends() {
+  var BS = String.fromCharCode(92);
+  var LF = String.fromCharCode(10);
+  var bad = [];
+  function fail(what) {
+    bad.push({ file: "test/layer-0-primitives/codebase-patterns.test.js", line: 1, content: what });
+  }
+  // What one captured name denotes. `null` means "not a name the language accepts".
+  var names = [
+    ["a four-digit escape", "p" + BS + "u0075sh", "push"],
+    ["a hex escape", BS + "x70ush", "push"],
+    ["a braced code point", BS + "u{75}nshift", "unshift"],
+    ["a braced code point with leading zeros", BS + "u{00000070}ush", "push"],
+    ["every character escaped", BS + "x70" + BS + "x75" + BS + "x73" + BS + "x68", "push"],
+    ["a line continuation", "pu" + BS + LF + "sh", "push"],
+    ["a doubled backslash", "pu" + BS + BS + "sh", "pu" + BS + "sh"],
+    ["an unknown escape", "pu" + BS + "sh", "push"],
+    ["a malformed hex escape", "pu" + BS + "x7h", "pux7h"],
+    ["a code point above the maximum", BS + "u{110000}ush", null],
+    ["a key carrying a quote", "push" + BS + "x27]", "push']"],
+    ["a surrogate pair", BS + "ud835" + BS + "udc29" + "ush", String.fromCodePoint(0x1d429) + "ush"],
+  ];
+  for (var i = 0; i < names.length; i++) {
+    var got = _propertyName(names[i][1]);
+    if (got !== names[i][2]) {
+      fail("_propertyName read " + names[i][0] + " (" + JSON.stringify(names[i][1]) + ") as " +
+        JSON.stringify(got) + " rather than " + JSON.stringify(names[i][2]));
+    }
+  }
+  // And the two shapes that must NOT be reported, because the name they would produce is not in the
+  // source. Both were executed counterexamples against a whole-file decode.
+  var mustBeSilent = [
+    ["a quote produced inside a string body", "x = y['push" + BS + "x27]'];"],
+    ["a dot produced inside a regex literal", "var re = /" + BS + "x2epush/;"],
+  ];
+  var NAME_CHAR = "(?:[A-Za-z0-9_$]|\\\\u[0-9a-fA-F]{4}|\\\\u\\{[0-9a-fA-F]+\\})";
+  var MEMBER = new RegExp("\\.\\s*(" + NAME_CHAR + "+)(?!\\s*\\()", "g");
+  var QUOTED = new RegExp("\\[\\s*(['\"`])((?:\\\\[\\s\\S]|[^'\"`\\\\])*)\\1\\s*\\]", "g");
+  function hits(text) {
+    var out = [], m;
+    MEMBER.lastIndex = 0;
+    while ((m = MEMBER.exec(text)) !== null) {
+      var mn = _propertyName(m[1]);
+      if (mn === "push" || mn === "unshift") out[out.length] = "." + mn;
+    }
+    QUOTED.lastIndex = 0;
+    while ((m = QUOTED.exec(text)) !== null) {
+      var qn = _propertyName(m[2]);
+      if (qn === "push" || qn === "unshift") out[out.length] = "[" + qn + "]";
+    }
+    return out;
+  }
+  for (var s = 0; s < mustBeSilent.length; s++) {
+    var found = hits(mustBeSilent[s][1]);
+    if (found.length !== 0) {
+      fail("the check reports " + mustBeSilent[s][0] + " (" + JSON.stringify(mustBeSilent[s][1]) +
+        "), a name the source does not contain: " + JSON.stringify(found));
+    }
+  }
+  // And the forms that must be reported, through the same two arms the check uses.
+  var mustFire = [
+    ["an escaped member read", "var p = Array.prototype.p" + BS + "u0075sh;", ".push"],
+    ["an escaped quoted key", 'var p = Array.prototype["' + BS + 'x70ush"];', "[push]"],
+    ["an escaped templated key", "var p = Array.prototype[`" + BS + "u{75}nshift`];", "[unshift]"],
+  ];
+  for (var f = 0; f < mustFire.length; f++) {
+    var fired = hits(mustFire[f][1]);
+    if (fired.indexOf(mustFire[f][2]) === -1) {
+      fail("the check does not report " + mustFire[f][0] + " (" + JSON.stringify(mustFire[f][1]) +
+        "); it found " + JSON.stringify(fired));
+    }
+  }
+  _report("the append check reads an escaped property name as the name it denotes, and invents none", bad);
 }
 
 // ---------------------------------------------------------------------------
