@@ -80,10 +80,13 @@ function run() {
   // and consumes whatever follows. The body is copied before it is measured, so a backing buffer
   // that shrinks between the measurement and the write cannot separate the two. The bound's own
   // `valueOf` is the window, because it runs inside the comparison the length is checked by.
-  var resizable = new ArrayBuffer(2, { maxByteLength: 2 });
+  // Resizable buffers are the point of this vector, and the engine floor has them; the fallback
+  // keeps the file runnable where they are absent instead of constructing something meaningless.
+  var canResize = typeof ArrayBuffer.prototype.resize === "function";
+  var resizable = canResize ? new ArrayBuffer(2, { maxByteLength: 2 }) : new ArrayBuffer(2);
   var shrinking = Buffer.from(resizable, 0, 2);
   shrinking[0] = 0xaa; shrinking[1] = 0xbb;
-  var hostileMin = { valueOf: function () { resizable.resize(1); return 0; } };
+  var hostileMin = { valueOf: function () { if (canResize) resizable.resize(1); return 0; } };
   var framed;
   try { framed = W().vector(1, hostileMin, null, shrinking).build(); }
   catch (e) { framed = "THROW:" + ((e && e.code) || "UNTYPED:" + (e && e.message)); }

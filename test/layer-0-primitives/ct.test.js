@@ -235,6 +235,21 @@ function testReconstruct() {
   ]);
   check("42. x509 preimage is byte-exact", pre.equals(expected));
 
+  // 42b. EVERY component of that preimage is appended by defining its index. These bytes are what a
+  // log's signature is verified over, so a numeric setter inherited from the array prototype
+  // replacing any one of them, the version, the signature type, the timestamp, the entry type, the
+  // certificate or the extensions, would put the verification on bytes the log never signed.
+  var taken = 0, underSetter;
+  Object.defineProperty(Array.prototype, "0", {
+    configurable: true, enumerable: false,
+    get: function () { return undefined; },
+    set: function (v) { taken += 1; Object.defineProperty(this, "0", { value: Buffer.from([0xff]), writable: true, enumerable: true, configurable: true }); },
+  });
+  try { underSetter = pki.ct.reconstructSignedData({ entryType: 0, leafCert: leaf }, s); }
+  finally { delete Array.prototype[0]; }
+  check("42b. an inherited index setter cannot replace a component of the preimage (setter x" + taken + ")",
+    underSetter.equals(expected) && taken === 0);
+
   // precert arm: ... entryType(0001) issuerKeyHash(32) u24(tbsLen) tbs u16(0)
   var tbs = Buffer.alloc(90, 0x22);
   var ikh = Buffer.alloc(32, 0x33);

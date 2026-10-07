@@ -691,7 +691,17 @@ function testNoStoringAppend() {
   // Anchored on the PROTOTYPE MEMBER and on the guard's own export name, neither of which a local
   // rename can move. A live `receiver.push(` dispatch is a different class, counted by the
   // captured-operation budget above; this one is about the form a module binds at load.
-  var STORING = /\bArray\s*\.\s*prototype\s*\.\s*push\b|\bintrinsic\s*\.\s*push\b/g;
+  //
+  // The COMPUTED spellings count too, and the dotted-only form missed them: `Array["prototype"]["push"]`
+  // obtains the same function while reading as nothing of the kind. The walk blanks string literals
+  // before matching, which would hide the property NAMES, so the anchor is the BRACKET on these two
+  // receivers rather than what is inside it: stripped, that line still reads `Array[ ][ ]`. Indexing
+  // `Array` or the guard namespace has no legitimate use in lib/ (measured: zero occurrences outside
+  // a comment), so this costs no exemption.
+  var STORING = new RegExp("\\bArray\\s*\\.\\s*prototype\\s*\\.\\s*push\\b" +
+    "|\\bintrinsic\\s*\\.\\s*push\\b" +
+    "|\\bArray\\s*\\[" +
+    "|\\bintrinsic\\s*\\[", "g");
   var files = _libFiles();
   var bad = [];
   for (var i = 0; i < files.length; i++) {
@@ -3922,7 +3932,7 @@ function testGuardReadsRuntimeLive() {
     "lib/attrcert-sign.js": 67,
     "lib/tsp-sign.js": 41,
     "lib/pkcs12-build.js": 63,
-    "lib/ct.js": 58,
+    "lib/ct.js": 40,
     "lib/cms-verify.js": 13,
     "lib/cms-encrypt.js": 66,
     "lib/crl-sign.js": 61,
