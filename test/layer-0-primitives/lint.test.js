@@ -1849,16 +1849,88 @@ function testCrlProfile() {
   // measured at 351 ms and the rescan-every-preceding-value form at about 3100 ms. A smaller input
   // does not work here, since at 20000 the quadratic form still came in at 355 ms and would have
   // passed any bound a slow machine could also meet.
-  var manyFeatures = [];
-  for (var mf = 0; mf < 60000; mf++) manyFeatures.push(mf);
-  var bigTf = makeCert({ exts: [tlsFeature(manyFeatures)] });
-  var tfStart = Date.now();
+  //
+  // THE MEASURED QUANTITY IS A DELTA, because an absolute bound here measures the machine. At
+  // 1500 ms this failed three consecutive CI runs at 1788, 1845 and 1866 ms while passing locally,
+  // and the reason is that the DER parse of a quarter-megabyte certificate dominates: the whole lint
+  // is 358 ms under the same c8 instrumentation CI uses, of which the rule itself is 2 ms, so the
+  // two forms were only 8.8x apart and the hosted runner is about 5x this hardware. Selecting a
+  // single profile does not isolate the rule either, measured at 254 ms against the default set's
+  // 256 ms.
+  //
+  // So the pair below differs ONLY in the property under test. Both certificates carry the same
+  // number of features and encode to the SAME SIZE (300249 bytes; every value from 40000 up takes
+  // three content octets, the repeated one included), so the parse cost is identical and cancels. A
+  // one-pass rule is linear on both and the delta is near zero; a rescan that exits on the first
+  // match is quadratic on distinct values and linear on repeated ones, so the delta is its whole
+  // quadratic cost.
+  //
+  // WHAT THE DELTA ALONE DOES NOT CATCH: a rescan that does NOT exit early is quadratic on BOTH
+  // sides, so the subtraction cancels it. The absolute bound below is the backstop for that one, and
+  // the two together cover both shapes. Sized from the same measurements: a form quadratic on both
+  // sides costs about 1.5 s here and about 7.5 s on the hosted runner, against the 1.8 s the linear
+  // form costs there, so 6000 ms separates them on that runner. On hardware as fast as this machine
+  // the two overlap and only the delta discriminates, which is why neither check stands alone.
+  //
+  // MEASURED over six passes, each the best of three lints per side: distinct around 221 ms,
+  // repeated around 222 ms, and a delta between -11 and +10 ms. A rescan over the same 60000 values
+  // costs 1511 ms, measured directly at the full size rather than scaled from a smaller one. The
+  // bound of 600 ms therefore sits about 12x above the delta's whole spread and about 2.5x below the
+  // quadratic cost, and both terms scale with the machine so those ratios hold on a slower runner.
+  // A negative delta is ordinary here and is why the bound is one-sided: the two certificates differ
+  // only in their values, so either side can win by a few milliseconds.
+  var distinctFeatures = [], repeatedFeatures = [];
+  for (var mf = 0; mf < 60000; mf++) { distinctFeatures.push(40000 + mf); repeatedFeatures.push(40000); }
+  var bigTf = makeCert({ exts: [tlsFeature(distinctFeatures)] });
+  var repTf = makeCert({ exts: [tlsFeature(repeatedFeatures)] });
+  check("the two certificates differ only in whether the features repeat (" +
+    bigTf.length + " vs " + repTf.length + " bytes)", bigTf.length === repTf.length);
+  function bestLintMs(der) {
+    var best = Infinity;
+    for (var r = 0; r < 3; r++) {
+      var t0 = Date.now();
+      pki.lint.certificate(der);
+      var took = Date.now() - t0;
+      if (took < best) best = took;
+    }
+    return best;
+  }
+  var distinctMs = bestLintMs(bigTf);
+  var repeatedMs = bestLintMs(repTf);
+  var tfDelta = distinctMs - repeatedMs;
   var bigReport = pki.lint.certificate(bigTf);
-  var tfMs = Date.now() - tfStart;
-  check("60000 distinct TLS features lint in linear time (" + tfMs + " ms, " + bigTf.length + " bytes)",
-    tfMs < 1500);
+  check("60000 distinct TLS features cost no more than 60000 repeated ones (delta " + tfDelta +
+    " ms: " + distinctMs + " distinct, " + repeatedMs + " repeated)", tfDelta < 600);
+  check("...and a form quadratic on both sides is caught by the absolute bound too (" +
+    distinctMs + " ms)", distinctMs < 6000);
   check("...and the report is still the right one",
     !has(bigReport, "lint/rfc7633/feature-repeated"));
+  // The pair only means something if the rule RAN on both sides. Either certificate failing to
+  // parse would make the delta zero and pass, so each side asserts a finding only this rule emits:
+  // the repeated one draws the repeat, and the distinct one draws the registry-width row that every
+  // value above the registry maximum produces.
+  check("...and the repeated certificate draws the repeated-feature finding",
+    has(pki.lint.certificate(repTf), "lint/rfc7633/feature-repeated"));
+  check("...and the distinct certificate reached the rule as well",
+    has(bigReport, "lint/rfc7633/feature-outside-registry-width"));
+  // CONTROL: the bound still has to sit BELOW what a rescan costs, and that depends on the machine
+  // this runs on rather than on the one the figure was taken from. A rescan over a tenth of the
+  // values is a hundredth of the work, so timing that and scaling it says what the full quadratic
+  // form would cost here. If a machine is ever fast enough to make that number approach the bound,
+  // this fails and says the size needs raising rather than letting the real check go quiet.
+  // The sample is large enough to time properly: a 6000-value one measured 16 ms, which is a single
+  // clock tick and quantizes the scaled figure by a sixth. Nanosecond timing over 12000 values is
+  // four times the work and carries no quantization at all.
+  var sample = 12000, scale = (60000 / sample) * (60000 / sample);
+  var rescanStart = process.hrtime.bigint();
+  var rescanSeen = 0;
+  for (var ri = 0; ri < sample; ri++) {
+    for (var rj = 0; rj < ri; rj++) { if (distinctFeatures[rj] === distinctFeatures[ri]) { rescanSeen++; break; } }
+  }
+  var rescanMs = (Number(process.hrtime.bigint() - rescanStart) / 1e6) * scale;
+  check("a rescan of every preceding value would cost more than the bound (about " +
+    rescanMs.toFixed(0) + " ms scaled from " + sample + " values, bound 600 ms, " +
+    rescanSeen + " repeats)", rescanMs > 600 * 2);
 
   // The profile is nameable and the rows are enumerable, which are two different tables.
   check("the rfc7633 profile is selectable", pki.lint.profiles().indexOf("rfc7633") !== -1);
