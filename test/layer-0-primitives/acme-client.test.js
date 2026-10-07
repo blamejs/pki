@@ -1773,6 +1773,26 @@ async function testAlternateChains() {
   var r2 = await (await withAccount(s2)).downloadCertificate(A.URLS.certificate, NO_BIND);
   check("#16 AL-2 a Link alternate is listed but not fetched", r2.alternates.length === 1 && r2.alternates[0] === ALT0 && altCalls(s2) === 0);
 
+  // AL-2b the Link header is parsed through operations bound at load. The relation name is what
+  // decides whether a header names an alternate chain this client will follow, and the parameter was
+  // cut with a live `String.prototype.slice`: a header stating `rel=next` parsed as `alternate`.
+  // Narrowed to a receiver carrying `rel=`, which is the Link header and its segments: replacing
+  // slice for every string stops an earlier step in the download and the probe never reaches the
+  // parser. The header is injected pre-built so the only code slicing such a string is the client's.
+  var realSliceAL = String.prototype.slice;
+  var sliceSeen = 0, r2b;
+  var s2b = A.acmeServer({ certPems: primary, certLinkHeader: "<" + ALT0 + ">;rel=\"alternate\"" });
+  try {
+    String.prototype.slice = function () {
+      if (realSliceAL.call(this, 0).indexOf("rel=") !== -1) { sliceSeen += 1; return "alternate"; }
+      return realSliceAL.apply(this, arguments);
+    };
+    r2b = await (await withAccount(s2b)).downloadCertificate(A.URLS.certificate, NO_BIND);
+  } finally { String.prototype.slice = realSliceAL; }
+  check("#16 AL-2b a replaced slice cannot change the Link relation the client resolves (" +
+    r2b.alternates.length + " alternate(s), hostile slice x" + sliceSeen + ")",
+  r2b.alternates.length === 1 && r2b.alternates[0] === ALT0 && sliceSeen === 0);
+
   // AL-3 a predicate selects the CA-B alternate (both cert URLs POST-as-GET'd, same leaf).
   var s3 = A.acmeServer({ certPems: primary, alternateChains: [altB] });
   var r3 = await (await withAccount(s3)).downloadCertificate(A.URLS.certificate, { requireBinding: false, selectChain: pickB });

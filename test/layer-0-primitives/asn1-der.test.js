@@ -1472,6 +1472,43 @@ function testNamedBitString() {
   check("namedBitString rejects a non-array", code(function () { b.namedBitString(5); }) === "asn1/bad-bit-string");
   // the emitted BIT STRING decodes back through the strict reader (round-trips to a valid TLV).
   check("namedBitString output is a decodable BIT STRING", pki.asn1.decode(b.namedBitString([5, 6])).tagNumber === 3);
+
+  // The dotted string an OBJECT IDENTIFIER renders to is what every algorithm and extension decision
+  // in this toolkit is made on. Each arc was accumulated through the global `BigInt` and appended
+  // through the live `push`, so a replacement of either decided the identifier: the same two content
+  // octets rendered as `1.2.3` and as `1.2.4`.
+  var oidDer = Buffer.from([0x06, 0x02, 42, 3]);
+  check("fixture: those octets are the OID 1.2.3", pki.asn1.read.oid(pki.asn1.decode(oidDer)) === "1.2.3");
+  var realBigInt = global.BigInt;
+  var realPush = Array.prototype.push;
+  var dotted, bigIntCalls = 0, pushCalls = 0;
+  try {
+    global.BigInt = function (v) { bigIntCalls += 1; return realBigInt(v) + 1n; };
+    Array.prototype.push = function () { pushCalls += 1; return realPush.apply(this, arguments); };
+    dotted = pki.asn1.read.oid(pki.asn1.decode(oidDer));
+  } finally {
+    global.BigInt = realBigInt;
+    Array.prototype.push = realPush;
+  }
+  check("a replaced BigInt or push cannot decide an OID's dotted form (" + dotted +
+    ", BigInt x" + bigIntCalls + ", push x" + pushCalls + ")",
+  dotted === "1.2.3" && bigIntCalls === 0 && pushCalls === 0);
+
+  // Appending with `push` STORES at the index, and a store walks the prototype chain for a setter,
+  // so an accessor at `Array.prototype[0]` took each arc as it was appended and answered with
+  // another: the same octets rendered `1.3.3`. Capturing `push` does not close that; defining the
+  // index on the array itself does.
+  var protoSetterCalls = 0, dottedUnderSetter;
+  Object.defineProperty(Array.prototype, "0", {
+    configurable: true, enumerable: false,
+    get: function () { return undefined; },
+    set: function (v) { protoSetterCalls += 1; Object.defineProperty(this, "0", { value: 1n, writable: true, enumerable: true, configurable: true }); },
+  });
+  try { dottedUnderSetter = pki.asn1.read.oid(pki.asn1.decode(oidDer)); }
+  finally { delete Array.prototype[0]; }
+  check("an inherited index setter cannot take an OID's arcs as they are appended (" +
+    dottedUnderSetter + ", setter x" + protoSetterCalls + ")",
+  dottedUnderSetter === "1.2.3" && protoSetterCalls === 0);
 }
 
 module.exports = { run: run };
