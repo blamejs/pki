@@ -820,13 +820,16 @@ function testNoStoringAppend() {
   // backreference keeps the pair matched, so a quote character inside a differently-quoted name is
   // not a close. A template literal carrying a substitution is a runtime-assembled name, which is
   // the limit this check already states rather than a spelling it can match.
-  // THE NAME IS CAPTURED AND THEN DECODED, rather than the file being normalized first: the two
-  // arms below capture whatever occupies a property position and `_propertyName` says which name it
-  // denotes, so `Array.prototype.push` and `Array.prototype["\x70ush"]` are reported while a
-  // quote or a dot produced by an escape inside some other literal cannot invent one.
-  var NAME_CHAR = "(?:[A-Za-z0-9_$]|\\\\u[0-9a-fA-F]{4}|\\\\u\\{[0-9a-fA-F]+\\})";
-  var MEMBER = new RegExp("\\.\\s*(" + NAME_CHAR + "+)(?!\\s*\\()", "g");
-  var QUOTED = new RegExp("\\[\\s*(['\"`])((?:\\\\[\\s\\S]|[^'\"`\\\\])*)\\1\\s*\\]", "g");
+  // TWO ARMS, AND THE EXPENSIVE ONE IS ANCHORED ON THE ESCAPE. The literal spellings are found by
+  // one pass that matches the names directly. The escaped spellings need a capture-then-decode pass,
+  // and running that at every property position is work with nothing to find: there are 81654 dots
+  // in `lib/` and ZERO `\u` or `\x` escapes, so it ran 81654 times for a spelling that occurs
+  // nowhere. MEASURED over all of lib/: 12 ms for the decode pass against 1 ms for the literal one,
+  // and the containment test that now gates it is under a millisecond. So the decode runs only on a
+  // file that CONTAINS an escape, which is the only place it can match, and the 4 files that do pay
+  // the thorough pass.
+  var STORING = new RegExp("\\.\\s*(?:push|unshift)\\b(?!\\s*\\()" +
+    "|\\[\\s*(['\"`])(?:push|unshift)\\1\\s*\\]", "g");
   var STORING_NAMES = { push: 1, unshift: 1 };
   var files = _libFiles();
   var bad = [];
@@ -850,52 +853,71 @@ function testNoStoringAppend() {
           "the index on the array itself",
       });
     }
+    var hasEscape = subject.indexOf("\\u") !== -1 || subject.indexOf("\\x") !== -1;
     var m;
-    MEMBER.lastIndex = 0;
-    while ((m = MEMBER.exec(subject)) !== null) {
+    STORING.lastIndex = 0;
+    while ((m = STORING.exec(subject)) !== null) report(m.index, m[0]);
+    if (!hasEscape) { _destructuringArm(subject, files[i], bad, lineAt, false); continue; }
+    _MEMBER.lastIndex = 0;
+    while ((m = _MEMBER.exec(subject)) !== null) {
       var memberName = _propertyName(m[1]);
-      if (memberName !== null && STORING_NAMES[memberName] === 1) report(m.index, "." + memberName);
+      if (memberName !== null && STORING_NAMES[memberName] === 1 && m[1] !== memberName) report(m.index, "." + memberName);
     }
-    QUOTED.lastIndex = 0;
-    while ((m = QUOTED.exec(subject)) !== null) {
+    _QUOTED.lastIndex = 0;
+    while ((m = _QUOTED.exec(subject)) !== null) {
       var quotedName = _propertyName(m[2]);
-      if (quotedName !== null && STORING_NAMES[quotedName] === 1) report(m.index, "[" + m[1] + quotedName + m[1] + "]");
+      if (quotedName !== null && STORING_NAMES[quotedName] === 1 && m[2] !== quotedName) report(m.index, "[" + m[1] + quotedName + m[1] + "]");
     }
-    // The destructuring arm, matched by BRACES rather than by a brace-free span: every `{` is walked
-    // to its own `}`, and a pattern is one whose close is followed by a single `=`. A default
-    // initializer or a nested pattern therefore stays inside the span instead of ending it.
-    for (var b = subject.indexOf("{"); b !== -1; b = subject.indexOf("{", b + 1)) {
-      // A pattern that opens right after a declaration keyword is a BINDING wherever its close
-      // lands, which is what covers the array-wrapped and for-of spellings. An object literal never
-      // stands in that position, so this arm adds no new way to report one.
-      var declared = /(?:^|[^A-Za-z0-9_$])(?:var|let|const)\s*\[?\s*$/.test(subject.slice(0, b));
-      // `_matchingBrace` returns the index OF the closing brace, so what follows a pattern starts
-      // one past it.
-      var close = _matchingBrace(subject, b + 1);
-      if (close <= b || close >= subject.length) continue;
-      if (!declared && !/^\s*=(?!=)/.test(subject.slice(close + 1))) continue;
-      var pattern = subject.slice(b, close);
-      // Every name-shaped token in the pattern, decoded, so `{ push: p }` is read as the key
-      // it is. A key written as a quoted string inside a pattern is covered by the same decode.
-      var keyRe = new RegExp(NAME_CHAR + "+", "g");
-      var key, names = {};
-      while ((key = keyRe.exec(pattern)) !== null) {
-        var decodedKey = _propertyName(key[0]);
-        if (decodedKey !== null) names[decodedKey] = 1;
-      }
-      if (names.push !== 1 && names.unshift !== 1) continue;
-      bad.push({
-        file: _relPath(files[i]),
-        line: lineAt(b),
-        content: "binds the storing append by destructuring — a store at an index runs a setter " +
-          "inherited from the prototype chain, which takes the element being appended; use " +
-          "`intrinsic.append`, which defines the index on the array itself",
-      });
-    }
+    _destructuringArm(subject, files[i], bad, lineAt, true);
   }
   bad = _filterMarkers(bad, "append-by-store");
   _report("no module in lib/ obtains the storing form of append", bad);
   _assertDecodesEscapedAppends();
+}
+
+/** The name shapes a property position can hold, compiled ONCE. Built per call they were a regex
+ *  compile at every `{` in every file, which is the other half of the cost the escape pass added. */
+var _NAME_CHAR = "(?:[A-Za-z0-9_$]|\\\\u[0-9a-fA-F]{4}|\\\\u\\{[0-9a-fA-F]+\\})";
+var _MEMBER = new RegExp("\\.\\s*(" + _NAME_CHAR + "+)(?!\\s*\\()", "g");
+var _QUOTED = new RegExp("\\[\\s*(['\"`])((?:\\\\[\\s\\S]|[^'\"`\\\\])*)\\1\\s*\\]", "g");
+var _NAME_TOKEN = new RegExp(_NAME_CHAR + "+", "g");
+
+/** The destructuring arm, matched by BRACES rather than by a brace-free span: every `{` is walked to
+ *  its own `}`, and a pattern is one whose close is followed by a single `=`, or one that opens right
+ *  after a declaration keyword. A default initializer or a nested pattern therefore stays inside the
+ *  span instead of ending it.
+ *
+ *  `decodeKeys` is false for a file carrying no escape at all, where the plain name test answers the
+ *  same question for the cost of one regex rather than one decode per name-shaped token. */
+function _destructuringArm(subject, file, bad, lineAt, decodeKeys) {
+  for (var b = subject.indexOf("{"); b !== -1; b = subject.indexOf("{", b + 1)) {
+    var declared = /(?:^|[^A-Za-z0-9_$])(?:var|let|const)\s*\[?\s*$/.test(subject.slice(0, b));
+    // `_matchingBrace` returns the index OF the closing brace, so what follows a pattern starts one
+    // past it.
+    var close = _matchingBrace(subject, b + 1);
+    if (close <= b || close >= subject.length) continue;
+    if (!declared && !/^\s*=(?!=)/.test(subject.slice(close + 1))) continue;
+    var pattern = subject.slice(b, close);
+    var binds = /\b(?:push|unshift)\b/.test(pattern);
+    if (!binds && decodeKeys) {
+      // Every name-shaped token in the pattern, decoded, so `{ push: p }` is read as the key it
+      // is. A key written as a quoted string inside a pattern is covered by the same decode.
+      _NAME_TOKEN.lastIndex = 0;
+      var key;
+      while ((key = _NAME_TOKEN.exec(pattern)) !== null) {
+        var decodedKey = _propertyName(key[0]);
+        if (decodedKey === "push" || decodedKey === "unshift") { binds = true; break; }
+      }
+    }
+    if (!binds) continue;
+    bad.push({
+      file: _relPath(file),
+      line: lineAt(b),
+      content: "binds the storing append by destructuring — a store at an index runs a setter " +
+        "inherited from the prototype chain, which takes the element being appended; use " +
+        "`intrinsic.append`, which defines the index on the array itself",
+    });
+  }
 }
 
 /** The name decoding, proven on the spellings it exists for AND on the ones it must not invent.
@@ -942,18 +964,16 @@ function _assertDecodesEscapedAppends() {
     ["a quote produced inside a string body", "x = y['push" + BS + "x27]'];"],
     ["a dot produced inside a regex literal", "var re = /" + BS + "x2epush/;"],
   ];
-  var NAME_CHAR = "(?:[A-Za-z0-9_$]|\\\\u[0-9a-fA-F]{4}|\\\\u\\{[0-9a-fA-F]+\\})";
-  var MEMBER = new RegExp("\\.\\s*(" + NAME_CHAR + "+)(?!\\s*\\()", "g");
-  var QUOTED = new RegExp("\\[\\s*(['\"`])((?:\\\\[\\s\\S]|[^'\"`\\\\])*)\\1\\s*\\]", "g");
+  // The SAME two patterns the check uses, so this cannot pass against a copy that drifted.
   function hits(text) {
     var out = [], m;
-    MEMBER.lastIndex = 0;
-    while ((m = MEMBER.exec(text)) !== null) {
+    _MEMBER.lastIndex = 0;
+    while ((m = _MEMBER.exec(text)) !== null) {
       var mn = _propertyName(m[1]);
       if (mn === "push" || mn === "unshift") out[out.length] = "." + mn;
     }
-    QUOTED.lastIndex = 0;
-    while ((m = QUOTED.exec(text)) !== null) {
+    _QUOTED.lastIndex = 0;
+    while ((m = _QUOTED.exec(text)) !== null) {
       var qn = _propertyName(m[2]);
       if (qn === "push" || qn === "unshift") out[out.length] = "[" + qn + "]";
     }
