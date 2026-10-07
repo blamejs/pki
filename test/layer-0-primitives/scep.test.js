@@ -200,6 +200,23 @@ async function testCertRepCrlOnly() {
   var empty = await cmsEncrypt.encrypt(certsOnlyBag(null, null), [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
   var emptyRep = await buildCertRep({ statusCode: "0", transactionId: "e", content: empty });
   check("SUCCESS CertRep with an empty bag refused", (await codeOf(pki.scep.parse(emptyRep, { recipientKey: { cert: F.caCert, key: F.caKey } }))) === "scep/empty-response");
+  // RFC 5940: a WELL-FORMED other-revocation entry in that crls field is still not a CRL. The entry
+  // has to be one the CMS parse accepts, so the refusal measured here is this module's own rule rather
+  // than a parse fault upstream of it. Nothing tested this third tagged-arm refusal before.
+  var respOk = await pki.ocsp.sign(
+    { responderID: "byName", responses: [{ cert: F.caCert, issuer: F.caCert, status: "good",
+      thisUpdate: new Date("2026-06-01T00:00:00Z"), nextUpdate: new Date("2026-07-01T00:00:00Z") }] },
+    { cert: F.caCert, key: F.caKey });
+  // `other [1] IMPLICIT OtherRevocationInfoFormat` carries its two fields directly: the implicit tag
+  // replaces the SEQUENCE's universal tag.
+  var oriOk = b.contextConstructed(1, Buffer.concat([b.oid("1.3.6.1.5.5.7.16.2"), respOk]));
+  var oriBag = b.sequence([b.oid(ID_SIGNED_DATA), b.explicit(0, b.sequence([
+    b.integer(5n), b.set([]), b.sequence([b.oid(ID_DATA)]),
+    b.contextConstructed(1, oriOk), b.set([])]))]);
+  var oriEnv = await cmsEncrypt.encrypt(oriBag, [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+  var oriRep = await buildCertRep({ statusCode: "0", transactionId: "ori", content: oriEnv });
+  check("SUCCESS CertRep carrying an other-revocation entry refused as a non-CRL",
+    (await codeOf(pki.scep.parse(oriRep, { recipientKey: { cert: F.caCert, key: F.caKey } }))) === "scep/bad-crl");
 }
 
 async function testCertRepSuccessValidatesPayload() {

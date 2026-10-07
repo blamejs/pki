@@ -227,6 +227,21 @@ function run() {
         code(function () { pki.schema.parse(attrcertV1Fixture); }) === "attrcert/legacy-v1-not-supported");
   check("parse defers a [1]-subject v1 AC as legacy",
         code(function () { pki.schema.parse(acV1Fixture(b.contextConstructed(1, Buffer.concat([b.explicit(4, nameOf("H"))])))); }) === "attrcert/legacy-v1-not-supported");
+
+  // RFC 5940: a CMS message CARRYING an OCSP response in its crls field is still a CMS message, and
+  // the embedded response is still independently routable. The two detectors do not collide: the
+  // outer ContentInfo leads with a content-type OID, the response leads with an ENUMERATED.
+  var riResp = b.sequence([b.enumerated(0n)]);
+  var riEntry = b.contextConstructed(1, b.sequence([b.oid("1.3.6.1.5.5.7.16.2"), riResp]));
+  var riCms = b.sequence([b.oid("1.2.840.113549.1.7.2"), b.explicit(0, b.sequence([
+    b.integer(5n), b.set([]), b.sequence([b.oid("1.2.840.113549.1.7.1")]),
+    b.contextConstructed(1, riEntry), b.set([])]))]);
+  check("L1 PIN a message carrying an other-revocation entry detects as cms",
+    pki.schema.detectFormat(riCms) === "cms");
+  check("L2 PIN the embedded response bytes detect as ocsp-response on their own",
+    pki.schema.detectFormat(riResp) === "ocsp-response");
+  check("L3 PIN the format registry is unchanged by the feature",
+    pki.schema.all().length === 15 && pki.schema.all().indexOf("ocsp-response") !== -1);
 }
 
 module.exports = { run: run };

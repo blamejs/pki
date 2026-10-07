@@ -222,6 +222,36 @@ async function run() {
   // 28. isCertsOnly reports false for a degenerate-looking but non-signedData input, and throws on garbage.
   check("28. isCertsOnly of non-DER non-PEM bytes throws cms/bad-input", code(function () { pki.cms.isCertsOnly(Buffer.from([0x01, 0x02])); }) === "cms/bad-input");
 
+  // ==== RFC 5940: the reader's own CRL rule still fires on a WELL-FORMED other-revocation entry ====
+  // The entry has to be one the CMS parse accepts, so that the refusal measured here is the reader's
+  // "a certs-only CRL must be a plain CertificateList" rule rather than a parse fault upstream of it.
+  var s5940 = signing.makeSigner("ec-p256");
+  var respOk5940 = await pki.ocsp.sign(
+    { responderID: "byName", responses: [{ cert: s5940.cert, issuer: s5940.cert, status: "good",
+      thisUpdate: new Date("2027-01-01T00:00:00Z"), nextUpdate: new Date("2027-01-08T00:00:00Z") }] },
+    { cert: s5940.cert, key: s5940.key });
+  // `other [1] IMPLICIT OtherRevocationInfoFormat` carries its two fields directly: the implicit tag
+  // replaces the SEQUENCE's universal tag.
+  var oriOk = b.contextConstructed(1, Buffer.concat([b.oid("1.3.6.1.5.5.7.16.2"), respOk5940]));
+  check("J1 a well-formed other-revocation entry is refused by the certs-only reader",
+    code(function () { pki.cms.parseCertsOnly(handCertsOnly([CERT_EC], { crls: [oriOk], version: 5 })); }) === "cms/bad-crl");
+  // `maxCerts` is a RESOURCE bound: it caps the certificates and CRLs parsed and returned. It must not
+  // decide WHICH messages are accepted. Applied by truncating the lists before the structural check,
+  // a cap that leaves no room for the crls dropped the entry silently, so a capped reader accepted a
+  // message an uncapped reader refuses and handed back `crls: []` where revocation information had
+  // been. The tag check reads a field off an already-parsed entry and costs nothing, so it runs over
+  // every entry; only the certificate and CRL parsing stays bounded.
+  var cappedMsg = handCertsOnly([CERT_EC], { crls: [oriOk], version: 5 });
+  check("J1b and a resource cap does not change that verdict",
+    code(function () { pki.cms.parseCertsOnly(cappedMsg, { maxCerts: 1 }); }) === "cms/bad-crl");
+  check("J1b CONTROL the cap still bounds what a well-formed message returns",
+    pki.cms.parseCertsOnly(handCertsOnly([CERT_A, CERT_B], {}), { maxCerts: 1 }).certificates.length === 1);
+  // N1 PIN: there is no emission route for one, and the absence is deliberate. `certsOnly` takes every
+  // crls entry through the CRL parser, so a response handed to it is a caller error rather than an
+  // other-revocation entry.
+  check("N1 PIN certsOnly refuses an OCSP response passed as a CRL",
+    code(function () { pki.cms.certsOnly(CERT_A, { crls: [respOk5940] }); }) === "cms/bad-input");
+
   // ==== maxCerts is a resource bound: the bound itself is validated (a bad cap cannot defeat it) ====
   var twoCertBag = pki.cms.certsOnly([CERT_A, CERT_B]);
   // 29. a positive integer cap is applied.

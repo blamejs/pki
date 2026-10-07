@@ -84,11 +84,17 @@ async function run() {
   // of them and a fixture built from one says nothing about the rest.
   var notSigned = [["digestedData", await pki.cms.digest(CONTENT)],
     ["compressedData", await pki.cms.compress(CONTENT)]];
+  // The assertion is the INVARIANT rather than the profile's size: no row ran, nothing was reported,
+  // and every row the profile holds answered not-applicable. A frozen total has to be edited whenever
+  // a row is added, which measures the edit; and it cannot be derived from `rules("rfc5652", "cms")`
+  // either, because that listing filters to fewer rows than the profile evaluates.
   check("Q4b. a content type the parser reads that is not signed-data runs no row (" +
     notSigned.map(function (p) { return p[0]; }).join(",") + ")",
   notSigned.every(function (p) {
     var rep = pki.lint.cms(p[1]);
-    return rep.ran.length === 0 && rep.counts.na === 6 && cmsIds(rep).length === 0;
+    var c = rep.counts;
+    return rep.ran.length === 0 && cmsIds(rep).length === 0 && c.na > 0 &&
+      c.fatal === 0 && c.error === 0 && c.warn === 0 && c.notice === 0 && c.pass === 0 && c.ne === 0;
   }));
   // A content type the parser does not read is refused before a row is reached, so it arrives as the
   // parser's own code rather than as five not-applicable rows. Sec. 4's id-data is that case.
@@ -120,11 +126,19 @@ async function run() {
         // No try/catch: the verb's contract is a report, so a throw here is the failure this vector
         // exists to catch and it is more use surfacing with its own stack than as a false return.
         var rep = underPollutedSignerInfos(p[1], function () { return pki.lint.cms(f[1]); });
-        return rep.ran.length === 0 && rep.counts.na === 6 && cmsIds(rep).length === 0;
+        // The invariant, not the profile's size: see Q4b.
+        return rep.ran.length === 0 && cmsIds(rep).length === 0 && rep.counts.na > 0;
       });
     }));
-  check("Q4d2. CONTROL: the same rows DO run on a real signed-data message, so Q4d is not silence",
-    pki.lint.cms(attached).ran.length === 6);
+  // The control is DERIVED from the same report: whatever the profile holds, every row of it runs on
+  // a real signed-data message, so Q4d's silence is the content type and not an empty profile.
+  var attachedRan = pki.lint.cms(attached);
+  var attachedBuckets = attachedRan.counts.pass + attachedRan.counts.fatal + attachedRan.counts.error +
+    attachedRan.counts.warn + attachedRan.counts.notice + attachedRan.counts.ne;
+  check("Q4d2. CONTROL: the same rows DO run on a real signed-data message, so Q4d is not silence (" +
+    attachedRan.ran.length + " ran)",
+  attachedRan.ran.length > 0 && attachedRan.counts.na === 0 &&
+    attachedRan.ran.length === attachedBuckets);
 
   // ---- Q5-Q6: sec. 11.3, the signing-time encoding --------------------------------------------
   var TIME_ID = "lint/rfc5652/signing-time-encoding";
@@ -281,6 +295,55 @@ async function run() {
   // verifier it must supply the content. There is no signature to verify, so it does not apply.
   check("Q12b. a certs-only message is not also reported as a detached signature",
     !has(pki.lint.cms(certsOnly), "lint/rfc5652/detached-content"));
+
+  // ---- RFC 5940: revocation information the parse did not read -------------------------------
+  // An `id-ri-ocsp-response` entry IS read, so it draws nothing. An `id-ri-scvp` entry and an
+  // unregistered format are accepted opaquely (RFC 5652 sec. 10.2.1's ANY DEFINED BY is an extension
+  // point, so refusing an unknown format would refuse a future registered one), and the notice is
+  // what tells a reader counting on that revocation information that it was not consulted.
+  var ocspResp = await pki.ocsp.sign(
+    { responderID: "byName", responses: [{ cert: cert, issuer: cert, status: "good",
+      thisUpdate: NB, nextUpdate: NA }] }, { cert: cert, key: key });
+  function riMessage(formatOid, valueDer) {
+    var arm = b.contextConstructed(1, Buffer.concat([b.oid(formatOid), valueDer]));
+    return b.sequence([b.oid("1.2.840.113549.1.7.2"), b.explicit(0, b.sequence([
+      b.integer(5n), b.set([]), b.sequence([b.oid("1.2.840.113549.1.7.1")]),
+      b.contextConstructed(1, arm), b.set([])]))]);
+  }
+  // The id prefix is the PROFILE the row belongs to, which is the carriage (RFC 5652 sec. 10.2.1);
+  // the document that registers the formats is the row's citation. Every row in the table keeps the
+  // prefix and the source equal, and a gate in cms-algorithm-protection.test.js enforces it.
+  var RI_ROW = "lint/rfc5652/other-revocation-format-not-read";
+  check("Q13. a read id-ri-ocsp-response entry draws no finding",
+    !has(pki.lint.cms(riMessage("1.3.6.1.5.5.7.16.2", ocspResp)), RI_ROW));
+  var scvpRep = pki.lint.cms(riMessage("1.3.6.1.5.5.7.16.4", b.sequence([b.integer(1n)])));
+  var scvpRow = scvpRep.findings.filter(function (f) { return f.id === RI_ROW; })[0];
+  check("Q13b. an id-ri-scvp entry draws one notice naming the format it could not read",
+    !!scvpRow && scvpRow.severity === "notice" && scvpRow.context.placement === "crls" &&
+    scvpRow.context.otherRevInfoFormatName === "id-ri-scvp");
+  var unregRow = pki.lint.cms(riMessage("1.3.6.1.5.5.7.16.99", b.sequence([])))
+    .findings.filter(function (f) { return f.id === RI_ROW; })[0];
+  check("Q13c. an unregistered format draws the same notice with no name",
+    !!unregRow && unregRow.context.otherRevInfoFormatName === null &&
+    unregRow.context.otherRevInfoFormat === "1.3.6.1.5.5.7.16.99");
+  // Q13d: the row answers "was the revocation information read", not "was the format recognized". An
+  // id-ri-ocsp-response entry whose OCSPResponse states a responseType this build does not decode is
+  // recognized and still unread, so it draws the notice, with responseType naming the cause. Keyed to
+  // the presence of `ocspResponse` the row stayed silent on it and the report claimed a reading it
+  // never did.
+  var opaqueResp = b.sequence([b.enumerated(0n), b.contextConstructed(0,
+    b.sequence([b.oid("1.3.6.1.5.5.7.48.1.99"),
+      b.octetString(Buffer.from("a response format this build does not read", "ascii"))]))]);
+  var opaqueRow = pki.lint.cms(riMessage("1.3.6.1.5.5.7.16.2", opaqueResp))
+    .findings.filter(function (f) { return f.id === RI_ROW; })[0];
+  check("Q13d. an OCSP entry whose responseType is unread draws the notice, naming the type",
+    !!opaqueRow && opaqueRow.severity === "notice" &&
+    opaqueRow.context.otherRevInfoFormatName === "id-ri-ocsp-response" &&
+    opaqueRow.context.responseType === "1.3.6.1.5.5.7.48.1.99");
+  // Q13e PIN: and a read entry still reports no responseType, so the field marks the unread case
+  // rather than appearing on every row.
+  check("Q13e. PIN a read entry draws no finding and so carries no responseType",
+    !has(pki.lint.cms(riMessage("1.3.6.1.5.5.7.16.2", ocspResp)), RI_ROW));
 
   console.log("CHECKS " + helpers.getChecks());
 }

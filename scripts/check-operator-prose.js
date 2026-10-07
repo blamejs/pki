@@ -201,6 +201,14 @@ var REVIEWED = [
             "RFC Editor index, which gives it as INFORMATIONAL, September 2020."
   },
   {
+    file: "CHANGELOG.md", check: "secrets", match: "alice@bad.example",
+    contexts: ["a leaf naming `alice@bad.example` under an exclusion of that same mailbox"],
+    reason: "the name in a released entry's worked example of an rfc822Name exclusion, where the " +
+            "mailbox and the exclusion have to be the same string for the example to say " +
+            "anything. RFC 2606 sec. 2 reserves the .example top-level domain for exactly this, " +
+            "so the address cannot route and names nobody."
+  },
+  {
     file: "CODE_OF_CONDUCT.md", check: "secrets", match: "conduct@pkijs.com",
     contexts: ["**`conduct@pkijs.com`**"],
     reason: "the address a report is meant to reach. RFC 2606 reserves example.com for " +
