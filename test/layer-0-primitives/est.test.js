@@ -169,7 +169,15 @@ function testCertsOnly() {
   check("37. crl surfaced", Array.isArray(withCrl.crls) && withCrl.crls.length === 1);
   // 37b. a [1] otherRevInfo RevocationInfoChoice is not a CRL -> est/bad-crl
   //      (an otherRevInfo forces SignedData version 5, RFC 5652 sec. 5.1).
-  var otherRevInfo = b.contextConstructed(1, b.sequence([b.oid("1.3.6.1.5.5.7.16.2"), b.sequence([])]));
+  //      The format OID is an UNREGISTERED id-ri leaf, so the CMS parse surfaces the entry opaquely
+  //      and est's own refusal is the one that fires. Under `id-ri-ocsp-response` the interior is
+  //      walked as an OCSPResponse (RFC 5940 sec. 2), an empty SEQUENCE there is a malformed response,
+  //      and the parse would throw first as est/bad-response, which is not what this row tests.
+  //      `other [1] IMPLICIT OtherRevocationInfoFormat` carries its two fields DIRECTLY: the implicit
+  //      tag replaces the SEQUENCE's universal tag, so wrapping a SEQUENCE inside the [1] produces a
+  //      one-child arm the CMS parse refuses before this module's own rule is reached.
+  var otherRevInfo = b.contextConstructed(1,
+    Buffer.concat([b.oid("1.3.6.1.5.5.7.16.99"), b.sequence([])]));
   check("37b. otherRevInfo choice rejected", code(function () { pki.est.parseCertsOnly(certsOnly([REAL_CERT], { crls: [otherRevInfo], version: 5 })); }) === "est/bad-crl");
   // 37c. a universal SEQUENCE that is not a CertificateList -> est/bad-crl.
   check("37c. non-CRL SEQUENCE rejected", code(function () { pki.est.parseCertsOnly(certsOnly([REAL_CERT], { crls: [b.sequence([b.integer(1n)])] })); }) === "est/bad-crl");

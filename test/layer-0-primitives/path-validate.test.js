@@ -4496,6 +4496,37 @@ async function testOcspRevocation() {
   var o2 = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle({ hashAlg: "SHA-256" })] });
   check("O2 OCSP good (SHA-256 CertID) -> valid", (await ocspRun(o2)).valid === true);
 
+  // RFC 5940: the same response CARRIED IN a CMS message's crls field reaches this checker as the
+  // record the CMS parse produced, with no re-encode by the caller and no new verb. An operator
+  // harvests the decoded entries and hands them straight to `ocspChecker`.
+  var riArm = b.contextConstructed(1, Buffer.concat([b.oid("1.3.6.1.5.5.7.16.2"), o1]));
+  var riMsg = b.sequence([b.oid("1.2.840.113549.1.7.2"), b.explicit(0, b.sequence([
+    b.integer(5n), b.set([]), b.sequence([b.oid("1.2.840.113549.1.7.1")]),
+    b.contextConstructed(1, riArm), b.set([])]))]);
+  var riParsed = pki.schema.cms.parse(riMsg);
+  var harvested = riParsed.crls.map(function (e) { return e.ocspResponse; }).filter(Boolean);
+  check("M1 an embedded OCSP response is harvested from the crls field as a usable record",
+    harvested.length === 1 && riParsed.crls[0].otherRevInfoFormatName === "id-ri-ocsp-response");
+  var riRes = await run([leaf], { time: T2027, trustAnchors: anchor,
+    revocationChecker: pki.path.ocspChecker(harvested) });
+  check("M1 and it determines the leaf's revocation status exactly as the standalone response does",
+    riRes.valid === true);
+  // M2: form is not coverage. RFC 5940 sec. 2 says the carried set MAY be more or less than needed,
+  // so a response covering no certificate in the path parses and leaves the status undetermined
+  // rather than failing the parse.
+  var oOther = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519",
+    single: [goodSingle({ serial: 999 })] });
+  var riOtherArm = b.contextConstructed(1, Buffer.concat([b.oid("1.3.6.1.5.5.7.16.2"), oOther]));
+  var riOtherMsg = b.sequence([b.oid("1.2.840.113549.1.7.2"), b.explicit(0, b.sequence([
+    b.integer(5n), b.set([]), b.sequence([b.oid("1.2.840.113549.1.7.1")]),
+    b.contextConstructed(1, riOtherArm), b.set([])]))]);
+  var riOtherParsed = pki.schema.cms.parse(riOtherMsg);
+  check("M2 a response covering no certificate in the path still parses",
+    riOtherParsed.crls[0].ocspResponse !== null);
+  check("M2 and the uncovered certificate is undetermined rather than a parse failure",
+    undetermined(await run([leaf], { time: T2027, trustAnchors: anchor,
+      revocationChecker: pki.path.ocspChecker([riOtherParsed.crls[0].ocspResponse]) })));
+
   // O5 — revoked.
   var o5 = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle({ status: "revoked", revocationReason: 1 })] });
   check("O5 OCSP revoked -> path/revoked", revoked(await ocspRun(o5)));

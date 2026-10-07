@@ -107,6 +107,20 @@ function rawSet(members) {
   return Buffer.concat([hdr, body]);
 }
 
+// A WELL-FORMED `other [1]` RevocationInfoChoice arm. OtherRevocationInfoFormat is exactly
+// { otherRevInfoFormat OBJECT IDENTIFIER, otherRevInfo ANY } (RFC 5652 sec. 10.2.1), and the format
+// OID here is an UNREGISTERED id-ri leaf so the interior stays opaque. Every row that uses this is
+// testing something else about the entry (its effect on the version, its tag, its ordering), so the
+// entry has to be one the parse accepts: a one-element arm would measure the shape refusal instead,
+// and an `id-ri-ocsp-response` arm would have its interior walked as an OCSPResponse (RFC 5940).
+// `other [1] IMPLICIT OtherRevocationInfoFormat`: the implicit tag REPLACES the SEQUENCE's universal
+// tag, so the [1] element's own children are the two fields. Wrapping a SEQUENCE inside the [1]
+// instead produces a one-child arm, which is the shape the parse refuses.
+function otherRevArm(formatOid, valueDer) {
+  return b.contextConstructed(1, Buffer.concat([b.oid(formatOid), valueDer]));
+}
+var WELL_FORMED_OTHER_CRL = otherRevArm("1.3.6.1.5.5.7.16.99", b.sequence([b.integer(1n)]));
+
 function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return (e && e.code) || ("RAW:" + (e && e.constructor && e.constructor.name)); } }
 function parseCode(der) { return code(function () { pki.schema.cms.parse(der); }); }
 function parse(der) { return pki.schema.cms.parse(der); }
@@ -511,7 +525,7 @@ function testEnvelopedVersionAndStructure() {
 
   // the v4 (cert other[3] / crl other[1]) and v3 (v2AttrCert[2]) version branches.
   var otherCert = b.contextConstructed(3, b.sequence([b.integer(1n)]));
-  var otherCrl = b.contextConstructed(1, b.sequence([b.integer(1n)]));
+  var otherCrl = WELL_FORMED_OTHER_CRL;
   var v2AttrCert = b.contextConstructed(2, b.sequence([b.integer(1n)]));
   check("originatorInfo cert other[3] -> envelope v4", parse(envCI({ version: 4, originatorInfo: originatorInfo({ certs: [otherCert] }), recips: [ktri({ version: 0 })] })).version === 4);
   check("cert other[3] but stated version 2 rejected", parseCode(envCI({ version: 2, originatorInfo: originatorInfo({ certs: [otherCert] }), recips: [ktri({ version: 0 })] })) === "cms/bad-version");
@@ -611,7 +625,7 @@ function testSignedDataCertCrlVersions() {
   var v1AttrCert = b.contextConstructed(1, b.sequence([b.integer(1n)]));
   var v2AttrCert = b.contextConstructed(2, b.sequence([b.integer(1n)]));
   var otherCert = b.contextConstructed(3, b.sequence([b.integer(1n)]));
-  var otherCrl = b.contextConstructed(1, b.sequence([b.integer(1n)]));
+  var otherCrl = WELL_FORMED_OTHER_CRL;
   var crl = b.sequence([b.sequence([b.integer(0n)]), algId(SHA256), b.bitString(Buffer.from([1]), 0)]);
   check("SignedData v1AttrCert [1] -> v3", parse(cms({ version: b.integer(3n), certs: [v1AttrCert] })).version === 3);
   check("SignedData v2AttrCert [2] -> v4", parse(cms({ version: b.integer(4n), certs: [v2AttrCert] })).version === 4);
@@ -811,7 +825,7 @@ function testAuthenticatedData() {
   // version rule (§9.1): originatorInfo tags only; recipient kinds do NOT bump.
   var v2AttrCert = b.contextConstructed(2, b.sequence([b.integer(1n)]));
   var otherCert = b.contextConstructed(3, b.sequence([b.integer(1n)]));
-  var otherCrl = b.contextConstructed(1, b.sequence([b.integer(1n)]));
+  var otherCrl = WELL_FORMED_OTHER_CRL;
   check("authData: v2AttrCert -> v1", parse(adCI({ version: 1, originatorInfo: originatorInfo({ certs: [v2AttrCert] }) })).version === 1);
   check("authData: other cert [3] -> v3", parse(adCI({ version: 3, originatorInfo: originatorInfo({ certs: [otherCert] }) })).version === 3);
   check("authData: other crl [1] -> v3", parse(adCI({ version: 3, originatorInfo: originatorInfo({ crls: [otherCrl] }) })).version === 3);
@@ -1070,6 +1084,204 @@ function run() {
   testCmsFailClosedBranches();
   testCmsPemRoundTrip();
   testDigestedData();
+  return testOtherRevocationInfo();
+}
+
+// RFC 5940: an OCSP response carried in the `crls` field, as the `other` arm of RevocationInfoChoice.
+//
+//   RevocationInfoChoice ::= CHOICE { crl CertificateList, other [1] IMPLICIT OtherRevocationInfoFormat }
+//   OtherRevocationInfoFormat ::= SEQUENCE { otherRevInfoFormat OBJECT IDENTIFIER, otherRevInfo ANY }
+//
+// RFC 5652 sec. 10.2.1 states the shape and RFC 5940 sec. 2 registers `id-ri-ocsp-response` as a
+// format whose `otherRevInfo` is an `OCSPResponse` (RFC 6960 sec. 4.2.1). The context-[1] entry is
+// admitted today and bumps the expected version to 5, but nothing decodes the interior: an operator
+// cannot tell an OCSP entry from an SCVP one, and the embedded response cannot reach revocation
+// checking without being re-encoded by the caller.
+async function testOtherRevocationInfo() {
+  var signing = require("../helpers/signing");
+  var F_OCSP = "1.3.6.1.5.5.7.16.2";
+  var s = signing.makeSigner("ec-p256");
+  var respOk = await pki.ocsp.sign(
+    { responderID: "byName", responses: [{ cert: s.cert, issuer: s.cert, status: "good",
+      thisUpdate: new Date("2027-01-01T00:00:00Z"), nextUpdate: new Date("2027-01-08T00:00:00Z") }] },
+    { cert: s.cert, key: s.key });
+  var ori = otherRevArm;
+
+  var F_SCVP = "1.3.6.1.5.5.7.16.4";
+  var F_UNREG = "1.3.6.1.5.5.7.16.99";
+  var CRL_DER = b.sequence([b.sequence([b.integer(0n)]), algId(SHA256), b.bitString(Buffer.from([1]), 0)]);
+  var oriOcsp = ori(F_OCSP, respOk);
+
+  // ---- A. accept and surface ----
+  // A1/A2: the entry is surfaced with its format named and its interior walked.
+  var m = parse(cms({ version: b.integer(5n), crls: [oriOcsp] }));
+  check("RI-A1 an id-ri-ocsp-response crls entry names its format",
+    m.crls.length === 1 && m.crls[0].tagClass === "context" && m.crls[0].tagNumber === 1 &&
+    m.crls[0].otherRevInfoFormat === F_OCSP && m.crls[0].otherRevInfoFormatName === "id-ri-ocsp-response");
+  check("RI-A2 and the embedded OCSPResponse is walked",
+    m.crls[0].ocspResponse && m.crls[0].ocspResponse.responseStatus.name === "successful" &&
+    m.crls[0].ocspResponse.basicResponse.responses.length === 1);
+  // A3: a mixed SET keeps each arm's own shape. Ascending by first octet puts the 0x30 CertificateList
+  // before the 0xA1 other entry (X.690 sec. 11.6), which is also F1.
+  var mixed = parse(cms({ version: b.integer(5n), crls: [CRL_DER, oriOcsp] }));
+  check("RI-A3 a mixed crls SET keeps each arm's own shape",
+    mixed.crls.length === 2 && mixed.crls[0].tagClass === "universal" &&
+    !Object.prototype.hasOwnProperty.call(mixed.crls[0], "ocspResponse") &&
+    mixed.crls[1].ocspResponse !== undefined && mixed.crls[1].ocspResponse !== null);
+  // A4 PIN: the universal arm's record is neither padded nor shortened by the new decode.
+  var onlyCrl = parse(cms({ version: b.integer(1n), crls: [CRL_DER] }));
+  check("RI-A4 PIN a CertificateList entry gains no other-format fields",
+    onlyCrl.crls.length === 1 && onlyCrl.crls[0].bytes.equals(CRL_DER) &&
+    !Object.prototype.hasOwnProperty.call(onlyCrl.crls[0], "otherRevInfoFormat") &&
+    !Object.prototype.hasOwnProperty.call(onlyCrl.crls[0], "ocspResponse"));
+  // A5: the embedded record reaches revocation checking with no re-encode by the caller. The claim is
+  // EQUIVALENCE with a standalone parse of the same bytes, not a particular status: the status here
+  // depends on whether the fixture's certificate pair is one the verifier can chain, and asserting a
+  // status would measure the fixture. Before the record was recorded this call answered
+  // `path/bad-input`, so the equivalence is what discriminates.
+  var at5 = new Date("2027-01-02T00:00:00Z");
+  async function verdictOf(record) {
+    try {
+      var v = await pki.path.verifyOcspResponse(record, s.cert, s.cert, at5);
+      return "status:" + v.status + "/matched:" + v.matched;
+    } catch (e) { return (e && e.code) || "RAW"; }
+  }
+  var a5Embedded = await verdictOf(m.crls[0].ocspResponse);
+  var a5Standalone = await verdictOf(pki.schema.ocsp.parseResponse(respOk));
+  check("RI-A5 the embedded record reaches the verifier exactly as a parsed one does (" +
+    a5Embedded + ")", a5Embedded === a5Standalone && a5Embedded.indexOf("status:") === 0);
+  // M3: and the rebuilt-record contract holds for an embedded record too.
+  var a5Rebuilt = await verdictOf(Object.assign({}, m.crls[0].ocspResponse));
+  check("RI-M3 a rebuilt copy of the embedded record is refused (" + a5Rebuilt + ")",
+    a5Rebuilt === "path/bad-input");
+
+  // ---- B. dispatch on otherRevInfoFormat ----
+  var scvp = parse(cms({ version: b.integer(5n), crls: [ori(F_SCVP, b.sequence([b.integer(1n)]))] }));
+  check("RI-B1 an id-ri-scvp entry is recognized but left opaque",
+    scvp.crls[0].otherRevInfoFormatName === "id-ri-scvp" && scvp.crls[0].ocspResponse === null &&
+    Buffer.isBuffer(scvp.crls[0].otherRevInfoBytes));
+  var unreg = parse(cms({ version: b.integer(5n), crls: [ori(F_UNREG, b.sequence([]))] }));
+  check("RI-B2 an unregistered format is accepted opaquely, with no name",
+    unreg.crls[0].otherRevInfoFormatName === null && unreg.crls[0].ocspResponse === null);
+  // B3: the RFC 5126 sec. 6.3.4 confusion, a BasicOCSPResponse where an OCSPResponse belongs. The
+  // first child is a SEQUENCE where the status ENUMERATED is read.
+  var basicOnly = b.sequence([b.sequence([b.integer(0n)]), algId(SHA256), b.bitString(Buffer.from([1]), 0)]);
+  check("RI-B3 a BasicOCSPResponse in place of an OCSPResponse is refused",
+    parseCode(cms({ version: b.integer(5n), crls: [ori(F_OCSP, basicOnly)] })) === "asn1/unexpected-tag");
+  check("RI-B4 an empty OCSPResponse SEQUENCE is refused",
+    parseCode(cms({ version: b.integer(5n), crls: [ori(F_OCSP, b.sequence([]))] })) === "ocsp/bad-ocsp-response");
+
+  // ---- C. OtherRevocationInfoFormat structural shape ----
+  check("RI-C1 an empty other-revocation arm is refused",
+    parseCode(cms({ version: b.integer(5n), crls: [b.contextConstructed(1, Buffer.alloc(0))] })) === "cms/bad-other-rev-info");
+  // C2: the OpenSSL one-element form. `crypto/cms/cms_asn1.c` makes otherRevInfo ASN1_OPT, so OpenSSL
+  // accepts and can emit an entry carrying no revocation information at all.
+  check("RI-C2 a one-element other-revocation arm is refused",
+    parseCode(cms({ version: b.integer(5n), crls: [b.contextConstructed(1, b.oid(F_OCSP))] })) === "cms/bad-other-rev-info");
+  check("RI-C3 a third element in the other-revocation arm is refused",
+    parseCode(cms({ version: b.integer(5n),
+      crls: [b.contextConstructed(1, Buffer.concat([b.oid(F_OCSP), respOk, b.integer(1n)]))] })) === "cms/bad-other-rev-info");
+  check("RI-C4 a non-OID format field is refused by the leaf reader",
+    parseCode(cms({ version: b.integer(5n),
+      crls: [b.contextConstructed(1, Buffer.concat([b.integer(1n), b.sequence([])]))] })) === "asn1/unexpected-tag");
+
+  // ---- D. RFC 5940 sec. 3 form rules ----
+  // D1 is the only genuinely new check: a non-successful response is a valid OCSPResponse that
+  // RFC 5940 sec. 3 forbids HERE, because an entry carrying no status conveys no revocation
+  // information.
+  check("RI-D1 a tryLater response is refused in a crls entry",
+    parseCode(cms({ version: b.integer(5n), crls: [ori(F_OCSP, b.sequence([b.enumerated(3n)]))] })) === "cms/bad-ocsp-rev-info");
+  check("RI-D2 a successful response with no responseBytes is refused by the OCSP shape",
+    parseCode(cms({ version: b.integer(5n), crls: [ori(F_OCSP, b.sequence([b.enumerated(0n)]))] })) === "ocsp/bad-response-bytes");
+  // D4 PIN: the standalone OCSP door still accepts what sec. 3 forbids only in this position.
+  var standalone = pki.schema.ocsp.parseResponse(b.sequence([b.enumerated(3n)]));
+  check("RI-D4 PIN the standalone OCSP door still accepts a tryLater response",
+    standalone.responseStatus.name === "tryLater");
+
+  // ---- E. version and cross-field rules, on all four content types ----
+  // E1 asserts the decoded shape POSITIVELY. Written as `ocspResponse !== null` it passes on the
+  // current tree, where the field is absent and `undefined !== null` is true, so it would measure
+  // nothing about the decode.
+  check("RI-E1 SignedData v5 carries a decoded other-revocation entry",
+    m.version === 5 && m.crls[0].ocspResponse != null &&
+    m.crls[0].ocspResponse.responseStatus.code === 0);
+  check("RI-E2 PIN the same entry under a stated v1 is refused",
+    parseCode(cms({ version: b.integer(1n), crls: [oriOcsp] })) === "cms/bad-version");
+  check("RI-E3 PIN a CertificateList-only crls under a stated v5 is refused",
+    parseCode(cms({ version: b.integer(5n), crls: [CRL_DER] })) === "cms/bad-version");
+
+  // ---- F. SET OF ordering ----
+  // The container is [1] IMPLICIT, so an unsorted crls SET is built by suppressing the fixture's own
+  // sort rather than by emitting a universal SET: a 0x31 here is read as the signerInfos SET instead
+  // and the refusal names that field, which measures nothing about crls ordering.
+  var descending = cms({ version: b.integer(5n),
+    children: [b.integer(5n), b.set([]), encap(ID_DATA, null),
+      implicitSetOf(1, [oriOcsp, CRL_DER], { sort: false }), b.set([])] });
+  check("RI-F1 an ascending mixed crls SET is accepted", mixed.crls.length === 2);
+  check("RI-F2 PIN a descending crls SET is refused", parseCode(descending) === "cms/bad-crls");
+
+  // ---- H. raw-byte exactness ----
+  check("RI-H1 PIN the entry's bytes are the on-wire [1] TLV",
+    m.crls[0].bytes.equals(oriOcsp));
+  check("RI-H2 the ANY bytes are the on-wire OCSPResponse TLV",
+    Buffer.isBuffer(m.crls[0].otherRevInfoBytes) && m.crls[0].otherRevInfoBytes.equals(respOk));
+  // H3 reads through the decoded record, which is absent on the current tree, so it is written to
+  // FAIL rather than throw: a throw here aborts every vector below it and the failing set stops
+  // being the whole picture.
+  var h3 = (function () {
+    var basic = m.crls[0].ocspResponse && m.crls[0].ocspResponse.basicResponse;
+    if (!basic || !Buffer.isBuffer(basic.tbsResponseDataBytes) || !basic.tbsResponseDataBytes.length) return false;
+    return respOk.indexOf(basic.tbsResponseDataBytes) !== -1;
+  })();
+  check("RI-H3 the embedded ResponseData bytes are raw, not re-serialized", h3);
+
+  // ---- I. the RFC 5940 sec. 2 smuggle ----
+  // sec. 2 is the only text that forbids an OCSPResponse in the CertificateList position, and nothing
+  // detects it today: a universal SEQUENCE is surfaced raw whatever it holds.
+  check("RI-I1 an OCSPResponse in the CertificateList position is refused",
+    parseCode(cms({ version: b.integer(1n), crls: [respOk] })) === "cms/misplaced-ocsp-response");
+  check("RI-I2 PIN a real CertificateList in that position is still accepted",
+    parse(cms({ version: b.integer(1n), crls: [CRL_DER] })).crls.length === 1);
+  // The detectors are `@internal` on their own modules rather than on the public namespaces, which is
+  // where the smuggle check has to read them from.
+  var ocspMod = require("../../lib/schema-ocsp.js");
+  var crlMod = require("../../lib/schema-crl.js");
+  // MEASURED: `crl.matches` answers false for this synthetic three-element CertificateList too, so the
+  // smuggle check cannot be "not a CRL" and has to be positive detection of a response. The pin is
+  // the one-directional fact it may rely on.
+  check("RI-I3 PIN the response detector tells the two apart, and the CRL detector claims neither",
+    ocspMod.matchesResponse(pki.asn1.decode(respOk)) === true &&
+    ocspMod.matchesResponse(pki.asn1.decode(CRL_DER)) === false &&
+    crlMod.matches(pki.asn1.decode(respOk)) === false);
+
+  // ---- K. caps and budget across the namespace boundary ----
+  // MEASURED: neither `maxDepth` nor `maxBytes` can show the crossing. The embedded response's TLVs
+  // are already inside the message's own tree, so walking them descends no further and decodes no
+  // second time. The ITEM budget is what the embedded walk spends out of the caller's pool, so that
+  // is the cap this is written on.
+  //
+  // The two messages differ only in the format OID, and the cap is derived rather than hard-coded:
+  // the opaque message's own lowest passing value is found first, and at that value the OCSP message
+  // must still refuse. That makes the vector self-calibrating and keeps it from measuring the outer
+  // parse, which a cap low enough to refuse both would.
+  var opaqueMsg = cms({ version: b.integer(5n), crls: [ori(F_UNREG, respOk)] });
+  var ocspMsg = cms({ version: b.integer(5n), crls: [oriOcsp] });
+  function lowestPassingItems(der) {
+    for (var i = 1; i <= 400; i++) {
+      if (code(function () { pki.schema.cms.parse(der, { maxItems: i }); }) === "NO-THROW") return i;
+    }
+    return null;
+  }
+  var opaqueFloor = lowestPassingItems(opaqueMsg);
+  var ocspFloor = lowestPassingItems(ocspMsg);
+  var k1Ocsp = code(function () { pki.schema.cms.parse(ocspMsg, { maxItems: opaqueFloor }); });
+  check("RI-K1 the caller's item budget is spent by the embedded walk, not merely by the message (" +
+    "opaque floor " + opaqueFloor + ", ocsp floor " + ocspFloor + ", ocsp at the opaque floor " + k1Ocsp + ")",
+  opaqueFloor !== null && ocspFloor !== null && ocspFloor > opaqueFloor && k1Ocsp === "cms/too-large");
+  check("RI-K4 and the refusal is the caller's own typed code rather than a raw decoder fault",
+    k1Ocsp.indexOf("cms/") === 0);
+  check("RI-K3 CONTROL the same embedded bytes parse at default caps through the standalone door",
+    pki.schema.ocsp.parseResponse(respOk).responseStatus.name === "successful");
 }
 
 // RFC 5652 sec. 7 DigestedData, the last of the six content types. It is the integrity-only
