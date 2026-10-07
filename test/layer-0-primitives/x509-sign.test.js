@@ -289,6 +289,37 @@ async function testCaCrossField() {
   check("CA with pathLen 0 accepted", pki.schema.x509.parse(der).version === 3);
 }
 
+/** The producer check runs `pki.lint` over the certificate this spec describes and refuses to sign one
+ *  that violates the profile. It reads the findings out of a list, and a list built by storing at an
+ *  index has no own property at the index it stores to, so an accessor inherited from
+ *  `Array.prototype` took each finding as it was collected and the index answered with the accessor's
+ *  value instead. A benign severity there stood in for the error finding and the certificate was
+ *  signed: measured, a CA certificate whose key usage omits keyCertSign, which is exactly what this
+ *  check exists to refuse. The vector asserts the refusal still arrives, and that nothing was
+ *  swallowed on the way, so the list is built by defining its indexes rather than by storing. */
+async function testProducerCheckUnderIndexAccessor() {
+  var s = makeSigner("ed25519");
+  var spec = {
+    subject: "accessor CA", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA,
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["digitalSignature"] },
+  };
+  check("a CA spec without keyCertSign is refused by the producer check",
+    await codeOf(pki.x509.sign(spec, { key: s.key })) === "x509/profile-violation");
+
+  // Built BEFORE the accessor is installed, so the getter never calls back into the subject.
+  var benign = { severity: "info", id: "probe/benign", citation: "probe", message: "probe" };
+  var run = await helpers.substituteIndex(0, benign, function () {
+    return pki.x509.sign(spec, { key: s.key });
+  });
+  check("...and it is still refused with a benign finding inherited at an array index",
+    run.error !== null && run.error.code === "x509/profile-violation");
+  check("...naming the rule the spec violates rather than the inherited one",
+    run.error !== null && String(run.error.message).indexOf("lint/rfc5280/ca-without-keycertsign") !== -1);
+  check("...and no certificate was returned", run.value === null);
+  check("...and no finding was taken by the accessor on the way (" + run.swallowed + " swallowed)",
+    run.swallowed === 0);
+}
+
 // ---- fail-closed -----------------------------------------------------------
 
 async function testFailClosed() {
@@ -2201,6 +2232,7 @@ async function main() {
   await testSharedBuilderRejects();
   await testKeyMatchAndTimeAndSan();
   await testFailClosed();
+  await testProducerCheckUnderIndexAccessor();
   await testOpensslInterop();
   await testRandomSerial();
   await testFixedCriticality();

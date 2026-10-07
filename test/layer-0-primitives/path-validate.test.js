@@ -6813,6 +6813,35 @@ async function testFetchingChecker() {
   var rN2 = await run(ocspPath, { time: T2027, trustAnchors: anchor, revocationChecker: nonceChecker });
   check("F57. a nonce-bearing request is asked each time rather than answered from a kept response",
     rN1.valid === true && rN2.valid === true && nonceAsks === 2);
+
+  // A certificate carrying no extensions has no own slot named `extensions`, so reading one answered
+  // from `Object.prototype`: an inherited getter supplied a list, and the fetcher decoded its entries
+  // and reported on what it found there rather than on what the certificate carries. The accessor is
+  // installed around the call only, and the crafted list is built before it goes in so the getter
+  // never calls back into the subject.
+  var plain = await mkCert({ subject: "NoExtLeaf", issuer: "Root", signWith: "ed25519",
+    subjectKeys: "ed25519leaf", serial: SER + 71 });
+  // Driven through the checker's own `check`, which is what `fetchingChecker` returns and therefore
+  // public surface. `pki.path.validate` refuses this pollution at its option door before the checker
+  // runs, so going through validate would measure that door rather than this read. The shape is the
+  // one pollution actually leaves: a DATA property, non-enumerable so no `for..in` elsewhere changes
+  // with it, and an accessor is refused by the checker's own door when it is constructed.
+  var bareChecker = pki.path.fetchingChecker({ transport: stub({}) });
+  var parsedPlain = pki.schema.x509.parse(plain);
+  var parsedRoot = pki.schema.x509.parse(
+    await mkCert({ subject: "Root", issuer: "Root", signWith: "ed25519" }));
+  var baseVerdict = await bareChecker.check(parsedPlain, parsedRoot, null);
+  var crafted = [{ oid: pki.oid.byName("authorityInfoAccess"), critical: false, value: Buffer.from([0x00, 0x00]) }];
+  var underVerdict;
+  try {
+    Object.defineProperty(Object.prototype, "extensions", {
+      configurable: true, writable: true, enumerable: false, value: crafted,
+    });
+    underVerdict = await bareChecker.check(parsedPlain, parsedRoot, null);
+  } finally { delete Object.prototype.extensions; }
+  check("F61. an inherited `extensions` list is not decoded for a certificate that carries none",
+    underVerdict.status === baseVerdict.status && underVerdict.reason === baseVerdict.reason &&
+    String(underVerdict.reason).indexOf("does not decode") === -1);
 }
 
 /** The DER of an OCSP request that rode in a GET URL, per RFC 6960 Appendix A.1. */

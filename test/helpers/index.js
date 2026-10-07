@@ -58,4 +58,5 @@ module.exports = {
   // Counts stores at Array.prototype indexes while an operation runs -- a store there runs a setter
   // the array inherits, which takes the element being appended.
   countIndexStores: _protoIdx.countIndexStores,
+  substituteIndex: _protoIdx.substituteIndex,
 };

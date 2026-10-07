@@ -90,7 +90,7 @@
   "lib/possession.js": "2026-10-07",
   "lib/rc2.js": "2026-10-07",
   "lib/related-cert.js": "2026-10-05",
-  "lib/revocation-fetch.js": "2026-10-06",
+  "lib/revocation-fetch.js": "2026-10-07",
   "lib/rfc3339.js": "2026-09-28",
   "lib/scep.js": "2026-10-07",
   "lib/schema-all.js": "2026-10-06",

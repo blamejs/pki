@@ -517,6 +517,28 @@ async function testRequestedCriticality() {
     await codeOf(pki.csr.sign({ subject: "x", subjectPublicKey: s.spki, extensionRequest: { nameConstraints: {} } }, { key: s.key })) === "csr/bad-input");
 }
 
+/** The same producer check the certificate signer runs, reached through `pki.csr.sign`. It reads its
+ *  findings out of a list, and a store at an index runs a setter inherited from the prototype chain,
+ *  so a benign finding installed on `Array.prototype` stood in for the error finding and the request
+ *  was signed past the check. A request carrying no subject and no subjectAltName names nobody, which
+ *  is what this refuses. */
+async function testProducerCheckUnderIndexAccessor() {
+  var s = makeSigner("ed25519");
+  var spec = { subject: [], subjectPublicKey: s.spki };
+  check("a request naming nobody is refused by the producer check",
+    await codeOf(pki.csr.sign(spec, s.key)) === "csr/profile-violation");
+
+  var benign = { severity: "info", id: "probe/benign", citation: "probe", message: "probe" };
+  var run = await helpers.substituteIndex(0, benign, function () { return pki.csr.sign(spec, s.key); });
+  check("...and it is still refused with a benign finding inherited at an array index",
+    run.error !== null && run.error.code === "csr/profile-violation");
+  check("...naming the rule the spec violates",
+    run.error !== null && String(run.error.message).indexOf("lint/rfc2986/subject-empty-no-identity") !== -1);
+  check("...and no request was returned", run.value === null);
+  check("...and no finding was taken by the accessor on the way (" + run.swallowed + " swallowed)",
+    run.swallowed === 0);
+}
+
 async function main() {
   await testRoundTrip();
   await testPemOutput();
@@ -529,6 +551,7 @@ async function main() {
   await testChallengePassword();
   await testProofOfPossession();
   await testFailClosed();
+  await testProducerCheckUnderIndexAccessor();
   await testRequestedCriticality();
   console.log("CHECKS " + helpers.getChecks());
 }

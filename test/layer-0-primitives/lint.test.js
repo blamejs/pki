@@ -1932,10 +1932,99 @@ function testCrlProfile() {
     rescanMs.toFixed(0) + " ms scaled from " + sample + " values, bound 600 ms, " +
     rescanSeen + " repeats)", rescanMs > 600 * 2);
 
+  testProtoAccessorCannotSupplyAVerdict();
+
   // The profile is nameable and the rows are enumerable, which are two different tables.
   check("the rfc7633 profile is selectable", pki.lint.profiles().indexOf("rfc7633") !== -1);
   check("and its rows are in the registry rules() enumerates",
     pki.lint.rules().some(function (r) { return r.id === "lint/rfc7633/feature-outside-registry-width"; }));
+}
+
+/** A report's verdict comes off the record the engine built, not off `Object.prototype`.
+ *
+ *  The engine's records were object literals, so a field a record does not own was both written and
+ *  read through the prototype chain. Two ways that decided a verdict. The byte reader answered with
+ *  `{ der }` on success, and the consumer then asked that record for `fatal`: an inherited getter
+ *  there fabricated a whole report for bytes that read correctly. And a finding carries `context`
+ *  only when its rule supplies one, so assigning it ran an inherited setter with the finding as the
+ *  receiver, which could delete the finding's own `severity` and leave an inherited getter to answer
+ *  in its place. The signers' producer check refuses on exactly that severity, so either one turned
+ *  a refusal into a signature.
+ *
+ *  Driven here through `pki.lint.certificate` on BYTES, where no spec is validated, so what is
+ *  measured is the engine rather than the accessor door a signer puts in front of its spec. */
+function testProtoAccessorCannotSupplyAVerdict() {
+  var der = makeCert({ serial: b.integer(-1n) });
+  var baseline = pki.lint.certificate(der);
+  check("a negative serial reports one error finding before anything is installed",
+    sevOf(baseline, "lint/rfc5280/serial-not-positive") === "error" && baseline.worst === "error");
+
+  // Built before installation, so the getter never calls back into the subject.
+  var fabricated = { id: "probe/fabricated", severity: "notice", source: "probe", citation: "probe", message: "probe" };
+  var underFatal;
+  try {
+    Object.defineProperty(Object.prototype, "fatal", {
+      configurable: true, get: function () { return fabricated; }, set: function () {},
+    });
+    underFatal = pki.lint.certificate(der);
+  } finally { delete Object.prototype.fatal; }
+  check("an inherited `fatal` does not become the report for bytes that read correctly",
+    !underFatal.findings.some(function (f) { return f.id === "probe/fabricated"; }));
+  check("...and the real finding is still the verdict",
+    sevOf(underFatal, "lint/rfc5280/serial-not-positive") === "error" && underFatal.worst === "error");
+
+  var underContext;
+  try {
+    Object.defineProperty(Object.prototype, "context", {
+      configurable: true,
+      get: function () { return undefined; },
+      set: function () { try { delete this.severity; } catch (_e) { /* a frozen finding is fine */ } },
+    });
+    Object.defineProperty(Object.prototype, "severity", {
+      configurable: true, get: function () { return "notice"; }, set: function () {},
+    });
+    underContext = pki.lint.certificate(der);
+  } finally {
+    delete Object.prototype.context;
+    delete Object.prototype.severity;
+  }
+  check("an inherited `context` setter cannot take a finding's severity off it",
+    underContext.findings.every(function (f) { return Object.prototype.hasOwnProperty.call(f, "severity"); }));
+  check("...and the error finding still reports as an error",
+    sevOf(underContext, "lint/rfc5280/serial-not-positive") === "error" && underContext.worst === "error");
+
+  // A rule row carries an optional field only when its rule needs one, so every row that omits one
+  // read it off `Object.prototype`. Each of these decides whether the rule RUNS, which is upstream of
+  // every severity: an `appliesTo` answering false skips it, and an `effectiveDate` in the future
+  // dates it out of its window. The rows carry no prototype now, so there is nothing to inherit, and
+  // that holds for a field no rule has made optional yet. `worst` is the write side: assigned to a
+  // report that owns no such slot, an inherited setter ran with the report as its receiver.
+  var INHERITED = [
+    ["an `appliesTo` data property answering false", "appliesTo",
+      { configurable: true, writable: true, enumerable: false, value: function () { return false; } }],
+    ["an `appliesTo` getter answering false", "appliesTo",
+      { configurable: true, get: function () { return function () { return false; }; }, set: function () {} }],
+    ["an `effectiveDate` beyond every certificate", "effectiveDate",
+      { configurable: true, writable: true, enumerable: false, value: new Date("2099-01-01T00:00:00Z") }],
+    ["a `worst` setter that strips each finding's severity", "worst",
+      { configurable: true,
+        get: function () { return "notice"; },
+        set: function () {
+          var list = this && this.findings;
+          if (!Array.isArray(list)) return;
+          for (var i = 0; i < list.length; i++) { try { delete list[i].severity; } catch (_e) { /* frozen is fine */ } }
+        } }],
+  ];
+  for (var k = 0; k < INHERITED.length; k++) {
+    var label = INHERITED[k][0], key = INHERITED[k][1];
+    var report;
+    try {
+      Object.defineProperty(Object.prototype, key, INHERITED[k][2]);
+      report = pki.lint.certificate(der);
+    } finally { delete Object.prototype[key]; }
+    check("the rule still runs and still reports an error under " + label,
+      sevOf(report, "lint/rfc5280/serial-not-positive") === "error" && report.worst === "error");
+  }
 }
 
 module.exports = { run: run };

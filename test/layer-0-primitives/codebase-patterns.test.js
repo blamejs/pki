@@ -262,13 +262,7 @@ function _scanLib(regex, opts) {
 // literals from source so a structural scan does not fire on prose in a
 // docstring or a token that only appears inside a quoted example.
 function _stripCommentsAndLiterals(content) {
-  var out = content
-    .replace(/\/\*[\s\S]*?\*\//g, function (m) { return m.replace(/[^\n]/g, " "); })
-    .replace(/(^|[^:])\/\/[^\n]*/g, "$1")
-    .replace(/"(?:[^"\\]|\\.)*"/g, '""')
-    .replace(/'(?:[^'\\]|\\.)*'/g, "''")
-    .replace(/`(?:[^`\\]|\\.)*`/g, "``");
-  return out;
+  return _lexBlank(content, true);
 }
 
 // Enumerate the comments in a JS source, string- and template-aware so a `//` inside a "http://" literal
@@ -344,6 +338,25 @@ function _detectorClassSource() {
     out.push(line);
   }
   return out.join("\n");
+}
+
+/** Every lib module loaded, so the checks that consult the LOADED MODULE GRAPH answer for all of
+ *  them rather than for the ones something happened to pull in. `index.js` reaches almost every
+ *  module, but one sits behind a lazy inline require: `lib/revocation-fetch.js` was absent from the
+ *  graph, so `_takesCaptures` answered that it does not take the captures while it takes them on its
+ *  own line 10, and the live-read check never looked at it. A check that cannot see a file reports
+ *  nothing about it, which reads exactly like a file with nothing to report. */
+function _ensureLibLoaded() {
+  var files = _libFiles();
+  var failed = [];
+  for (var i = 0; i < files.length; i++) {
+    if (require.cache[files[i]]) continue;
+    try { require(files[i]); }
+    catch (e) { failed.push({ file: _relPath(files[i]), line: 1,
+      content: "could not be loaded, so every check that reads the module graph passes over it: " +
+        String(e && e.message).slice(0, 120) }); }
+  }
+  return failed;
 }
 
 function _takesCaptures(absPath) {
@@ -603,16 +616,90 @@ function testNoDeferralMarkers() {
 // (g) fail-open verify/parse shape — `return true` inside a catch
 // ---------------------------------------------------------------------------
 
-// The index just past the `}` that closes a block whose body starts at `from`. Falls back to the
-// end of the string when the braces do not balance -- a scan that cannot find the end reports the
-// whole remainder rather than nothing, so unparseable input is loud instead of silently exempt.
-function _matchingBrace(text, from) {
-  var depth = 1;
-  for (var i = from; i < text.length; i++) {
-    if (text[i] === "{") depth++;
-    else if (text[i] === "}" && --depth === 0) return i;
+/** Every `{` paired with its `}` in ONE pass, so a brace's partner is a lookup rather than a scan.
+ *  Scanned forward per brace, each enclosing block re-read the same suffix: on this tree that drove
+ *  the gate to about 91 s and 1.76 GB resident, which a small CI worker does not have.
+ *
+ *  `quoteAware` is set for the subject that KEEPS its string literals, which is the one the
+ *  destructuring arm reads. A `}` inside a literal closed the pattern early there, so
+ *  `var { x = "}", push: p } = Array.prototype;` ended the span before `push` and the gate stayed
+ *  green on a capture it exists to report. Template literals nest: `${` opens a brace whose `}`
+ *  returns the walk to the template text it sat in.
+ *
+ *  It is NOT set for the subject with literals removed, where every remaining quote character sits
+ *  inside a regex literal, which this walk deliberately does not read: telling one from a division
+ *  needs a parser it does not carry. Reading those as string openers swallowed the code after them
+ *  and unbalanced five files. Either way `_assertSourcesParseBalanced` reports a file that does not
+ *  close, so a mis-parse fails a check instead of exempting the file quietly. */
+var _braceTableFor = null;
+var _braceTableMode = null;
+var _braceTableCache = null;
+function _braceTable(text, quoteAware) {
+  // The MODE is part of the key. Keyed on the text alone, a file carrying neither a comment nor a
+  // literal produces the same subject from both strippers, and whichever walk ran first answered for
+  // the other: primed with the quote-blind table, the destructuring walk read a pattern as closing at
+  // the `}` inside a string literal and reported nothing.
+  if (_braceTableFor === text && _braceTableMode === !!quoteAware) return _braceTableCache;
+  var table = Object.create(null);
+  // A `}` arriving with nothing open means the walk is reading braces that are not blocks, so every
+  // span it hands out afterwards is measured from the wrong place. Discarded silently, it closed a
+  // block early and left the balance check reporting nothing.
+  var stray = false;
+  var braces = [];        // open-brace positions, each flagged when it opened a `${`
+  var modes = ["code"];   // innermost last: code, sq, dq, tpl
+  for (var i = 0; i < text.length; i++) {
+    var ch = text.charAt(i);
+    if (ch === "\\") { i++; continue; }
+    var mode = modes[modes.length - 1];
+    if (mode === "sq" || mode === "dq") {
+      if (ch === (mode === "sq" ? "'" : "\"")) modes.pop();
+      continue;
+    }
+    if (mode === "tpl") {
+      if (ch === "`") { modes.pop(); continue; }
+      if (ch === "$" && text.charAt(i + 1) === "{") {
+        braces.push({ at: i + 1, subst: true });
+        modes.push("code");
+        i++;
+      }
+      continue;
+    }
+    if (quoteAware) {
+      if (ch === "'") { modes.push("sq"); continue; }
+      if (ch === "\"") { modes.push("dq"); continue; }
+      if (ch === "`") { modes.push("tpl"); continue; }
+    }
+    if (ch === "{") { braces.push({ at: i, subst: false }); continue; }
+    if (ch === "}") {
+      var open = braces.pop();
+      if (!open) { stray = true; continue; }
+      table[open.at] = i;
+      if (open.subst) modes.pop();
+      continue;
+    }
   }
-  return text.length;
+  _braceTableCache = {
+    table: table,
+    balanced: braces.length === 0 && modes.length === 1 && !stray,
+    // Where it went wrong, so the report names a line instead of only a file. The innermost brace
+    // left open is the one whose partner was consumed; an unclosed quote is reported at the file's
+    // end, since the walk cannot know which quote character opened the run it never left.
+    openAt: braces.length ? braces[braces.length - 1].at : -1,
+    openMode: modes.length > 1 ? modes[modes.length - 1] : null,
+    stray: stray,
+  };
+  _braceTableFor = text;
+  _braceTableMode = !!quoteAware;
+  return _braceTableCache;
+}
+
+// The index OF the `}` that closes a block whose body starts at `from`, so `from - 1` is its `{`.
+// Falls back to the end of the string when that brace has no partner -- a scan that cannot find the
+// end reports the whole remainder rather than nothing, so unparseable input is loud instead of
+// silently exempt. `quoteAware` says whether the subject still carries its string literals.
+function _matchingBrace(text, from, quoteAware) {
+  var close = _braceTable(text, quoteAware).table[from - 1];
+  return close === undefined ? text.length : close;
 }
 
 function testNoFailOpenVerify() {
@@ -658,7 +745,7 @@ function testNoFailOpenVerify() {
     var opener;
     while ((opener = CATCH_OPENER.exec(subject)) !== null) {
       var bodyStart = opener.index + opener[0].length;
-      var body = subject.slice(bodyStart, _matchingBrace(subject, bodyStart));
+      var body = subject.slice(bodyStart, _matchingBrace(subject, bodyStart, false));
       if (!VERDICT.test(body)) continue;
       bad.push({
         file: _relPath(files[i]),
@@ -677,21 +764,80 @@ function testNoFailOpenVerify() {
  *  literal: `obj["push"]` survives this and not that. Newlines inside a removed comment are kept so
  *  a reported line number still points at the source line. */
 function _stripCommentsOnly(src) {
+  return _lexBlank(src, false);
+}
+
+/** ONE pass that knows a comment from a literal, blanking comments always and literal CONTENTS when
+ *  asked. Both strippers share it, so neither can drift into reading the other's shapes.
+ *
+ *  The literal-blanking form used to be four independent regex passes, and they could not tell the
+ *  two apart. The `//` pass deleted the `//` inside the literal on
+ *  `authority = "//" + userinfo + host + port;`, its only guard being a preceding character other
+ *  than `:`, which left the line holding one unpaired `"`. The double-quote pass then paired that
+ *  quote with the next one further down the file, and since its body matched newlines too, it
+ *  collapsed everything between onto one line. Every span measured in lib/guard-name.js after that
+ *  line was therefore measured against a different file, and the fail-open walk read a block that
+ *  does not exist. A stripper that mis-reads its input hides the shape the gate exists to find, and
+ *  it hides it silently, which is why `_assertSourcesParseBalanced` now reports a subject that does
+ *  not close.
+ *
+ *  lib/ carries no regex literal (project rule 11, enforced by `testNoRegexInLib`), so a `/` in code
+ *  position opens a comment or divides, and the walk needs no regex lexing. Length is preserved
+ *  exactly, newlines included, so an offset into the subject still names its source line. */
+// The four line terminators JavaScript recognizes: LF, CR, LINE SEPARATOR and PARAGRAPH SEPARATOR.
+function _isLineTerminator(ch) {
+  return ch === "\n" || ch === "\r" || ch === " " || ch === " ";
+}
+
+function _lexBlank(src, blankLiterals) {
   var out = "", i = 0, n = src.length;
+  // The innermost context last. `code` and `tpl` alternate through a `${` and its `}`; a quoted
+  // string never nests. Scanning a template to the next backtick instead treated the OPENING backtick
+  // of a nested template as the outer one's end: on "`a${`}`}`" the subject was cut short, the
+  // fail-open walk closed a catch 19 characters early, and a `return true` after it went unseen.
+  var modes = ["code"];
+  // The brace depth inside each open `${`, so an object literal in a substitution does not end it.
+  var substDepth = [];
+  function literalChar(ch) { return blankLiterals ? (ch === "\n" ? "\n" : " ") : ch; }
   while (i < n) {
+    var mode = modes[modes.length - 1];
     var c = src[i], d = src[i + 1];
-    if (c === "/" && d === "/") { while (i < n && src[i] !== "\n") { out += " "; i++; } continue; }
-    if (c === "/" && d === "*") {
-      i += 2; out += "  ";
-      while (i < n && !(src[i] === "*" && src[i + 1] === "/")) { out += src[i] === "\n" ? "\n" : " "; i++; }
-      i += 2; out += "  "; continue;
+    if (mode === "code") {
+      // A line comment ends at ANY line terminator the language recognizes. Stopped at "\n" alone, a
+      // comment ended by a bare carriage return or by U+2028 / U+2029 ran on and blanked the
+      // executable code after it, which is a check going quiet rather than reporting.
+      if (c === "/" && d === "/") { while (i < n && !_isLineTerminator(src[i])) { out += " "; i++; } continue; }
+      if (c === "/" && d === "*") {
+        i += 2; out += "  ";
+        while (i < n && !(src[i] === "*" && src[i + 1] === "/")) { out += src[i] === "\n" ? "\n" : " "; i++; }
+        if (i < n) { out += "  "; i += 2; }
+        continue;
+      }
+      if (c === "'") { modes.push("sq"); out += c; i++; continue; }
+      if (c === '"') { modes.push("dq"); out += c; i++; continue; }
+      if (c === "`") { modes.push("tpl"); out += c; i++; continue; }
+      if (c === "{" && substDepth.length) { substDepth[substDepth.length - 1] += 1; out += c; i++; continue; }
+      if (c === "}" && substDepth.length) {
+        if (substDepth[substDepth.length - 1] > 0) { substDepth[substDepth.length - 1] -= 1; }
+        else { substDepth.pop(); modes.pop(); }   // back to the template text this substitution sat in
+        out += c; i++; continue;
+      }
+      out += c; i++; continue;
     }
-    if (c === '"' || c === "'" || c === "`") {
-      var q = c; out += c; i++;
-      while (i < n && src[i] !== q) { if (src[i] === "\\") { out += src[i]; i++; } out += src[i] || ""; i++; }
-      out += src[i] || ""; i++; continue;
+    // The escape and the character it escapes travel together: blanked as two, kept as two. A line
+    // continuation keeps its newline either way, so the line count does not shift.
+    if (c === "\\") {
+      out += blankLiterals ? " " : c; i++;
+      if (i < n) { out += literalChar(src[i]); i++; }
+      continue;
     }
-    out += c; i++;
+    if (mode === "tpl") {
+      if (c === "`") { modes.pop(); out += c; i++; continue; }
+      if (c === "$" && d === "{") { modes.push("code"); substDepth.push(0); out += "${"; i += 2; continue; }
+      out += literalChar(c); i++; continue;
+    }
+    if (c === (mode === "sq" ? "'" : "\"")) { modes.pop(); out += c; i++; continue; }
+    out += literalChar(c); i++;
   }
   return out;
 }
@@ -883,6 +1029,91 @@ function testNoStoringAppend() {
   _report("no module in lib/ obtains the storing form of append", bad);
   _assertDecodesEscapedAppends();
   _assertNoDirectStoringAppendCalls();
+  _assertBudgetedModulesAreUnread();
+  _assertBraceWalkHandlesLiterals();
+  _assertSourcesParseBalanced();
+}
+
+/** The brace walk pinned on the shapes that defeated it, each one executed JavaScript that node
+ *  accepts. A walk that closes a block early does not report anything: it hands out a shorter span
+ *  and every check reading that span goes quiet, which is the failure that looks like a pass. */
+function _assertBraceWalkHandlesLiterals() {
+  var BT = String.fromCharCode(96);
+  var bad = [];
+  function fail(what) {
+    bad.push({ file: "test/layer-0-primitives/codebase-patterns.test.js", line: 1, content: what });
+  }
+
+  // A nested template inside a substitution. Scanned to the next backtick, the outer template ended
+  // at the INNER one's opener and the rest of the line stopped being code.
+  var nested = "function f(){try {} catch(e) { const t = " + BT + "a${" + BT + "}" + BT + "}" + BT + "; return true; }}";
+  var strippedNested = _lexBlank(nested, true);
+  if (strippedNested.length !== nested.length) fail("_lexBlank changed the length of a nested template");
+  if (strippedNested.indexOf("return true") === -1) {
+    fail("_lexBlank lost the code after a nested template literal, so the fail-open walk cannot see it");
+  }
+  var nestedCatch = strippedNested.indexOf("catch(e) {") + "catch(e) {".length;
+  var nestedClose = _matchingBrace(strippedNested, nestedCatch, false);
+  if (strippedNested.slice(nestedCatch, nestedClose).indexOf("return true") === -1) {
+    fail("the catch block after a nested template closed before its `return true`");
+  }
+
+  // A brace a walk that does not read regex literals cannot pair. It must report rather than close a
+  // block early: project rule 11 keeps these out of lib/, and this check is what makes a breach loud.
+  var strayBrace = "function f(){try {} catch(e) { /[}]/; return true; }}";
+  if (_braceTable(_lexBlank(strayBrace, true), false).balanced) {
+    fail("a `}` that pairs with nothing was discarded instead of reported");
+  }
+
+  // The same subject asked for in both modes. A file with no comment and no literal produces one
+  // subject from both strippers, so a cache keyed on the text alone answered in the wrong mode.
+  var pattern = "var { x = " + JSON.stringify("}") + ", push: p } = Array.prototype;";
+  var blind = _braceTable(pattern, false).table[pattern.indexOf("{")];
+  var aware = _braceTable(pattern, true).table[pattern.indexOf("{")];
+  if (blind === aware) {
+    fail("the brace table answered the same in both modes, so the quote-aware walk is not running");
+  }
+  if (pattern.slice(0, aware).indexOf("push") === -1) {
+    fail("the quote-aware table closed the pattern before its `push`, which is the capture to report");
+  }
+
+  _report("the brace walk reads nested templates, reports an unpairable brace, and keys its cache by mode", bad);
+}
+
+/** The brace walk reports a file whose braces and quotes do not both close. It reads no regex
+ *  literal, so a lone `{`, `}` or quote character inside one unbalances the walk, and every span
+ *  taken from that file afterwards is measured from the wrong place. Reported, that is a failing
+ *  check naming the file; unreported, it is a gate that silently stops seeing the shape it exists to
+ *  find. Both subjects are walked, because the two arms read different ones. */
+function _assertSourcesParseBalanced() {
+  var files = _libFiles();
+  var bad = [];
+  for (var i = 0; i < files.length; i++) {
+    var content;
+    try { content = fs.readFileSync(files[i], "utf8"); }
+    catch (_e) { continue; }
+    var subjects = [
+      ["comments removed, literals kept", _stripCommentsOnly(content), true],
+      ["comments and literals removed", _stripCommentsAndLiterals(content), false],
+    ];
+    for (var s = 0; s < subjects.length; s++) {
+      var walk = _braceTable(subjects[s][1], subjects[s][2]);
+      if (walk.balanced) continue;
+      var where = walk.openAt >= 0
+        ? subjects[s][1].slice(0, walk.openAt).split(/\r?\n/).length
+        : 1;
+      bad.push({
+        file: _relPath(files[i]), line: where,
+        content: "braces or quotes do not close when read with " + subjects[s][0] +
+          (walk.openMode ? " (inside an unclosed " + walk.openMode + " run)" : "") +
+          (walk.stray ? " (a `}` arrived with no block open)" : "") +
+          " — a span taken from this file is measured from the wrong place, so the walk reads the " +
+          "remainder of the file instead of the block. A regex literal holding a lone brace or quote " +
+          "character is the usual cause: write it as a character class the walk balances, or escape it",
+      });
+    }
+  }
+  _report("every lib source parses with its braces and quotes balanced", bad);
 }
 
 /** THE CALL POSITION, held to a per-module budget that ratchets DOWN. `recv.push(x)` stores at an
@@ -896,19 +1127,74 @@ function testNoStoringAppend() {
  *  A check that reports 469 times is not a gate, so this is a budget rather than a line: a module at
  *  zero is absent from the table and a new call in it fails immediately, and a module still listed
  *  cannot grow. It reports in BOTH directions, so converting calls without lowering the figure fails
- *  too, which is what keeps the number meaning the real count. The reporting verbs are last by
- *  design: `inspect` and `lint` build report lines, where a substituted element is a wrong
- *  diagnostic rather than a wrong signature. Delete the table when it empties and the line is drawn
- *  with no exemptions. */
+ *  too, which is what keeps the number meaning the real count. A module is last only while nothing
+ *  else in the library reads it, which `_assertBudgetedModulesAreUnread` is what enforces. Delete the
+ *  table when it empties and the line is drawn with no exemptions. */
+var _STORING_APPEND_BUDGET = {
+  "lib/inspect.js": 284,
+};
+
+/** A budget is an exemption, and an exemption travels to whoever reads the module. So a budgeted
+ *  module must be one nothing else in lib/ requires: `inspect` is a public verb no module reads, and
+ *  a substituted element in it is a wrong report line.
+ *
+ *  `lint` was budgeted on that same reading and was required by the certificate, CSR and CRL signers,
+ *  which call `lint.assertBuildClean` as a producer check before they sign. MEASURED through the
+ *  shipped door: `_runLints` collected each finding by storing at an index, so a benign finding
+ *  inherited from `Array.prototype` stood in for the error finding, and `pki.x509.sign` emitted a CA
+ *  certificate whose key usage omits keyCertSign, which is the artifact the check exists to refuse.
+ *  A report builder that another module reads is a gate, whatever it is called.
+ *
+ *  The rule is structural rather than a list, so it answers for a budget entry nobody has written
+ *  yet: budget a module that anything requires and this fires, naming the readers. */
+function _assertBudgetedModulesAreUnread() {
+  var files = _libFiles();
+  var budgeted = Object.keys(_STORING_APPEND_BUDGET);
+  var bad = [];
+  // Asked of the LOADED MODULE GRAPH rather than of the text, the same way `_takesCaptures` asks it.
+  // Matched lexically, this answered for exactly one spelling: `require('./inspect')`,
+  // `require( "./inspect" )`, `require("./inspect.js")`, `require("./" + "inspect")`,
+  // `require/* c */("./inspect")`, a key naming a subdirectory, and a reader reached through a
+  // re-exporting bridge all loaded the module and reported nothing. Node records what each module
+  // actually required, so no way of writing an import or of hiding one changes the answer.
+  for (var u = 0; u < files.length; u++) {
+    if (require.cache[files[u]]) continue;
+    bad.push({
+      file: _relPath(files[u]), line: 1,
+      content: "is not in the loaded module graph, so whether it reads a budgeted module cannot be " +
+        "answered — require it from the suite, or the budget check passes over it silently",
+    });
+  }
+  for (var i = 0; i < budgeted.length; i++) {
+    var rel = budgeted[i];
+    var abs = path.join(REPO_ROOT, rel.split("/").join(path.sep));
+    var readers = [];
+    for (var f = 0; f < files.length; f++) {
+      if (files[f] === abs) continue;
+      var entry = require.cache[files[f]];
+      if (!entry) continue;
+      for (var c = 0; c < entry.children.length; c++) {
+        if (entry.children[c].filename !== abs) continue;
+        readers.push(_relPath(files[f]).replace(/\\/g, "/"));
+        break;
+      }
+    }
+    if (!readers.length) continue;
+    bad.push({
+      file: rel, line: 1,
+      content: "is budgeted for the storing append and is required by " + readers.join(", ") +
+        " — a store at an index runs a setter inherited from the prototype chain, which takes the " +
+        "element being appended, so the reader decides on a value the accessor supplied. A module " +
+        "another module reads is not a report builder: convert its calls to `_push(list, value)` " +
+        "over `intrinsic.append` (or `guard.list.append`) and drop its entry from the budget",
+    });
+  }
+  bad = _filterMarkers(bad, "append-by-store");
+  _report("every module budgeted for the storing append is one nothing else in lib/ reads", bad);
+}
+
 function _assertNoDirectStoringAppendCalls() {
-  // The two report builders, and nothing else. Every other module in lib/ is held to zero, so a new
-  // call anywhere outside these two fails immediately. These lists become report lines, where a
-  // substituted element is a wrong diagnostic rather than a wrong signature, which is why they are
-  // last rather than exempt.
-  var PUSH_BUDGET = {
-    "lib/inspect.js": 284,
-    "lib/lint.js": 132,
-  };
+  var PUSH_BUDGET = _STORING_APPEND_BUDGET;
   var CALL = new RegExp("\\.\\s*(?:push|unshift)\\s*\\(", "g");
   var files = _libFiles();
   var bad = [];
@@ -965,7 +1251,7 @@ function _destructuringArm(subject, file, bad, lineAt, decodeKeys) {
     var declared = /(?:^|[^A-Za-z0-9_$])(?:var|let|const)\s*\[?\s*$/.test(subject.slice(b > 64 ? b - 64 : 0, b));
     // `_matchingBrace` returns the index OF the closing brace, so what follows a pattern starts one
     // past it.
-    var close = _matchingBrace(subject, b + 1);
+    var close = _matchingBrace(subject, b + 1, true);
     if (close <= b || close >= subject.length) continue;
     // AN ASSIGNMENT PATTERN NEEDS NO DECLARATION, and its close need not be followed by `=` either:
     // `[{ push: p }] = [Array.prototype]` closes on `]`, and `for ({ push: p } of [A])` on ` of `.
@@ -4282,7 +4568,7 @@ function testGuardReadsRuntimeLive() {
     /** Still budgeted: the module's own selections and copies are converted and its policy-mapping
      *  copies were an admission, but the 57 counted here are the live prototype reads elsewhere in
      *  it, which item 0v7 carries. */
-    "lib/path-validate.js": 25,
+    "lib/path-validate.js": 24,
     "lib/asn1-der.js": 66,
     "lib/schema-engine.js": 15,
     "lib/cms-sign.js": 26,
@@ -4317,6 +4603,11 @@ function testGuardReadsRuntimeLive() {
      *  operations is sent to. Arming a module arms it whole, so this is the count that was always
      *  there and is now counted, and it ratchets DOWN only like the rest. */
     "lib/scep.js": 89,
+    /** Entered scope when it took the own-property read and the defining write that keep a finding's
+     *  severity off `Object.prototype`. Arming a module arms it whole, and this is the largest module
+     *  in the library, so this is the count that was always there and is now counted. It ratchets
+     *  DOWN only, like the rest. */
+    "lib/lint.js": 662,
   };
   var counts = {};
   bad.forEach(function (b) { counts[b.file] = (counts[b.file] || 0) + 1; });
@@ -5276,6 +5567,7 @@ function testNoOptionNamedThen() {
 
 function run() {
   _allViolations = [];
+  _report("every lib module loads, so the module-graph checks answer for all of them", _ensureLibLoaded());
   testNoOptionNamedThen();
   testSourceHeaders();
   testShippedSourceIsAscii();

@@ -17,6 +17,14 @@
  * `countIndexStores(upTo, fn)` returns `{ stores, value }` -- the number of stores seen at indexes
  * 0 .. upTo-1, and whatever `fn` returned (awaited when it is a promise). The accessors are removed
  * before it returns, including when `fn` throws.
+ *
+ * `substituteIndex(index, value, fn)` is the stronger form: its setter SWALLOWS the store, leaving no
+ * own property, so reading the index answers with `value` instead of the element that was appended.
+ * That is the shape an attacker gets from a store, and it is what a vector needs to show a decision
+ * being made on a value the caller never supplied. It returns `{ swallowed, value, error }`, with
+ * `error` carrying whatever `fn` threw rather than rethrowing, since a vector usually asserts a
+ * refusal. `value` is read before installation by the caller, so the getter never calls back into the
+ * subject: a getter that does is the first thing the operation under test corrupts.
  */
 
 function _install(upTo, onStore) {
@@ -49,4 +57,19 @@ async function countIndexStores(upTo, fn) {
   return { stores: stores, indexes: seen, value: value };
 }
 
-module.exports = { countIndexStores: countIndexStores };
+async function substituteIndex(index, value, fn) {
+  var swallowed = 0;
+  var key = String(index);
+  Object.defineProperty(Array.prototype, key, {
+    configurable: true,
+    get: function () { return value; },
+    set: function () { swallowed += 1; },
+  });
+  var out = null, error = null;
+  try { out = await fn(); }
+  catch (e) { error = e; }
+  finally { delete Array.prototype[key]; }
+  return { swallowed: swallowed, value: out, error: error };
+}
+
+module.exports = { countIndexStores: countIndexStores, substituteIndex: substituteIndex };
