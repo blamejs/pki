@@ -71,6 +71,13 @@ no transpilation.
 var pki = require("@blamejs/pki");
 ```
 
+An ESM caller can import the whole namespace object or any namespace by name:
+
+```js
+import pki from "@blamejs/pki";
+import { x509, cms, path, schema } from "@blamejs/pki";
+```
+
 ## Quickstart
 
 ### Parse an X.509 certificate

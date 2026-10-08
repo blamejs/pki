@@ -728,6 +728,36 @@ function run() {
   var refN = eqNorm(ref), tN = eqNorm(t);
   var agree = ref ? mustAgree.every(function (v) { var vn = eqNorm(v); return refN.indexOf(vn) >= 0 && tN.indexOf(vn) >= 0; }) : false;
   check("interop: pki.inspect values agree with openssl x509 -text (" + ossl.split(/[\\/]/).slice(-3).join("/") + ")", agree);
+
+  /* The options record these verbs build when the argument is omitted used to be an empty object
+     literal, which carries `Object.prototype`, so every option the caller did not pass was read off
+     the prototype chain. `maxBytes` is the one that shows it: a value installed there became the cap
+     the render is held to, and a report that renders without it came back refused instead. */
+  var smallDer = Buffer.from("0403010203", "hex");
+  var cleanRender = pki.inspect.asn1(smallDer);
+  check("CONTROL a five-byte value renders with no options passed (" + cleanRender.length + " chars)",
+    cleanRender.length > 0);
+  var underInherited = null, inheritedThrew = null;
+  var reads = 0;
+  try {
+    Object.defineProperty(Object.prototype, "maxBytes", {
+      get: function () { reads += 1; return 1; },
+      configurable: true, enumerable: false,
+    });
+    try { underInherited = pki.inspect.asn1(smallDer); }
+    catch (e) { inheritedThrew = (e && e.code) || "throw"; }
+  } finally { delete Object.prototype.maxBytes; }
+  // CONTROL: an inherited field IS reachable on a plain object literal, which is what the default
+  // used to be, so the arm below is not asserting that an unreadable value was ignored.
+  var literalSees;
+  try {
+    Object.defineProperty(Object.prototype, "maxBytes", { value: 7, configurable: true, enumerable: false });
+    literalSees = {}.maxBytes;
+  } finally { delete Object.prototype.maxBytes; }
+  check("CONTROL an inherited maxBytes is visible through an object literal", literalSees === 7);
+  check("an omitted options record is not held to an inherited maxBytes (" +
+    (inheritedThrew !== null ? "refused " + inheritedThrew : "rendered, " + reads + " inherited read(s)") + ")",
+  inheritedThrew === null && underInherited === cleanRender);
 }
 
 function findOpenssl() {

@@ -73,8 +73,53 @@ var inspect    = require("./lib/inspect");
 var lint       = require("./lib/lint");
 var webauthn   = require("./lib/webauthn");
 
+/* Every value in the export object below is a bare identifier, and the ten `var`s here are what make
+ * that true. Node detects a CommonJS module's named exports with `cjs-module-lexer`, which follows
+ * `name: ident` and a shorthand and stops at anything else: a member expression, a nested object
+ * literal, a call. `version: constants.version` was the first entry, so it stopped the lexer before
+ * any namespace was seen and `import { x509 } from "@blamejs/pki"` failed for all 47 of them, with
+ * only `default`, `module.exports` and `version` reaching an ESM caller. Hoisting is the whole fix;
+ * it needs no build step and changes nothing a `require` caller sees. A new namespace added below
+ * must be a bare identifier, which a vector in `esm-named-exports.test.js` holds it to. */
+var _version = constants.version;
+var _identityNs = { match: identity.match };
+var _cmsNs = {
+  verify: cms.verify, sign: cms.sign, countersign: cms.countersign, encrypt: cms.encrypt,
+  authenticate: cms.authenticate, decrypt: cms.decrypt, compress: cms.compress, decompress: cms.decompress,
+  digest: cms.digest, verifyDigest: cms.verifyDigest,
+  certsOnly: cms.certsOnly, parseCertsOnly: cms.parseCertsOnly, isCertsOnly: cms.isCertsOnly,
+  timestampImprint: cms.timestampImprint, attachTimestamp: cms.attachTimestamp,
+};
+var _cmpNs = {
+  build: cmp.build, transfer: cmp.transfer, wellKnownUrl: cmp.wellKnownUrl, verify: cmp.verify,
+  openKeyPackage: cmp.openKeyPackage, session: cmp.session,
+};
+var _keyNs = {
+  encrypt: key.encrypt, decrypt: key.decrypt, export: key.export, import: key.import,
+  generate: key.generate, publicFromPrivate: key.publicFromPrivate,
+};
+var _kemNs = { encapsulate: compositeKem.encapsulate, decapsulate: compositeKem.decapsulate };
+var _scepNs = {
+  build: scep.build, parse: scep.parse, getCACaps: scep.getCACaps, getCACert: scep.getCACert,
+  getNextCACert: scep.getNextCACert, enroll: scep.enroll, renew: scep.renew, getCert: scep.getCert,
+  getCrl: scep.getCrl, parseCapabilities: scep.parseCapabilities,
+};
+var _transportNs = { https: transport.https, peerChain: transport.peerChain };
+var _lintNs = {
+  certificate: lint.certificate,
+  csr:         lint.csr,
+  crl:         lint.crl,
+  ocsp:        lint.ocsp,
+  cms:         lint.cms,
+  tsp:         lint.tsp,
+  attrcert:    lint.attrcert,
+  rules:       lint.rules,
+  profiles:    lint.profiles,
+};
+var _webcryptoNs = _webcryptoNamespace();
+
 module.exports = {
-  version:   constants.version,
+  version:   _version,
   // `C` is the terse call-site alias; `constants` the discoverable name.
   C:         constants,
   constants: constants,
@@ -97,7 +142,7 @@ module.exports = {
   // `identity` is RFC 9525 service identity -- pki.identity.match says whether a certificate
   // presents a name the client was trying to reach. A separate answer from path validation,
   // which pki.path.validate gives; sec. 1.2 has an application need both.
-  identity:  { match: identity.match },
+  identity:  _identityNs,
   // `ct` is RFC 6962 Certificate Transparency -- pki.ct.parseSctList decodes the
   // SCT-list extension a certificate / OCSP response carries; the signature is
   // surfaced raw for external verification (pki.ct.reconstructSignedData).
@@ -113,11 +158,7 @@ module.exports = {
   // Curated, the way pki.cmp is: cms-verify also exports `setEngine`, the seam path-validate injects
   // its path builder through. That is plumbing between two internal modules, not an operator verb,
   // and exporting the module wholesale would put it on the public surface.
-  cms:       { verify: cms.verify, sign: cms.sign, countersign: cms.countersign, encrypt: cms.encrypt,
-    authenticate: cms.authenticate, decrypt: cms.decrypt, compress: cms.compress, decompress: cms.decompress,
-    digest: cms.digest, verifyDigest: cms.verifyDigest,
-    certsOnly: cms.certsOnly, parseCertsOnly: cms.parseCertsOnly, isCertsOnly: cms.isCertsOnly,
-    timestampImprint: cms.timestampImprint, attachTimestamp: cms.attachTimestamp },
+  cms:       _cmsNs,
   smime:     smime,
   // `cmc` interprets an RFC 5272 Full PKI Response into one terminal verdict;
   // `pki.schema.cmc` is the decoder underneath it.
@@ -147,8 +188,7 @@ module.exports = {
   // and pki.cmp.verify checks the protection on an incoming one. pki.cmp.openKeyPackage opens a
   // centrally generated private key a CA delivered. Parsing lives at pki.schema.cmp.parse.
   // setEngine is the @internal path-validate seam -- kept off the public surface.
-  cmp:       { build: cmp.build, transfer: cmp.transfer, wellKnownUrl: cmp.wellKnownUrl, verify: cmp.verify,
-    openKeyPackage: cmp.openKeyPackage, session: cmp.session },
+  cmp:       _cmpNs,
   // `crl` is the RFC 5280 sec. 5 CRL producing side -- pki.crl.sign builds and signs a CertificateList
   // over any registry algorithm, pki.crl.verify checks a CRL signature through the one path-validation
   // signature engine, and pki.crl.isRevoked looks a serial up. Parsing lives at pki.schema.crl.parse.
@@ -158,8 +198,7 @@ module.exports = {
   // pki.key.generate / publicFromPrivate over every WebCrypto algorithm. Parsing lives at pki.schema.pkcs8.
   // Curated: correspondsTo is the @internal check pki.cmp.session holds a delivered key and its
   // certificate to each other with, and stays off the public surface.
-  key:       { encrypt: key.encrypt, decrypt: key.decrypt, export: key.export, import: key.import,
-    generate: key.generate, publicFromPrivate: key.publicFromPrivate },
+  key:       _keyNs,
   // `pkcs12` is the RFC 7292 / RFC 9579 PKCS#12 (.p12/.pfx) producing side -- pki.pkcs12.build assembles a
   // password-integrity store (key/cert/crl/secret bags in an AuthenticatedSafe, shrouded keys + cert safes
   // under PBES2, a classic HMAC or PBMAC1 MAC), and pki.pkcs12.verifyMac checks a store's MAC. Parsing lives
@@ -193,7 +232,7 @@ module.exports = {
   // `kem` is composite ML-KEM key establishment (draft-ietf-lamps-pq-composite-kem):
   // pki.kem.encapsulate / decapsulate over a post-quantum ML-KEM hybridized with a
   // traditional RSA-OAEP / ECDH / X25519 / X448, mixed through the SHA3-256 combiner.
-  kem:       { encapsulate: compositeKem.encapsulate, decapsulate: compositeKem.decapsulate },
+  kem:       _kemNs,
   // `sigstore` verifies a Sigstore bundle (the npm --provenance artifact): a
   // keyless Fulcio signature over a DSSE-wrapped in-toto SLSA attestation with a
   // Rekor inclusion proof -- offline, zero-dep, against caller-pinned trust.
@@ -204,14 +243,14 @@ module.exports = {
   // splitter, certs-only + serverkeygen validators over CMS, the enroll-attribute
   // builders, the HTTP response classifier). est opens no socket; fail-closed.
   est:       est,
-  scep:      { build: scep.build, parse: scep.parse, getCACaps: scep.getCACaps, getCACert: scep.getCACert, getNextCACert: scep.getNextCACert, enroll: scep.enroll, renew: scep.renew, getCert: scep.getCert, getCrl: scep.getCrl, parseCapabilities: scep.parseCapabilities },
+  scep:      _scepNs,
   // `transport` is the shared fail-closed node:https transport the enrollment clients
   // drive -- pki.transport.https(defaults) returns a transport(request) -> {status,
   // headers, body}. The toolkit's sole socket choke point: explicit trust anchors,
   // rejectUnauthorized always on, a TLS floor, a streaming response cap, and a timeout.
   // Curated to the public `https` factory; the module's `isBlockedIp` classifier is an
   // internal helper pki.path.build reuses (require the module), not a public surface.
-  transport: { https: transport.https, peerChain: transport.peerChain },
+  transport: _transportNs,
   // `jose` is the RFC 7515 Flattened JWS + RFC 7638 JWK-thumbprint layer: a strict
   // base64url codec, a bounded duplicate-key-rejecting JSON reader, profiled
   // sign/verify (ACME-outer / EAB-inner / keyChange-inner), and an alg registry
@@ -241,17 +280,7 @@ module.exports = {
   // `lint` is named member by member rather than passed through, because the module also exports the
   // build-time gate the authoring verbs call and the two readers its conformance vectors use. Those
   // are internal plumbing, so they stay off the public namespace.
-  lint: {
-    certificate: lint.certificate,
-    csr:         lint.csr,
-    crl:         lint.crl,
-    ocsp:        lint.ocsp,
-    cms:         lint.cms,
-    tsp:         lint.tsp,
-    attrcert:    lint.attrcert,
-    rules:       lint.rules,
-    profiles:    lint.profiles,
-  },
+  lint: _lintNs,
   // `webauthn` verifies a W3C WebAuthn / passkey attestation -- pki.webauthn.verify
   // checks the attestation-statement signature + each format's structural bindings
   // (packed / tpm / android-key / apple / fido-u2f / none) and surfaces the x5c chain
@@ -263,7 +292,7 @@ module.exports = {
   // A ready W3C Crypto instance (globalThis.crypto shape) with the classes for
   // constructing more attached under the same namespace (pki.webcrypto.CryptoKey,
   // .SubtleCrypto, .Crypto, .WebCryptoError). PQC-first, classical-capable, zero-dep.
-  webcrypto: _webcryptoNamespace(),
+  webcrypto: _webcryptoNs,
 };
 
 function _webcryptoNamespace() {

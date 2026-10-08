@@ -142,12 +142,18 @@ jobs:
           harness="fuzz/${{ matrix.target }}.fuzz.js"
           corpus="fuzz/${{ matrix.target }}_seed_corpus"
           echo "::group::jazzer fuzz $harness ($FUZZ_TIME s)"
+          # The arena cap and the reasoning behind it are in cflite_pr.yml. This run is thirty times
+          # longer, so it reaches millions of iterations rather than hundreds of thousands and gets
+          # more room for the growth the allocator retains; the cap is still what holds that growth
+          # down, and the limit is still what finds an allocation taken from a length field.
+          export MALLOC_ARENA_MAX=2
+          FUZZ_LIMITS="-rss_limit_mb=6144"
           if [ -d "$corpus" ]; then
             npx --prefix fuzz jazzer "$harness" "$corpus" -- \
-              -max_total_time="$FUZZ_TIME" -error_exitcode=1 -timeout=30
+              -max_total_time="$FUZZ_TIME" -error_exitcode=1 -timeout=30 $FUZZ_LIMITS
           else
             npx --prefix fuzz jazzer "$harness" -- \
-              -max_total_time="$FUZZ_TIME" -error_exitcode=1 -timeout=30
+              -max_total_time="$FUZZ_TIME" -error_exitcode=1 -timeout=30 $FUZZ_LIMITS
           fi
           echo "::endgroup::"
 

@@ -4,9 +4,13 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.8.62 — 2026-10-08
+## v0.9.0 — 2026-10-08
 
-Give every record the toolkit builds for an omitted argument no prototype, so a field the caller left out is absent rather than inherited.
+Import any namespace by name from an ESM caller, and give every record the toolkit builds for an omitted argument no prototype.
+
+### Added
+
+- Every namespace is an ESM named import. `import { x509, cms, path, schema, lint, webcrypto } from "@blamejs/pki"` resolves, as does any of the other 41; `import pki from "@blamejs/pki"` is unchanged and gives the same object `require` does. The package remains CommonJS, runs on Node LTS as shipped, and adds no build step and no transpilation: every value in the export object is a bare identifier bound above it, which is the shape Node's export reader can follow. A `.d.ts` generated from the source comment blocks is still to come.
 
 ### Changed
 
@@ -15,10 +19,10 @@ Give every record the toolkit builds for an omitted argument no prototype, so a 
 ### Fixed
 
 - A revocation deadline is measured against the toolkit's own clock. `pki.path.fetchingChecker` builds its deadline with no options record, so the record it defaulted carried `Object.prototype` and the clock came from an inherited `now`: one reporting a time far ahead made the deadline expired before the first fetch, and the fetch that would have retrieved a CRL or an OCSP response was never made. The same record supplies the bound a decoded size is held to, where an inherited `max` of zero refuses every value.
-- A signer signs with the identity its caller named. `pki.x509.sign`, `pki.crl.sign` and `pki.attrcert.sign` default an omitted issuer record, so an inherited `cert`, `key`, `name` or `publicKey` was read as if supplied. Reaching the read required getting past the spec's unknown-field door and its copy depth cap, both of which refused it, so the effect was a refused signing call rather than a signature under another identity. The record has no prototype now, which is where the answer belongs.
-- A client believes what a server actually sent. `pki.acme`, `pki.cmp`, `pki.ct`, `pki.est`, `pki.scep` and the revocation fetcher each default an omitted response record, where an inherited `status`, `body` or `headers` stands in for what arrived. The verbs that take a response through an options door already refused those by name; the record itself no longer carries them.
+- `pki.inspect.asn1`, `pki.inspect.certificate` and the other report verbs are held to the caps their caller passed. With the options argument omitted the record they defaulted carried `Object.prototype`, so an inherited `maxBytes` became the cap the render was held to and a report that renders normally came back refused.
+- A signer signs with the identity its caller named. `pki.x509.sign`, `pki.crl.sign` and `pki.attrcert.sign` default an omitted issuer or extension record, so an inherited `cert`, `key`, `name`, `publicKey`, `basicConstraints` or `keyUsage` was read as if supplied. Reaching the read required getting past the spec's unknown-field door and its copy depth cap, both of which refused it, so the effect was a refused signing call rather than a signature under another identity. The record has no prototype now, which is where the answer belongs.
+- A client believes what a server actually sent. `pki.acme`, `pki.cmp`, `pki.ct`, `pki.est`, `pki.scep` and the revocation fetcher each default an omitted response record, where an inherited `status`, `body` or `headers` stands in for what arrived. The content type a CMP transfer and a CT fetch check, and the declared content length the HTTP transport enforces its response cap against, were each read through a header record defaulted the same way.
 - The records every other verb defaults are the same shape and are converted with them: the options records of `pki.asn1.decode`, `pki.cbor.decode`, the schema engine and the shared PKIX sub-schemas, the signer and countersigner records in `pki.cms.sign`, the MAC and bag encryption records in `pki.pkcs12.build`, the message-imprint records in `pki.tsp.sign`, the header records in `pki.est`, the request and defaults records in the HTTP transport, the setup records in `pki.hpke`, the client option records in `pki.ct`, the certificate-transparency policy `pki.path.validate` passes on, the fallback key in `pki.jose`, the algorithm records the WebAuthn verifiers read a name off, and the algorithm record a signature scheme reads off a key.
-- A response header is read off a record that carries only what arrived. The content type a CMP transfer and a CT fetch check, and the declared content length the HTTP transport enforces its response cap against, were each read through a header record defaulted to an empty literal, so a value installed on `Object.prototype` under the header's own name stood in for a header the server never sent.
 
 ### Documentation
 
