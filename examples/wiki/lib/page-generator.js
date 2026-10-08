@@ -452,7 +452,15 @@ function _shell(opts) {
 function _renderNav(navGroups, currentPath, activeGroup) {
   var out = [];
   out.push('<aside class="side">');
+  // On a narrow screen the nav collapses behind the label below, which is CSS-only: the checkbox
+  // carries the open state so the menu works with JavaScript off, as the search form does. Both the
+  // checkbox and the label are inert above the stylesheet's 720px breakpoint.
+  out.push('<input type="checkbox" id="navtoggle" class="nav-toggle">');
+  out.push('<div class="side-top">');
   out.push('<a class="brand" href="/"><img src="/pkijs-logo.png" alt="' + esc(BRAND) + '"><span>' + esc(BRAND) + "</span></a>");
+  out.push('<label class="nav-toggle-btn" for="navtoggle">Menu</label>');
+  out.push("</div>");
+  out.push('<div class="side-body">');
   // Full-text search: a plain GET form — works without JavaScript.
   out.push('<form class="side-search" action="/search" method="get" role="search">');
   out.push('<label class="visually-hidden" for="q">Search documentation</label>');
@@ -478,6 +486,7 @@ function _renderNav(navGroups, currentPath, activeGroup) {
   out.push('<div class="side-foot">');
   out.push('<a href="' + esc(REPO_URL) + '" target="_blank" rel="noopener noreferrer">GitHub</a> · ');
   out.push('<a href="' + esc(NPM_URL) + '" target="_blank" rel="noopener noreferrer">npm</a>');
+  out.push("</div>");
   out.push("</div>");
   out.push("</aside>");
   return out.join("\n");

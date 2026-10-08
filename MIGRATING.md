@@ -14,6 +14,52 @@ The toolkit has no `deprecate()`-marked surface awaiting removal.
 
 Listed newest-first.
 
+### v0.9.1 — `pki.smime.verify, pki.smime.decrypt, pki.est.splitMultipartMixed, and pki.est.parseServerKeygenResponse`
+
+A MIME entity that names one Content-Type parameter twice, or one header field twice, is refused rather than resolved by position, and one entity is bounded at 1024 body parts, 1024 header lines, and 256 Content-Type parameters.
+
+No API shape changed, so there is nothing to rewrite. What changes is which messages produce a
+verdict.
+
+Two shapes are refused outright, in either order of the two occurrences:
+
+- A `Content-Type` naming one parameter twice, such as `boundary="a"; boundary="b"`, or two
+  `micalg`, `protocol`, or `smime-type` parameters. Raises `smime/bad-mime`.
+- A header area naming one field twice, such as two `Content-Type` lines. Raises
+  `smime/bad-mime`.
+
+RFC 2045 sec. 5.1 gives a parameter one occurrence and RFC 5322 sec. 3.6 gives a singleton field
+one, so an entity naming either twice has two conforming readings that disagree about what the
+entity is: the `boundary` decides which octets a detached signature covers. Before this release
+the verdict followed the order the two occurrences appeared in, so the same two values swapped
+flipped between `valid: true` and a refusal.
+
+A field that may legally repeat, such as `Received`, is unaffected, and every occurrence stays
+readable from `headers`. Only resolving a repeated name to a single value is refused.
+
+Three bounds apply to one entity:
+
+| bound | value | `pki.constants.LIMITS` row |
+| --- | --- | --- |
+| body parts | 1024 | `MIME_MAX_PARTS` |
+| header lines | 1024 | `MIME_MAX_HEADERS` |
+| `Content-Type` parameters | 256 | `MIME_MAX_PARAMS` |
+
+A folded field spends one of the 1024 header lines for each physical line it occupies, so a field
+folded over three lines costs three. From `pki.smime`, an entity over the part bound raises
+`smime/bad-multipart` and one over the header-line or parameter bound raises `smime/bad-mime`;
+the `pki.est` readers raise `est/bad-multipart` for all three. The 16 MiB `MIME_MAX_BYTES` entity
+cap is unchanged.
+
+If a message you must keep reading carries one of the refused shapes, it is ambiguous to every
+other S/MIME implementation as well, and the sender has to emit each parameter and each field
+once. No option restores the previous behavior, because a precedence rule no other reader is
+obliged to share cannot settle which octets a signature covers.
+
+Separately, the entity record and the `content` a verdict is read with no longer share the buffer
+passed in. If you relied on mutating your own input buffer to change what a returned record reads
+back, that no longer works, and the record now holds the bytes the verdict was computed over.
+
 ### v0.6.12 — `pki.crl.verify, pki.pkcs12.verifyMac, and pki.ct.verifySctWithLogList`
 
 Each returned a bare boolean and now returns a verdict object; read `res.valid` where you read the boolean.

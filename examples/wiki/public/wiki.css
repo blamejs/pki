@@ -127,10 +127,48 @@ code[class*=language-],pre[class*=language-]{background:transparent;text-shadow:
 pre.code code[class*=language-]{color:#cfe3ff}
 .readme pre code[class*=language-]{color:#cfe3ff}
 
+/* ---- Narrow-screen menu toggle (CSS-only; both parts inert above 720px) ---- */
+.nav-toggle,.nav-toggle-btn{display:none}
+.side-top{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.side-top .brand{margin-bottom:14px}
+
 @media(max-width:720px){
   .wrap{flex-direction:column}
-  aside.side{width:auto;flex:none;border-right:none;border-bottom:1px solid var(--line)}
-  main{padding:24px 18px}
+  aside.side{width:auto;flex:none;border-right:none;border-bottom:1px solid var(--line);padding:12px 16px;overflow:visible}
+  .side-top .brand{margin-bottom:0}
+
+  /* `main` carries `margin:0 auto`, and an auto cross-axis margin turns off flex stretch, so the
+     column laid it out at its content's min-content width instead of the viewport's: measured at a
+     375px viewport, the page scrolled 771px wide. */
+  main{width:100%;max-width:none;margin:0;padding:22px 16px}
+
+  /* Collapsed, the nineteen group headers still stand 659px tall, so a reader landing on a page met
+     a full screen of navigation before the first line of it. */
+  .nav-toggle{position:absolute;display:block;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+  .nav-toggle-btn{display:inline-block;background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--ink);font-size:14px;padding:8px 14px;cursor:pointer;user-select:none}
+  .nav-toggle-btn::after{content:"\25B8";margin-left:8px;font-size:10px;color:var(--muted)}
+  .nav-toggle:checked~.side-top .nav-toggle-btn::after{content:"\25BE"}
+  .nav-toggle:focus-visible~.side-top .nav-toggle-btn{outline:2px solid var(--accent);outline-offset:2px}
+  .nav-toggle:not(:checked)~.side-body{display:none}
+  .side-body{margin-top:12px}
+
+  /* Pointer-sized targets become finger-sized ones. */
+  aside.side ul a{padding:9px 10px}
+  details.navgrp>summary{padding:8px 0;margin:4px 0}
+
+  /* Each of these scrolls inside its own box rather than widening the page. */
+  pre.code,.readme pre,.ref-table,.readme table{max-width:100%}
+  main>*{min-width:0}
+
+  /* Stacked rather than side by side: beside a 96px logo the title had about 200px to wrap into. */
+  .hero{flex-direction:column;align-items:flex-start;gap:12px;margin-bottom:14px}
+  .hero img{width:56px;height:56px}
+  .hero h1{font-size:26px}
+  .hero .tag{font-size:16px}
+  h1{font-size:27px}
+  main>.intro{font-size:16px}
+  h2{font-size:20px}
+  footer{margin-top:32px}
 }
 @media print{
   aside.side,aside.toc-rail,.copy-btn,.skip-link{display:none}

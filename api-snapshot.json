@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.9.0",
+  "packageVersion": "0.9.1",
   "surface": {
     "C": {
       "kind": "object",
@@ -165,6 +165,15 @@
               "kind": "number"
             },
             "MIME_MAX_BYTES": {
+              "kind": "number"
+            },
+            "MIME_MAX_HEADERS": {
+              "kind": "number"
+            },
+            "MIME_MAX_PARAMS": {
+              "kind": "number"
+            },
+            "MIME_MAX_PARTS": {
               "kind": "number"
             },
             "NAMED_SCAN_MAX_ELEMENTS": {
@@ -1729,6 +1738,15 @@
               "kind": "number"
             },
             "MIME_MAX_BYTES": {
+              "kind": "number"
+            },
+            "MIME_MAX_HEADERS": {
+              "kind": "number"
+            },
+            "MIME_MAX_PARAMS": {
+              "kind": "number"
+            },
+            "MIME_MAX_PARTS": {
               "kind": "number"
             },
             "NAMED_SCAN_MAX_ELEMENTS": {

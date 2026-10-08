@@ -331,6 +331,35 @@ async function run() {
   check("30. strictMicalg compares the micalg as an order-independent, whitespace-tolerant set", (await pki.smime.verify(Buffer.from(mixed.toString().replace(/micalg=[^;]+/, "micalg=\"sha-512, sha-256\"")), { strictMicalg: true })).valid === true);
   check("31. strictMicalg still flags a genuinely wrong micalg set", (await codeOf(function () { return pki.smime.verify(Buffer.from(mixed.toString().replace(/micalg=[^;]+/, "micalg=sha-384")), { strictMicalg: true }); })) === "smime/micalg-mismatch");
 
+  // RFC 2045 sec. 5.1 / RFC 5322 sec. 3.6: a repeated Content-Type parameter, or a repeated Content-Type
+  // field, leaves the entity reading differently depending on which occurrence a reader takes, and the
+  // boundary decides which octets the signature covers. Measured before the rule, on this message:
+  // `boundary="DECOY"; boundary=<real>` verified while the swapped order refused, and a second
+  // Content-Type field placed AFTER the real one verified while the same field placed before it
+  // refused. Both orders of each must now refuse, so no reading of these bytes is accepted.
+  var signedOne = await pki.smime.sign(MSG, signers, { form: "multipart" });
+  var oneText = signedOne.toString("latin1");
+  var realBoundary = /boundary="([^"]+)"/.exec(oneText)[1];
+  var ambiguous = [
+    oneText.split('boundary="' + realBoundary + '"').join('boundary="DECOY"; boundary="' + realBoundary + '"'),
+    oneText.split('boundary="' + realBoundary + '"').join('boundary="' + realBoundary + '"; boundary="DECOY"'),
+    oneText.split('micalg=sha-256').join('micalg=md5; micalg=sha-256'),
+    oneText.split('micalg=sha-256').join('micalg=sha-256; micalg=md5'),
+    oneText.replace("Content-Type: multipart/signed", "Content-Type: text/plain\r\nContent-Type: multipart/signed"),
+    oneText.replace(/(Content-Type: multipart\/signed[^\r\n]*\r\n)/, "$1Content-Type: text/plain\r\n"),
+  ];
+  var everyReadingRefused = true, acceptedAmbiguity = -1;
+  for (var amb = 0; amb < ambiguous.length; amb++) {
+    var ambCode = await codeOf(function () { return pki.smime.verify(Buffer.from(ambiguous[amb], "latin1")); });
+    if (ambCode !== "smime/bad-mime") { everyReadingRefused = false; acceptedAmbiguity = amb; }
+  }
+  check("31a. a repeated Content-Type parameter or field is refused in either order, so no reading is accepted" +
+    (acceptedAmbiguity < 0 ? "" : " [accepted index " + acceptedAmbiguity + "]"), everyReadingRefused);
+  // CONTROL: the unmodified message these six were derived from verifies, so they refuse for the
+  // ambiguity and not because the rewrite broke the signature.
+  check("31b. CONTROL the message every ambiguous variant was derived from verifies",
+    (await pki.smime.verify(Buffer.from(oneText, "latin1"))).valid === true);
+
   // RFC 2045: 8-bit (non-ASCII) default content is declared 8bit, not (falsely) 7bit; it round-trips.
   var m8 = await pki.smime.sign(Buffer.from("café — résumé\n", "utf8"), signers, { form: "multipart" });
   check("32. non-ASCII default content is declared Content-Transfer-Encoding: 8bit", /Content-Transfer-Encoding: 8bit/.test(m8.toString("latin1")) && (await pki.smime.verify(m8)).valid === true);
@@ -536,6 +565,13 @@ async function run() {
   check("91. a SIGNED message whose payload claims hp=cipher -> smime/bad-header-protection (no encryption layer)", (await codeOf(function () { return pki.smime.verify(cipherOnSigned); })) === "smime/bad-header-protection");
   var malformed = await pki.smime.sign(Buffer.from("Content-Type: text/plain; hp=\"clear\"\r\nNoColonHeaderLine\r\n\r\nbody\n"), signers, { entity: true });
   check("91. a payload DECLARING hp with a malformed header block -> smime/bad-header-protection (no silent downgrade)", (await codeOf(function () { return pki.smime.verify(malformed); })) === "smime/bad-header-protection");
+  // A payload naming hp TWICE does not say whether its headers are protected, and the two readings
+  // disagree (RFC 2045 sec. 5.1). The repeat is refused before the mode is read, in both the
+  // valued+valued and the bare+valued form.
+  var hpTwiceValued = await pki.smime.sign(Buffer.from("Content-Type: text/plain; hp=\"clear\"; hp=\"cipher\"\r\n\r\nbody\n"), signers, { entity: true });
+  check("91. a payload declaring hp twice -> smime/bad-header-protection", (await codeOf(function () { return pki.smime.verify(hpTwiceValued); })) === "smime/bad-header-protection");
+  var hpBareThenValued = await pki.smime.sign(Buffer.from("Content-Type: text/plain; hp; hp=\"clear\"\r\n\r\nbody\n"), signers, { entity: true });
+  check("91. a payload declaring hp bare and then valued -> smime/bad-header-protection", (await codeOf(function () { return pki.smime.verify(hpBareThenValued); })) === "smime/bad-header-protection");
 
   // (g) canonicalization: a transport that mangles a CRLF in the signed HP part still verifies + surfaces the
   // same inner headers (the shared RFC 8551 sec. 3.1.1 canonicalizer repairs both signer + verifier sides).
