@@ -20,6 +20,7 @@ Carry out the signature a caller asked for, compare a name by its own matching r
 
 ### Fixed
 
+- An S/MIME signer descriptor that carries its fields on a prototype is read the way a property read reads it. A method on the descriptor's class is not a field, which `pki.smime.sign` already held, and neither is a same-named value that method shadows: a class defining a `digestAlgorithm` method over a base class that holds a `digestAlgorithm` string sent the string through as the field while the readable value was the method, and signing failed as `cms/unsupported-algorithm` naming an undefined digest. Such a descriptor now signs under the digest it asked for, or the default where it asked for none.
 - A distinguished name is compared under the matching rule its own attribute carries. Every attribute value was compared case-insensitively, which is correct for every attribute RFC 5280 sec. 4.1.2.4 requires support for and wrong for the ones whose rule is case-exact: `challengePassword` (RFC 2985 sec. 5.4.1), `localKeyId` (sec. 5.5.2) and `role` (RFC 5755 sec. 4.4.5) are all resolvable by name, mintable through `pki.x509.parseDn`, and compared EQUAL for values differing only in case. Name chaining, revocation scope and name constraints all rest on that comparison. Everything else keeps the case-insensitive rule, so a conforming PKIX name compares exactly as before.
 
 ### Security

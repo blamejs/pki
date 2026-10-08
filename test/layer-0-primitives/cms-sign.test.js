@@ -654,6 +654,44 @@ async function testBadInput() {
     desc.cert = rsa.cert; desc.key = rsa.key;
     return pki.smime.sign(CONTENT, desc, {});
   }, "cms/bad-input");
+  /* A CALLABLE descriptor carrying cert and key is a shape these verbs read, and the names a
+     function carries by construction are not fields the caller named. The exemption belongs at the
+     door that REFUSES, not only at a reader that copies: `pki.smime.sign` snapshots a descriptor
+     before handing it on, so excluding the machinery there alone left a caller going straight to
+     `pki.cms.sign` with the same callable refused for `length`. Every door that takes a descriptor
+     is driven here, with the own `arguments` and `caller` a non-strict function carries on the
+     engine floor minted on, so the vector holds on either engine. */
+  function callableSigner() {
+    var fn = function () { return 0; };
+    fn.cert = rsa.cert; fn.key = rsa.key;
+    ["arguments", "caller"].forEach(function (n) {
+      Object.defineProperty(fn, n, { value: null, writable: false, enumerable: false, configurable: true });
+    });
+    return fn;
+  }
+  var toCounterCallable = await pki.cms.sign(CONTENT, [{ cert: rsa.cert, key: rsa.key }]);
+  var CALLABLE_DOORS = [
+    ["pki.cms.sign", function (d) { return pki.cms.sign(CONTENT, d); }],
+    ["pki.cms.sign (list form)", function (d) { return pki.cms.sign(CONTENT, [d]); }],
+    ["pki.cms.countersign", function (d) { return pki.cms.countersign(toCounterCallable, d); }],
+    ["pki.smime.sign", function (d) { return pki.smime.sign(CONTENT, d, {}); }],
+  ];
+  var doorsRefused = [], doorsAcceptedTypo = [];
+  for (var dk = 0; dk < CALLABLE_DOORS.length; dk++) {
+    var door = CALLABLE_DOORS[dk][1];
+    try { await door(callableSigner()); }
+    catch (de) { doorsRefused.push(CALLABLE_DOORS[dk][0] + " -> " + (de && de.code)); }
+    var typoed = callableSigner();
+    typoed.digestAlgoritm = "sha384";
+    var typoCode = null;
+    try { await door(typoed); } catch (te) { typoCode = te && te.code; }
+    if (typoCode !== "cms/bad-input") doorsAcceptedTypo.push(CALLABLE_DOORS[dk][0] + " -> " + typoCode);
+  }
+  check("every door that takes a signer descriptor reads a callable one" +
+    (doorsRefused.length ? " [refused: " + doorsRefused.join("; ") + "]" : ""), doorsRefused.length === 0);
+  check("CONTROL and every one of them still refuses a misspelled field on it" +
+    (doorsAcceptedTypo.length ? " [missed: " + doorsAcceptedTypo.join("; ") + "]" : ""),
+  doorsAcceptedTypo.length === 0);
   // CONTROL: a recognized field supplied only by the prototype is both accepted and carried out, so
   // the gate and the reader agree about which fields they can see.
   var inherited384 = await pki.cms.sign(CONTENT, [(function () {
