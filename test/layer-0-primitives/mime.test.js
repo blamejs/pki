@@ -124,15 +124,17 @@ function run() {
     "text/plain; CHARSET=us-ascii; charset=utf-8",
     /* RFC 2231 sec. 3 and sec. 4 give a parameter two further spellings, `name*` for an extended
        value and `name*0` / `name*1` for a continuation, and sec. 7 makes them the same logical
-       parameter. This reader does not assemble either, so a reader that does takes a different
-       value: measured, `boundary*=us-ascii''DECOY; boundary=REAL` verified while an RFC 2231 reader
-       would split the body on DECOY. The duplicate check compares the base attribute for that
-       reason. */
+       parameter. This reader assembles neither, so a PLAIN spelling beside a starred one leaves the
+       two readers holding different values: measured, `boundary*=us-ascii''DECOY; boundary=REAL`
+       verified here while an RFC 2231 reader splits the body on DECOY. Continuations ALONE are a
+       different case and are accepted; 42g covers them. */
     "multipart/mixed; boundary*=us-ascii''DECOY; boundary=\"REAL\"",
     "multipart/mixed; boundary=\"REAL\"; boundary*=us-ascii''DECOY",
-    "multipart/mixed; boundary*0=DE; boundary*1=COY",
-    "multipart/mixed; boundary*0*=us-ascii''DE; boundary*1=COY",
     "multipart/mixed; BOUNDARY*=us-ascii''DECOY; boundary=\"REAL\"",
+    "multipart/mixed; boundary*0=DE; boundary*1=COY; boundary=\"REAL\"",
+    // The same spelling twice is a repeat whether or not it is starred.
+    "multipart/mixed; boundary=\"REAL\"; name*=a; name*=b",
+    "multipart/mixed; boundary=\"REAL\"; name*0=a; name*0=b",
   ];
   var refusedEvery = true, acceptedShape = null;
   for (var r = 0; r < repeated.length; r++) {
@@ -207,6 +209,23 @@ function run() {
   check("42f. CONTROL a lone extended spelling is one occurrence, not a repeat",
     mime.parse(Buffer.from("Content-Type: text/plain; charset*=us-ascii''x\r\n\r\ny", "latin1"), E, "mime/bad-entity")
       .contentType.params["charset*"] === "us-ascii''x");
+  /* Continuation segments ALONE are one logical parameter and are accepted: this reader assembles
+     none of it, so a consumer sees the attribute as absent rather than holding a value that differs
+     from an RFC 2231 reader's. Refusing them would reject a conforming message over a parameter that
+     cannot change what a signature covers, such as a long `name` on an opaque entity. Where absence
+     does matter the consumer already fails closed, which 42h pins. */
+  var continued = mime.parse(Buffer.from(
+    "Content-Type: application/pkcs7-mime; smime-type=signed-data; name*0=verylong; name*1=.p7m\r\n\r\nz",
+    "latin1"), E, "mime/bad-entity");
+  check("42g. continuation segments alone parse, and no assembled value is invented",
+    continued.contentType.type === "application/pkcs7-mime" &&
+    continued.contentType.params["smime-type"] === "signed-data" &&
+    continued.contentType.params["name*0"] === "verylong" &&
+    continued.contentType.params.name === undefined);
+  check("42h. a boundary spelled only as a continuation leaves no boundary, which splitting refuses",
+    mime.parse(Buffer.from("Content-Type: multipart/mixed; boundary*0=RE; boundary*1=AL\r\n\r\nbody", "latin1"),
+      E, "mime/bad-entity").contentType.params.boundary === undefined &&
+    fault(function () { mime.splitMultipart(Buffer.from("body"), undefined, E, "mime/bad-entity"); }) === "mime/bad-entity");
   // CONTROL: a distinct field whose name merely contains another's is not an occurrence of it.
   check("43d. CONTROL a prefixed field name is not an occurrence of the field it contains",
     mime.parse(Buffer.from("Content-Type: text/plain\r\nX-Content-Type: text/html\r\n\r\nx", "latin1"),

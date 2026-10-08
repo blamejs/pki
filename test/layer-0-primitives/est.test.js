@@ -352,11 +352,16 @@ function testServerKeygen() {
       === "est/bad-multipart" &&
     code(function () { pki.est.splitMultipartMixed(Buffer.from(oneBodyPart, "latin1"), "multipart/mixed; boundary=\"bnd\"; boundary*=us-ascii''DECOY"); })
       === "est/bad-multipart" &&
-    code(function () { pki.est.splitMultipartMixed(Buffer.from(oneBodyPart, "latin1"), "multipart/mixed; boundary*0=b; boundary*1=nd"); })
+    code(function () { pki.est.splitMultipartMixed(Buffer.from(oneBodyPart, "latin1"), "multipart/mixed; boundary*0=b; boundary*1=nd; boundary=\"bnd\""); })
       === "est/bad-multipart");
   // CONTROL: a different base attribute spelled RFC 2231 is not a repeat of the boundary.
   check("46p. CONTROL an RFC 2231 spelling of ANOTHER attribute still splits",
     pki.est.splitMultipartMixed(Buffer.from(oneBodyPart, "latin1"), "multipart/mixed; charset*=us-ascii''x; boundary=\"bnd\"").length === 1);
+  /* Continuation segments ALONE carry no plain occurrence, so this reader holds no boundary rather
+     than one that differs from an RFC 2231 reader's, and the missing boundary is what refuses. */
+  check("46q. a boundary spelled only as a continuation is refused for being absent, not ambiguous",
+    code(function () { pki.est.splitMultipartMixed(Buffer.from(oneBodyPart, "latin1"), "multipart/mixed; boundary*0=b; boundary*1=nd"); })
+      === "est/bad-multipart");
   check("46m. a bare parameter name beside a valued one is a repeat, in either order",
     code(function () { pki.est.splitMultipartMixed(Buffer.from(oneBodyPart, "latin1"), 'multipart/mixed; boundary; boundary="bnd"'); })
       === "est/bad-multipart" &&
