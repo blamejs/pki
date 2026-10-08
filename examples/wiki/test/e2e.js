@@ -252,6 +252,28 @@ async function run() {
     var navProbe = await _get(port, "/" + entries[0].slug);
     check("active page carries aria-current", navProbe.body.indexOf('aria-current="page"') !== -1);
     check("the active group is server-rendered open", navProbe.body.indexOf('<details class="navgrp" open>') !== -1);
+
+    /* ---- Narrow screens ----
+       Measured at a 375px viewport before these rules: the page scrolled 771px wide because `main`
+       carries `margin:0 auto`, and an auto cross-axis margin turns off flex stretch, so the column
+       laid main out at its content's min-content width; and the nineteen collapsed nav groups stood
+       659px tall, so the first screen of a phone held navigation and no content. The menu is
+       CSS-only, so it works with JavaScript off, as the search form does. */
+    check("the shell declares a device-width viewport", home.body.indexOf('name="viewport"') !== -1 &&
+      home.body.indexOf("width=device-width") !== -1);
+    check("the nav is wrapped in a toggleable body", home.body.indexOf('class="side-body"') !== -1);
+    check("the menu toggle is a checkbox the label drives, so it needs no script",
+      home.body.indexOf('type="checkbox" id="navtoggle" class="nav-toggle"') !== -1 &&
+      home.body.indexOf('<label class="nav-toggle-btn" for="navtoggle">') !== -1);
+    var css = cssResp.body;
+    check("the stylesheet collapses the nav only below the breakpoint",
+      css.indexOf("@media(max-width:720px)") !== -1 &&
+      css.indexOf(".nav-toggle:not(:checked)~.side-body{display:none}") !== -1);
+    check("the toggle and its label are inert above the breakpoint",
+      css.indexOf(".nav-toggle,.nav-toggle-btn{display:none}") !== -1);
+    check("main is held to the viewport on a narrow screen, not to its content's min-content width",
+      /@media\(max-width:720px\)\{[\s\S]*?\bmain\{width:100%;max-width:none;margin:0/.test(css));
+    check("the wide-screen sidebar width is untouched", css.indexOf("aside.side{width:260px") !== -1);
     check("namespace page carries TechArticle JSON-LD", navProbe.body.indexOf('"@type":"TechArticle"') !== -1);
 
     // ---- Home: quick start + pills + tenets ----

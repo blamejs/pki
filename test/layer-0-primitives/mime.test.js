@@ -12,6 +12,7 @@
 var helpers = require("../helpers");
 var check = helpers.check;
 var mime = require("../../lib/mime.js");
+var C = require("../../lib/constants.js");
 
 function E(code, message) { this.code = code; this.message = message; }
 E.prototype = Object.create(Error.prototype);
@@ -101,6 +102,154 @@ function run() {
   check("40. hasParam ignores a bare attribute inside a comment", mime.hasParam("text/plain; charset=x (hp)", "hp") === false);
   // paramNameCount counts bare AND valued occurrences of an attribute name (paramCount counts only valued).
   check("41. paramNameCount counts bare and valued attribute occurrences", mime.paramNameCount("text/plain; hp; hp=\"clear\"", "hp") === 2 && mime.paramNameCount("text/plain; charset=utf-8", "hp") === 0);
+
+  /* A Content-Type that names one parameter TWICE has no value the parser can resolve: reading the
+     last occurrence and reading the first are both conforming (RFC 2045 sec. 5.1 gives a parameter
+     one occurrence) and they disagree, so two implementations handed the same bytes read the entity
+     differently. The repeat is refused where the parameter record is built, which covers every name
+     at once: `boundary` decides which octets a signature is checked over, `protocol` and
+     `smime-type` decide whether the entity is accepted, `micalg` decides the digest reported back. */
+  function dupEntity(ct) {
+    return Buffer.from("Content-Type: " + ct + "\r\n\r\n" +
+      "--REAL\r\nContent-Type: text/plain\r\n\r\nbody\r\n--REAL--\r\n", "latin1");
+  }
+  var repeated = [
+    "multipart/mixed; boundary=\"DECOY\"; boundary=\"REAL\"",
+    "multipart/mixed; boundary=\"REAL\"; boundary=\"DECOY\"",
+    "multipart/signed; boundary=\"REAL\"; protocol=\"application/evil\"; protocol=\"application/pkcs7-signature\"",
+    "multipart/signed; boundary=\"REAL\"; micalg=sha-256; micalg=md5",
+    "application/pkcs7-mime; smime-type=enveloped-data; smime-type=signed-data",
+    "text/plain; charset=us-ascii; charset=utf-8",
+    "text/plain; hp; hp=\"clear\"",
+    "text/plain; CHARSET=us-ascii; charset=utf-8",
+  ];
+  var refusedEvery = true, acceptedShape = null;
+  for (var r = 0; r < repeated.length; r++) {
+    if (fault(function () { mime.parse(dupEntity(repeated[r]), E, "mime/bad-entity"); }) !== "mime/bad-entity") {
+      refusedEvery = false; acceptedShape = repeated[r];
+    }
+  }
+  check("42. a repeated parameter of any name is refused, in either order and whatever its case" +
+    (acceptedShape === null ? "" : " [accepted " + JSON.stringify(acceptedShape) + "]"), refusedEvery);
+  // CONTROL: one occurrence of each parses, so the arm above is not refusing every entity it reads.
+  var single = Buffer.from(
+    "Content-Type: multipart/mixed; boundary=\"REAL\"; charset=utf-8\r\n\r\n" +
+    "--REAL\r\nContent-Type: text/plain\r\n\r\nbody\r\n--REAL--\r\n", "latin1");
+  check("42a. CONTROL one occurrence of each parameter still parses and splits",
+    mime.parse(single, E, "mime/bad-entity").contentType.params.boundary === "REAL" &&
+    mime.parse(single, E, "mime/bad-entity").contentType.params.charset === "utf-8" &&
+    mime.splitMultipart(mime.parse(single, E, "mime/bad-entity").body, "REAL", E, "mime/bad-entity").length === 1);
+  // CONTROL: a single BARE attribute is not a repeat, and still reaches the reader that owns it.
+  check("42b. CONTROL a single bare attribute still parses, with no value recorded",
+    mime.parse(Buffer.from("Content-Type: text/plain; hp\r\n\r\nx", "latin1"), E, "mime/bad-entity")
+      .contentType.params.hp === undefined);
+  // A repeated name inside a comment is not an occurrence: comments are stripped before counting.
+  check("42c. a parameter name repeated only inside a comment is not a repeat",
+    mime.parse(Buffer.from("Content-Type: text/plain; charset=utf-8 (charset=us-ascii)\r\n\r\nx", "latin1"),
+      E, "mime/bad-entity").contentType.params.charset === "utf-8");
+  // `__proto__` as a parameter name is counted on a null-prototype record, so it cannot read as seen.
+  check("42d. a parameter named __proto__ is counted, not inherited",
+    mime.parse(Buffer.from("Content-Type: text/plain; __proto__=x\r\n\r\ny", "latin1"), E, "mime/bad-entity")
+      .contentType.params.__proto__ === "x" &&
+    fault(function () {
+      mime.parse(Buffer.from("Content-Type: text/plain; __proto__=x; __proto__=y\r\n\r\nz", "latin1"), E, "mime/bad-entity");
+    }) === "mime/bad-entity");
+
+  /* The same ambiguity one level up: a field that occurs twice. Resolving it means choosing an
+     occurrence, and reading the first and reading the last are both conforming, so the media type a
+     body is dispatched on would follow the order the two fields happen to appear in. Measured before
+     the rule: the same two Content-Type fields swapped parsed as "text/plain" one way and
+     "application/pkcs7-mime" the other. A field that may legally repeat stays readable from the
+     `headers` array, which is where a consumer takes every occurrence. */
+  var twoCt = Buffer.from("Content-Type: text/plain\r\nContent-Type: application/pkcs7-mime\r\n\r\nbody\r\n", "latin1");
+  var twoCtSwapped = Buffer.from("Content-Type: application/pkcs7-mime\r\nContent-Type: text/plain\r\n\r\nbody\r\n", "latin1");
+  var twoCtFolded = Buffer.from("Content-Type:\r\n text/plain\r\nContent-Type:\r\n text/html\r\n\r\nbody\r\n", "latin1");
+  var twoCtCased = Buffer.from("content-type: text/plain\r\nCONTENT-TYPE: text/html\r\n\r\nbody\r\n", "latin1");
+  check("43. an entity declaring Content-Type twice is refused, in either order, folded or re-cased",
+    fault(function () { mime.parse(twoCt, E, "mime/bad-entity"); }) === "mime/bad-entity" &&
+    fault(function () { mime.parse(twoCtSwapped, E, "mime/bad-entity"); }) === "mime/bad-entity" &&
+    fault(function () { mime.parse(twoCtFolded, E, "mime/bad-entity"); }) === "mime/bad-entity" &&
+    fault(function () { mime.parse(twoCtCased, E, "mime/bad-entity"); }) === "mime/bad-entity");
+  check("43a. a repeated Content-Transfer-Encoding is refused too, not resolved by position",
+    fault(function () {
+      mime.parse(Buffer.from("Content-Type: text/plain\r\nContent-Transfer-Encoding: base64\r\n" +
+        "Content-Transfer-Encoding: 7bit\r\n\r\nbody\r\n", "latin1"), E, "mime/bad-entity");
+    }) === "mime/bad-entity");
+  // CONTROL: a field that may legally repeat does not stop the entity parsing, and every occurrence
+  // is retained; only resolving one of them to a single value is refused.
+  var repeatable = mime.parse(Buffer.from(
+    "Received: from a\r\nReceived: from b\r\nContent-Type: text/plain\r\n\r\nbody\r\n", "latin1"), E, "mime/bad-entity");
+  check("43b. CONTROL a legally-repeated field parses and keeps every occurrence in headers",
+    repeatable.contentType.type === "text/plain" &&
+    repeatable.headers.filter(function (h) { return h.lname === "received"; }).length === 2);
+  check("43c. resolving that repeated field to one value is refused",
+    fault(function () { repeatable.header("Received"); }) === "mime/bad-entity" &&
+    repeatable.header("Content-Type") === "text/plain");
+  // CONTROL: a distinct field whose name merely contains another's is not an occurrence of it.
+  check("43d. CONTROL a prefixed field name is not an occurrence of the field it contains",
+    mime.parse(Buffer.from("Content-Type: text/plain\r\nX-Content-Type: text/html\r\n\r\nx", "latin1"),
+      E, "mime/bad-entity").contentType.type === "text/plain");
+
+  /* A parsed record must not read back the caller's later writes. Measured before the rule, on the
+     shipped verb: `pki.smime.verify` returned `valid: true` and its `content` shared the caller's
+     ArrayBuffer, so a write into that buffer after the verdict changed the bytes the caller read as
+     verified. The record is taken into a store of its own, so what it reads back is the entity the
+     verdict was computed over. */
+  var held = Buffer.from("Content-Type: text/plain\r\n\r\nSECRET", "latin1");
+  var snap = mime.parse(held, E, "mime/bad-entity");
+  var snapBefore = snap.bodyBytes.toString("latin1");
+  held[held.length - 1] = 0x58;
+  check("44. a parsed record does not share the caller's buffer",
+    snap.bodyBytes.buffer !== held.buffer && snap.bytes.buffer !== held.buffer &&
+    snap.headerBytes.buffer !== held.buffer);
+  check("44a. a caller writing into its own buffer after the parse does not change the record",
+    snap.bodyBytes.toString("latin1") === snapBefore && snapBefore === "SECRET");
+  // CONTROL: the snapshot is byte-identical, so the bytes a verifier hashes are unchanged by the copy.
+  check("44b. CONTROL the snapshot is byte-for-byte the input it was taken from",
+    mime.parse(Buffer.from("Content-Type: text/plain\r\n\r\nSECRET", "latin1"), E, "mime/bad-entity")
+      .bytes.equals(Buffer.from("Content-Type: text/plain\r\n\r\nSECRET", "latin1")));
+  // And the parts a detached signature is checked over are views of the snapshot, not of the caller.
+  var heldMp = Buffer.from("Content-Type: multipart/mixed; boundary=B\r\n\r\n--B\r\n\r\npart one\r\n--B--\r\n", "latin1");
+  var mpRec = mime.parse(heldMp, E, "mime/bad-entity");
+  check("44c. a split part does not share the caller's buffer either",
+    mime.splitMultipart(mpRec.body, "B", E, "mime/bad-entity")[0].buffer !== heldMp.buffer);
+
+  /* Counting work before doing it (CWE-834, CWE-770). Measured before the caps: a 1367 KiB body of
+     200,000 empty parts split into 200,000 parts in 49 ms, 100,000 header lines parsed, and a
+     Content-Type carrying 100,000 parameters built a 100,000-entry record. Each is now bounded by a
+     C.LIMITS row. */
+  // `new Array(n + 1).join(s)` is n copies of s, so this is the FIRST count the cap refuses.
+  var manyParts = Buffer.from("Content-Type: multipart/mixed; boundary=B\r\n\r\n" +
+    new Array(C.LIMITS.MIME_MAX_PARTS + 2).join("--B\r\n\r\n") + "--B--\r\n", "latin1");
+  check("45. a part count one over MIME_MAX_PARTS is refused",
+    fault(function () {
+      mime.splitMultipart(mime.parse(manyParts, E, "mime/bad-entity").body, "B", E, "mime/bad-entity");
+    }) === "mime/bad-entity");
+  // CONTROL: a body at the cap still splits, so the arm above is a bound and not a blanket refusal.
+  var atPartCap = Buffer.from("Content-Type: multipart/mixed; boundary=B\r\n\r\n" +
+    new Array(C.LIMITS.MIME_MAX_PARTS + 1).join("--B\r\n\r\n") + "--B--\r\n", "latin1");
+  check("45a. CONTROL a part count AT the cap still splits",
+    mime.splitMultipart(mime.parse(atPartCap, E, "mime/bad-entity").body, "B", E, "mime/bad-entity")
+      .length === C.LIMITS.MIME_MAX_PARTS);
+
+  var manyHeaders = "";
+  for (var mh = 0; mh < C.LIMITS.MIME_MAX_HEADERS + 1; mh++) manyHeaders += "X-H-" + mh + ": v\r\n";
+  check("46. a header count over MIME_MAX_HEADERS is refused",
+    fault(function () { mime.parse(Buffer.from(manyHeaders + "\r\nbody", "latin1"), E, "mime/bad-entity"); }) === "mime/bad-entity");
+  var atHeaderCap = "";
+  for (var ah = 0; ah < C.LIMITS.MIME_MAX_HEADERS; ah++) atHeaderCap += "X-H-" + ah + ": v\r\n";
+  check("46a. CONTROL a header count AT the cap still parses",
+    mime.parse(Buffer.from(atHeaderCap + "\r\nbody", "latin1"), E, "mime/bad-entity").headers.length === C.LIMITS.MIME_MAX_HEADERS);
+
+  var manyParams = "text/plain";
+  for (var pi = 0; pi < C.LIMITS.MIME_MAX_PARAMS + 1; pi++) manyParams += "; p" + pi + "=v";
+  check("47. a parameter count over MIME_MAX_PARAMS is refused",
+    fault(function () { mime.parse(Buffer.from("Content-Type: " + manyParams + "\r\n\r\nx", "latin1"), E, "mime/bad-entity"); }) === "mime/bad-entity");
+  var atParamCap = "text/plain";
+  for (var ap = 0; ap < C.LIMITS.MIME_MAX_PARAMS; ap++) atParamCap += "; p" + ap + "=v";
+  check("47a. CONTROL a parameter count AT the cap still parses",
+    Object.keys(mime.parse(Buffer.from("Content-Type: " + atParamCap + "\r\n\r\nx", "latin1"), E, "mime/bad-entity")
+      .contentType.params).length === C.LIMITS.MIME_MAX_PARAMS);
 
   console.log("CHECKS " + helpers.getChecks());
 }

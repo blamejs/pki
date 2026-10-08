@@ -272,6 +272,96 @@ function testServerKeygen() {
         body43.replace("application/pkcs8",
           "application/pkcs7-mime; smime-type=server-generated-key; smime-type=certs-only"), ct, {});
     }) === "est/bad-multipart");
+  /* 46j/46k. The work a multipart response can ask for is counted before it is done (CWE-834,
+     CWE-770). Measured before the caps: a 7031 KiB body declaring 200,000 parts was split into all
+     200,000 in 276 ms. The bounds are the same `C.LIMITS` rows the MIME reader uses, so one structural
+     concept has one number. */
+  var estCaps = require("../../lib/constants.js").LIMITS;
+  var overParts = new Array(estCaps.MIME_MAX_PARTS + 3).join("--bnd\r\nContent-Type: text/plain\r\n\r\nx\r\n") + "--bnd--\r\n";
+  check("46j. a part count over MIME_MAX_PARTS -> refused",
+    code(function () { pki.est.splitMultipartMixed(Buffer.from(overParts, "latin1"), 'multipart/mixed; boundary="bnd"'); })
+      === "est/bad-multipart");
+  // CONTROL: a part count AT the cap still splits, so the arm above is a bound, not a blanket refusal.
+  var atParts = new Array(estCaps.MIME_MAX_PARTS + 1).join("--bnd\r\nContent-Type: text/plain\r\n\r\nx\r\n") + "--bnd--\r\n";
+  check("46j. CONTROL a part count AT the cap still splits",
+    pki.est.splitMultipartMixed(Buffer.from(atParts, "latin1"), 'multipart/mixed; boundary="bnd"').length
+      === estCaps.MIME_MAX_PARTS);
+  /* RFC 2046 sec. 5.1.1 discards everything after the closing delimiter, so an epilogue cannot spend
+     the part budget. A body at the cap carrying boundary-looking epilogue lines splits into the same
+     parts as the same body without them. */
+  var atPartsEpilogue = atParts + "--bnd\r\n--bnd\r\n--bnd\r\nignored epilogue\r\n";
+  check("46j. CONTROL an epilogue that looks like a delimiter does not spend the part budget",
+    pki.est.splitMultipartMixed(Buffer.from(atPartsEpilogue, "latin1"), 'multipart/mixed; boundary="bnd"').length
+      === estCaps.MIME_MAX_PARTS);
+  /* A Content-Type is parameter-counted as it is split, like the MIME reader's. Measured before the
+     cap: a 3.8 MiB Content-Type carrying 1,000,000 parameters was ACCEPTED in 194 ms and 100 MiB of
+     resident memory, and a part's media type splits the value a second time. */
+  var ctCapBody = Buffer.from("--bnd\r\nContent-Type: text/plain\r\n\r\nx\r\n--bnd--\r\n", "latin1");
+  var overCtParams = 'multipart/mixed; boundary="bnd"';
+  for (var cp = 0; cp < estCaps.MIME_MAX_PARAMS + 1; cp++) overCtParams += "; q" + cp + "=v";
+  check("46o. a Content-Type parameter count over MIME_MAX_PARAMS is refused",
+    code(function () { pki.est.splitMultipartMixed(ctCapBody, overCtParams); }) === "est/bad-multipart");
+  // CONTROL: a Content-Type AT the cap still splits, so the arm above is a bound and not a refusal
+  // of every parameterized media type. `boundary` is one of the 256, so this adds 255 more.
+  var atCtParams = 'multipart/mixed; boundary="bnd"';
+  for (var ap3 = 0; ap3 < estCaps.MIME_MAX_PARAMS - 1; ap3++) atCtParams += "; q" + ap3 + "=v";
+  check("46o. CONTROL a Content-Type AT the cap still splits",
+    pki.est.splitMultipartMixed(ctCapBody, atCtParams).length === 1);
+  var overHeaders = "";
+  for (var eh = 0; eh < estCaps.MIME_MAX_HEADERS + 1; eh++) overHeaders += "X-H-" + eh + ": v\r\n";
+  check("46k. a per-part header count over MIME_MAX_HEADERS -> refused",
+    code(function () {
+      pki.est.splitMultipartMixed(Buffer.from("--bnd\r\n" + overHeaders + "\r\nx\r\n--bnd--\r\n", "latin1"),
+        'multipart/mixed; boundary="bnd"');
+    }) === "est/bad-multipart");
+  // CONTROL: a per-part header count AT the cap still parses, and the headers arrive.
+  var atHeaders = "";
+  for (var ah2 = 0; ah2 < estCaps.MIME_MAX_HEADERS; ah2++) atHeaders += "X-H-" + ah2 + ": v\r\n";
+  check("46k. CONTROL a per-part header count AT the cap still parses",
+    pki.est.splitMultipartMixed(Buffer.from("--bnd\r\n" + atHeaders + "\r\nx\r\n--bnd--\r\n", "latin1"),
+      'multipart/mixed; boundary="bnd"')[0].headers["x-h-0"] === "v");
+  /* 46l/46m/46n. The same ambiguity on EST's own three readers, each of which resolves a name to one
+     value. Measured before the rules: a PART declaring Content-Type twice took the LAST line, so the
+     same two lines swapped reported `application/pkcs7-mime; smime-type=certs-only` one way and
+     `application/pkcs8` the other, which is which part is the private key and which is the
+     certificate; `boundary; boundary="bnd"` was accepted where `boundary="a"; boundary="b"` was
+     refused, because only a valued occurrence was counted; and a Content-Type arriving as a
+     two-element array was refused in one order and accepted in the other. */
+  var partTwoCt = "--bnd\r\nContent-Type: application/pkcs8\r\n" +
+    "Content-Type: application/pkcs7-mime; smime-type=certs-only\r\n\r\nP\r\n--bnd--\r\n";
+  var partTwoCtSwapped = "--bnd\r\nContent-Type: application/pkcs7-mime; smime-type=certs-only\r\n" +
+    "Content-Type: application/pkcs8\r\n\r\nP\r\n--bnd--\r\n";
+  check("46l. a part declaring one header field twice is refused, in either order",
+    code(function () { pki.est.splitMultipartMixed(Buffer.from(partTwoCt, "latin1"), 'multipart/mixed; boundary="bnd"'); })
+      === "est/bad-multipart" &&
+    code(function () { pki.est.splitMultipartMixed(Buffer.from(partTwoCtSwapped, "latin1"), 'multipart/mixed; boundary="bnd"'); })
+      === "est/bad-multipart");
+  // CONTROL: one of each still parses, and a part may still carry several DIFFERENT fields.
+  var partOneCt = "--bnd\r\nContent-Type: application/pkcs8\r\nContent-Transfer-Encoding: base64\r\n\r\nP\r\n--bnd--\r\n";
+  var okParts = pki.est.splitMultipartMixed(Buffer.from(partOneCt, "latin1"), 'multipart/mixed; boundary="bnd"');
+  check("46l. CONTROL distinct part header fields still parse",
+    okParts.length === 1 && okParts[0].contentType === "application/pkcs8" &&
+    okParts[0].headers["content-transfer-encoding"] === "base64");
+  var oneBodyPart = "--bnd\r\nContent-Type: text/plain\r\n\r\nx\r\n--bnd--\r\n";
+  check("46m. a bare parameter name beside a valued one is a repeat, in either order",
+    code(function () { pki.est.splitMultipartMixed(Buffer.from(oneBodyPart, "latin1"), 'multipart/mixed; boundary; boundary="bnd"'); })
+      === "est/bad-multipart" &&
+    code(function () { pki.est.splitMultipartMixed(Buffer.from(oneBodyPart, "latin1"), 'multipart/mixed; boundary="bnd"; boundary'); })
+      === "est/bad-multipart");
+  // CONTROL: a single bare parameter is not a repeat, and a single valued one still splits.
+  check("46m. CONTROL one boundary parameter still splits",
+    pki.est.splitMultipartMixed(Buffer.from(oneBodyPart, "latin1"), 'multipart/mixed; boundary="bnd"').length === 1);
+  check("46n. a single-value response header arriving as a two-element array is refused, either order",
+    code(function () {
+      pki.est.classifyResponse(200, { "content-type": ["application/pkcs8", "application/pkcs7-mime"] }, Buffer.from("x"), { op: "cacerts" });
+    }) === "est/bad-content-type" &&
+    code(function () {
+      pki.est.classifyResponse(200, { "content-type": ["application/pkcs7-mime", "application/pkcs8"] }, Buffer.from("x"), { op: "cacerts" });
+    }) === "est/bad-content-type");
+  // CONTROL: the ordinary string form, and a one-element array, are unambiguous and still classify.
+  check("46n. CONTROL a string and a one-element array still classify",
+    pki.est.classifyResponse(200, { "content-type": "application/pkcs7-mime; smime-type=certs-only" }, Buffer.from("x"), { op: "cacerts" }).status === "ok" &&
+    pki.est.classifyResponse(200, { "content-type": ["application/pkcs7-mime; smime-type=certs-only"] }, Buffer.from("x"), { op: "cacerts" }).status === "ok");
   // 47. whitespace before the semicolon is tolerated (erratum 5779 rejected).
   var r47 = pki.est.parseServerKeygenResponse(body43, 'multipart/mixed ; boundary="estBoundary"', {});
   check("47. whitespace before ; tolerated", !!r47.privateKey);

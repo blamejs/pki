@@ -1879,6 +1879,42 @@ security-only patches after the next major releases.
   inner message, a non-`message/rfc822` payload, or a duplicate Content-Type on
   either part reports `legacy: null`.
 
+- **A MIME entity that two readers interpret differently (CWE-436 / CWE-345).**
+  RFC 2045 §5.1 gives a Content-Type parameter one occurrence and RFC 5322 §3.6
+  gives a singleton field one, so an entity naming either twice has two
+  conforming readings that disagree about what the entity is. The `boundary`
+  decides which octets a detached signature covers, `protocol` and `smime-type`
+  decide whether the entity is accepted, and `micalg` decides which digest is
+  reported back. `pki.smime.verify` and `pki.smime.decrypt` refuse the repeat
+  (`smime/bad-mime`) instead of resolving it by position, in either order of the
+  two occurrences. The refusal is in the shared MIME reader, so it holds on every
+  route into it rather than on the one route a caller happens to take. Every
+  occurrence of a field that may legally repeat, such as `Received`, stays
+  readable from `headers`, and only resolving a repeated name to a single value
+  is refused. `pki.est` refuses a duplicate `boundary` and a duplicate
+  `smime-type` with `est/bad-multipart`.
+
+- **MIME parser resource exhaustion (CWE-834 / CWE-770).** One entity is held to
+  1024 body parts (`MIME_MAX_PARTS`), 1024 header lines (`MIME_MAX_HEADERS`) and
+  256 Content-Type parameters (`MIME_MAX_PARAMS`), under the 16 MiB
+  `MIME_MAX_BYTES` entity cap. Each count is charged as the entity is scanned,
+  before the list it would populate is built, so a refusal costs the bound rather
+  than the input: a 16 MiB header area is refused in 21 ms and 32 MiB of resident
+  memory, where counting the same lines after splitting them took 1114 ms and
+  653 MiB. A folded field spends one of the 1024 lines for each physical line it
+  occupies, and a header area of nothing but folded continuations is bounded the
+  same way. `pki.est.splitMultipartMixed` and
+  `pki.est.parseServerKeygenResponse` are held to the same two bounds.
+
+- **A verified body that changes after the verdict (CWE-367).** The MIME entity
+  record under `pki.smime`, and the `content` a verdict is read with, are copied
+  into a store of their own before they are read. They were views into the bytes
+  the caller supplied, so a write into that buffer after `verify` returned
+  changed what the caller read back as verified content. The copy is byte-for-byte
+  the input, so the octets the signature covers are unchanged, and it is taken
+  after the entity size cap, so an oversized entity is still refused without
+  being copied.
+
 - **A related-certificate proof answers one question, and only that one
   (CWE-347).** RFC 9763 §3.1 signs the DER `IssuerAndSerialNumber` and the DER
   `BinaryTime`, and nothing more. `locationInfo` rides in the same attribute and is
