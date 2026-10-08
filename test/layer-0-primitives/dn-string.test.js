@@ -495,6 +495,103 @@ function testAttributeStringTypes() {
 }
 
 // The parsed name is usable where a built name is.
+/* A bare `subject` string is a COMMON NAME, so a caller who writes a distinguished name there
+   certifies one commonName whose value is the whole text. Measured before this rule:
+   `subject: "CN=Example CA, O=Example"` produced the single RDN
+   `CN=CN=Example CA\, O=Example`, the doubled `CN=` being the caller's own prefix taken as part of
+   the value, and `"C=US, ST=CA, L=SF, O=Example, CN=Example CA"` produced one RDN of the entire
+   string. It bit this repository three times on 2026-09-29.
+
+   No other toolkit reads a string that way. OpenSSL's `-subj` requires `/type=value/...` and
+   refuses anything else, naming the format it wants ("subject name is expected to be in the format
+   /type0=value0/type1=value1/..."); Go's `crypto/x509/pkix` has no string form at all, only the
+   struct; .NET's `X500DistinguishedName(string)` documents its argument as the distinguished name
+   and parses it. The shorthand stays, because a common name is the common case, but a string
+   written as a distinguished name is refused rather than certified as a name nobody asked for.
+
+   The discriminator is the prefix RFC 4514 sec. 3 itself requires of a DN: an attribute type, a
+   descriptor or a dotted-decimal OID, immediately followed by `=`. A common name that merely
+   CONTAINS an `=` later on is untouched.
+
+   Both halves of that prefix are held to the production. `attributeType` is `descr / numericoid`
+   and a `numericoid` carries at least one dot, so `1=1` and `99=9` open with no attribute type and
+   are the values they say they are; refusing them would name `parseDn(s).bytes` as the way forward
+   for a string `parseDn` does not read either. Sec. 3 admits whitespace at no position in the
+   grammar, so ` CN=Example` is the same case from the other side. Each is in the control list
+   below. */
+async function testBareDnStringIsRefused(keys) {
+  var SPEC = {
+    subjectPublicKey: keys.spki, serialNumber: 7n,
+    notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"),
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] },
+  };
+  function spec(subject) {
+    var s = { subject: subject };
+    for (var k in SPEC) s[k] = SPEC[k];
+    return s;
+  }
+  async function codeOf(subject) {
+    try { await pki.x509.sign(spec(subject), { key: keys.key }); return "NO-THROW"; }
+    catch (e) { return (e && e.code) || ("RAW:" + (e && e.constructor && e.constructor.name)); }
+  }
+
+  var DN_SHAPED = [
+    "CN=Example CA",
+    "CN=Example CA, O=Example",
+    "CN=Example CA,O=Example",
+    "cn=example ca, o=example",
+    "C=US, ST=CA, L=SF, O=Example, CN=Example CA",
+    "2.5.4.3=Example CA",
+    "CN=a=b",
+    "1.2=Example CA",
+    "0.9.2342.19200300.100.1.25=example",
+    "CN-1=Example CA",
+  ];
+  var refusedEvery = true, accepted = null;
+  for (var i = 0; i < DN_SHAPED.length; i++) {
+    if (await codeOf(DN_SHAPED[i]) !== "x509/bad-name") { refusedEvery = false; accepted = DN_SHAPED[i]; }
+  }
+  check("a bare subject written as a distinguished name is refused" +
+    (accepted === null ? "" : " [accepted " + JSON.stringify(accepted) + "]"), refusedEvery);
+
+  // CONTROL: the shorthand itself is unchanged, including a common name that contains an `=`
+  // somewhere other than the attribute-type position, and one that contains a comma.
+  var KEPT = ["Example CA", "Example CA (v=2)", "Smith, John", "=leading", "a-b_c",
+    "1=1", "99=9", " CN=Example CA, O=Example",
+    // Neither production: a trailing or doubled dot leaves an empty arc, a leading dot
+    // leaves one too, and an underscore is in no keystring.
+    "1.2.=x", "1..2=x", ".1=x", "1.=x", "CN_name=x"];
+  var keptEvery = true, lost = null;
+  for (var j = 0; j < KEPT.length; j++) {
+    var der;
+    try { der = await pki.x509.sign(spec(KEPT[j]), { key: keys.key }); }
+    catch (e) { keptEvery = false; lost = KEPT[j] + " -> threw " + e.code; continue; }
+    var subject = pki.schema.x509.parse(der).subject;
+    // One RDN, one attribute, and its value is the caller's string unchanged.
+    var atv = subject.rdns.length === 1 && subject.rdns[0].length === 1 ? subject.rdns[0][0] : null;
+    if (atv === null || atv.value !== KEPT[j]) {
+      keptEvery = false;
+      lost = KEPT[j] + " -> " + JSON.stringify(subject.dn);
+    }
+  }
+  check("CONTROL a genuine common name still becomes one, value unchanged" +
+    (lost === null ? "" : " [lost " + JSON.stringify(lost) + "]"), keptEvery);
+
+  // CONTROL: the documented way forward works, and produces the DN the caller meant.
+  var viaParseDn = await pki.x509.sign(spec(pki.x509.parseDn("CN=Example CA, O=Example").bytes), { key: keys.key });
+  check("CONTROL parseDn(s).bytes is accepted and certifies the real distinguished name",
+    pki.schema.x509.parse(viaParseDn).subject.dn === "CN=Example CA, O=Example");
+
+  // The rule is at the shared encoder, so a sibling builder refuses the same string.
+  var csrCode;
+  try {
+    await pki.csr.sign({ subject: "CN=Example CA, O=Example", subjectPublicKey: keys.spki }, { key: keys.key });
+    csrCode = "NO-THROW";
+  } catch (e) { csrCode = (e && e.code) || "RAW"; }
+  check("the same string is refused by a sibling builder, not only by x509.sign [" + csrCode + "]",
+    csrCode === "csr/bad-name");
+}
+
 function testFeedsTheBuilder() {
   var parsed = pki.x509.parseDn("C=US, O=Example Inc, CN=leaf");
   check("the encoded Name is valid DER a builder accepts",
@@ -550,6 +647,11 @@ async function run() {
   testAttributeStringTypes();
   testFeedsTheBuilder();
   await testBuilderRejectsBadSentinelValues();
+  var kp = require("node:crypto").generateKeyPairSync("ed25519");
+  await testBareDnStringIsRefused({
+    key: kp.privateKey.export({ format: "der", type: "pkcs8" }),
+    spki: kp.publicKey.export({ format: "der", type: "spki" }),
+  });
 }
 
 module.exports = { run: run };

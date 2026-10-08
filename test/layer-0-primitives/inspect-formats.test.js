@@ -290,12 +290,12 @@ async function buildEveryFormat() {
     // A bare token is a CMS ContentInfo and is detected as cms.
     tsp: pki.tsp.response(token, {}),
     tspToken: token,
-    attrcert: await pki.attrcert.sign({ holder: { entityName: { directoryName: "CN=Alice" } },
+    attrcert: await pki.attrcert.sign({ holder: { entityName: { directoryName: "Alice" } },
       notBeforeTime: NB, notAfterTime: NA,
       attributes: { role: { roleName: { uniformResourceIdentifier: "urn:role:format" } } } },
-    { name: "CN=A Format AA", publicKey: spki, key: key }),
-    cmp: await pki.cmp.build({ header: { sender: { directoryName: "CN=A Format Subject" },
-      recipient: { directoryName: "CN=A Format CA" }, transactionID: Buffer.alloc(16, 7) },
+    { name: "A Format AA", publicKey: spki, key: key }),
+    cmp: await pki.cmp.build({ header: { sender: { directoryName: "A Format Subject" },
+      recipient: { directoryName: "A Format CA" }, transactionID: Buffer.alloc(16, 7) },
     body: { ir: { certTemplate: { subject: [{ commonName: "A Format Subject" }], publicKey: spki } } } },
     { cert: cert, key: key }),
   };
@@ -401,19 +401,19 @@ async function runEveryDetectedFormat() {
     has(acReport, "roleName: URI:urn:role:format") && !/role:\n\s+30:/.test(acReport));
   // The same for an extension the certificate decoders do not know: the attribute-certificate parser decoded
   // it, and without reading that the report hex-dumped the bytes it had already decoded.
-  var acExt = await pki.attrcert.sign({ holder: { entityName: { directoryName: "CN=Alice" } },
+  var acExt = await pki.attrcert.sign({ holder: { entityName: { directoryName: "Alice" } },
     notBeforeTime: NB, notAfterTime: NA, extensions: { noRevAvail: true },
     attributes: { role: { roleName: { uniformResourceIdentifier: "urn:role:ext" } } } },
-  { name: "CN=A Format AA", publicKey: f.spki, key: f.key });
+  { name: "A Format AA", publicKey: f.spki, key: f.key });
   check("F2k. and an extension its own parser decoded renders decoded, not as its bytes",
     has(pki.inspect.attrcert(acExt), "noRevAvail: true") &&
     !/noRevAvail:\n\s+05:00/.test(pki.inspect.attrcert(acExt)));
   // A decoded record that is NOT a name has to render as its own fields. Asked of every value, the name
   // renderer answers a non-name with a truthy placeholder, and that answer stood in for the record: a group
   // attribute rendered as that placeholder instead of the memberships it grants.
-  var acGroup = await pki.attrcert.sign({ holder: { entityName: { directoryName: "CN=Alice" } },
+  var acGroup = await pki.attrcert.sign({ holder: { entityName: { directoryName: "Alice" } },
     notBeforeTime: NB, notAfterTime: NA, attributes: { group: { values: [{ string: "admins" }] } } },
-  { name: "CN=A Format AA", publicKey: f.spki, key: f.key });
+  { name: "A Format AA", publicKey: f.spki, key: f.key });
   var groupR = pki.inspect.attrcert(acGroup);
   check("F2l. and a decoded record that is not a name renders its own fields",
     has(groupR, "admins") && !has(groupR, "tagundefined"));
@@ -815,8 +815,8 @@ async function runPopulatedFormats(f) {
   malformed.every(function (c) { return c === "inspect/bad-input"; }));
 
   // A CMP header carrying the times, nonces and key id the report reads.
-  var cmpFull = await pki.cmp.build({ header: { sender: { directoryName: "CN=A Populated Subject" },
-    recipient: { directoryName: "CN=A Populated CA" }, transactionID: Buffer.alloc(16, 7),
+  var cmpFull = await pki.cmp.build({ header: { sender: { directoryName: "A Populated Subject" },
+    recipient: { directoryName: "A Populated CA" }, transactionID: Buffer.alloc(16, 7),
     senderNonce: Buffer.alloc(16, 9), recipNonce: Buffer.alloc(16, 11), messageTime: NB },
   body: { ir: { certTemplate: { subject: [{ commonName: "A Populated Subject" }], publicKey: spki } } } },
   { cert: cert, key: key, extraCerts: [cert] });
@@ -1048,8 +1048,8 @@ async function runPopulatedFormats(f) {
 
   // A MAC-protected CMP message. Its shared secret is what a senderKID names, so the header carries one
   // where a signature-protected message does not. The mac option's own field is `secret`.
-  var macCmp = await pki.cmp.build({ header: { sender: { directoryName: "CN=A MAC Subject" },
-    recipient: { directoryName: "CN=A MAC CA" }, transactionID: Buffer.alloc(16, 7),
+  var macCmp = await pki.cmp.build({ header: { sender: { directoryName: "A MAC Subject" },
+    recipient: { directoryName: "A MAC CA" }, transactionID: Buffer.alloc(16, 7),
     senderKID: Buffer.from("kid-1") },
   body: { ir: { certTemplate: { subject: [{ commonName: "A MAC Subject" }], publicKey: spki } } } },
   { mac: { secret: "s3cret" } });
@@ -1057,8 +1057,8 @@ async function runPopulatedFormats(f) {
     has(pki.inspect.cmp(macCmp), "Sender Key ID:"));
   // The error arm is expanded where the others are only named, because its CONTENT is the whole diagnostic and
   // no other verb renders it: naming the arm told a reader only that something went wrong.
-  var errCmp = await pki.cmp.build({ header: { sender: { directoryName: "CN=An Erroring Subject" },
-    recipient: { directoryName: "CN=An Erroring CA" }, transactionID: Buffer.alloc(16, 7) },
+  var errCmp = await pki.cmp.build({ header: { sender: { directoryName: "An Erroring Subject" },
+    recipient: { directoryName: "An Erroring CA" }, transactionID: Buffer.alloc(16, 7) },
   body: { error: { pKIStatusInfo: { status: 2, statusString: ["no good"], failInfo: ["badRequest"] },
     errorCode: 7, errorDetails: ["a detail"] } } }, { cert: cert, key: key });
   var errR = pki.inspect.cmp(errCmp);
@@ -1069,10 +1069,10 @@ async function runPopulatedFormats(f) {
   // An attribute certificate whose holder takes the baseCertificateID form rather than a name, and which
   // carries an extension: two branches a holder named by entity alone never reaches.
   // A baseCertificateID's serial field is `serial` (attrcert-sign's accepted set is issuer, serial, issuerUID).
-  var acBase = await pki.attrcert.sign({ holder: { baseCertificateID: { issuer: { directoryName: "CN=A Format CA" },
+  var acBase = await pki.attrcert.sign({ holder: { baseCertificateID: { issuer: { directoryName: "A Format CA" },
     serial: pki.schema.x509.parse(cert).serialNumber } }, notBeforeTime: NB, notAfterTime: NA,
   attributes: { role: { roleName: { uniformResourceIdentifier: "urn:role:populated" } } },
-  extensions: { noRevAvail: true } }, { name: "CN=A Populated AA", publicKey: spki, key: key });
+  extensions: { noRevAvail: true } }, { name: "A Populated AA", publicKey: spki, key: key });
   var acR = pki.inspect.attrcert(acBase);
   check("P11. an attribute certificate held by base certificate id renders that form and its extensions",
     has(acR, "Base Certificate ID:") && has(acR, "Serial Number:") && has(acR, "Extensions:"));
@@ -1080,7 +1080,7 @@ async function runPopulatedFormats(f) {
   var acDigest = await pki.attrcert.sign({ holder: { objectDigestInfo: { digestedObjectType: "publicKey",
     digestAlgorithm: "sha256", objectDigest: Buffer.alloc(32, 1) } }, notBeforeTime: NB, notAfterTime: NA,
   attributes: { role: { roleName: { uniformResourceIdentifier: "urn:role:digest" } } } },
-  { name: "CN=A Populated AA", publicKey: spki, key: key });
+  { name: "A Populated AA", publicKey: spki, key: key });
   // The DIGEST is what identifies a holder named this way, so the algorithm alone left every holder
   // identified by one digest algorithm reading the same and the report carrying no identity at all.
   var digestR = pki.inspect.attrcert(acDigest);
@@ -1094,10 +1094,10 @@ async function runPopulatedFormats(f) {
   // RFC 5755's IssuerSerial carries an optional issuerUID, which distinguishes two issuers sharing a name, so
   // a holder identified with one was reported without the field that identifies it.
   var acUid = await pki.attrcert.sign({ holder: { baseCertificateID: {
-    issuer: { directoryName: "CN=A Format CA" }, serial: pki.schema.x509.parse(cert).serialNumber,
+    issuer: { directoryName: "A Format CA" }, serial: pki.schema.x509.parse(cert).serialNumber,
     issuerUID: Buffer.from([0xa1, 0xb2, 0xc3]) } }, notBeforeTime: NB, notAfterTime: NA,
   attributes: { role: { roleName: { uniformResourceIdentifier: "urn:role:uid" } } } },
-  { name: "CN=A Populated AA", publicKey: spki, key: key });
+  { name: "A Populated AA", publicKey: spki, key: key });
   check("P11f. and a holder's issuerUID is rendered, since it is what tells two same-named issuers apart",
     has(pki.inspect.attrcert(acUid), "Issuer Unique ID: a1:b2:c3"));
 

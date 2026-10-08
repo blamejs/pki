@@ -47,11 +47,11 @@ async function run() {
   var NB = new Date("2020-01-01Z"), NA = new Date("2040-01-01Z"), T = new Date("2025-01-01Z");
 
   var rootA = await pki.x509.sign({
-    subject: "CN=Root A", subjectPublicKey: pub, notBefore: NB, notAfter: NA,
+    subject: "Root A", subjectPublicKey: pub, notBefore: NB, notAfter: NA,
     extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] },
   }, { key: priv });
   var rootB = await pki.x509.sign({
-    subject: "CN=Root B", subjectPublicKey: pub, notBefore: NB, notAfter: NA,
+    subject: "Root B", subjectPublicKey: pub, notBefore: NB, notAfter: NA,
     extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] },
   }, { key: priv });
   var pemA = pki.schema.x509.pemEncode(rootA, "CERTIFICATE");
@@ -138,7 +138,7 @@ async function run() {
 
   // ---- S12: the anchors are the ones path.validate takes -----------------------------------
   var leaf = await pki.x509.sign({
-    subject: "CN=leaf.example", subjectPublicKey: pub, notBefore: NB, notAfter: NA,
+    subject: "leaf.example", subjectPublicKey: pub, notBefore: NB, notAfter: NA,
     extensions: { basicConstraints: { cA: false } },
   }, { cert: rootA, key: priv });
   var one = writeBundle("one-root.pem", pemA);

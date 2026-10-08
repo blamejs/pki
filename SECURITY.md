@@ -1906,6 +1906,64 @@ security-only patches after the next major releases.
   same way. `pki.est.splitMultipartMixed` and
   `pki.est.parseServerKeygenResponse` are held to the same two bounds.
 
+- **A verdict steered through a replaced promise continuation (CWE-1321 / CWE-349).**
+  `p.then(f)` reads `then` off the promise at the call, so a replacement installed
+  after the toolkit loads decides what `f` is handed. Eight verdict paths computed
+  `valid` inside such a continuation from the one boolean a cryptographic verify
+  resolved, which made that value the whole verdict. Measured: a replacement
+  substituting `true` for a `false` fulfillment value turned a tampered CSR
+  signature, a CRL held against a key that did not sign it, a proof of possession
+  over the wrong bytes, and an attribute certificate held against a key other than
+  its issuer's into passing verdicts, each with the substitution reaching exactly
+  that one continuation. `pki.csr.verify`, `pki.crl.verify`,
+  `pki.attrcert.verify`, `pki.relatedCert.verifyRequest`,
+  `pki.possession.verifyRequest`, `pki.cmc.verify`, `pki.est` enrollment and the
+  Sigstore signed-certificate-timestamp check now assemble theirs through the
+  continuation captured at load, as `pki.cms.verify`, `pki.path.validate`,
+  `pki.webauthn.verify` and `pki.crmf.verifyPop` already did. An OCSP CertID digest
+  takes the same route, a substituted digest being able to match a certificate the
+  response does not name.
+
+- **An authorization gate answered by the object prototype (CWE-1321 / CWE-693).**
+  `pki.possession.verifyRequest` and `pki.cms.verify` ask a certificate's decoded
+  keyUsage extension whether its key may make the signature in question. One of
+  the names they asked for, `contentCommitment`, is the X.509 spelling of the
+  `nonRepudiation` bit, and the decoder emits the RFC 5280 §4.2.1.3 names rather
+  than that one, so the read reached past the record. The record carried
+  `Object.prototype`, so a value set there decided it: measured, a certificate
+  confined to `cRLSign` went from unauthorized to authorized under one
+  assignment. The decoded record now inherits nothing, so a name the decoder does
+  not define cannot be answered from anywhere, and both gates ask only for names
+  it does define. The record's prototype exemption rested on its keys being the
+  fixed bit names, which held for the decoder and not for its callers.
+
+- **A name compared by a rule its attribute does not carry (CWE-697).**
+  `dnEqual` case-folded every attribute value. That is the correct rule for every
+  attribute RFC 5280 §4.1.2.4 requires support for, and the wrong one for an
+  attribute whose equality rule is case-exact: `challengePassword`
+  (RFC 2985 §5.4.1), `localKeyId` (§5.5.2) and `role` (RFC 5755 §4.4.5) are each
+  resolvable by name, mintable through `pki.x509.parseDn`, and compared EQUAL for
+  values differing only in case. Certificate chaining, revocation scope and name
+  constraints all rest on that comparison, so two distinct names reading as one is
+  the outcome it exists to prevent. The comparison now takes the rule from the
+  attribute; every other attribute keeps the case-insensitive rule.
+
+- **A request a verb accepted and did not carry out (CWE-20).** A `pki.cms` signer
+  descriptor names the digest and the padding its signature is made under. A field
+  the verb did not read was ignored, so `digestAlgoritm: "sha384"` signed under
+  SHA-256 and reported nothing, while the same misspelling one argument along in
+  `opts` was already refused. `sign` and `countersign` now refuse an unrecognized
+  field by name, which `pki.smime.sign` inherits by signing through them and
+  `pki.pkcs12.build` already applied to the same descriptors.
+
+- **A distinguished name certified as one common name (CWE-1286).** A bare name
+  string is the common-name shorthand, so a caller writing a distinguished name
+  there certified one commonName holding the whole text: `CN=Example CA, O=Example`
+  became the single RDN `CN=CN=Example CA\, O=Example`. The shared name encoder
+  refuses a string that opens as a distinguished name, which covers every builder
+  that takes a name and a `directoryName` in a GeneralName, and names both ways
+  forward. OpenSSL refuses the same string for the same reason.
+
 - **A verified body that changes after the verdict (CWE-367).** The MIME entity
   record under `pki.smime`, and the `content` a verdict is read with, are copied
   into a store of their own before they are read. They were views into the bytes

@@ -39,7 +39,7 @@ async function codeOf(promise) {
 
 function spec(over) {
   return Object.assign({
-    holder: { entityName: { directoryName: "CN=Alice" } },
+    holder: { entityName: { directoryName: "Alice" } },
     notBeforeTime: NB, notAfterTime: NA, attributes: ROLE,
   }, over || {});
 }
@@ -49,9 +49,9 @@ function spec(over) {
 // rule itself, including the noRevAvail route that needs no option at all.
 var OK = { time: WITHIN, revocationStatus: "notRevoked" };
 function okTarget(t) { return { time: WITHIN, revocationStatus: "notRevoked", target: t }; }
-function aaOf(s) { return { name: "CN=Example AA", publicKey: s.spki, key: s.key }; }
+function aaOf(s) { return { name: "Example AA", publicKey: s.spki, key: s.key }; }
 // The issuer argument the verifier takes: the AC issuer this caller directly trusts (sec. 5(4)).
-function trusted(s) { return { name: "CN=Example AA", publicKey: s.spki }; }
+function trusted(s) { return { name: "Example AA", publicKey: s.spki }; }
 // An AC carrying what RFC 5755 forbids an ISSUER to produce (a targetCert, several Targets
 // elements) cannot come out of pki.attrcert.sign, which refuses it, but a verifier MUST still
 // answer for one. It is written as the bytes a relying party would receive: the signer's own
@@ -154,9 +154,9 @@ async function testTheTrustedIssuerIsRequired() {
   check("an omitted issuer throws attrcert/bad-input",
     (await codeOf(pki.attrcert.verify(der, undefined, { time: WITHIN }))) === "attrcert/bad-input");
   check("an issuer with no public key throws attrcert/bad-input",
-    (await codeOf(pki.attrcert.verify(der, { name: "CN=Example AA" }, { time: WITHIN }))) === "attrcert/bad-input");
+    (await codeOf(pki.attrcert.verify(der, { name: "Example AA" }, { time: WITHIN }))) === "attrcert/bad-input");
   // The AC names its issuer; a caller who trusts a DIFFERENT name has not trusted THIS issuer.
-  var r = await pki.attrcert.verify(der, { name: "CN=Someone Else", publicKey: aa.spki }, OK);
+  var r = await pki.attrcert.verify(der, { name: "Someone Else", publicKey: aa.spki }, OK);
   check("an issuer name that is not the one the AC names is refused", r.verified === false);
   check("the refusal names the issuer mismatch", /issuer/i.test(String(r.reason)));
 }
@@ -341,7 +341,7 @@ async function testATargetCertIssuerIsNotATarget() {
 // noRevAvail returned verified === true, so a revoked AC granted its privileges.
 async function testRevocationIsAnswered() {
   var aa = makeSigner("ec-p256");
-  var bare = { holder: { entityName: { directoryName: "CN=Alice" } },
+  var bare = { holder: { entityName: { directoryName: "Alice" } },
     notBeforeTime: NB, notAfterTime: NA, attributes: ROLE };
 
   var noExt = await pki.attrcert.sign(bare, aaOf(aa));
@@ -480,7 +480,7 @@ async function testOptionsAreFixedAtTheCall() {
   var acDer = await pki.attrcert.sign(spec(), aaOf(real));
   var swappable = Buffer.from(other.spki);
   check("the two keys are the same length, so the overwrite is total", real.spki.length === other.spki.length);
-  var pendingKey = pki.attrcert.verify(acDer, { name: "CN=Example AA", publicKey: swappable }, OK);
+  var pendingKey = pki.attrcert.verify(acDer, { name: "Example AA", publicKey: swappable }, OK);
   real.spki.copy(swappable);
   check("overwriting issuer.publicKey mid-call does not change the trusted key",
     (await pendingKey).verified === false);
@@ -492,7 +492,7 @@ async function testOptionsAreFixedAtTheCall() {
   if (comp) {
     var compAc = await pki.attrcert.sign(spec(), aaOf(comp));
     var compSwap = Buffer.from(compOther.spki);
-    var pendingComp = pki.attrcert.verify(compAc, { name: "CN=Example AA", publicKey: compSwap }, OK);
+    var pendingComp = pki.attrcert.verify(compAc, { name: "Example AA", publicKey: compSwap }, OK);
     comp.spki.copy(compSwap);
     check("a composite issuer key is fixed at the call too", (await pendingComp).verified === false);
   }

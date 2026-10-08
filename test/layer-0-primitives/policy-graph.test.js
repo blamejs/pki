@@ -42,13 +42,13 @@ async function keys() {
 async function chainOf(depth, rootExtensions, spec) {
   var k = await keys();
   var root = await pki.x509.sign({
-    subject: "CN=Root", subjectPublicKey: k.pub, notBefore: NB, notAfter: NA,
+    subject: "Root", subjectPublicKey: k.pub, notBefore: NB, notAfter: NA,
     extensions: rootExtensions,
   }, { key: k.key });
   var certs = [], issuer = root;
   for (var d = 1; d <= depth; d++) {
     var cert = await pki.x509.sign({
-      subject: "CN=Level " + d, subjectPublicKey: k.pub, notBefore: NB, notAfter: NA,
+      subject: "Level " + d, subjectPublicKey: k.pub, notBefore: NB, notAfter: NA,
       extensions: spec(d, d === depth),
     }, { cert: issuer, key: k.key });
     certs.push(cert);

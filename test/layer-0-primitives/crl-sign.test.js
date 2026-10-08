@@ -519,28 +519,28 @@ async function testSignerKeyFaults() {
   // The scheme resolves from the issuer SPKI, so a key that cannot sign under it fails closed rather than
   // emitting a CRL whose signature no relying party can check.
   check("issuer SPKI and signing key of different algorithms -> crl/bad-input",
-    await codeOf(withIssuer({ name: "CN=X", publicKey: ec.spki, key: ed.key })) === "crl/bad-input");
+    await codeOf(withIssuer({ name: "X", publicKey: ec.spki, key: ed.key })) === "crl/bad-input");
   check("an unusable signing key -> crl/bad-input",
-    await codeOf(withIssuer({ name: "CN=X", publicKey: ec.spki, key: Buffer.from([0x30, 0x03, 0x02, 0x01, 0x00]) })) === "crl/bad-input");
+    await codeOf(withIssuer({ name: "X", publicKey: ec.spki, key: Buffer.from([0x30, 0x03, 0x02, 0x01, 0x00]) })) === "crl/bad-input");
   check("a signing key of an unsupported type -> crl/bad-input",
-    await codeOf(withIssuer({ name: "CN=X", publicKey: ec.spki, key: 5 })) === "crl/bad-input");
+    await codeOf(withIssuer({ name: "X", publicKey: ec.spki, key: 5 })) === "crl/bad-input");
   // A key whose algorithm cannot produce signatures at all is refused at scheme resolution, with the
   // registry's own verdict -- not silently downgraded to some default signature algorithm.
   var kem = require("node:crypto").generateKeyPairSync("ml-kem-768").publicKey.export({ format: "der", type: "spki" });
   check("a key-encapsulation SPKI as the issuer key -> crl/unsupported-algorithm",
-    await codeOf(withIssuer({ name: "CN=X", publicKey: kem, key: ec.key })) === "crl/unsupported-algorithm");
+    await codeOf(withIssuer({ name: "X", publicKey: kem, key: ec.key })) === "crl/unsupported-algorithm");
   check("an unknown digestAlgorithm override -> crl/unsupported-algorithm",
     await codeOf(pki.crl.sign(spec, issuerOf(ec), { digestAlgorithm: "not-a-hash" })) === "crl/unsupported-algorithm");
   // An undecodable PEM signing key is reported as a key-decoding fault, not as a signing failure -- the
   // verdict names what the caller got wrong.
   check("an undecodable PEM signing key -> crl/bad-input",
-    await codeOf(withIssuer({ name: "CN=X", publicKey: ec.spki, key: "-----BEGIN PRIVATE KEY-----\nnot base64 at all\n-----END PRIVATE KEY-----" })) === "crl/bad-input");
+    await codeOf(withIssuer({ name: "X", publicKey: ec.spki, key: "-----BEGIN PRIVATE KEY-----\nnot base64 at all\n-----END PRIVATE KEY-----" })) === "crl/bad-input");
   // issuer.key may be a CryptoKey rather than PKCS#8 bytes; the CRL it produces must verify like any other.
   var ck = await pki.webcrypto.subtle.importKey("pkcs8", ec.key, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
-  var ckDer = await pki.crl.sign(spec, { name: "CN=X", publicKey: ec.spki, key: ck });
+  var ckDer = await pki.crl.sign(spec, { name: "X", publicKey: ec.spki, key: ck });
   check("a CryptoKey issuer.key signs a CRL that verifies", (await pki.crl.verify(ckDer, { publicKey: ec.spki })).valid === true);
   check("a CryptoKey of the wrong algorithm -> crl/bad-input",
-    await codeOf(withIssuer({ name: "CN=X", publicKey: ec.spki, key: await pki.webcrypto.subtle.importKey("pkcs8", ed.key, { name: "Ed25519" }, false, ["sign"]) })) === "crl/bad-input");
+    await codeOf(withIssuer({ name: "X", publicKey: ec.spki, key: await pki.webcrypto.subtle.importKey("pkcs8", ed.key, { name: "Ed25519" }, false, ["sign"]) })) === "crl/bad-input");
 }
 
 // ---- sec. 5.2.5 -- IssuingDistributionPoint gates ----
@@ -1096,7 +1096,7 @@ async function testPreEncodedExtProfile() {
     await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 1n, revocationDate: RD, extensions: [extDer("invalidityDate", false, Buffer.from([0x18, 0x04, 0x41, 0x41, 0x41, 0x41]))] }] }, issuerOf(s))) === "crl/bad-input");
   // certificateIssuer (indirect CRLs) is deferred until crlChecker handles indirect CRLs -- rejected on both forms.
   check("object-form certificateIssuer entry -> crl/bad-input (deferred)",
-    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 1n, revocationDate: RD, certificateIssuer: [{ directoryName: "CN=Other CA" }] }] }, issuerOf(s))) === "crl/bad-input");
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 1n, revocationDate: RD, certificateIssuer: [{ directoryName: "Other CA" }] }] }, issuerOf(s))) === "crl/bad-input");
   check("pre-encoded certificateIssuer entry -> crl/bad-input (deferred)",
     await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 1n, revocationDate: RD, extensions: [extDer("certificateIssuer", true, B.sequence([]))] }] }, issuerOf(s))) === "crl/bad-input");
   // An indirect-CRL IDP (indirectCRL) is deferred until crlChecker handles indirect CRLs -- rejected on both forms.

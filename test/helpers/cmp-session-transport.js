@@ -38,7 +38,7 @@ async function init(pki, subjectSpki) {
   var caKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
   _caKeyPk8 = caKp.privateKey.export({ format: "der", type: "pkcs8" });
   var caSpki = caKp.publicKey.export({ format: "der", type: "spki" });
-  _caCertDer = await pki.x509.sign({ subject: "CN=CMP Test CA", subjectPublicKey: caSpki, serialNumber: 1, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: true } }, { key: _caKeyPk8 });
+  _caCertDer = await pki.x509.sign({ subject: "CMP Test CA", subjectPublicKey: caSpki, serialNumber: 1, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: true } }, { key: _caKeyPk8 });
   var sKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
   _signerKeyPk8 = sKp.privateKey.export({ format: "der", type: "pkcs8" });
   var sSpki = sKp.publicKey.export({ format: "der", type: "spki" });

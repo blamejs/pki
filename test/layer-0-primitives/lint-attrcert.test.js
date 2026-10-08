@@ -58,9 +58,9 @@ function reExtension(der, oidName, opts) {
 async function run() {
   var ed = await pki.key.generate("Ed25519");
   var key = await pki.key.export(ed.privateKey), spki = await pki.key.export(ed.publicKey);
-  var aa = { name: "CN=Example AA", publicKey: spki, key: key };
+  var aa = { name: "Example AA", publicKey: spki, key: key };
   function spec(over) {
-    return Object.assign({ holder: { entityName: { directoryName: "CN=Alice" } },
+    return Object.assign({ holder: { entityName: { directoryName: "Alice" } },
       notBeforeTime: NB, notAfterTime: NA, attributes: ROLE }, over || {});
   }
 
@@ -262,7 +262,7 @@ async function run() {
   // present." A SHOULD, so a warning, and it counts the NAMES in the one option rather than the
   // options: the sibling row counts options, and this fixture names exactly one of them.
   var twoNameHolder = await pki.attrcert.sign(spec({
-    holder: { entityName: [{ directoryName: "CN=Alice" }, { dNSName: "holder2.example" }] } }), aa);
+    holder: { entityName: [{ directoryName: "Alice" }, { dNSName: "holder2.example" }] } }), aa);
   var twoNameRep = pki.lint.attrcert(twoNameHolder);
   check("R11f. a Holder entityName carrying two names is reported at warn",
     sevOf(twoNameRep, "lint/rfc5755/holder-entity-name-multiple") === "warn" &&

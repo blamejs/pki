@@ -357,6 +357,28 @@ async function run() {
   check("69. malformed algorithm parameters (trailing bytes) -> c509/non-invertible", codeSync(function () { return pki.schema.c509.parse(V.mk({ 2: "82482a8648ce3d040302430500ff" })); }) === "c509/non-invertible");
   // an ECDSA signature whose width is not 2x a supported curve field size fails closed.
   check("70. a non-curve-width ECDSA signature -> c509/bad-signature", codeSync(function () { return pki.schema.c509.parse(V.mk({ 10: "583e" + "00".repeat(62) })); }) === "c509/bad-signature");
+  /* 70a/70b. A fixed-width r||s says nothing about which curve produced it, so the same (r, s) pair
+     zero-padded to a wider accepted width reconstructs byte-identical DER: the 64-, 96- and
+     132-byte spellings of one signature are three encodings of one certificate, and a C509 byte
+     string is therefore not a unique identifier for what it encodes. Refusing a wider spelling is
+     not available here, because `parse` takes no issuer curve and a certificate it refused would
+     have no way forward. The narrowest width that represents the value is REPORTED instead, so a
+     caller deduplicating, caching or blocklisting by encoded form has the canonical key and a
+     caller that does not care is unaffected. One comparison answers it:
+     `r.signatureValueMinimalWidth === r.signatureValue.length`. */
+  var narrow = "5840" + "11".repeat(64);
+  var padded = "5860" + "00".repeat(16) + "11".repeat(32) + "00".repeat(16) + "11".repeat(32);
+  var narrowParsed = pki.schema.c509.parse(V.mk({ 10: narrow }));
+  var paddedParsed = pki.schema.c509.parse(V.mk({ 10: padded }));
+  check("70a. the padded and the narrow spelling reconstruct identical DER, and the width is reported",
+    narrowParsed.reconstructedDer.equals(paddedParsed.reconstructedDer) &&
+    narrowParsed.signatureValue.length === 64 && paddedParsed.signatureValue.length === 96 &&
+    narrowParsed.signatureValueMinimalWidth === 64 && paddedParsed.signatureValueMinimalWidth === 64);
+  // CONTROL: a genuine full-width signature is reported at its own width, so the field is a fact
+  // about the value and not a flag on every wide curve.
+  var genuineP384 = pki.schema.c509.parse(V.mk({ 10: "5860" + "ab".repeat(96) }));
+  check("70b. CONTROL a genuine P-384-width signature reports its own width",
+    genuineP384.signatureValue.length === 96 && genuineP384.signatureValueMinimalWidth === 96);
   // an EC point whose length does not match its curve field size fails closed.
   check("71. an EC point with a wrong length for its curve -> c509/non-invertible", codeSync(function () { return pki.schema.c509.parse(V.mk({ 8: "5820fe" + "00".repeat(31) })); }) === "c509/non-invertible");
   // a ~oid ecPublicKey algorithm carries no curve (the int form does), so it cannot be reconstructed.
@@ -2501,7 +2523,7 @@ async function run() {
       subject: [{ commonName: ARMS[ai2][0] }], subjectPublicKey: armSpki, serialNumber: Buffer.from([1]),
       notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"),
       extensions: { keyUsage: ["digitalSignature"] },
-    }, { key: armKp.privateKey, name: "CN=I", publicKey: armSpki });
+    }, { key: armKp.privateKey, name: "I", publicKey: armSpki });
     var armC509 = pki.schema.c509.encode(armDer);
     check("373." + ai2 + " " + ARMS[ai2][2] + " -- the encoder's spelling is the one the decoder requires",
       pki.cbor.decode(armC509).children[6].majorType === ARMS[ai2][1] &&

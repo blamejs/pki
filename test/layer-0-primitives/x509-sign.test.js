@@ -77,7 +77,7 @@ async function testPemOutput() {
     (await codeOf(pki.x509.sign({ subject: holed(), subjectPublicKey: s.spki, notBefore: NB, notAfter: NA },
       { key: s.key }))) === "x509/bad-input");
   check("a sparse issuer name array is a typed refusal",
-    (await codeOf(pki.x509.sign({ subject: "CN=t", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA },
+    (await codeOf(pki.x509.sign({ subject: "t", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA },
       { key: s.key, name: holed(), publicKey: s.spki }))) === "x509/bad-input");
   // A hole before any element is the same fault; the first index is not special.
   var leading = []; leading[1] = { commonName: "t" };
@@ -386,12 +386,12 @@ async function testFailClosed() {
     subject: "Issuing CA", subjectPublicKey: ca.spki, notBefore: NB, notAfter: NA,
     extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] },
   }, { key: ca.key }));
-  var mixedIssuer = await specReject(base, { key: ca.key, cert: caCert, name: "CN=Different CA" });
+  var mixedIssuer = await specReject(base, { key: ca.key, cert: caCert, name: "Different CA" });
   check("an issuing cert mixed with an explicit name -> x509/bad-input", mixedIssuer.code === "x509/bad-input");
   check("...and NO certificate is emitted", mixedIssuer.emitted === null);
   check("each issuer form on its own still signs",
     (await pki.x509.sign(base, { key: ca.key, cert: caCert })) != null &&
-    (await pki.x509.sign(base, { key: ca.key, name: "CN=Explicit CA", publicKey: ca.spki })) != null);
+    (await pki.x509.sign(base, { key: ca.key, name: "Explicit CA", publicKey: ca.spki })) != null);
 
   var badOpts = null;
   try { await pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA }, { key: s.key }, { digestAlgorithms: "sha256" }); }
@@ -1750,11 +1750,11 @@ async function testPrecertificateSpec() {
   // embedding it, and a client reconstructs the same entry and verifies the signature.
   var ca = makeSigner("ed25519");
   var caDer = await pki.x509.sign({
-    subject: "CN=ct-ca", subjectPublicKey: ca.spki, notBefore: NB, notAfter: NA,
+    subject: "ct-ca", subjectPublicKey: ca.spki, notBefore: NB, notAfter: NA,
     extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] },
   }, { key: ca.key });
   var caCert = pki.schema.x509.parse(caDer);
-  var base = { subject: "CN=leaf.example", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, serialNumber: "0102030405" };
+  var base = { subject: "leaf.example", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, serialNumber: "0102030405" };
   var precert = await pki.x509.sign(Object.assign({}, base, { extensions: { precertificatePoison: true } }), { cert: caDer, key: ca.key });
   check("a CA issues a poisoned precertificate under an issuing certificate",
     pki.schema.x509.parse(precert).extensions.some(function (e) { return e.name === "precertificatePoison"; }));

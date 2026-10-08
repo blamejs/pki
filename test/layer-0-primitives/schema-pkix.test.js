@@ -74,6 +74,27 @@ function testKeyUsage() {
   var ds = d(b.bitString(Buffer.from([0x80]), 7));
   check("ku digitalSignature decodes", ds.digitalSignature === true && ds.keyCertSign === false);
 
+  /* The decoded record answers for the nine bits RFC 5280 sec. 4.2.1.3 names and nothing else, and
+     `keyUsagePermits` is called with a name that is NOT one of them: the bit is `nonRepudiation`,
+     and `contentCommitment` is the X.509 spelling the BUILDER accepts, so three shipped
+     authorization gates read a name this decoder never defines. The record inherited
+     `Object.prototype`, so whatever answered there decided the read: measured before this, a
+     certificate confined to cRLSign went from maySign=false to maySign=true under one assignment to
+     `Object.prototype.contentCommitment`, which is the fail-OPEN direction on an authorization gate.
+     The record now inherits nothing, so a name nothing defined answers nothing. */
+  check("ku the decoded record inherits nothing, so an undefined name cannot be answered elsewhere",
+    Object.getPrototypeOf(ds) === null);
+  var pollutedRead;
+  Object.prototype.contentCommitment = true;
+  try { pollutedRead = d(b.bitString(Buffer.from([0x04]), 2)).contentCommitment; }
+  finally { delete Object.prototype.contentCommitment; }
+  check("ku a polluted prototype cannot answer for a key usage the certificate does not assert",
+    pollutedRead === undefined);
+  // CONTROL: the nine names the decoder does define still read, and the cleanup took.
+  check("ku CONTROL the defined bits still read and the environment is restored",
+    ds.digitalSignature === true && ds.nonRepudiation === false &&
+    Object.prototype.contentCommitment === undefined);
+
   check("ku empty BIT STRING rejected (at least one bit MUST be set, RFC 5280 4.2.1.3)",
     code(function () { d(b.bitString(Buffer.alloc(0), 0)); }) === "path/bad-key-usage");
   check("ku all-zero BIT STRING rejected (non-empty bytes, no bit set)",

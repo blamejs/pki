@@ -23,6 +23,55 @@ var CN = "2.5.4.3", O = "2.5.4.10";
 var NUL = String.fromCharCode(0), SOH = String.fromCharCode(1);
 function codeOf(fn) { try { fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
+/* An attribute's equality rule belongs to the attribute, and folding case on one whose rule is
+   case-EXACT makes two distinct names compare as the same name. Measured before this table, through
+   `pki.x509.parseDn` and the shipped comparison: `challengePassword=Secret` and
+   `challengePassword=secret` are different DER and compared EQUAL, as did `localKeyId=AB` vs `ab`
+   and `role=http://Example.COM/Admin` vs its lowercase form. RFC 2985 sec. 5.4.1 gives
+   challengePassword caseExactMatch, sec. 5.5.2 gives localKeyId octetStringMatch, and RFC 5755
+   sec. 4.4.5 makes a role a URI.
+
+   The table names only the attributes whose rule is NOT case-ignoring. Everything else keeps the
+   fold, which is what RFC 5280 sec. 4.1.2.4 requires of every attribute it requires support for,
+   so a conforming PKIX name compares exactly as it did. */
+function testCaseExactAttributes() {
+  var pki = helpers.pki;
+  function differsOnlyInCase(dn) {
+    var a = pki.x509.parseDn(dn), b = pki.x509.parseDn(dn.toLowerCase());
+    if (a.bytes.equals(b.bytes)) return "FIXTURE: the two forms encode identically";
+    return name.dnEqual(a.rdns, b.rdns, E, "x/n", "dn");
+  }
+  var EXACT = [
+    ["challengePassword=Secret", "RFC 2985 sec. 5.4.1 caseExactMatch"],
+    ["localKeyId=AB", "RFC 2985 sec. 5.5.2 octetStringMatch"],
+  ];
+  var foldedEvery = false, stillFolds = null;
+  for (var i = 0; i < EXACT.length; i++) {
+    if (differsOnlyInCase(EXACT[i][0]) !== false) { foldedEvery = true; stillFolds = EXACT[i][0]; }
+  }
+  check("a case-exact attribute is no longer folded" +
+    (stillFolds === null ? "" : " [still folds " + stillFolds + "]"), foldedEvery === false);
+
+  // CONTROL: every attribute RFC 5280 sec. 4.1.2.4 requires support for still folds, which is the
+  // rule those attributes carry and what a conforming name comparison depends on.
+  var IGNORING = ["CN=Example CA", "C=US", "O=Example", "OU=Unit", "L=Town", "ST=State", "SN=Smith"];
+  var foldsEvery = true, lost = null;
+  for (var j = 0; j < IGNORING.length; j++) {
+    if (differsOnlyInCase(IGNORING[j]) !== true) { foldsEvery = false; lost = IGNORING[j]; }
+  }
+  check("CONTROL every case-ignoring attribute still folds" +
+    (lost === null ? "" : " [lost " + lost + "]"), foldsEvery);
+
+  // CONTROL: the rule is the attribute's, so the same value under a case-ignoring type still folds.
+  check("CONTROL the same text under commonName still folds",
+    differsOnlyInCase("CN=Secret") === true);
+  // An attribute the registry names but the table does not keeps the RFC 5280 default rather than
+  // being given a rule nothing states. (An UNregistered type cannot be reached: `parseDn` refuses
+  // one outright, so there is no comparison to make.)
+  check("CONTROL a registered attribute the table does not name keeps the default comparison",
+    differsOnlyInCase("DC=Example") === true);
+}
+
 function testDnEqual() {
   check("identical DNs equal", name.dnEqual([rdn(CN, "Root")], [rdn(CN, "Root")], E, "x/n", "dn") === true);
   check("case-folded equal (Root == root)", name.dnEqual([rdn(CN, "Root")], [rdn(CN, "root")], E, "x/n", "dn") === true);
@@ -260,6 +309,7 @@ function testNotCallerReplaceable() {
 
 function run() {
   testDnEqual();
+  testCaseExactAttributes();
   testRdnMultiset();
   testControlByteReject();
   testRenderEscaping();

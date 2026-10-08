@@ -40,7 +40,7 @@ async function keyObjectFor(algorithm) {
 
 function rootSpec(spki, cn) {
   return {
-    subject: cn || "CN=KeyObject Root",
+    subject: cn || "KeyObject Root",
     subjectPublicKey: spki,
     serialNumber: 20260920n,
     notBefore: NOT_BEFORE,
@@ -69,7 +69,7 @@ async function testEveryAlgorithmClassSigns() {
   for (var i = 0; i < classes.length; i++) {
     var name = classes[i][0];
     var k = await keyObjectFor(classes[i][1]);
-    var verdict = await code(pki.x509.sign(rootSpec(k.spki, "CN=" + name), { key: k.priv }));
+    var verdict = await code(pki.x509.sign(rootSpec(k.spki, name), { key: k.priv }));
     if (verdict !== "NO-THROW") refused.push(name + ": " + verdict);
   }
   check("a KeyObject signs in every algorithm class (" + refused.join("; ") + ")", refused.length === 0);
@@ -140,14 +140,14 @@ async function testEverySigningVerbTakesAKeyObject() {
   }
 
   await drive("x509.sign", function () {
-    return pki.x509.sign({ subject: "CN=Leaf", subjectPublicKey: leafSpki, notBefore: NOT_BEFORE, notAfter: NOT_AFTER },
+    return pki.x509.sign({ subject: "Leaf", subjectPublicKey: leafSpki, notBefore: NOT_BEFORE, notAfter: NOT_AFTER },
       { key: k.priv, cert: caCert });
   });
   await drive("crl.sign", function () {
     return pki.crl.sign({ thisUpdate: NOT_BEFORE, nextUpdate: NOT_AFTER, crlNumber: 1n, revoked: [] }, { key: k.priv, cert: caCert });
   });
   await drive("csr.sign", function () {
-    return pki.csr.sign({ subject: "CN=Requester", subjectPublicKey: k.spki }, { key: k.priv });
+    return pki.csr.sign({ subject: "Requester", subjectPublicKey: k.spki }, { key: k.priv });
   });
   await drive("cms.sign", function () {
     return pki.cms.sign(Buffer.from("content"), { key: k.priv, cert: caCert });
@@ -158,7 +158,7 @@ async function testEverySigningVerbTakesAKeyObject() {
   });
   await drive("attrcert.sign", function () {
     return pki.attrcert.sign({
-      holder: { entityName: { directoryName: "CN=Alice" } },
+      holder: { entityName: { directoryName: "Alice" } },
       notBeforeTime: NOT_BEFORE, notAfterTime: NOT_AFTER,
       attributes: { role: { roleName: { uniformResourceIdentifier: "urn:role:admin" } } },
     }, { cert: caCert, key: k.priv });

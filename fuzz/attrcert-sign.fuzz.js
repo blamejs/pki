@@ -33,9 +33,11 @@ module.exports.fuzz = async function (data) {
 
   var holder;
   switch (flags & 3) {
-    case 0: holder = { entityName: { directoryName: "CN=" + name.replace(/[^A-Za-z0-9 ]/g, "x") } }; break;
+    // A bare name string is a common name. Written with a `CN=` prefix it opens as an RFC 4514
+    // distinguished name, which the builder refuses, and the arm would reach nothing.
+    case 0: holder = { entityName: { directoryName: name.replace(/[^A-Za-z0-9 ]/g, "x") } }; break;
     case 1: holder = { entityName: [{ dNSName: (name.replace(/[^A-Za-z0-9.-]/g, "x") || "h.example") }] }; break;
-    case 2: holder = { baseCertificateID: { issuer: [{ directoryName: "CN=CA" }], serial: 42n } }; break;
+    case 2: holder = { baseCertificateID: { issuer: [{ directoryName: "CA" }], serial: 42n } }; break;
     default: holder = { objectDigestInfo: { digestedObjectType: "publicKey", digestAlgorithm: "sha256", objectDigest: Buffer.alloc(32, flags) } }; break;
   }
   var attributes = {};
@@ -48,7 +50,7 @@ module.exports.fuzz = async function (data) {
 
   var der;
   try {
-    der = await pki.attrcert.sign(spec, { name: "CN=Example AA", publicKey: aa.spki, key: aa.key });
+    der = await pki.attrcert.sign(spec, { name: "Example AA", publicKey: aa.spki, key: aa.key });
   } catch (e) {
     if (isPki(e)) return;
     throw e;

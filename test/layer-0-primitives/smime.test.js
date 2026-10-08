@@ -155,13 +155,18 @@ async function run() {
   } finally { delete String.prototype.cert; delete String.prototype.key; }
   check("0u. a primitive descriptor is refused as bad input, never read through a polluted built-in prototype",
     primErr !== null && primErr.code === "smime/bad-input");
-  // A descriptor's own Symbol-keyed and constructor-named fields travel with it, as the CMS layer
-  // read them from the caller's object.
+  /* A descriptor's own Symbol-keyed and constructor-named fields still travel with it to the CMS
+     layer, and that layer now refuses them: a field a signing verb does not read is a request it
+     never carried out, which is the door `pkcs12.build` has held the same descriptors to all along.
+     What this pins is that they ARRIVE, so the refusal names them rather than the reader dropping
+     them in silence. */
   var symKey = Symbol("note");
   var withSym = { cert: fit.cert, key: fit.key, constructor: "mine" };
   withSym[symKey] = "kept";
-  check("0v. own Symbol-keyed and constructor-named fields sign as before",
-    (await codeOf(function () { return pki.smime.sign(MSG, [withSym]); })) === "NO-THROW");
+  check("0v. own Symbol-keyed and constructor-named fields arrive, and are refused by name",
+    (await codeOf(function () { return pki.smime.sign(MSG, [withSym]); })) === "cms/bad-input");
+  check("0v. CONTROL the same descriptor without them signs",
+    (await codeOf(function () { return pki.smime.sign(MSG, [{ cert: fit.cert, key: fit.key }]); })) === "NO-THROW");
   // The prototype walk is bounded: a proxy that names itself as its own prototype is refused,
   // and so is a chain deeper than any descriptor has.
   var cyclic = new Proxy({ cert: fit.cert, key: fit.key }, { getPrototypeOf: function () { return cyclic; } });

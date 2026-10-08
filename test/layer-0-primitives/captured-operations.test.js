@@ -547,6 +547,98 @@ async function testConstantTimeComparisonIsCaptured() {
     (underReplaced && underReplaced.valid) + ")", !!underReplaced && underReplaced.valid === false);
 }
 
+// ---- the continuation that carries a verify result into a verdict ----
+/* `p.then(f)` reads `then` off the promise at the call, so a replacement decides what `f` is handed.
+   The verbs below each report a verdict whose `valid` a continuation computes FROM the boolean a
+   cryptographic verify resolved, which makes that one value the whole verdict: substitute `true` for
+   it and a signature that does not verify is reported as one that does. Each fixture here is a
+   verdict that must stay negative -- a tampered CSR signature, a CRL held against a key that did not
+   sign it, a proof of possession over the wrong bytes, an attribute certificate held against a key
+   other than its issuer's -- and the substitute is narrow on purpose: it replaces a `false`
+   fulfillment value and passes every other value through, so an `await` of anything that is not a
+   verify result is untouched and a flip that does happen is this class and not a side effect. The
+   count proves the substitute was live and reached exactly the one continuation. */
+async function testVerdictContinuationsUseTheCapturedThen() {
+  var realThen = Promise.prototype.then;
+  var flips = 0;
+  function flipping(onFulfilled, onRejected) {
+    return realThen.call(this, function (v) {
+      if (v === false) { flips += 1; v = true; }
+      return typeof onFulfilled === "function" ? onFulfilled(v) : v;
+    }, onRejected);
+  }
+  async function underFlipping(fn) {
+    flips = 0;
+    var out = null, threw = null;
+    await withReplaced(Promise.prototype, "then", flipping, async function () {
+      try { out = await fn(); } catch (e) { threw = (e && e.code) || String((e && e.message) || e); }
+    });
+    return { verdict: out, threw: threw, flips: flips };
+  }
+
+  var s = makeSigner("ec-p256", { cn: "Continuation CSR" });
+  var csr = await pki.csr.sign({ subject: "Continuation CSR", subjectPublicKey: s.spki }, { key: s.key });
+  var tamperedCsr = Buffer.from(csr);
+  tamperedCsr[tamperedCsr.length - 1] ^= 0xff;
+
+  var ca = makeSigner("ec-p256", { cn: "Continuation CA", ca: true });
+  var stranger = makeSigner("ec-p256", { cn: "Continuation Stranger" });
+  var crl = await pki.crl.sign({ thisUpdate: NB, nextUpdate: NA, crlNumber: 1n, revoked: [] },
+    { key: ca.key, publicKey: ca.spki, name: "Continuation CA" });
+
+  var held = makeSigner("ec-p256", { cn: "Continuation Held", serial: 42 });
+  var heldParsed = pki.schema.x509.parse(held.cert);
+  var requester = makeSigner("ec-p256", { cn: "Continuation Requester", serial: 43 });
+  var certID = { issuer: heldParsed.issuer.bytes, serialNumber: heldParsed.serialNumber };
+  var requestTime = 1800000000;
+  var proof = crypto.sign("sha256",
+    pki.relatedCert.requestSignedData({ certID: certID, requestTime: requestTime }),
+    { key: held.keyObject, dsaEncoding: "der" });
+  proof[proof.length - 1] ^= 0xff;
+  var proofCsr = await pki.csr.sign({ subject: "Continuation Requester", subjectPublicKey: requester.spki,
+    relatedCertRequest: { certID: certID, requestTime: requestTime, signature: proof,
+      locationInfo: ["https://certs.example/held.cer"] } }, { key: requester.key });
+  var proofAttr = pki.schema.csr.parse(proofCsr).attributes
+    .filter(function (a) { return a.type === pki.oid.byName("relatedCertRequest"); })[0].relatedCertRequest;
+  var proofOpts = { at: new Date((requestTime + 60) * 1000), maxAge: 300 };
+
+  var aa = makeSigner("ec-p256", { cn: "Continuation AA" });
+  var ac = await pki.attrcert.sign({
+    holder: { entityName: { directoryName: "Alice" } },
+    notBeforeTime: NB, notAfterTime: NA,
+    attributes: { role: { roleName: { uniformResourceIdentifier: "urn:role:admin" } } },
+  }, { name: "Continuation AA", publicKey: aa.spki, key: aa.key });
+  var acOpts = { time: AT, revocationStatus: "notRevoked" };
+
+  var cases = [
+    { name: "pki.csr.verify over a tampered signature",
+      run: function () { return pki.csr.verify(tamperedCsr); },
+      baseline: function (v) { return v.valid === false && v.verified === false; } },
+    { name: "pki.crl.verify against a key that did not sign the CRL",
+      run: function () { return pki.crl.verify(crl, { publicKey: stranger.spki }); },
+      baseline: function (v) { return v.valid === false && v.signatureValid === false; } },
+    { name: "pki.relatedCert.verifyRequest over a proof that does not verify",
+      run: function () { return pki.relatedCert.verifyRequest(proofAttr, held.cert, proofOpts); },
+      baseline: function (v) { return v.valid === false && v.verified === false; } },
+    { name: "pki.attrcert.verify against a key other than the issuer's",
+      run: function () { return pki.attrcert.verify(ac, { name: "Continuation AA", publicKey: stranger.spki }, acOpts); },
+      baseline: function (v) { return v.valid === false && v.signatureValid === false; } },
+  ];
+
+  for (var i = 0; i < cases.length; i++) {
+    var c = cases[i];
+    var honest = await c.run();
+    check("CONTROL " + c.name + " reports a negative verdict", c.baseline(honest));
+    var under = await underFlipping(c.run);
+    var forged = under.verdict !== null && (under.verdict.valid === true ||
+      under.verdict.verified === true || under.verdict.signatureValid === true);
+    check(c.name + " builds its verdict through the captured continuation, so a replaced " +
+      "Promise.prototype.then cannot substitute the verify result (flips=" + under.flips +
+      (under.threw !== null ? ", threw " + under.threw : ", valid=" + (under.verdict && under.verdict.valid)) + ")",
+    !forged);
+  }
+}
+
 async function run() {
   await testNativeVerifierIsCaptured();
   await testNativeSignerIsCaptured();
@@ -561,6 +653,7 @@ async function run() {
   await testSigningVerbsBuildThroughTheCapturedPromise();
   await testVerdictAggregatorsBuildThroughTheCapturedPromise();
   await testCapturedPromiseStaticsSurviveAReplacedGlobal();
+  await testVerdictContinuationsUseTheCapturedThen();
   await testTufKeyIdentifierIsCaptured();
   await testConstantTimeComparisonIsCaptured();
 }

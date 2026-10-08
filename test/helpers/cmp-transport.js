@@ -20,7 +20,7 @@ var PKIXCMP = "application/pkixcmp";
 var SIGNER = signing.makeSigner("ec-p256", { cn: "cmp-ca.example" });
 var CERT_DER = SIGNER.cert;
 
-var HDR = { sender: { directoryName: "CN=client" }, recipient: { directoryName: "CN=CA" }, transactionID: Buffer.alloc(16, 7) };
+var HDR = { sender: { directoryName: "client" }, recipient: { directoryName: "CA" }, transactionID: Buffer.alloc(16, 7) };
 var SIG = { key: SIGNER.key, cert: SIGNER.cert };
 
 // Build the fixture PKIMessages once (async: pki.cmp.build signs). Returns raw DER Buffers the transfer

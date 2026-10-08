@@ -749,9 +749,9 @@ async function testOuterAltFieldsRefused() {
   var crl = await pki.crl.sign({ thisUpdate: NB, nextUpdate: NA, crlNumber: 1n }, { cert: ca, key: s.key });
   var csr = await pki.csr.sign({ subject: "envelope.example", subjectPublicKey: s.spki }, { key: s.key });
   var ac = await pki.attrcert.sign({
-    holder: { entityName: { directoryName: "CN=Alice" } }, notBeforeTime: NB, notAfterTime: NA,
+    holder: { entityName: { directoryName: "Alice" } }, notBeforeTime: NB, notAfterTime: NA,
     attributes: { role: { roleName: { uniformResourceIdentifier: "urn:role:admin" } } },
-  }, { name: "CN=Example AA", publicKey: s.spki, key: s.key });
+  }, { name: "Example AA", publicKey: s.spki, key: s.key });
 
   // The two components appended to a structure that is otherwise valid and would parse.
   function appended(der, howMany) {

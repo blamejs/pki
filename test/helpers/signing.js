@@ -65,7 +65,10 @@ function makeSigner(alg, opts) {
 // A keyUsage extension (SEQUENCE { extnID, critical BOOLEAN, extnValue OCTET STRING }) asserting a
 // single named bit -- keyEncipherment (2) or keyAgreement (4), which M9/M15 of the CMS enveloped
 // profile require on a recipient certificate.
-var _KU_BIT = { digitalSignature: 0, nonRepudiation: 1, keyEncipherment: 2, dataEncipherment: 3, keyAgreement: 4 };
+// The RFC 5280 sec. 4.2.1.3 KeyUsage bit positions, all nine, so a vector can mint a certificate
+// confined to any one of them.
+var _KU_BIT = { digitalSignature: 0, nonRepudiation: 1, keyEncipherment: 2, dataEncipherment: 3,
+  keyAgreement: 4, keyCertSign: 5, cRLSign: 6, encipherOnly: 7, decipherOnly: 8 };
 function keyUsageExt(bitName) {
   var ku = b.namedBitString([_KU_BIT[bitName]]);   // minimal single-bit NamedBitList (X.690 sec. 11.2.2)
   return b.sequence([b.oid(O("keyUsage")), b.boolean(true), b.octetString(ku)]);
@@ -132,6 +135,23 @@ function makeCompositeSigner(arm, opts) {
   };
 }
 
+// signerOf(bag) -> the signer descriptor a signing verb reads, and nothing else. makeSigner returns
+// keyObject and spki alongside cert and key for callers that need them, and a verb that reads two of
+// those fields refuses the rest: a name the verb does not read is a request it never carried out,
+// which is what `pki.cms.sign`'s unknown-field door exists to report. Takes one bag or an array of
+// them, and leaves a descriptor literal alone, so a vector that supplies a deliberately bad field
+// still reaches the door. The form follows `cert`, as the verb's own does.
+var _CERT_FORM = ["cert", "key", "pss", "digestAlgorithm", "combinedRsaSig"];
+var _KEY_ONLY_FORM = ["spki", "keyIdentifier", "key", "pss", "digestAlgorithm", "combinedRsaSig"];
+function signerOf(v) {
+  if (Array.isArray(v)) return v.map(signerOf);
+  if (v === null || typeof v !== "object") return v;
+  var fields = v.cert == null && v.spki != null ? _KEY_ONLY_FORM : _CERT_FORM;
+  var out = {};
+  fields.forEach(function (k) { if (Object.prototype.hasOwnProperty.call(v, k)) out[k] = v[k]; });
+  return out;
+}
+
 // makeTsa(alg, opts) -> { cert, key }: the TSA argument pki.tsp.sign actually reads. makeSigner
 // also returns keyObject and spki for callers that need them, and handing the whole bag to a verb
 // that reads two of its fields is the shape the unknown-field doors exist to refuse -- a name
@@ -146,4 +166,4 @@ function makeTsa(alg, opts) {
   return { cert: s.cert, key: s.key };
 }
 
-module.exports = { makeSigner: makeSigner, makeTsa: makeTsa, minimalCert: minimalCert, makeCompositeSigner: makeCompositeSigner, makeRecipient: makeRecipient, keyUsageExt: keyUsageExt };
+module.exports = { makeSigner: makeSigner, makeTsa: makeTsa, minimalCert: minimalCert, makeCompositeSigner: makeCompositeSigner, makeRecipient: makeRecipient, keyUsageExt: keyUsageExt, signerOf: signerOf };

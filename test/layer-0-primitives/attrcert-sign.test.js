@@ -27,9 +27,9 @@ async function codeOf(promise) {
 }
 // A minimal valid spec over a given AA signer, merged with overrides.
 function spec(over) {
-  return Object.assign({ holder: { entityName: { directoryName: "CN=Alice" } }, notBeforeTime: NB, notAfterTime: NA, attributes: ROLE }, over || {});
+  return Object.assign({ holder: { entityName: { directoryName: "Alice" } }, notBeforeTime: NB, notAfterTime: NA, attributes: ROLE }, over || {});
 }
-function aaOf(s) { return { name: "CN=Example AA", publicKey: s.spki, key: s.key }; }
+function aaOf(s) { return { name: "Example AA", publicKey: s.spki, key: s.key }; }
 
 // ---- round-trip + byte-stability -------------------------------------------
 
@@ -92,7 +92,7 @@ async function testTagBoundaries() {
   check("v2Form [0] first child is the issuerName GeneralNames SEQUENCE", issuer.children[0].tagClass === "universal" && issuer.children[0].tagNumber === asn1.TAGS.SEQUENCE);
 
   // RoleSyntax roleName [1] EXPLICIT vs roleAuthority [0] IMPLICIT.
-  var der2 = await pki.attrcert.sign(spec({ attributes: { role: { roleAuthority: [{ directoryName: "CN=RA" }], roleName: { uniformResourceIdentifier: "urn:r" } } } }), aaOf(aa));
+  var der2 = await pki.attrcert.sign(spec({ attributes: { role: { roleAuthority: [{ directoryName: "RA" }], roleName: { uniformResourceIdentifier: "urn:r" } } } }), aaOf(aa));
   var roleValue = asn1.decode(der2).children[0].children[6].children[0].children[1].children[0];   // attributes->attr0->SET->value0 (RoleSyntax)
   var ra = roleValue.children[0], rn = roleValue.children[1];
   check("roleAuthority is a context [0] IMPLICIT (children ARE GeneralNames members)", ra.tagClass === "context" && ra.tagNumber === 0 && ra.children[0].tagNumber === 4);
@@ -134,15 +134,15 @@ async function testCompositeArm() {
 
 async function testHolderForms() {
   var aa = makeSigner("ec-p256");
-  var e = await pki.attrcert.sign(spec({ holder: { entityName: { directoryName: "CN=E" } } }), aaOf(aa));
+  var e = await pki.attrcert.sign(spec({ holder: { entityName: { directoryName: "E" } } }), aaOf(aa));
   check("entityName holder round-trips", !!pki.schema.attrcert.parse(e).holder.entityName);
-  var bc = await pki.attrcert.sign(spec({ holder: { baseCertificateID: { issuer: [{ directoryName: "CN=CA" }], serial: 4242n } } }), aaOf(aa));
+  var bc = await pki.attrcert.sign(spec({ holder: { baseCertificateID: { issuer: [{ directoryName: "CA" }], serial: 4242n } } }), aaOf(aa));
   check("baseCertificateID holder round-trips", pki.schema.attrcert.parse(bc).holder.baseCertificateID.serial === 4242n);
   var odi = await pki.attrcert.sign(spec({ holder: { objectDigestInfo: { digestedObjectType: "publicKey", digestAlgorithm: "sha256", objectDigest: Buffer.alloc(32, 7) } } }), aaOf(aa));
   check("objectDigestInfo holder round-trips", pki.schema.attrcert.parse(odi).holder.objectDigestInfo.digestedObjectType.name === "publicKey");
   // fromCertificate: derive baseCertificateID from a PKC's issuer + serial.
   var subj = makeSigner("ec-p256");
-  var pkc = await pki.x509.sign({ subject: "CN=Holder", subjectPublicKey: subj.spki, notBefore: NB, notAfter: NA }, { name: "CN=IssuingCA", publicKey: aa.spki, key: aa.key });
+  var pkc = await pki.x509.sign({ subject: "Holder", subjectPublicKey: subj.spki, notBefore: NB, notAfter: NA }, { name: "IssuingCA", publicKey: aa.spki, key: aa.key });
   var fc = await pki.attrcert.sign(spec({ holder: { fromCertificate: pkc } }), aaOf(aa));
   var fcHolder = pki.schema.attrcert.parse(fc).holder;
   check("fromCertificate derives a baseCertificateID", !!fcHolder.baseCertificateID);
@@ -172,16 +172,16 @@ async function testHolderForms() {
 async function testIssuerForms() {
   var aa = makeSigner("ec-p256");
   // { cert } derives the issuerName from the AA subject DN, with NO CA gate (an AA is not a CA).
-  var aaCert = await pki.x509.sign({ subject: "CN=Example AA", subjectPublicKey: aa.spki, notBefore: NB, notAfter: NA }, { key: aa.key });
+  var aaCert = await pki.x509.sign({ subject: "Example AA", subjectPublicKey: aa.spki, notBefore: NB, notAfter: NA }, { key: aa.key });
   var der = await pki.attrcert.sign(spec(), { cert: aaCert, key: aa.key });
   var p = pki.schema.attrcert.parse(der);
   var issuerGn = p.issuer.v2Form.issuerName.names[0];
   check("{ cert } issuerName is a directoryName [4] over the AA subject DN (no CA gate)", issuerGn.tagNumber === 4 && issuerGn.bytes.toString("latin1").indexOf("Example AA") >= 0);
 
-  check("missing issuer.key -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec(), { name: "CN=AA", publicKey: aa.spki })) === "attrcert/bad-input");
+  check("missing issuer.key -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec(), { name: "AA", publicKey: aa.spki })) === "attrcert/bad-input");
   check("no issuer form -> attrcert/bad-input (never self-signed)", await codeOf(pki.attrcert.sign(spec(), { key: aa.key })) === "attrcert/bad-input");
   check("empty issuer DN -> attrcert/bad-issuer-name", await codeOf(pki.attrcert.sign(spec(), { name: [], publicKey: aa.spki, key: aa.key })) === "attrcert/bad-issuer-name");
-  check("garbage issuer.publicKey -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec(), { name: "CN=AA", publicKey: Buffer.from([1, 2, 3]), key: aa.key })) === "attrcert/bad-input");
+  check("garbage issuer.publicKey -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec(), { name: "AA", publicKey: Buffer.from([1, 2, 3]), key: aa.key })) === "attrcert/bad-input");
   // a malformed issuer.cert / holder.fromCertificate re-types the raw x509/* fault to the attrcert domain.
   check("malformed issuer.cert -> attrcert/bad-input (re-typed, not x509/*)", await codeOf(pki.attrcert.sign(spec(), { cert: Buffer.from([0x30, 0x03, 0x02, 0x01, 0x01]), key: aa.key })) === "attrcert/bad-input");
   check("malformed holder.fromCertificate -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec({ holder: { fromCertificate: Buffer.from([0x30, 0x03, 0x02, 0x01, 0x01]) } }), aaOf(aa))) === "attrcert/bad-input");
@@ -281,7 +281,7 @@ async function testAdvancedBranches() {
   // objectDigestInfo publicKeyCert + chargingIdentity policyAuthority [0] + acProxying targetGroup [1] + aaControls excludedAttrs [1].
   var der = await pki.attrcert.sign(spec({
     holder: { objectDigestInfo: { digestedObjectType: "publicKeyCert", digestAlgorithm: "sha384", objectDigest: Buffer.alloc(48, 3) } },
-    attributes: { chargingIdentity: { policyAuthority: { directoryName: "CN=PA" }, values: [{ string: "chg" }] } },
+    attributes: { chargingIdentity: { policyAuthority: { directoryName: "PA" }, values: [{ string: "chg" }] } },
     extensions: { acProxying: [{ targetGroup: { dNSName: "grp.example" } }], aaControls: { excludedAttrs: ["clearance"] } },
   }), aaOf(aa));
   var p = pki.schema.attrcert.parse(der);
@@ -293,7 +293,7 @@ async function testAdvancedBranches() {
   var g = await pki.attrcert.sign(spec({ attributes: { group: { values: [{ octets: Buffer.from("g") }] } } }), aaOf(aa));
   check("group IetfAttrSyntax octets arm round-trips", pki.schema.attrcert.parse(g).attributes[0].decoded[0].values[0].kind === "octets");
   // baseCertificateID with a valid issuerUID BIT STRING.
-  var bcuid = await pki.attrcert.sign(spec({ holder: { baseCertificateID: { issuer: [{ directoryName: "CN=CA" }], serial: 7n, issuerUID: Buffer.from([0xab]) } } }), aaOf(aa));
+  var bcuid = await pki.attrcert.sign(spec({ holder: { baseCertificateID: { issuer: [{ directoryName: "CA" }], serial: 7n, issuerUID: Buffer.from([0xab]) } } }), aaOf(aa));
   check("baseCertificateID issuerUID round-trips", !!pki.schema.attrcert.parse(bcuid).holder.baseCertificateID.issuerUID);
   // aaControls with pathLenConstraint + permittedAttrs [0] IMPLICIT.
   var full = await pki.attrcert.sign(spec({ extensions: { aaControls: { pathLenConstraint: 3, permittedAttrs: ["role", "group"] } } }), aaOf(aa));
@@ -377,7 +377,7 @@ async function testMalformedValues() {
   check("objectDigestInfo bad algorithm -> attrcert/bad-input", await bad({ holder: { objectDigestInfo: { digestedObjectType: "publicKey", digestAlgorithm: "not-an-alg", objectDigest: Buffer.alloc(32) } } }) === "attrcert/bad-input");
   // baseCertificateID
   check("baseCertificateID missing issuer -> attrcert/bad-input", await bad({ holder: { baseCertificateID: { serial: 1n } } }) === "attrcert/bad-input");
-  check("baseCertificateID non-buffer issuerUID -> attrcert/bad-input", await bad({ holder: { baseCertificateID: { issuer: [{ directoryName: "CN=CA" }], serial: 1n, issuerUID: "x" } } }) === "attrcert/bad-input");
+  check("baseCertificateID non-buffer issuerUID -> attrcert/bad-input", await bad({ holder: { baseCertificateID: { issuer: [{ directoryName: "CA" }], serial: 1n, issuerUID: "x" } } }) === "attrcert/bad-input");
   // targets / aaControls
   check("acProxying bad target -> attrcert/bad-input", await bad({ extensions: { acProxying: [{ nope: 1 }] } }) === "attrcert/bad-input");
   check("acProxying empty -> attrcert/bad-input", await bad({ extensions: { acProxying: [] } }) === "attrcert/bad-input");
@@ -414,7 +414,7 @@ async function testSelfVerify() {
   var aa = makeSigner("ec-p256");
   var other = makeSigner("ec-p256");
   // The AA public key advertised does not match the signing key -> the self-verify fails closed.
-  check("mismatched AA key/publicKey -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec(), { name: "CN=AA", publicKey: other.spki, key: aa.key })) === "attrcert/bad-input");
+  check("mismatched AA key/publicKey -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec(), { name: "AA", publicKey: other.spki, key: aa.key })) === "attrcert/bad-input");
 }
 
 // ---- fail-closed misuse -----------------------------------------------------
@@ -447,7 +447,7 @@ async function testIssuerProfile() {
   check("pre-encoded auditIdentity of 21 octets -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec({ extensions: [noRev, extOf("acAuditIdentity", true, B.octetString(Buffer.alloc(21, 1)))] }), aaOf(aa))) === "attrcert/bad-input");
   // Sec. 4.4.5: roleName MUST use the uniformResourceIdentifier CHOICE.
   check("role.roleName as a dNSName -> attrcert/bad-input (RFC 5755 sec. 4.4.5)", await codeOf(pki.attrcert.sign(spec({ attributes: { role: { roleName: { dNSName: "admin.example" } } } }), aaOf(aa))) === "attrcert/bad-input");
-  check("role.roleName as a directoryName -> attrcert/bad-input (RFC 5755 sec. 4.4.5)", await codeOf(pki.attrcert.sign(spec({ attributes: { role: { roleName: { directoryName: "CN=admin" } } } }), aaOf(aa))) === "attrcert/bad-input");
+  check("role.roleName as a directoryName -> attrcert/bad-input (RFC 5755 sec. 4.4.5)", await codeOf(pki.attrcert.sign(spec({ attributes: { role: { roleName: { directoryName: "admin" } } } }), aaOf(aa))) === "attrcert/bad-input");
   var roleDns = B.sequence([B.oid(O("role")), B.set([B.sequence([B.explicit(1, dns("admin.example"))])])]);
   check("pre-encoded role with a dNSName roleName -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec({ attributes: [roleDns] }), aaOf(aa))) === "attrcert/bad-input");
   var roleUri = B.sequence([B.oid(O("role")), B.set([B.sequence([B.explicit(1, uri("urn:role:admin"))])])]);
@@ -464,12 +464,12 @@ async function testIssuerProfile() {
   var crlp = byName(await pki.attrcert.sign(spec({ extensions: { cRLDistributionPoints: ["http://crl.example/aa.crl"] } }), aaOf(aa)));
   check("cRLDistributionPoints object form with an HTTP URL signs, non-critical", crlp.cRLDistributionPoints && crlp.cRLDistributionPoints.critical === false && crlp.cRLDistributionPoints.decoded[0].distributionPoint.kind === "fullName");
   check("cRLDistributionPoints with an LDAP URL signs", !!byName(await pki.attrcert.sign(spec({ extensions: { cRLDistributionPoints: ["ldap://ldap.example/cn=aa,o=x?certificateRevocationList"] } }), aaOf(aa))).cRLDistributionPoints);
-  check("cRLDistributionPoints with a directoryName signs", !!byName(await pki.attrcert.sign(spec({ extensions: { cRLDistributionPoints: [{ directoryName: "CN=aa crl" }] } }), aaOf(aa))).cRLDistributionPoints);
+  check("cRLDistributionPoints with a directoryName signs", !!byName(await pki.attrcert.sign(spec({ extensions: { cRLDistributionPoints: [{ directoryName: "aa crl" }] } }), aaOf(aa))).cRLDistributionPoints);
   check("cRLDistributionPoints with an https URL -> attrcert/bad-input (RFC 5755 sec. 4.3.5)", await codeOf(pki.attrcert.sign(spec({ extensions: { cRLDistributionPoints: ["https://crl.example/aa.crl"] } }), aaOf(aa))) === "attrcert/bad-input");
   check("cRLDistributionPoints with a dNSName -> attrcert/bad-input (RFC 5755 sec. 4.3.5)", await codeOf(pki.attrcert.sign(spec({ extensions: { cRLDistributionPoints: [{ dNSName: "crl.example" }] } }), aaOf(aa))) === "attrcert/bad-input");
   check("cRLDistributionPoints fullName with two names -> attrcert/bad-input (RFC 5755 sec. 4.3.5)", await codeOf(pki.attrcert.sign(spec({ extensions: { cRLDistributionPoints: [{ fullName: ["http://crl.example/a", "http://crl.example/b"] }] } }), aaOf(aa))) === "attrcert/bad-input");
   check("cRLDistributionPoints with two distribution points -> attrcert/bad-input (RFC 5755 sec. 4.3.5)", await codeOf(pki.attrcert.sign(spec({ extensions: { cRLDistributionPoints: ["http://crl.example/a", "http://crl.example/b"] } }), aaOf(aa))) === "attrcert/bad-input");
-  check("cRLDistributionPoints with a cRLIssuer and no fullName -> attrcert/bad-input (RFC 5755 sec. 4.3.5)", await codeOf(pki.attrcert.sign(spec({ extensions: { cRLDistributionPoints: [{ cRLIssuer: [{ directoryName: "CN=issuer" }] }] } }), aaOf(aa))) === "attrcert/bad-input");
+  check("cRLDistributionPoints with a cRLIssuer and no fullName -> attrcert/bad-input (RFC 5755 sec. 4.3.5)", await codeOf(pki.attrcert.sign(spec({ extensions: { cRLDistributionPoints: [{ cRLIssuer: [{ directoryName: "issuer" }] }] } }), aaOf(aa))) === "attrcert/bad-input");
   var rdnDp = B.sequence([B.sequence([B.explicit(0, B.contextConstructed(1, B.sequence([B.oid(O("commonName")), B.utf8("crl")])))])]);   // [1] IMPLICIT RelativeDistinguishedName holds the AttributeTypeAndValue directly
   check("pre-encoded cRLDistributionPoints with a nameRelativeToCRLIssuer -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec({ extensions: [extOf("cRLDistributionPoints", false, rdnDp)] }), aaOf(aa))) === "attrcert/bad-input");
   var twoNameDp = B.sequence([B.sequence([B.explicit(0, B.contextConstructed(0, Buffer.concat([uri("http://crl.example/a"), uri("http://crl.example/b")])))])]);
@@ -549,13 +549,13 @@ async function testUnknownFieldsRefused() {
     ["role", function () { return pki.attrcert.sign(spec({ attributes: { role: { roleName: { uniformResourceIdentifier: "urn:r" }, rolename: 1 } } }), aaOf(aa)); }, /rolename/],
     ["clearance", function () { return pki.attrcert.sign(spec({ attributes: { clearance: { policyId: "2.5.29.32.0", classlist: ["secret"] } } }), aaOf(aa)); }, /classlist/],
     ["securityCategory", function () { return pki.attrcert.sign(spec({ attributes: { clearance: { policyId: "2.5.29.32.0", securityCategories: [{ type: "2.16.840.1.101.2.1.8.1", value: pki.asn1.build.utf8("N"), critical: true }] } } }), aaOf(aa)); }, /critical/],
-    ["group (IetfAttrSyntax)", function () { return pki.attrcert.sign(spec({ attributes: { group: { values: [{ string: "g" }], policyAuthorty: { directoryName: "CN=PA" } } } }), aaOf(aa)); }, /policyAuthorty/],
+    ["group (IetfAttrSyntax)", function () { return pki.attrcert.sign(spec({ attributes: { group: { values: [{ string: "g" }], policyAuthorty: { directoryName: "PA" } } } }), aaOf(aa)); }, /policyAuthorty/],
     ["IetfAttrSyntax value", function () { return pki.attrcert.sign(spec({ attributes: { group: { values: [{ string: "g", encoding: "utf8" }] } } }), aaOf(aa)); }, /encoding/],
     ["authenticationInfo (SvceAuthInfo)", function () { return pki.attrcert.sign(spec({ attributes: { authenticationInfo: { service: { dNSName: "s" }, ident: { dNSName: "i" }, authinfo: Buffer.from("x") } } }), aaOf(aa)); }, /authinfo/],
     ["aaControls", function () { return pki.attrcert.sign(spec({ extensions: { aaControls: { pathLenConstraint: 1, permittedAttr: ["role"] } } }), aaOf(aa)); }, /permittedAttr/],
     ["target entry", function () { return pki.attrcert.sign(spec({ extensions: { targetInformation: [{ targetName: { dNSName: "t.example" }, targetGroupName: 1 }] } }), aaOf(aa)); }, /targetGroupName/],
     ["objectDigestInfo", function () { return pki.attrcert.sign(spec({ holder: { objectDigestInfo: { digestedObjectType: "publicKey", digestAlgorithm: "sha256", objectDigest: Buffer.alloc(32, 1), otherObjectTypeId: "1.2.3" } } }), aaOf(aa)); }, /otherObjectTypeId/],
-    ["baseCertificateID", function () { return pki.attrcert.sign(spec({ holder: { baseCertificateID: { issuer: [{ directoryName: "CN=CA" }], serial: 7n, issuerUid: Buffer.from([1]) } } }), aaOf(aa)); }, /issuerUid/],
+    ["baseCertificateID", function () { return pki.attrcert.sign(spec({ holder: { baseCertificateID: { issuer: [{ directoryName: "CA" }], serial: 7n, issuerUid: Buffer.from([1]) } } }), aaOf(aa)); }, /issuerUid/],
   ];
   for (var i = 0; i < rows.length; i++) {
     var m = await refusal(rows[i][1]);
