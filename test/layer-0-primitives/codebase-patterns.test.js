@@ -1817,11 +1817,15 @@ function testRecordDefaultsCarryNoPrototype() {
   // client believes a server sent. An inherited `now` made a revocation deadline expire before the
   // first fetch; an inherited `max` bounded a value at zero.
   //
-  // The shape is the DEFAULT, which no rename touches: an assignment whose right-hand side ORs to an
-  // EMPTY object literal. A literal with fields in it is a different thing and is not matched, and
-  // neither is `||` to anything else. Every lib module has a null-prototype record in scope, either
-  // through the guard-intrinsic captures or through a load-time capture of its own, so the fix is the
-  // expression the module already uses elsewhere.
+  // The shape is the DEFAULT itself, in EVERY position, which no rename touches: an `||` whose right
+  // side is an EMPTY object literal. Matching only an assignment was the first version of this check
+  // and it was wrong: the same default appears as a call argument (`f(opts.mac || {})`), inside a
+  // parenthesized member read (`(headers || {})["content-type"]`), and in a chain
+  // (`header.jwk || opts.jwk || {}`), and the record it builds inherits in all of them. A literal
+  // with fields in it is a different thing and is not matched, and neither is `||` to anything else.
+  // Every lib module has a null-prototype record in scope, either through the guard-intrinsic
+  // captures or through a load-time capture of its own, so the fix is the expression the module
+  // already uses elsewhere.
   var bad = [];
   _libFiles().forEach(function (f) {
     var src = fs.readFileSync(f, "utf8");
@@ -1829,7 +1833,7 @@ function testRecordDefaultsCarryNoPrototype() {
     var body = _stripCommentsAndLiterals(src);
     var lines = _lines(body);
     for (var i = 0; i < lines.length; i++) {
-      if (/=\s*[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\s*\|\|\s*\{\s*\}/.test(lines[i])) {
+      if (/\|\|\s*\{\s*\}/.test(lines[i])) {
         bad.push({ file: rel, line: i + 1,
           content: "a record defaulted to an empty object literal reads every omitted field off " +
             "`Object.prototype` -- default it to a null-prototype record instead, with the create " +
