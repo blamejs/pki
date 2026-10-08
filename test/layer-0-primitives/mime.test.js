@@ -122,6 +122,17 @@ function run() {
     "text/plain; charset=us-ascii; charset=utf-8",
     "text/plain; hp; hp=\"clear\"",
     "text/plain; CHARSET=us-ascii; charset=utf-8",
+    /* RFC 2231 sec. 3 and sec. 4 give a parameter two further spellings, `name*` for an extended
+       value and `name*0` / `name*1` for a continuation, and sec. 7 makes them the same logical
+       parameter. This reader does not assemble either, so a reader that does takes a different
+       value: measured, `boundary*=us-ascii''DECOY; boundary=REAL` verified while an RFC 2231 reader
+       would split the body on DECOY. The duplicate check compares the base attribute for that
+       reason. */
+    "multipart/mixed; boundary*=us-ascii''DECOY; boundary=\"REAL\"",
+    "multipart/mixed; boundary=\"REAL\"; boundary*=us-ascii''DECOY",
+    "multipart/mixed; boundary*0=DE; boundary*1=COY",
+    "multipart/mixed; boundary*0*=us-ascii''DE; boundary*1=COY",
+    "multipart/mixed; BOUNDARY*=us-ascii''DECOY; boundary=\"REAL\"",
   ];
   var refusedEvery = true, acceptedShape = null;
   for (var r = 0; r < repeated.length; r++) {
@@ -185,6 +196,17 @@ function run() {
   check("43c. resolving that repeated field to one value is refused",
     fault(function () { repeatable.header("Received"); }) === "mime/bad-entity" &&
     repeatable.header("Content-Type") === "text/plain");
+  // CONTROL: two RFC 2231 spellings of DIFFERENT base attributes are not a repeat, and a lone
+  // extended spelling is one occurrence, so the rule reads the base and not the asterisk.
+  var distinctBases = mime.parse(Buffer.from(
+    "Content-Type: multipart/mixed; charset*=us-ascii''x; boundary=\"REAL\"\r\n\r\n" +
+    "--REAL\r\nContent-Type: text/plain\r\n\r\nbody\r\n--REAL--\r\n", "latin1"), E, "mime/bad-entity");
+  check("42e. CONTROL distinct base attributes, one spelled RFC 2231, still parse",
+    distinctBases.contentType.params.boundary === "REAL" &&
+    distinctBases.contentType.params["charset*"] === "us-ascii''x");
+  check("42f. CONTROL a lone extended spelling is one occurrence, not a repeat",
+    mime.parse(Buffer.from("Content-Type: text/plain; charset*=us-ascii''x\r\n\r\ny", "latin1"), E, "mime/bad-entity")
+      .contentType.params["charset*"] === "us-ascii''x");
   // CONTROL: a distinct field whose name merely contains another's is not an occurrence of it.
   check("43d. CONTROL a prefixed field name is not an occurrence of the field it contains",
     mime.parse(Buffer.from("Content-Type: text/plain\r\nX-Content-Type: text/html\r\n\r\nx", "latin1"),

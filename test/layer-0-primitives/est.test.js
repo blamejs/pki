@@ -343,6 +343,20 @@ function testServerKeygen() {
     okParts.length === 1 && okParts[0].contentType === "application/pkcs8" &&
     okParts[0].headers["content-transfer-encoding"] === "base64");
   var oneBodyPart = "--bnd\r\nContent-Type: text/plain\r\n\r\nx\r\n--bnd--\r\n";
+  /* RFC 2231 sec. 3 and sec. 4 spell one parameter three ways, and sec. 7 makes them the same
+     logical parameter. This reader assembles neither the extended nor the continued form, so a
+     reader that does splits the body somewhere else: measured, `boundary*=us-ascii''DECOY;
+     boundary=REAL` split on REAL and was accepted. */
+  check("46p. an RFC 2231 spelling beside the plain one is a repeat, in either order",
+    code(function () { pki.est.splitMultipartMixed(Buffer.from(oneBodyPart, "latin1"), "multipart/mixed; boundary*=us-ascii''DECOY; boundary=\"bnd\""); })
+      === "est/bad-multipart" &&
+    code(function () { pki.est.splitMultipartMixed(Buffer.from(oneBodyPart, "latin1"), "multipart/mixed; boundary=\"bnd\"; boundary*=us-ascii''DECOY"); })
+      === "est/bad-multipart" &&
+    code(function () { pki.est.splitMultipartMixed(Buffer.from(oneBodyPart, "latin1"), "multipart/mixed; boundary*0=b; boundary*1=nd"); })
+      === "est/bad-multipart");
+  // CONTROL: a different base attribute spelled RFC 2231 is not a repeat of the boundary.
+  check("46p. CONTROL an RFC 2231 spelling of ANOTHER attribute still splits",
+    pki.est.splitMultipartMixed(Buffer.from(oneBodyPart, "latin1"), "multipart/mixed; charset*=us-ascii''x; boundary=\"bnd\"").length === 1);
   check("46m. a bare parameter name beside a valued one is a repeat, in either order",
     code(function () { pki.est.splitMultipartMixed(Buffer.from(oneBodyPart, "latin1"), 'multipart/mixed; boundary; boundary="bnd"'); })
       === "est/bad-multipart" &&
