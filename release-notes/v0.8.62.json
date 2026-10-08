@@ -1,6 +1,6 @@
 {
   "version": "0.8.62",
-  "date": "2026-10-07",
+  "date": "2026-10-08",
   "headline": "Give every record the toolkit builds for an omitted argument no prototype, so a field the caller left out is absent rather than inherited.",
   "summary": "A default record written as an empty object literal has `Object.prototype`, so every field the caller omitted was read off the prototype chain. What those fields decide is the point: the clock a revocation deadline is measured against, the bound a decoded value is held to, the key and certificate a signer signs with, and the status and body a client believes a server sent. One route was reachable and is fixed at the root: a revocation deadline took its clock from an inherited `now`, which made the deadline expire before the first fetch, so a revocation check could be skipped with nothing in the verdict saying so. The rest were already refused by checks put there for other reasons, by the door that reports an unknown option, the one that refuses a field supplied through an accessor, and the copy depth cap, which means they returned a refusal where an operator expected a signature. All 117 such records across 40 modules now have no prototype, and a static check refuses a new one written anywhere in the library.",
   "sections": {

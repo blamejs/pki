@@ -4,7 +4,7 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.8.62 — 2026-10-07
+## v0.8.62 — 2026-10-08
 
 Give every record the toolkit builds for an omitted argument no prototype, so a field the caller left out is absent rather than inherited.
 
