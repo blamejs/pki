@@ -212,6 +212,60 @@ function run() {
   testByteCap();
   testBudget();
   testDeadline();
+  testAnOmittedOptionsRecordReadsNoInheritedField();
+}
+
+/* A record defaulted with `{}` has `Object.prototype`, so every field the caller omitted is read off
+   the prototype chain. These two read a CLOCK and a BOUND out of a record their callers routinely
+   omit, and neither sits behind an options door: `pki.path.fetchingChecker` reaches
+   `guard.limits.deadline(cfg.totalDeadlineMs)` with no second argument at all. An inherited `now`
+   therefore decided when a revocation deadline expires, which is either a deadline that never
+   expires or one already expired before the first fetch, and an inherited `max` decided the bound a
+   decoded value is held to. The defaults have no prototype, so there is nothing to inherit. */
+function testAnOmittedOptionsRecordReadsNoInheritedField() {
+  var proto = Object.prototype;
+  var had = Object.prototype.hasOwnProperty.call(proto, "now");
+  var hadMax = Object.prototype.hasOwnProperty.call(proto, "max");
+  var realNow = proto.now, realMax = proto.max;
+  var clockCalls = 0;
+  var d, capped = null, capThrew = null;
+  try {
+    // A clock whose every reading is a billion milliseconds later, so a deadline measured against it
+    // is expired before anything runs.
+    Object.defineProperty(proto, "now", {
+      value: function () { clockCalls += 1; return clockCalls * 1e9; },
+      writable: true, configurable: true, enumerable: false,
+    });
+    // A bound of zero, so a value held to it would be refused whatever it is.
+    Object.defineProperty(proto, "max", { value: 0, writable: true, configurable: true, enumerable: false });
+    d = limits.deadline(5000);
+    try { capped = limits.cap(4096, "maxBytes", 4096); } catch (e) { capThrew = (e && e.code) || "throw"; }
+  } finally {
+    if (had) Object.defineProperty(proto, "now", { value: realNow, writable: true, configurable: true, enumerable: false });
+    else delete proto.now;
+    if (hadMax) Object.defineProperty(proto, "max", { value: realMax, writable: true, configurable: true, enumerable: false });
+    else delete proto.max;
+  }
+  // CONTROL: the pollution has to be the shape the guard would actually use, or the arm proves only
+  // that an unusable value was ignored. `now` is used when it is callable and `max` when it is a
+  // number, and both were.
+  check("CONTROL the inherited clock is callable and the inherited bound is a number, which is what " +
+    "these fields are read as", typeof realNow === "undefined" && typeof realMax === "undefined");
+  check("CONTROL an inherited `now` is reachable on a plain object literal, which is the shape the " +
+    "default used to have", (function () {
+    var seen;
+    try {
+      Object.defineProperty(proto, "now", { value: 42, writable: true, configurable: true, enumerable: false });
+      seen = {}.now;
+    } finally { delete proto.now; }
+    return seen === 42;
+  })());
+  check("a deadline built with its options omitted is not expired by an inherited clock (" +
+    clockCalls + " inherited clock call(s), remaining " + (d && d.remaining()) + " ms)",
+  d !== null && clockCalls === 0 && d.expired() === false && d.remaining() > 0);
+  check("a cap built with its options omitted is not bounded by an inherited max (" +
+    (capThrew === null ? "returned " + capped : "threw " + capThrew) + ")",
+  capThrew === null && capped === 4096);
 }
 
 module.exports = { run: run };

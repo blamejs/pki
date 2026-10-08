@@ -4,6 +4,25 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.62 — 2026-10-07
+
+Give every record the toolkit builds for an omitted argument no prototype, so a field the caller left out is absent rather than inherited.
+
+### Changed
+
+- A record the toolkit defaults for an omitted argument no longer inherits from `Object.prototype`. A caller passing its own object is unaffected: only the record built when the argument is absent changed, and a field read off it that the caller did not supply now reads as absent.
+
+### Fixed
+
+- A revocation deadline is measured against the toolkit's own clock. `pki.path.fetchingChecker` builds its deadline with no options record, so the record it defaulted carried `Object.prototype` and the clock came from an inherited `now`: one reporting a time far ahead made the deadline expired before the first fetch, and the fetch that would have retrieved a CRL or an OCSP response was never made. The same record supplies the bound a decoded size is held to, where an inherited `max` of zero refuses every value.
+- A signer signs with the identity its caller named. `pki.x509.sign`, `pki.crl.sign` and `pki.attrcert.sign` default an omitted issuer record, so an inherited `cert`, `key`, `name` or `publicKey` was read as if supplied. Reaching the read required getting past the spec's unknown-field door and its copy depth cap, both of which refused it, so the effect was a refused signing call rather than a signature under another identity. The record has no prototype now, which is where the answer belongs.
+- A client believes what a server actually sent. `pki.acme`, `pki.cmp`, `pki.ct`, `pki.est`, `pki.scep` and the revocation fetcher each default an omitted response record, where an inherited `status`, `body` or `headers` stands in for what arrived. The verbs that take a response through an options door already refused those by name; the record itself no longer carries them.
+- The records every other verb defaults are the same shape and are converted with them: the options records of `pki.asn1.decode`, `pki.cbor.decode`, the schema engine and the shared PKIX sub-schemas, the signer and countersigner records in `pki.cms.sign`, the bag encryption record in `pki.pkcs12.build`, the message-imprint records in `pki.tsp.sign`, the header records in `pki.est`, the request and defaults records in the HTTP transport, and the algorithm record a signature scheme reads off a key.
+
+### Documentation
+
+- `THREAT-MODEL.md` states the boundary the toolkit's use of captured operations rests on. The operations a check decides through are copied from the runtime while the modules load, which is what makes a later replacement unable to change a verdict, and that also means code running before the first `require` of the package can replace an operation before the copy is taken. Load the package before running untrusted code in the same realm.
+
 ## v0.8.61 — 2026-10-07
 
 Take every cryptographic operation, and every question about which key a key is, through an operation captured when the toolkit loads, so a replacement installed afterwards cannot decide a secret, a tag, a key type or a verdict.

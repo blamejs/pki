@@ -1808,6 +1808,39 @@ function testAlgorithmLookupNoDefault() {
   _report("algorithm-table lookups throw on a miss (no OR-defaults, no weak literal presets surviving unknown OIDs)", bad);
 }
 
+function testRecordDefaultsCarryNoPrototype() {
+  // class: record-default-inherits-object-prototype
+  // A record defaulted with an empty object literal has `Object.prototype`, so every field the
+  // caller omitted is read off the prototype chain. `opts = opts || {}` is the common spelling, and
+  // the fields then read out of it decide things: a clock a deadline is measured against, a bound a
+  // decoded value is held to, the key and certificate a signer signs with, the status and body a
+  // client believes a server sent. An inherited `now` made a revocation deadline expire before the
+  // first fetch; an inherited `max` bounded a value at zero.
+  //
+  // The shape is the DEFAULT, which no rename touches: an assignment whose right-hand side ORs to an
+  // EMPTY object literal. A literal with fields in it is a different thing and is not matched, and
+  // neither is `||` to anything else. Every lib module has a null-prototype record in scope, either
+  // through the guard-intrinsic captures or through a load-time capture of its own, so the fix is the
+  // expression the module already uses elsewhere.
+  var bad = [];
+  _libFiles().forEach(function (f) {
+    var src = fs.readFileSync(f, "utf8");
+    var rel = path.relative(REPO_ROOT, f);
+    var body = _stripCommentsAndLiterals(src);
+    var lines = _lines(body);
+    for (var i = 0; i < lines.length; i++) {
+      if (/=\s*[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\s*\|\|\s*\{\s*\}/.test(lines[i])) {
+        bad.push({ file: rel, line: i + 1,
+          content: "a record defaulted to an empty object literal reads every omitted field off " +
+            "`Object.prototype` -- default it to a null-prototype record instead, with the create " +
+            "expression this module already uses" });
+      }
+    }
+  });
+  bad = _filterMarkers(bad, "record-default-inherits-object-prototype");
+  _report("a record defaulted for an absent argument carries no prototype (no `|| {}` defaults)", bad);
+}
+
 function testRegistryTablesCarryNoPrototype() {
   // class: registry-table-inherits-object-prototype
   // A module-level lookup table declared as a plain object literal inherits Object.prototype, so
@@ -5549,6 +5582,7 @@ function run() {
   testWorkflowScanFailureMasked();
   testSharedLeafOptionScope();
   testAlgorithmLookupNoDefault();
+  testRecordDefaultsCarryNoPrototype();
   testRegistryTablesCarryNoPrototype();
   testNumberNarrowsUnboundedInteger();
   testNanDateComparisonUnguarded();

@@ -105,6 +105,14 @@ a signed message cannot nominate its own verification algorithm.
   `rejectUnauthorized` on, and floors TLS at 1.2. Protecting PKI messages
   an application moves over its own channels is the operator's
   responsibility.
+- **Code that runs before this package is loaded.** The toolkit takes its
+  operations from the runtime once, while its modules load, and uses those
+  copies afterwards. That is what makes a later replacement of a prototype
+  method, a global, a module property or an accessor unable to change what
+  a check decides. It also sets the boundary: code that runs earlier than
+  the first `require` of the package can replace an operation before the
+  copy is taken, and the copy is then the replacement. Load the package
+  before running untrusted code in the same realm.
 - **Perfect side-channel resistance in a JIT.** Cryptographic operations
   run on the platform (`node:crypto` and OpenSSL), so constant-time
   behavior is inherited from the runtime. Timing resistance of the

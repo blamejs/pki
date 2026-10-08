@@ -1532,7 +1532,14 @@ security-only patches after the next major releases.
   a character's code carry no prototype, since such a table holds an entry per
   character it allows and a read at any other code would otherwise answer from the
   array prototype, and the certificate-policy tree is keyed in a record with no
-  prototype for the same reason.
+  prototype for the same reason. A record the toolkit builds because an argument was OMITTED is
+  closed with them: written as an empty object literal it carries `Object.prototype`, so every field
+  the caller left out was read off the prototype chain, and those fields decide a clock, a bound, a
+  signing identity and what a client believes a server sent. One such read was reachable: a
+  revocation deadline took its clock from an inherited `now`, which expired the deadline before the
+  first fetch and skipped the check. The others were refused first by the unknown-option door, the
+  accessor door and the copy depth cap, so they returned a refusal rather than a wrong answer. Every
+  one of them now defaults to a record with no prototype, and a static check refuses a new one.
   The platform's own crypto is reached the same way. `node:crypto` is an ordinary
   module object, the objects it returns carry their methods on ordinary
   prototypes, and a key answers which key it is through an accessor, so every one
