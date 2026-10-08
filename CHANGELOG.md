@@ -4,6 +4,30 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.9.0 — 2026-10-08
+
+Import any namespace by name from an ESM caller, and give every record the toolkit builds for an omitted argument no prototype.
+
+### Added
+
+- Every namespace is an ESM named import. `import { x509, cms, path, schema, lint, webcrypto } from "@blamejs/pki"` resolves, as does any of the other 41; `import pki from "@blamejs/pki"` is unchanged and gives the same object `require` does. The package remains CommonJS, runs on Node LTS as shipped, and adds no build step and no transpilation: every value in the export object is a bare identifier bound above it, which is the shape Node's export reader can follow. A `.d.ts` generated from the source comment blocks is still to come.
+
+### Changed
+
+- A record the toolkit defaults for an omitted argument no longer inherits from `Object.prototype`. A caller passing its own object is unaffected: only the record built when the argument is absent changed, and a field read off it that the caller did not supply now reads as absent.
+
+### Fixed
+
+- A revocation deadline is measured against the toolkit's own clock. `pki.path.fetchingChecker` builds its deadline with no options record, so the record it defaulted carried `Object.prototype` and the clock came from an inherited `now`: one reporting a time far ahead made the deadline expired before the first fetch, and the fetch that would have retrieved a CRL or an OCSP response was never made. The same record supplies the bound a decoded size is held to, where an inherited `max` of zero refuses every value.
+- `pki.inspect.asn1`, `pki.inspect.certificate` and the other report verbs are held to the caps their caller passed. With the options argument omitted the record they defaulted carried `Object.prototype`, so an inherited `maxBytes` became the cap the render was held to and a report that renders normally came back refused.
+- A signer signs with the identity its caller named. `pki.x509.sign`, `pki.crl.sign` and `pki.attrcert.sign` default an omitted issuer or extension record, so an inherited `cert`, `key`, `name`, `publicKey`, `basicConstraints` or `keyUsage` was read as if supplied. Reaching the read required getting past the spec's unknown-field door and its copy depth cap, both of which refused it, so the effect was a refused signing call rather than a signature under another identity. The record has no prototype now, which is where the answer belongs.
+- A client believes what a server actually sent. `pki.acme`, `pki.cmp`, `pki.ct`, `pki.est`, `pki.scep` and the revocation fetcher each default an omitted response record, where an inherited `status`, `body` or `headers` stands in for what arrived. The content type a CMP transfer and a CT fetch check, and the declared content length the HTTP transport enforces its response cap against, were each read through a header record defaulted the same way.
+- The records every other verb defaults are the same shape and are converted with them: the options records of `pki.asn1.decode`, `pki.cbor.decode`, the schema engine and the shared PKIX sub-schemas, the signer and countersigner records in `pki.cms.sign`, the MAC and bag encryption records in `pki.pkcs12.build`, the message-imprint records in `pki.tsp.sign`, the header records in `pki.est`, the request and defaults records in the HTTP transport, the setup records in `pki.hpke`, the client option records in `pki.ct`, the certificate-transparency policy `pki.path.validate` passes on, the fallback key in `pki.jose`, the algorithm records the WebAuthn verifiers read a name off, and the algorithm record a signature scheme reads off a key.
+
+### Documentation
+
+- `THREAT-MODEL.md` states the boundary the toolkit's use of captured operations rests on. The operations a check decides through are copied from the runtime while the modules load, which is what makes a later replacement unable to change a verdict, and that also means code running before the first `require` of the package can replace an operation before the copy is taken. Load the package before running untrusted code in the same realm.
+
 ## v0.8.61 — 2026-10-07
 
 Take every cryptographic operation, and every question about which key a key is, through an operation captured when the toolkit loads, so a replacement installed afterwards cannot decide a secret, a tag, a key type or a verdict.

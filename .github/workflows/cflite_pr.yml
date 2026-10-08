@@ -153,14 +153,34 @@ jobs:
           harness="fuzz/${{ matrix.target }}.fuzz.js"
           corpus="fuzz/${{ matrix.target }}_seed_corpus"
           echo "::group::jazzer fuzz $harness ($FUZZ_TIME s)"
+          # `composite-kem` hit `out-of-memory (used: 2093Mb; limit: 2048Mb)` at 458k iterations and
+          # `ct-log-list-sig` 2166Mb, both on heads that could not have caused it, and a re-run of an
+          # identical commit passed. MEASURED, in this order:
+          #   - the verbs themselves retain 0.31 MB per 1000 iterations and then flatten (86 -> 105 MB
+          #     over 60k iterations in plain node), so there is no per-iteration retention to remove;
+          #   - the same target under jazzer for the same 60 seconds creeps 413 -> 533 MB here against
+          #     649 -> 2093 MB in CI, which is the same code and duration for twelve times the growth.
+          # What differs is the allocator: glibc keeps freed memory in per-thread arenas, so process
+          # RSS climbs monotonically under a high-churn workload that leaks nothing, and
+          # -rss_limit_mb measures exactly that. Capping the arenas addresses the growth without
+          # touching the limit, which is the one that still finds a parser allocating from an
+          # attacker's length field. Raising the limit alone would trade that sensitivity away, so the
+          # raise here is small and the cap is doing the work.
+          #
+          # -malloc_limit_mb is NOT set, and the reason is measured rather than assumed: it is inert
+          # under jazzer.js. A target allocating a single 64 MB buffer per iteration ran 200 iterations
+          # under -malloc_limit_mb=16 without firing, because libFuzzer's allocator hooks never see a
+          # V8 allocation. -rss_limit_mb is the only memory limit that works here.
+          export MALLOC_ARENA_MAX=2
+          FUZZ_LIMITS="-rss_limit_mb=3072"
           # Pass the seed corpus as the first positional arg when present;
           # libFuzzer treats directory args as corpus inputs.
           if [ -d "$corpus" ]; then
             npx --prefix fuzz jazzer "$harness" "$corpus" -- \
-              -max_total_time="$FUZZ_TIME" -error_exitcode=1 -timeout=30
+              -max_total_time="$FUZZ_TIME" -error_exitcode=1 -timeout=30 $FUZZ_LIMITS
           else
             npx --prefix fuzz jazzer "$harness" -- \
-              -max_total_time="$FUZZ_TIME" -error_exitcode=1 -timeout=30
+              -max_total_time="$FUZZ_TIME" -error_exitcode=1 -timeout=30 $FUZZ_LIMITS
           fi
           echo "::endgroup::"
 

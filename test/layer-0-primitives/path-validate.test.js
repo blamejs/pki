@@ -7759,18 +7759,31 @@ async function testTlsFeatureChainConstraint() {
     !!rowOf(j8, 2) && rowOf(j8, 2).ok === false);
 
   // J13: both lists come off untrusted certificates and the syntax bounds neither, so a pairwise
-  // comparison is work an issuer and a subject choose together. One large input, not a ratio, and the
-  // SIZE is chosen where the two forms actually separate: measured in isolation on the same bigint
-  // lists, the pairwise form runs 121 ms at 10000 per side, 484 ms at 20000 and about 4.3 s at 60000,
-  // against 1 to 6 ms for the set form at any of them. 10000 would therefore have passed a bound a
-  // slow machine could also meet, so this uses 60000 and a bound below the pairwise figure.
+  // comparison is work an issuer and a subject choose together. One large input and an absolute
+  // bound, never a ratio between two timings, which measures the machine as much as the code.
+  //
+  // THE SIZE IS CHOSEN SO THE WINDOW SURVIVES A SLOW MACHINE, which 60000 did not. Four figures,
+  // measured. Through this path, which encodes and parses the features before comparing them, the
+  // set form runs 287 ms at 60000 per side and 657 ms at 120000. The comparison itself, timed in
+  // isolation on the same lists, is 5 ms and 18 ms for the set form against 2486 ms and 11974 ms for
+  // the pairwise form. At 60000 the pairwise term (2486) is barely above the whole set-form run
+  // (287), so a bound between them left no room for a loaded runner: this vector failed a release at
+  // 2512 ms against a bound of 2500 on a runner 9 times slower than the machine the bound was
+  // measured on, while the same commit passed twice elsewhere. At 120000 the pairwise term is 18
+  // times the entire set-form run, so the window is 5900 ms (the set form at 9 times slower) to
+  // 12600 ms (the pairwise form at full speed), and 8500 sits between them with about 45% either way.
+  //
+  // THE BOUND IS PROVEN TO DISCRIMINATE WITHOUT RESTORING THE SLOW FORM: the pairwise comparison
+  // alone, over the same 120000-element lists, takes 11974 ms, which exceeds this bound before any
+  // encoding or parsing is counted. A mutation of the shipped comparison would show the same thing
+  // and would mean leaving a quadratic scan in a validation path to do it.
   var many = [];
-  for (var mi = 0; mi < 60000; mi++) many.push(mi);
+  for (var mi = 0; mi < 120000; mi++) many.push(mi);
   var bigStart = Date.now();
   var j13 = await chain(many, many);
   var bigMs = Date.now() - bigStart;
-  check("J13. a 60000-feature set on both sides compares in linear time (" + bigMs + " ms)",
-    j13.valid === true && bigMs < 2500);
+  check("J13. a 120000-feature set on both sides compares in linear time (" + bigMs + " ms)",
+    j13.valid === true && bigMs < 8500);
 
   // J12: adding this rule must not delete the unknown-critical verdict a critical one draws.
   var critCa = await mkCert({ subject: "TF CA", issuer: "TF Anchor", signWith: "ed25519",
