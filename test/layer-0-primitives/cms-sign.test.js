@@ -659,11 +659,27 @@ async function testBadInput() {
      door that REFUSES, not only at a reader that copies: `pki.smime.sign` snapshots a descriptor
      before handing it on, so excluding the machinery there alone left a caller going straight to
      `pki.cms.sign` with the same callable refused for `length`. Every door that takes a descriptor
-     is driven here, with the own `arguments` and `caller` a non-strict function carries on the
-     engine floor minted on, so the vector holds on either engine. */
-  function callableSigner() {
-    var fn = function () { return 0; };
-    fn.cert = rsa.cert; fn.key = rsa.key;
+     is driven here, against every callable kind.
+
+     The shapes differ by where the function machinery lives, and a vector written on one says
+     nothing about the other. A PLAIN strict function -- what every `"use strict"` file and every ES
+     module produces, and what this file produces -- owns neither `arguments` nor `caller`, and
+     `Function.prototype` carries both as the restricted accessors, so a check that walks the
+     prototype chain finds them there. On the Node 24.21.0 floor a non-strict function owns both
+     outright, which is the shape minted below. Measured: the minted shape passed while the plain
+     one was refused for `arguments` at both direct `pki.cms` doors, and the first version of this
+     vector minted and so never asked.
+
+     The KINDS do not share a prototype either: an async function, a generator and an async
+     generator each sit on their own intrinsic prototype carrying `Symbol.toStringTag`, which an
+     ordinary function's chain never reaches. Measured: all three were refused at both direct
+     `pki.cms` doors for `Symbol(Symbol.toStringTag)` while an ordinary function passed, and the
+     version of this vector that crossed only the two SHAPES with the doors never asked. So the
+     matrix is every kind crossed with every door, in both directions. */
+  function fitted(fn) { fn.cert = rsa.cert; fn.key = rsa.key; return fn; }
+  function plainSigner() { return fitted(function () { return 0; }); }
+  function floorShapedSigner() {
+    var fn = plainSigner();
     ["arguments", "caller"].forEach(function (n) {
       Object.defineProperty(fn, n, { value: null, writable: false, enumerable: false, configurable: true });
     });
@@ -676,22 +692,67 @@ async function testBadInput() {
     ["pki.cms.countersign", function (d) { return pki.cms.countersign(toCounterCallable, d); }],
     ["pki.smime.sign", function (d) { return pki.smime.sign(CONTENT, d, {}); }],
   ];
+  var CALLABLE_KINDS = [
+    ["plain strict", plainSigner],
+    ["engine-floor own arguments/caller", floorShapedSigner],
+    ["generator", function () { return fitted(function* () { yield 1; }); }],
+    ["async", function () { return fitted(async function () { return 1; }); }],
+    ["async generator", function () { return fitted(async function* () { yield 1; }); }],
+    ["bound", function () { return fitted((function bindMe() {}).bind(null)); }],
+    ["class", function () { return fitted(class Plain {}); }],
+    ["derived class", function () { return fitted(class Derived extends (class Base {}) {}); }],
+    ["method shorthand", function () { return fitted(({ m: function () {} }).m); }],
+  ];
   var doorsRefused = [], doorsAcceptedTypo = [];
   for (var dk = 0; dk < CALLABLE_DOORS.length; dk++) {
-    var door = CALLABLE_DOORS[dk][1];
-    try { await door(callableSigner()); }
-    catch (de) { doorsRefused.push(CALLABLE_DOORS[dk][0] + " -> " + (de && de.code)); }
-    var typoed = callableSigner();
-    typoed.digestAlgoritm = "sha384";
-    var typoCode = null;
-    try { await door(typoed); } catch (te) { typoCode = te && te.code; }
-    if (typoCode !== "cms/bad-input") doorsAcceptedTypo.push(CALLABLE_DOORS[dk][0] + " -> " + typoCode);
+    for (var sh = 0; sh < CALLABLE_KINDS.length; sh++) {
+      var door = CALLABLE_DOORS[dk][1], mintShape = CALLABLE_KINDS[sh][1];
+      var where = CALLABLE_DOORS[dk][0] + " / " + CALLABLE_KINDS[sh][0];
+      try { await door(mintShape()); }
+      catch (de) { doorsRefused.push(where + " -> " + (de && de.code) + " " + String(de && de.message).slice(0, 44)); }
+      var typoed = mintShape();
+      typoed.digestAlgoritm = "sha384";
+      var typoCode = null;
+      try { await door(typoed); } catch (te) { typoCode = te && te.code; }
+      if (typoCode !== "cms/bad-input") doorsAcceptedTypo.push(where + " -> " + typoCode);
+    }
   }
-  check("every door that takes a signer descriptor reads a callable one" +
+  check("every door that takes a signer descriptor reads a callable one, of every kind" +
     (doorsRefused.length ? " [refused: " + doorsRefused.join("; ") + "]" : ""), doorsRefused.length === 0);
   check("CONTROL and every one of them still refuses a misspelled field on it" +
     (doorsAcceptedTypo.length ? " [missed: " + doorsAcceptedTypo.join("; ") + "]" : ""),
   doorsAcceptedTypo.length === 0);
+  /* What the exemption costs, measured rather than argued. A caller can define an own
+     non-enumerable property under a machinery name, which is byte-for-byte the shape the engine
+     floor creates, so there is no line to draw between the two and the exempted one is ignored.
+     None of those names is a descriptor field, and this proves the ignoring stops there: a real
+     `digestAlgorithm` beside them is still read and still carried out, and a misspelled one is
+     still refused. A function Proxy does not reach any of it; the door refuses one outright.
+
+     `then` is the narrower case and is included to pin which shape it admits: the non-thenable mask
+     `guard.verdict.shield` leaves is `then: undefined`, and that is what passes. An own
+     `then: 42` is a field the caller wrote and is refused by name, which the next vector asserts. */
+  var beside = floorShapedSigner();
+  Object.defineProperty(beside, "caller", { value: 42, writable: true, enumerable: false, configurable: true });
+  Object.defineProperty(beside, "then", { value: undefined, writable: true, enumerable: false, configurable: true });
+  beside.digestAlgorithm = "sha384";
+  var besideDer = await pki.cms.sign(CONTENT, beside);
+  check("an exempted name does not stop a real field beside it being carried out",
+    pki.schema.cms.parse(besideDer).signerInfos[0].digestAlgorithm.name === "sha384");
+  await rejects("a misspelled field beside an exempted name", function () {
+    var fn = floorShapedSigner();
+    Object.defineProperty(fn, "caller", { value: 42, writable: true, enumerable: false, configurable: true });
+    fn.digestAlgoritm = "sha384";
+    return pki.cms.sign(CONTENT, fn);
+  }, "cms/bad-input");
+  await rejects("an own `then` holding a value is a field the caller wrote, not the shield's mask", function () {
+    var fn = floorShapedSigner();
+    Object.defineProperty(fn, "then", { value: 42, writable: true, enumerable: false, configurable: true });
+    return pki.cms.sign(CONTENT, fn);
+  }, "cms/bad-input");
+  await rejects("a function Proxy is refused as a descriptor rather than interrogated", function () {
+    return pki.cms.sign(CONTENT, new Proxy(plainSigner(), {}));
+  }, "cms/bad-input");
   // CONTROL: a recognized field supplied only by the prototype is both accepted and carried out, so
   // the gate and the reader agree about which fields they can see.
   var inherited384 = await pki.cms.sign(CONTENT, [(function () {

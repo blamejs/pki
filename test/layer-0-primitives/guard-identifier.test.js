@@ -979,6 +979,38 @@ function testOwnMachineryName() {
   check("isOwnMachineryName: an accessor under a machinery name is not machinery",
     identifier.isOwnMachineryName(accessorNamed, "name") === false);
   check("isOwnMachineryName: and deciding that did not invoke the getter", getterRuns === 0);
+
+  /* `isMachineryName` is the form a check that WALKS the prototype chain asks, and the difference
+     is not cosmetic: a PLAIN strict function -- what this file produces, what every ES module
+     produces -- owns neither `arguments` nor `caller`, and `Function.prototype` carries both as the
+     restricted accessors, so a chain walk reaches them there and the own-only form answers false.
+     Measured: that refused a plain callable signer descriptor at both direct `pki.cms` doors while
+     the engine floor's own-property shape passed. */
+  var plainFn = function () {};
+  ["arguments", "caller"].forEach(function (n) {
+    check("isOwnMachineryName: a strict function does not OWN `" + n + "`, so the own-only form says no",
+      Object.getOwnPropertyDescriptor(plainFn, n) === undefined &&
+      identifier.isOwnMachineryName(plainFn, n) === false);
+    check("isMachineryName: and the chain-walking form says yes",
+      identifier.isMachineryName(plainFn, n) === true);
+  });
+  check("isMachineryName: an owned machinery name is machinery either way",
+    identifier.isMachineryName(fn, "arguments") === true &&
+    identifier.isMachineryName(plainFn, "length") === true);
+  check("isMachineryName: a field the caller assigned is still theirs",
+    identifier.isMachineryName(fn, "digestAlgorithm") === false);
+  /* An OWN property under a machinery name is the caller's, so it stays refused by name. It takes
+     `defineProperty` to make one: assigning `fn.arguments` on a strict function reaches
+     `Function.prototype`'s restricted setter, which throws. */
+  var ownShadow = function () {};
+  Object.defineProperty(ownShadow, "arguments", {
+    value: "sha384", writable: true, enumerable: true, configurable: true,
+  });
+  check("isMachineryName: an own property under a machinery name is not machinery",
+    identifier.isMachineryName(ownShadow, "arguments") === false);
+  check("isMachineryName: a non-callable reaches no part of the callable arm",
+    identifier.isMachineryName({}, "arguments") === false &&
+    identifier.isMachineryName(plain, "caller") === false);
   check("isOwnMachineryName: an absent value answers false rather than throwing",
     identifier.isOwnMachineryName(null, "length") === false &&
     identifier.isOwnMachineryName(undefined, "length") === false);
