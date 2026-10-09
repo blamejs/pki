@@ -14,7 +14,7 @@ The toolkit has no `deprecate()`-marked surface awaiting removal.
 
 Listed newest-first.
 
-### v0.9.2 — `pki.relatedCert.verifyRequest, the pki.cms signer descriptor, and a bare name string`
+### v0.9.3 — `pki.relatedCert.verifyRequest, the pki.cms signer descriptor, and a bare name string`
 
 verifyRequest returns a verdict object instead of a bare boolean; a signer descriptor and a bare name string are both held to what the verb actually reads.
 

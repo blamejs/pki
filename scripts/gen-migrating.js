@@ -221,7 +221,7 @@ function _build() {
 //   migration:  multi-line markdown migration recipe
 var OUT_OF_BAND_BREAKS = [
   {
-    release: "v0.9.2",
+    release: "v0.9.3",
     surface: "pki.relatedCert.verifyRequest, the pki.cms signer descriptor, and a bare name string",
     summary: "verifyRequest returns a verdict object instead of a bare boolean; a signer descriptor and a bare name string are both held to what the verb actually reads.",
     migration: [
