@@ -336,15 +336,17 @@ async function testCsrAttribute() {
      window that proof needs. `null` mints one carrying no keyUsage extension at all. Each gets its
      own serial so the certID binding check has a certificate to match. */
   var kuSerial = 100;
-  async function heldWithKeyUsage(keyUsage) {
+  async function heldWithKeyUsage(keyUsage, alg) {
     kuSerial += 1;
     var opts = { cn: "KU " + (keyUsage === null ? "none" : keyUsage), serial: kuSerial };
     if (keyUsage !== null) opts.exts = [signing.keyUsageExt(keyUsage)];
-    var h = signing.makeSigner("ec-p256", opts);
+    var h = signing.makeSigner(alg || "ec-p256", opts);
     var hp = pki.schema.x509.parse(h.cert);
     var cid = { issuer: hp.issuer.bytes, serialNumber: hp.serialNumber };
     var pre = pki.relatedCert.requestSignedData({ certID: cid, requestTime: CERT_TIME });
-    var sig = crypto.sign("sha256", pre, { key: h.keyObject, dsaEncoding: "der" });
+    // An EdDSA key fixes its own digest, so naming one is the error OpenSSL reports.
+    var edwards = alg === "ed25519" || alg === "ed448";
+    var sig = crypto.sign(edwards ? null : "sha256", pre, { key: h.keyObject, dsaEncoding: "der" });
     return {
       cert: h.cert,
       fresh: FRESH,
@@ -842,16 +844,34 @@ async function testVerdictShapeAndKeyUsageGate(ctx) {
     gated.valid === false && gated.verified === true && gated.signerMaySign === false &&
     gated.code === "relatedcert/signer-may-not-sign");
 
-  // CONTROL: the two key-establishment usages RFC 9763 sec. 3.1 admits still verify.
-  var admitted = ["keyEncipherment", "keyAgreement", "digitalSignature", "nonRepudiation"];
-  var admittedEvery = true, lost = null;
-  for (var i = 0; i < admitted.length; i++) {
-    var h = await ctx.heldWithKeyUsage(admitted[i]);
+  /* WHICH establishment bit counts comes from the subject key, because sec. 3.1 admits a key
+     establishment CERTIFICATE and a bit the key's own family cannot perform does not make one.
+     Measured under the union of both bits: an EC certificate asserting only keyEncipherment, which
+     RFC 8813 sec. 3 makes a MUST NOT for id-ecPublicKey, and an RSA certificate asserting only
+     keyAgreement, which RFC 3279 sec. 2.3.1 does not list, both reported signerMaySign and a valid
+     proof. Both arms of the matrix are driven, in both directions. */
+  var USAGE_MATRIX = [
+    ["ec-p256", "keyAgreement", true], ["ec-p256", "keyEncipherment", false],
+    ["rsa", "keyEncipherment", true], ["rsa", "keyAgreement", false],
+    ["ec-p256", "digitalSignature", true], ["ec-p256", "nonRepudiation", true],
+    ["rsa", "digitalSignature", true], ["rsa", "nonRepudiation", true],
+    ["ed25519", "digitalSignature", true], ["ed25519", "keyAgreement", false],
+    ["ed25519", "keyEncipherment", false],
+  ];
+  var matrixWrong = [];
+  for (var i = 0; i < USAGE_MATRIX.length; i++) {
+    var row = USAGE_MATRIX[i];
+    var h = await ctx.heldWithKeyUsage(row[1], row[0]);
     var r = await pki.relatedCert.verifyRequest(h.rc, h.cert, h.fresh);
-    if (!(r.valid === true && r.signerMaySign === true)) { admittedEvery = false; lost = admitted[i]; }
+    var wantCode = row[2] ? undefined : "relatedcert/signer-may-not-sign";
+    if (r.valid !== row[2] || r.signerMaySign !== row[2] || r.code !== wantCode) {
+      matrixWrong.push(row[0] + "/" + row[1] + " -> valid=" + r.valid +
+        " signerMaySign=" + r.signerMaySign + " code=" + r.code);
+    }
   }
-  check("V6: CONTROL every usage RFC 9763 sec. 3.1 admits still verifies" +
-    (lost === null ? "" : " [lost " + lost + "]"), admittedEvery);
+  check("V6: an establishment usage authorizes the proof only where the subject key's own family " +
+    "performs that establishment mechanism, and a signature usage always does" +
+    (matrixWrong.length ? " [" + matrixWrong.join("; ") + "]" : ""), matrixWrong.length === 0);
   // CONTROL: a certificate carrying no keyUsage at all is unconstrained and still verifies.
   var none = await ctx.heldWithKeyUsage(null);
   var noneV = await pki.relatedCert.verifyRequest(none.rc, none.cert, none.fresh);

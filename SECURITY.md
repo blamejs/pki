@@ -1948,6 +1948,18 @@ security-only patches after the next major releases.
   the outcome it exists to prevent. The comparison now takes the rule from the
   attribute; every other attribute keeps the case-insensitive rule.
 
+- **An establishment usage that authorized a key that cannot perform it (CWE-863).**
+  `pki.relatedCert.verifyRequest` admits a key-establishment certificate's key as
+  the signer of a proof of possession, which RFC 9763 §3.1 has such a key do once.
+  It accepted either establishment bit from any key, so a certificate that is not
+  an establishment certificate under any reading authorized the proof: measured,
+  an EC certificate asserting only `keyEncipherment`, which RFC 8813 §3 makes a
+  MUST NOT for `id-ecPublicKey`, and an RSA certificate asserting only
+  `keyAgreement`, which RFC 3279 §2.3.1 does not list, both reported
+  `signerMaySign` and a valid proof. The bit is now taken against the subject
+  key's own family, from a shared table, and a family in neither column admits
+  neither bit, so a signature usage is what authorizes it.
+
 - **A request a verb accepted and did not carry out (CWE-20).** A `pki.cms` signer
   descriptor names the digest and the padding its signature is made under. A field
   the verb did not read was ignored, so `digestAlgoritm: "sha384"` signed under
