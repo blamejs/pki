@@ -45,29 +45,29 @@ async function testAlgorithms() {
   ];
   for (var i = 0; i < cases.length; i++) {
     var s = Object.assign({}, cases[i][1], cases[i][2]);
-    var p7 = await pki.cms.sign(CONTENT, s);
+    var p7 = await pki.cms.sign(CONTENT, signing.signerOf(s));
     var res = await pki.cms.verify(p7);
     check(cases[i][0] + " signs -> verifies", res.valid === true && res.signers[0].ok === true);
   }
   // a non-default digest (SHA-384) for RSA and ECDSA round-trips.
-  var r384 = await pki.cms.verify(await pki.cms.sign(CONTENT, Object.assign(makeSigner("rsa"), { digestAlgorithm: "sha384" })));
+  var r384 = await pki.cms.verify(await pki.cms.sign(CONTENT, signing.signerOf(Object.assign(makeSigner("rsa"), { digestAlgorithm: "sha384" }))));
   check("RSA + SHA-384 digest -> verifies", r384.valid === true);
   // an id-RSASSA-PSS signer certificate (a PSS-restricted RSA key) signs with RSASSA-PSS.
-  var rpssKey = await pki.cms.verify(await pki.cms.sign(CONTENT, makeSigner("rsa-pss")));
+  var rpssKey = await pki.cms.verify(await pki.cms.sign(CONTENT, signing.signerOf(makeSigner("rsa-pss"))));
   check("id-RSASSA-PSS signer cert -> signs+verifies (PSS)", rpssKey.valid === true);
   // an id-RSASSA-PSS key whose SPKI params pin SHA-384: signing honors the pinned hash (Node
   // rejects signing a SHA-384-restricted key under the SHA-256 default), so the token verifies.
-  var pinned = await pki.cms.verify(await pki.cms.sign(CONTENT, makeSigner("rsa-pss", { pssHash: "sha384" })));
+  var pinned = await pki.cms.verify(await pki.cms.sign(CONTENT, signing.signerOf(makeSigner("rsa-pss", { pssHash: "sha384" }))));
   check("id-RSASSA-PSS SHA-384-pinned key -> signs under SHA-384 + verifies", pinned.valid === true);
 }
 
 // ---- content modes: attached / detached ----
 async function testContentModes() {
   var s = makeSigner("ec-p256");
-  var attached = await pki.cms.verify(await pki.cms.sign(CONTENT, s));
+  var attached = await pki.cms.verify(await pki.cms.sign(CONTENT, signing.signerOf(s)));
   check("attached content -> verifies without opts.content", attached.valid === true);
 
-  var det = await pki.cms.sign(CONTENT, s, { detached: true });
+  var det = await pki.cms.sign(CONTENT, signing.signerOf(s), { detached: true });
   var withContent = await pki.cms.verify(det, { content: CONTENT });
   check("detached + content -> verifies", withContent.valid === true);
   await rejects("detached verified without content", function () { return pki.cms.verify(det); }, "cms/detached-content-required");
@@ -92,7 +92,7 @@ async function testContentModes() {
       },
       writable: true, configurable: true,
     });
-    hookedSig = await pki.cms.sign(CONTENT, s);
+    hookedSig = await pki.cms.sign(CONTENT, signing.signerOf(s));
   } finally { Object.defineProperty(Promise.prototype, "then", realThen); }
   var hookedVerdict = await pki.cms.verify(hookedSig);
   check("a replaced promise continuation cannot sign over a digest nothing computed (" +
@@ -106,19 +106,19 @@ async function testStreamingDetachedSign() {
   // byte-identical to the buffered one: the only thing the stream could change is the messageDigest,
   // so matching DER proves the incremental hash equals the one-shot hash. Chunk size must not matter.
   var s = makeSigner("ed25519");
-  var buffered = await pki.cms.sign(CONTENT, s, { detached: true, signingTime: false });
-  var streamed = await pki.cms.sign(_chunksOf(CONTENT, 4), s, { detached: true, signingTime: false });
+  var buffered = await pki.cms.sign(CONTENT, signing.signerOf(s), { detached: true, signingTime: false });
+  var streamed = await pki.cms.sign(_chunksOf(CONTENT, 4), signing.signerOf(s), { detached: true, signingTime: false });
   check("streaming detached sign (async iterable) is byte-identical to the buffered detached sign",
     Buffer.compare(streamed, buffered) === 0);
   check("the streamed detached signature verifies against the content",
     (await pki.cms.verify(streamed, { content: CONTENT })).valid === true);
   check("streaming detached sign is chunk-boundary independent",
-    Buffer.compare(await pki.cms.sign(_chunksOf(CONTENT, 1), s, { detached: true, signingTime: false }), buffered) === 0);
+    Buffer.compare(await pki.cms.sign(_chunksOf(CONTENT, 1), signing.signerOf(s), { detached: true, signingTime: false }), buffered) === 0);
   // A callable that implements the async-iteration protocol is a valid content source, not a byte source.
   var callable = function () {};
   callable[Symbol.asyncIterator] = async function* () { for (var i = 0; i < CONTENT.length; i += 4) yield CONTENT.subarray(i, i + 4); };
   check("streaming detached sign accepts a callable async-iterable content",
-    Buffer.compare(await pki.cms.sign(callable, s, { detached: true, signingTime: false }), buffered) === 0);
+    Buffer.compare(await pki.cms.sign(callable, signing.signerOf(s), { detached: true, signingTime: false }), buffered) === 0);
   // A content whose Symbol.asyncIterator is a one-shot accessor is consumed: the door acquires the
   // iterator once and threads it to the engine, so a valid stateful-accessor source a bare `for await`
   // accepts is not refused by a second protocol read across the sign path.
@@ -128,7 +128,7 @@ async function testStreamingDetachedSign() {
     return async function* () { for (var i = 0; i < CONTENT.length; i += 4) yield CONTENT.subarray(i, i + 4); };
   } });
   check("streaming detached sign consumes a one-shot-accessor content (one protocol read across the path)",
-    Buffer.compare(await pki.cms.sign(oneShotContent, s, { detached: true, signingTime: false }), buffered) === 0);
+    Buffer.compare(await pki.cms.sign(oneShotContent, signing.signerOf(s), { detached: true, signingTime: false }), buffered) === 0);
   // Acquisition is deferred to the hashing path: a pre-hash rejection (an empty signer list) never
   // drives the stream, so the content's iterator factory -- which might open a file or socket -- is
   // never invoked, and a resource it would open cannot leak.
@@ -146,7 +146,7 @@ async function testStreamingDetachedSign() {
     for (var i = 0; i < CONTENT.length; i += 4) yield CONTENT.subarray(i, i + 4);
   })();
   var signedUnderPoll;
-  try { signedUnderPoll = await pki.cms.sign(pollutedAllSign, [makeSigner("ed25519"), makeSigner("rsa")], { detached: true, signingTime: false }); }
+  try { signedUnderPoll = await pki.cms.sign(pollutedAllSign, signing.signerOf([makeSigner("ed25519"), makeSigner("rsa")]), { detached: true, signingTime: false }); }
   finally { Promise.all = realAllSign; }
   check("streaming multi-signer sign is not truncated by a stream replacing Promise.all",
     (await pki.cms.verify(signedUnderPoll, { content: CONTENT })).signers.length === 2);
@@ -161,7 +161,7 @@ async function testStreamingDetachedSign() {
     for (var i = 0; i < CONTENT.length; i += 4) yield CONTENT.subarray(i, i + 4);
   })();
   var signedMapPoll;
-  try { signedMapPoll = await pki.cms.sign(pollutedMapSign, [makeSigner("ed25519"), makeSigner("rsa")], { detached: true, signingTime: false }); }
+  try { signedMapPoll = await pki.cms.sign(pollutedMapSign, signing.signerOf([makeSigner("ed25519"), makeSigner("rsa")]), { detached: true, signingTime: false }); }
   finally { Array.prototype.map = realMapSign; }
   check("streaming multi-signer sign is not truncated by a stream replacing Array.prototype.map",
     (await pki.cms.verify(signedMapPoll, { content: CONTENT })).signers.length === 2);
@@ -182,7 +182,7 @@ async function testStreamingDetachedSign() {
   // path: an attached (non-detached) sign of it succeeds, which the streaming path would refuse.
   var bufWithAsync = Buffer.from("plain bytes that also expose an async iterator");
   bufWithAsync[Symbol.asyncIterator] = async function* () { yield Buffer.from([9]); };
-  var attachedOfBytes = await pki.cms.sign(bufWithAsync, s, { signingTime: false });
+  var attachedOfBytes = await pki.cms.sign(bufWithAsync, signing.signerOf(s), { signingTime: false });
   check("a byte source with a Symbol.asyncIterator signs as buffered bytes, not as a stream",
     (await pki.cms.verify(attachedOfBytes)).valid === true);
   // pki.cms.sign is documented `-> Promise`, so a content whose Symbol.asyncIterator is a throwing
@@ -191,32 +191,32 @@ async function testStreamingDetachedSign() {
   Object.defineProperty(evil, Symbol.asyncIterator, { get: function () { throw new Error("hostile getter"); } });
   var threwSync = false, rejected = false;
   try {
-    await pki.cms.sign(evil, s, { detached: true, signingTime: false }).then(function () {}, function () { rejected = true; });
+    await pki.cms.sign(evil, signing.signerOf(s), { detached: true, signingTime: false }).then(function () {}, function () { rejected = true; });
   } catch (_e) { threwSync = true; }
   check("streaming sign does not throw synchronously on a throwing Symbol.asyncIterator getter", threwSync === false);
   check("streaming sign rejects on a throwing Symbol.asyncIterator getter", rejected === true);
   // A multi-signer detached sign over a single-use async iterable hashes it once for both digests.
-  var multi = await pki.cms.sign(_chunksOf(CONTENT, 3), [makeSigner("ed25519"), makeSigner("rsa")],
+  var multi = await pki.cms.sign(_chunksOf(CONTENT, 3), signing.signerOf([makeSigner("ed25519"), makeSigner("rsa")]),
     { detached: true, signingTime: false });
   check("streaming detached sign supports multiple signers (single pass over the content)",
     (await pki.cms.verify(multi, { content: CONTENT })).valid === true);
   // A streamed content is detached-only (an attached SignedData would need the content buffered to
   // state the eContent OCTET STRING length) and requires signed attributes (the digest attribute is
   // the whole point of streaming); both refusals are config-time cms/bad-input.
-  var attachedErr = await pki.cms.sign(_chunksOf(CONTENT, 4), s, { signingTime: false }).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  var attachedErr = await pki.cms.sign(_chunksOf(CONTENT, 4), signing.signerOf(s), { signingTime: false }).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
   check("streaming content without detached is refused", attachedErr === "cms/bad-input");
-  var noAttrsErr = await pki.cms.sign(_chunksOf(CONTENT, 4), s, { detached: true, signedAttributes: false }).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  var noAttrsErr = await pki.cms.sign(_chunksOf(CONTENT, 4), signing.signerOf(s), { detached: true, signedAttributes: false }).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
   check("streaming content with signedAttributes:false is refused", noAttrsErr === "cms/bad-input");
   // A chunk that is not a byte source is reported in this verb's domain (cms/bad-input), the same as
   // a buffered content's bad bytes, not leaked as the engine's webcrypto/data code.
   var badChunks = (async function* () { yield CONTENT.subarray(0, 4); yield "not a byte source"; })();
-  var chunkErr = await pki.cms.sign(badChunks, s, { detached: true, signingTime: false }).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  var chunkErr = await pki.cms.sign(badChunks, signing.signerOf(s), { detached: true, signingTime: false }).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
   check("streaming sign: a non-byte chunk is a cms/bad-input, not a webcrypto error", chunkErr === "cms/bad-input");
   // A source whose async-iterator factory returns a malformed iterator (a non-callable next) surfaces
   // from the engine as webcrypto/syntax; report it in this verb's domain, the same as a bad chunk.
   var badIterSign = {};
   badIterSign[Symbol.asyncIterator] = function () { return { next: 1 }; };
-  var badIterErr = await pki.cms.sign(badIterSign, s, { detached: true, signingTime: false }).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  var badIterErr = await pki.cms.sign(badIterSign, signing.signerOf(s), { detached: true, signingTime: false }).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
   check("streaming sign: a malformed stream iterator is a cms/bad-input, not a webcrypto error", badIterErr === "cms/bad-input");
   // The default signing time resolves through the captured Date intrinsic, so a streamed content whose
   // Symbol.asyncIterator accessor replaces the global Date cannot stamp the emitted signingTime with an
@@ -228,14 +228,14 @@ async function testStreamingDetachedSign() {
   function FakeDateSign(a) { return arguments.length === 0 ? new realDateSign(fakeMsSign) : new realDateSign(a); }
   FakeDateSign.now = function () { return fakeMsSign; };
   FakeDateSign.prototype = realDateSign.prototype;
-  var refAtFake = await pki.cms.sign(CONTENT, edTimeSigner, { detached: true, signingTime: new Date(fakeMsSign) });
+  var refAtFake = await pki.cms.sign(CONTENT, signing.signerOf(edTimeSigner), { detached: true, signingTime: new Date(fakeMsSign) });
   var getterTimeContent = {};
   Object.defineProperty(getterTimeContent, Symbol.asyncIterator, { configurable: true, get: function () {
     global.Date = FakeDateSign;
     return function () { return (async function* () { yield CONTENT; })(); };
   } });
   var streamedForgedTime;
-  try { streamedForgedTime = await pki.cms.sign(getterTimeContent, edTimeSigner, { detached: true }); }
+  try { streamedForgedTime = await pki.cms.sign(getterTimeContent, signing.signerOf(edTimeSigner), { detached: true }); }
   finally { global.Date = realDateSign; }
   check("streaming sign: a Symbol.asyncIterator getter replacing global Date cannot forge the signingTime attribute",
     Buffer.compare(streamedForgedTime, refAtFake) !== 0);
@@ -249,7 +249,7 @@ async function testStreamingDetachedSign() {
     Promise.resolve = function () { throw new Error("hostile Promise.resolve"); };
   })();
   var promErr = null, signedUnderResolve = null;
-  try { signedUnderResolve = await pki.cms.sign(pollutesResolve, edPromSigner, { detached: true, signingTime: false }); }
+  try { signedUnderResolve = await pki.cms.sign(pollutesResolve, signing.signerOf(edPromSigner), { detached: true, signingTime: false }); }
   catch (e) { promErr = e; }
   finally { Promise.resolve = realResolve; }
   var okUnderResolve = promErr === null && signedUnderResolve != null &&
@@ -259,7 +259,7 @@ async function testStreamingDetachedSign() {
   // Symbol.asyncIterator accessor mutates the caller's signer array cannot add a SignerInfo the caller
   // never asked for: the emitted SignedData carries exactly the one signer that was passed.
   var edOne = makeSigner("ed25519"), edTwo = makeSigner("ed25519");
-  var signerArr = [edOne];
+  var signerArr = [signing.signerOf(edOne)];
   var injectSigner = {};
   Object.defineProperty(injectSigner, Symbol.asyncIterator, { configurable: true, get: function () {
     signerArr.push(edTwo);
@@ -272,14 +272,14 @@ async function testStreamingDetachedSign() {
   // opts.signingTime on the caller's still-uncopied options cannot stamp the signature with its instant.
   var edOpt = makeSigner("ed25519");
   var fakeOptMs = new Date("2019-03-03T00:00:00Z").getTime();
-  var refFakeOpt = await pki.cms.sign(CONTENT, edOpt, { detached: true, signingTime: new Date(fakeOptMs) });
+  var refFakeOpt = await pki.cms.sign(CONTENT, signing.signerOf(edOpt), { detached: true, signingTime: new Date(fakeOptMs) });
   var optsMut = { detached: true };
   var mutOptsContent = {};
   Object.defineProperty(mutOptsContent, Symbol.asyncIterator, { configurable: true, get: function () {
     optsMut.signingTime = new Date(fakeOptMs);
     return function () { return (async function* () { yield CONTENT; })(); };
   } });
-  var streamedOpt = await pki.cms.sign(mutOptsContent, edOpt, optsMut);
+  var streamedOpt = await pki.cms.sign(mutOptsContent, signing.signerOf(edOpt), optsMut);
   check("streaming sign: a content accessor cannot set opts.signingTime on the copied options",
     Buffer.compare(streamedOpt, refFakeOpt) !== 0);
   // The signed-attribute list is assembled with captured array operations, so a streamed content whose
@@ -300,7 +300,7 @@ async function testStreamingDetachedSign() {
     };
   })();
   var signedExtra = null, extraErr = null;
-  try { signedExtra = await pki.cms.sign(dropAttrsContent, edExtra, { detached: true, signingTime: false, additionalSignedAttributes: [{ type: customType, values: [customVal] }] }); }
+  try { signedExtra = await pki.cms.sign(dropAttrsContent, signing.signerOf(edExtra), { detached: true, signingTime: false, additionalSignedAttributes: [{ type: customType, values: [customVal] }] }); }
   catch (e) { extraErr = e; }
   finally { Array.prototype.concat = realConcat; }
   var attrCount = (extraErr === null && signedExtra != null)
@@ -310,7 +310,7 @@ async function testStreamingDetachedSign() {
 
 // ---- streaming detached verify: async-iterable opts.content (Streaming CMS) ----
 async function testStreamingDetachedVerify() {
-  var det = await pki.cms.sign(CONTENT, makeSigner("rsa"), { detached: true });
+  var det = await pki.cms.sign(CONTENT, signing.signerOf(makeSigner("rsa")), { detached: true });
   check("streaming verify: async-iterable opts.content verifies a detached signature",
     (await pki.cms.verify(det, { content: _chunksOf(CONTENT, 5) })).valid === true);
   check("streaming verify: chunk size does not matter",
@@ -321,7 +321,7 @@ async function testStreamingDetachedVerify() {
   check("streaming verify: a differing streamed content -> message-digest-mismatch",
     r2.valid === false && r2.signers[0].code === "cms/message-digest-mismatch");
   // A multi-signer detached signature (two distinct digest algorithms) verifies from ONE streamed pass.
-  var multi = await pki.cms.sign(CONTENT, [makeSigner("ed25519"), makeSigner("rsa")], { detached: true });
+  var multi = await pki.cms.sign(CONTENT, signing.signerOf([makeSigner("ed25519"), makeSigner("rsa")]), { detached: true });
   check("streaming verify: multi-signer detached verifies from a single streamed pass",
     (await pki.cms.verify(multi, { content: _chunksOf(CONTENT, 7) })).valid === true);
   // A content-only signer (no signed attributes) binds the whole content as the preimage, which a
@@ -329,7 +329,7 @@ async function testStreamingDetachedVerify() {
   // A content-only signer cannot be verified from a stream (its signature is over content the stream
   // does not retain), but that is a PER-SIGNER verdict, never a whole-message abort: verify resolves
   // with valid:false and the signer's own code, exactly as the buffered path verdicts each signer.
-  var contentOnly = await pki.cms.sign(CONTENT, makeSigner("ed25519"), { detached: true, signedAttributes: false });
+  var contentOnly = await pki.cms.sign(CONTENT, signing.signerOf(makeSigner("ed25519")), { detached: true, signedAttributes: false });
   var rco = await pki.cms.verify(contentOnly, { content: _chunksOf(CONTENT, 4) });
   check("streaming verify: a content-only signer is a per-signer streamed-content-unverifiable verdict, not a throw",
     rco.valid === false && rco.signers[0].code === "cms/streamed-content-unverifiable");
@@ -346,7 +346,7 @@ async function testStreamingDetachedVerify() {
   // An unsupported digest is a per-signer verdict, exactly as the buffered path returns, not a
   // whole-operation throw: streaming must not change the verdict of a message with such a signer.
   var UNREG = "1.3.6.1.4.1.99999.8.7.6";
-  var badDigest = surgery.replaceLastAlgId(await pki.cms.sign(CONTENT, makeSigner("rsa"), { detached: true }),
+  var badDigest = surgery.replaceLastAlgId(await pki.cms.sign(CONTENT, signing.signerOf(makeSigner("rsa")), { detached: true }),
     pki.oid.byName("sha256"), function () { return b.sequence([b.oid(UNREG)]); }).der;
   var ru = await pki.cms.verify(badDigest, { content: _chunksOf(CONTENT, 5) });
   check("streaming verify: an unsupported digest is a per-signer unsupported-algorithm verdict, not a throw",
@@ -355,7 +355,7 @@ async function testStreamingDetachedVerify() {
   // streamed content whose Symbol.asyncIterator accessor empties the caller's opts.certs cannot hide the
   // signer certificate the caller supplied: the signature still verifies against it.
   var sc = makeSigner("ec-p256");
-  var detNoCert = await pki.cms.sign(CONTENT, sc, { certificates: false, detached: true });
+  var detNoCert = await pki.cms.sign(CONTENT, signing.signerOf(sc), { certificates: false, detached: true });
   var certsArr = [sc.cert];
   var emptiesCerts = {};
   Object.defineProperty(emptiesCerts, Symbol.asyncIterator, { configurable: true, get: function () {
@@ -373,7 +373,7 @@ async function testStreamingVerifyPrototypePollution() {
   // replace a prototype method mid-verify. Every verdict-deciding step uses a captured intrinsic, so
   // it cannot. Buffer.prototype.equals: a stream replacing it with always-true must not pass the
   // message-digest check for content that was never signed.
-  var det1 = await pki.cms.sign(CONTENT, makeSigner("rsa"), { detached: true });
+  var det1 = await pki.cms.sign(CONTENT, signing.signerOf(makeSigner("rsa")), { detached: true });
   var realEquals = Buffer.prototype.equals;
   var pollutedEquals = (async function* () { Buffer.prototype.equals = function () { return true; }; yield Buffer.from("bytes that were never signed"); })();
   var r1;
@@ -383,7 +383,7 @@ async function testStreamingVerifyPrototypePollution() {
     r1.valid === false && r1.signers[0].code === "cms/message-digest-mismatch");
   // Array.prototype.map: a stream replacing it to truncate the signer enumeration must not hide signers
   // (a dropped signer could be an unverified one, so `valid` would report only a passing subset).
-  var det2 = await pki.cms.sign(CONTENT, [makeSigner("ed25519"), makeSigner("rsa")], { detached: true });
+  var det2 = await pki.cms.sign(CONTENT, signing.signerOf([makeSigner("ed25519"), makeSigner("rsa")]), { detached: true });
   var realMap = Array.prototype.map;
   var pollutedMap = (async function* () {
     Array.prototype.map = function (fn, thisArg) {
@@ -400,7 +400,7 @@ async function testStreamingVerifyPrototypePollution() {
     r2.signers.length === 2 && r2.valid === true);
   // Promise.all: a stream replacing it to resolve to a fabricated [{ ok: true }] must not make `valid`
   // true without verifying any real SignerInfo.
-  var det3 = await pki.cms.sign(CONTENT, makeSigner("rsa"), { detached: true });
+  var det3 = await pki.cms.sign(CONTENT, signing.signerOf(makeSigner("rsa")), { detached: true });
   var realPromiseAll = Promise.all;
   var pollutedAll = (async function* () { Promise.all = function () { return realPromiseAll.call(Promise, [{ ok: true }]); }; yield Buffer.from("bytes that were never signed"); })();
   var r3;
@@ -409,7 +409,7 @@ async function testStreamingVerifyPrototypePollution() {
   check("streaming verify: a stream replacing Promise.all cannot fabricate a passing signer set", r3.valid === false);
   // Promise.prototype.then: a stream replacing it to invoke callbacks with a fabricated { ok: true }
   // must not forge `valid` — the whole verify path chains with await, which does not dispatch through it.
-  var det4 = await pki.cms.sign(CONTENT, makeSigner("rsa"), { detached: true });
+  var det4 = await pki.cms.sign(CONTENT, signing.signerOf(makeSigner("rsa")), { detached: true });
   var realThen = Promise.prototype.then;
   var pollutedThen = (async function* () {
     Promise.prototype.then = function (onF) { return realThen.call(Promise.resolve({ ok: true, sid: {}, cert: null, signedAttributesPresent: true }), onF); };
@@ -466,30 +466,30 @@ async function testStreamingVerifyPrototypePollution() {
 
 // ---- multiple signers ----
 async function testMultiSigner() {
-  var p7 = await pki.cms.sign(CONTENT, [makeSigner("ec-p256"), makeSigner("rsa"), makeSigner("ed25519")]);
+  var p7 = await pki.cms.sign(CONTENT, signing.signerOf([makeSigner("ec-p256"), makeSigner("rsa"), makeSigner("ed25519")]));
   var res = await pki.cms.verify(p7);
   check("three signers -> all verify", res.valid === true && res.signers.length === 3 && res.signers.every(function (x) { return x.ok === true; }));
 }
 
 // ---- signer identifier: issuerAndSerialNumber (default) vs subjectKeyIdentifier ----
 async function testSignerIdentifier() {
-  var is = await pki.cms.verify(await pki.cms.sign(CONTENT, makeSigner("ec-p256")));
+  var is = await pki.cms.verify(await pki.cms.sign(CONTENT, signing.signerOf(makeSigner("ec-p256"))));
   check("issuerAndSerial sid -> matched by issuer+serial", is.signers[0].sid.serialNumberHex != null && is.signers[0].sid.subjectKeyIdentifier == null);
 
-  var ski = await pki.cms.verify(await pki.cms.sign(CONTENT, makeSigner("ec-p256", { ski: true }), { sid: "ski" }));
+  var ski = await pki.cms.verify(await pki.cms.sign(CONTENT, signing.signerOf(makeSigner("ec-p256", { ski: true })), { sid: "ski" }));
   check("subjectKeyIdentifier sid -> matched by SKI", ski.valid === true && ski.signers[0].sid.subjectKeyIdentifier != null);
   // a ski sid requires the signer cert to carry an SKI extension.
-  await rejects("ski sid without an SKI extension", function () { return pki.cms.sign(CONTENT, makeSigner("ec-p256"), { sid: "ski" }); }, "cms/no-ski");
+  await rejects("ski sid without an SKI extension", function () { return pki.cms.sign(CONTENT, signing.signerOf(makeSigner("ec-p256")), { sid: "ski" }); }, "cms/no-ski");
 }
 
 // ---- signed attributes: default, disabled, custom, signing-time ----
 async function testSignedAttributes() {
   // no signed attributes: the signature is over the content directly.
-  var noAttr = await pki.cms.verify(await pki.cms.sign(CONTENT, makeSigner("ec-p256"), { signedAttributes: false }));
+  var noAttr = await pki.cms.verify(await pki.cms.sign(CONTENT, signing.signerOf(makeSigner("ec-p256")), { signedAttributes: false }));
   check("signedAttributes:false -> verifies (content-signed)", noAttr.valid === true);
 
   // the default signed attributes bind the content: verify then tamper -> invalid.
-  var p7 = await pki.cms.sign(CONTENT, makeSigner("ec-p256"));
+  var p7 = await pki.cms.sign(CONTENT, signing.signerOf(makeSigner("ec-p256")));
   var parsed = pki.schema.cms.parse(p7);
   // Flip a content byte in the ENCODING. The content rides the message verbatim, so it is found by
   // value, and a one-byte flip keeps every length intact -- the message stays well-formed and the
@@ -504,14 +504,14 @@ async function testSignedAttributes() {
 
   // a custom signed attribute rides along and the signature still verifies.
   var attrVal = pki.asn1.build.printable("custom");
-  var withExtra = await pki.cms.sign(CONTENT, makeSigner("ec-p256"), { additionalSignedAttributes: [{ type: "1.2.840.113549.1.9.16.2.4", values: [attrVal] }] });
+  var withExtra = await pki.cms.sign(CONTENT, signing.signerOf(makeSigner("ec-p256")), { additionalSignedAttributes: [{ type: "1.2.840.113549.1.9.16.2.4", values: [attrVal] }] });
   var er = await pki.cms.verify(withExtra);
   check("additional signed attribute -> still verifies", er.valid === true);
   check("additional signed attribute is present", pki.schema.cms.parse(withExtra).signerInfos[0].signedAttrs.length === 4);
   // An attribute entry reads two fields; a third is a request that would never be carried out.
   async function cmsCode(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code; } }
-  check("an additional signed attribute entry with an unknown field -> cms/bad-input", (await cmsCode(function () { return pki.cms.sign(CONTENT, makeSigner("ec-p256"), { additionalSignedAttributes: [{ type: "1.2.840.113549.1.9.16.2.4", values: [attrVal], critical: true }] }); })) === "cms/bad-input");
-  check("an unsigned attribute entry with an unknown field -> cms/bad-input", (await cmsCode(function () { return pki.cms.sign(CONTENT, makeSigner("ec-p256"), { unsignedAttributes: [{ type: "1.2.840.113549.1.9.16.2.4", value: attrVal }] }); })) === "cms/bad-input");
+  check("an additional signed attribute entry with an unknown field -> cms/bad-input", (await cmsCode(function () { return pki.cms.sign(CONTENT, signing.signerOf(makeSigner("ec-p256")), { additionalSignedAttributes: [{ type: "1.2.840.113549.1.9.16.2.4", values: [attrVal], critical: true }] }); })) === "cms/bad-input");
+  check("an unsigned attribute entry with an unknown field -> cms/bad-input", (await cmsCode(function () { return pki.cms.sign(CONTENT, signing.signerOf(makeSigner("ec-p256")), { unsignedAttributes: [{ type: "1.2.840.113549.1.9.16.2.4", value: attrVal }] }); })) === "cms/bad-input");
 
   // An unsigned attribute TYPE may repeat, and RFC 5652 is the authority for that rather than against
   // it. `UnsignedAttributes ::= SET SIZE (1..MAX) OF Attribute` imposes no per-type uniqueness, clause
@@ -521,7 +521,7 @@ async function testSignedAttributes() {
   // type "specifies one or more signatures". A signature re-timestamped by several authorities carries
   // one timeStampToken attribute per authority, so a blanket refusal denies a conforming message.
   var tsAttr = { type: "timeStampToken", values: [attrVal] };
-  var twoTs = await pki.cms.sign(CONTENT, makeSigner("ec-p256"), { unsignedAttributes: [tsAttr, tsAttr] });
+  var twoTs = await pki.cms.sign(CONTENT, signing.signerOf(makeSigner("ec-p256")), { unsignedAttributes: [tsAttr, tsAttr] });
   var twoParsed = pki.schema.cms.parse(twoTs).signerInfos[0];
   var tsRows = (twoParsed.unsignedAttrs || []).filter(function (a) { return a.type === pki.oid.byName("timeStampToken"); });
   check("UA1. two instances of one unsigned attribute type are emitted, both of them",
@@ -532,28 +532,28 @@ async function testSignedAttributes() {
   // ones is still refused among the unsigned, repeated or not.
   check("UA3. CONTROL a content-type attribute is still refused among the unsigned attributes",
     (await cmsCode(function () {
-      return pki.cms.sign(CONTENT, makeSigner("ec-p256"), { unsignedAttributes: [{ type: "contentType", values: [attrVal] }] });
+      return pki.cms.sign(CONTENT, signing.signerOf(makeSigner("ec-p256")), { unsignedAttributes: [{ type: "contentType", values: [attrVal] }] });
     })) === "cms/bad-input");
 
   // signing-time omitted on request.
-  var noTime = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ec-p256"), { signingTime: false }));
+  var noTime = pki.schema.cms.parse(await pki.cms.sign(CONTENT, signing.signerOf(makeSigner("ec-p256")), { signingTime: false }));
   check("signingTime:false -> two signed attributes", noTime.signerInfos[0].signedAttrs.length === 2);
 }
 
 // ---- output forms + structure: PEM, no-certs, eContentType/version, CryptoKey ----
 async function testOutputForms() {
-  var pem = await pki.cms.sign(CONTENT, makeSigner("ec-p256"), { pem: true });
+  var pem = await pki.cms.sign(CONTENT, signing.signerOf(makeSigner("ec-p256")), { pem: true });
   check("pem:true -> a CMS PEM string", typeof pem === "string" && pem.indexOf("-----BEGIN CMS-----") === 0);
   check("PEM output verifies", (await pki.cms.verify(pem)).valid === true);
 
   // certificates:false -> the signer is not embedded; supply it via opts.certs to verify.
   var s = makeSigner("ec-p256");
-  var noCerts = await pki.cms.sign(CONTENT, s, { certificates: false });
+  var noCerts = await pki.cms.sign(CONTENT, signing.signerOf(s), { certificates: false });
   check("certificates:false + no opts.certs -> signer-cert-not-found", (await pki.cms.verify(noCerts)).signers[0].code === "cms/signer-cert-not-found");
   check("certificates:false + opts.certs -> verifies", (await pki.cms.verify(noCerts, { certs: [s.cert] })).valid === true);
 
   // a non-id-data eContentType lifts the CMSVersion to 3.
-  var v3 = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ec-p256"), { eContentType: "tSTInfo" }));
+  var v3 = pki.schema.cms.parse(await pki.cms.sign(CONTENT, signing.signerOf(makeSigner("ec-p256")), { eContentType: "tSTInfo" }));
   check("non-data eContentType -> SignedData version 3", v3.version === 3);
 
   // a signer key supplied as an already-imported WebCrypto CryptoKey.
@@ -582,35 +582,200 @@ async function testOutputForms() {
 // ---- config-time misuse fails closed with a typed cms/* error ----
 async function testBadInput() {
   var s = makeSigner("ec-p256");
-  await rejects("options not an object", function () { return pki.cms.sign(CONTENT, s, "nope"); }, "cms/bad-input");
+  await rejects("options not an object", function () { return pki.cms.sign(CONTENT, signing.signerOf(s), "nope"); }, "cms/bad-input");
 
   // An option this verb does not read is refused, not ignored. A misspelling does not select the
   // mode the caller meant, and swallowing it signs the message the other way with nothing said --
   // `signedAttribute` for `signedAttributes` decides whether the signature covers the content
   // directly or a set of attributes, which is the difference the stripping attack turns on.
   await rejects("an unknown sign option", function () {
-    return pki.cms.sign(CONTENT, s, { signedAttribute: false });
+    return pki.cms.sign(CONTENT, signing.signerOf(s), { signedAttribute: false });
   }, "cms/bad-input");
   await rejects("an option only countersign takes", function () {
-    return pki.cms.sign(CONTENT, s, { signerIndex: 0 });
+    return pki.cms.sign(CONTENT, signing.signerOf(s), { signerIndex: 0 });
   }, "cms/bad-input");
   // The whole documented set is still accepted -- a gate that refuses a real option would be the
   // worse defect, and `sid` is omitted here because it needs a certificate carrying an SKI.
-  check("every documented sign option is accepted", Buffer.isBuffer(await pki.cms.sign(CONTENT, s, {
+  check("every documented sign option is accepted", Buffer.isBuffer(await pki.cms.sign(CONTENT, signing.signerOf(s), {
     signedAttributes: true, signingTime: new Date(0), additionalSignedAttributes: [],
     unsignedAttributes: [], eContentType: "data", detached: false, certificates: true, pem: false,
   })));
 
-  var countersigned = await pki.cms.sign(CONTENT, s);
+  /* A SIGNER DESCRIPTOR is held to the same rule as `opts`. Measured before this gate, on an RSA
+     signer: `{ cert, key, digestAlgoritm: "sha384" }` (the typo) was accepted and the signature made
+     under sha256, the default, with nothing reported, while the IDENTICAL misspelling one argument
+     along in `opts` was a hard `cms/bad-input`. A caller who believes they configured SHA-384 got
+     SHA-256. `KNOWN_SIGNER_CERT_KEYS` and `KNOWN_SIGNER_KEY_ONLY_KEYS` already existed and were
+     already applied to the same descriptors by `pkcs12-build.js`; the module that defines them did
+     not apply them. */
+  var rsa = makeSigner("rsa");
+  await rejects("a misspelled signer digestAlgorithm", function () {
+    return pki.cms.sign(CONTENT, [{ cert: rsa.cert, key: rsa.key, digestAlgoritm: "sha384" }]);
+  }, "cms/bad-input");
+  await rejects("an invented signer descriptor field", function () {
+    return pki.cms.sign(CONTENT, [{ cert: rsa.cert, key: rsa.key, nonsense: 1 }]);
+  }, "cms/bad-input");
+  await rejects("a key-only signer carrying a certificate-form field", function () {
+    return pki.cms.sign(CONTENT, [{ spki: rsa.spki, key: rsa.key, keyIdentifier: Buffer.alloc(20, 1), cert: rsa.cert, pss: true }], { signedAttributes: true });
+  }, "cms/bad-input");
+  // CONTROL: the request that was silently dropped is now carried out, and reported in the message.
+  var signed384 = await pki.cms.sign(CONTENT, [{ cert: rsa.cert, key: rsa.key, digestAlgorithm: "sha384" }]);
+  check("the digest a signer asks for is the digest it is signed under",
+    pki.schema.cms.parse(signed384).signerInfos[0].digestAlgorithm.name === "sha384");
+  // CONTROL: every documented descriptor field is still accepted, in both forms.
+  check("the documented certificate-form descriptor is accepted",
+    Buffer.isBuffer(await pki.cms.sign(CONTENT, [{ cert: rsa.cert, key: rsa.key, digestAlgorithm: "sha256" }])));
+  /* EVERY verb that reads a descriptor, not only the one the defect was found through.
+     `countersign` builds its countersigner through a reader of its own rather than through
+     `sign`'s, so the gate on one left the other taking a misspelled digest silently. */
+  var toCounter = await pki.cms.sign(CONTENT, [{ cert: rsa.cert, key: rsa.key }]);
+  await rejects("a misspelled countersigner digestAlgorithm", function () {
+    return pki.cms.countersign(toCounter, [{ cert: rsa.cert, key: rsa.key, digestAlgoritm: "sha384" }]);
+  }, "cms/bad-input");
+  /* `authenticate` takes RECIPIENTS rather than signers, so the same misspelling is refused there by
+     the recipient key set, which already held it. It is asserted beside these so the three arguments
+     a caller might reach for all answer, and so a reader does not take the signer gate to be what
+     answers for this one. */
+  await rejects("a misspelled field on an authenticate recipient", function () {
+    return pki.cms.authenticate(CONTENT, [{ cert: rsa.cert, key: rsa.key, digestAlgoritm: "sha384" }]);
+  }, "cms/bad-input");
+  /* An unknown field the caller put on the descriptor's PROTOTYPE is the same dropped request, and
+     `pki.smime.sign` snapshots a descriptor before forwarding it, so the check has to survive that
+     copy. A symbol-keyed or function-valued inherited field is not in the class: every recognized
+     field is a string-keyed data value, so neither can be a misspelling of one. */
+  await rejects("an unknown field inherited by a signer descriptor", function () {
+    var proto = { digestAlgoritm: "sha384" };
+    var desc = Object.create(proto);
+    desc.cert = rsa.cert; desc.key = rsa.key;
+    return pki.cms.sign(CONTENT, [desc]);
+  }, "cms/bad-input");
+  await rejects("an unknown field inherited by an S/MIME signer descriptor", function () {
+    var desc = Object.create({ digestAlgoritm: "sha384" });
+    desc.cert = rsa.cert; desc.key = rsa.key;
+    return pki.smime.sign(CONTENT, desc, {});
+  }, "cms/bad-input");
+  /* A CALLABLE descriptor carrying cert and key is a shape these verbs read, and the names a
+     function carries by construction are not fields the caller named. The exemption belongs at the
+     door that REFUSES, not only at a reader that copies: `pki.smime.sign` snapshots a descriptor
+     before handing it on, so excluding the machinery there alone left a caller going straight to
+     `pki.cms.sign` with the same callable refused for `length`. Every door that takes a descriptor
+     is driven here, against every callable kind.
+
+     The shapes differ by where the function machinery lives, and a vector written on one says
+     nothing about the other. A PLAIN strict function -- what every `"use strict"` file and every ES
+     module produces, and what this file produces -- owns neither `arguments` nor `caller`, and
+     `Function.prototype` carries both as the restricted accessors, so a check that walks the
+     prototype chain finds them there. On the Node 24.21.0 floor a non-strict function owns both
+     outright, which is the shape minted below. Measured: the minted shape passed while the plain
+     one was refused for `arguments` at both direct `pki.cms` doors, and the first version of this
+     vector minted and so never asked.
+
+     The KINDS do not share a prototype either: an async function, a generator and an async
+     generator each sit on their own intrinsic prototype carrying `Symbol.toStringTag`, which an
+     ordinary function's chain never reaches. Measured: all three were refused at both direct
+     `pki.cms` doors for `Symbol(Symbol.toStringTag)` while an ordinary function passed, and the
+     version of this vector that crossed only the two SHAPES with the doors never asked. So the
+     matrix is every kind crossed with every door, in both directions. */
+  function fitted(fn) { fn.cert = rsa.cert; fn.key = rsa.key; return fn; }
+  function plainSigner() { return fitted(function () { return 0; }); }
+  function floorShapedSigner() {
+    var fn = plainSigner();
+    ["arguments", "caller"].forEach(function (n) {
+      Object.defineProperty(fn, n, { value: null, writable: false, enumerable: false, configurable: true });
+    });
+    return fn;
+  }
+  var toCounterCallable = await pki.cms.sign(CONTENT, [{ cert: rsa.cert, key: rsa.key }]);
+  var CALLABLE_DOORS = [
+    ["pki.cms.sign", function (d) { return pki.cms.sign(CONTENT, d); }],
+    ["pki.cms.sign (list form)", function (d) { return pki.cms.sign(CONTENT, [d]); }],
+    ["pki.cms.countersign", function (d) { return pki.cms.countersign(toCounterCallable, d); }],
+    ["pki.smime.sign", function (d) { return pki.smime.sign(CONTENT, d, {}); }],
+  ];
+  var CALLABLE_KINDS = [
+    ["plain strict", plainSigner],
+    ["engine-floor own arguments/caller", floorShapedSigner],
+    ["generator", function () { return fitted(function* () { yield 1; }); }],
+    ["async", function () { return fitted(async function () { return 1; }); }],
+    ["async generator", function () { return fitted(async function* () { yield 1; }); }],
+    ["bound", function () { return fitted((function bindMe() {}).bind(null)); }],
+    ["class", function () { return fitted(class Plain {}); }],
+    ["derived class", function () { return fitted(class Derived extends (class Base {}) {}); }],
+    ["method shorthand", function () { return fitted(({ m: function () {} }).m); }],
+  ];
+  var doorsRefused = [], doorsAcceptedTypo = [];
+  for (var dk = 0; dk < CALLABLE_DOORS.length; dk++) {
+    for (var sh = 0; sh < CALLABLE_KINDS.length; sh++) {
+      var door = CALLABLE_DOORS[dk][1], mintShape = CALLABLE_KINDS[sh][1];
+      var where = CALLABLE_DOORS[dk][0] + " / " + CALLABLE_KINDS[sh][0];
+      try { await door(mintShape()); }
+      catch (de) { doorsRefused.push(where + " -> " + (de && de.code) + " " + String(de && de.message).slice(0, 44)); }
+      var typoed = mintShape();
+      typoed.digestAlgoritm = "sha384";
+      var typoCode = null;
+      try { await door(typoed); } catch (te) { typoCode = te && te.code; }
+      if (typoCode !== "cms/bad-input") doorsAcceptedTypo.push(where + " -> " + typoCode);
+    }
+  }
+  check("every door that takes a signer descriptor reads a callable one, of every kind" +
+    (doorsRefused.length ? " [refused: " + doorsRefused.join("; ") + "]" : ""), doorsRefused.length === 0);
+  check("CONTROL and every one of them still refuses a misspelled field on it" +
+    (doorsAcceptedTypo.length ? " [missed: " + doorsAcceptedTypo.join("; ") + "]" : ""),
+  doorsAcceptedTypo.length === 0);
+  /* What the exemption costs, measured rather than argued. A caller can define an own
+     non-enumerable property under a machinery name, which is byte-for-byte the shape the engine
+     floor creates, so there is no line to draw between the two and the exempted one is ignored.
+     None of those names is a descriptor field, and this proves the ignoring stops there: a real
+     `digestAlgorithm` beside them is still read and still carried out, and a misspelled one is
+     still refused. A function Proxy does not reach any of it; the door refuses one outright.
+
+     `then` is the narrower case and is included to pin which shape it admits: the non-thenable mask
+     `guard.verdict.shield` leaves is `then: undefined`, and that is what passes. An own
+     `then: 42` is a field the caller wrote and is refused by name, which the next vector asserts. */
+  var beside = floorShapedSigner();
+  Object.defineProperty(beside, "caller", { value: 42, writable: true, enumerable: false, configurable: true });
+  Object.defineProperty(beside, "then", { value: undefined, writable: true, enumerable: false, configurable: true });
+  beside.digestAlgorithm = "sha384";
+  var besideDer = await pki.cms.sign(CONTENT, beside);
+  check("an exempted name does not stop a real field beside it being carried out",
+    pki.schema.cms.parse(besideDer).signerInfos[0].digestAlgorithm.name === "sha384");
+  await rejects("a misspelled field beside an exempted name", function () {
+    var fn = floorShapedSigner();
+    Object.defineProperty(fn, "caller", { value: 42, writable: true, enumerable: false, configurable: true });
+    fn.digestAlgoritm = "sha384";
+    return pki.cms.sign(CONTENT, fn);
+  }, "cms/bad-input");
+  await rejects("an own `then` holding a value is a field the caller wrote, not the shield's mask", function () {
+    var fn = floorShapedSigner();
+    Object.defineProperty(fn, "then", { value: 42, writable: true, enumerable: false, configurable: true });
+    return pki.cms.sign(CONTENT, fn);
+  }, "cms/bad-input");
+  await rejects("a function Proxy is refused as a descriptor rather than interrogated", function () {
+    return pki.cms.sign(CONTENT, new Proxy(plainSigner(), {}));
+  }, "cms/bad-input");
+  // CONTROL: a recognized field supplied only by the prototype is both accepted and carried out, so
+  // the gate and the reader agree about which fields they can see.
+  var inherited384 = await pki.cms.sign(CONTENT, [(function () {
+    var d = Object.create({ digestAlgorithm: "sha384" });
+    d.cert = rsa.cert; d.key = rsa.key; return d;
+  })()]);
+  check("a digest inherited from the descriptor's prototype is validated and then used",
+    pki.schema.cms.parse(inherited384).signerInfos[0].digestAlgorithm.name === "sha384");
+  // CONTROL: the request the countersigner really made is carried out and readable.
+  var counter384 = await pki.cms.countersign(toCounter, [{ cert: rsa.cert, key: rsa.key, digestAlgorithm: "sha384" }]);
+  check("the digest a countersigner asks for is the digest it is countersigned under",
+    pki.schema.cms.parse(counter384).signerInfos[0].unsignedAttrs != null);
+
+  var countersigned = await pki.cms.sign(CONTENT, signing.signerOf(s));
   await rejects("an unknown countersign option", function () {
-    return pki.cms.countersign(countersigned, s, { signerIndexes: 0 });
+    return pki.cms.countersign(countersigned, signing.signerOf(s), { signerIndexes: 0 });
   }, "cms/bad-input");
   // countersign has no content of its own, so the options that describe one are not its to take.
   await rejects("a content option passed to countersign", function () {
-    return pki.cms.countersign(countersigned, s, { detached: true });
+    return pki.cms.countersign(countersigned, signing.signerOf(s), { detached: true });
   }, "cms/bad-input");
   check("every documented countersign option is accepted",
-    Buffer.isBuffer(await pki.cms.countersign(countersigned, s, {
+    Buffer.isBuffer(await pki.cms.countersign(countersigned, signing.signerOf(s), {
       signerIndex: 0, signingTime: new Date(0), certificates: true, pem: false,
       signedAttributes: true, additionalSignedAttributes: [],
     })));
@@ -622,33 +787,33 @@ async function testBadInput() {
   function SignBag() { this.signedAttributes = true; }
   SignBag.prototype.describe = function () { return "signing"; };
   check("sign accepts an options instance whose class defines a method",
-    Buffer.isBuffer(await pki.cms.sign(CONTENT, s, new SignBag())));
+    Buffer.isBuffer(await pki.cms.sign(CONTENT, signing.signerOf(s), new SignBag())));
   function CountersignBag() { this.signerIndex = 0; }
   CountersignBag.prototype.describe = function () { return "countersigning"; };
   check("countersign accepts an options instance whose class defines a method",
-    Buffer.isBuffer(await pki.cms.countersign(countersigned, s, new CountersignBag())));
+    Buffer.isBuffer(await pki.cms.countersign(countersigned, signing.signerOf(s), new CountersignBag())));
   // The copy chooses how to read a value by kind, and asking the prototype rather than the slot
   // gets both directions wrong. A plain object built over `Map.prototype` answers `instanceof
   // Map` and holds no entries, so a copy that trusted that ran `forEach` on it and the raw
   // TypeError escaped a verb that only ever refuses in its own code. A real Map from another
   // realm is the mirror case: it holds entries and fails `instanceof`.
   var mapProtoSpec = Object.create(Map.prototype);
-  Object.keys(s).forEach(function (k) { mapProtoSpec[k] = s[k]; });
+  Object.keys(signing.signerOf(s)).forEach(function (k) { mapProtoSpec[k] = s[k]; });
   check("a signer spec built over Map.prototype signs rather than raising an untyped error",
     Buffer.isBuffer(await pki.cms.sign(CONTENT, mapProtoSpec)));
   var arrayProtoSpec = Object.create(Array.prototype);
-  Object.keys(s).forEach(function (k) { arrayProtoSpec[k] = s[k]; });
+  Object.keys(signing.signerOf(s)).forEach(function (k) { arrayProtoSpec[k] = s[k]; });
   check("and one built over Array.prototype signs, with the kind's own names left out of it",
     Buffer.isBuffer(await pki.cms.sign(CONTENT, arrayProtoSpec)));
   var foreignSpec = require("vm").runInNewContext("({})");
-  Object.keys(s).forEach(function (k) { foreignSpec[k] = s[k]; });
+  Object.keys(signing.signerOf(s)).forEach(function (k) { foreignSpec[k] = s[k]; });
   check("a signer spec built in another realm signs",
     Buffer.isBuffer(await pki.cms.sign(CONTENT, foreignSpec)));
   // The copy runs before the option check, and it reads a field once and writes what came back as
   // plain data. An accessor therefore has to be refused HERE: after the copy there is a value on
   // the object and nothing left to say it was ever computed, so a field that answers differently
   // the next time it is read passes as a settled one.
-  var getterSpec = Object.assign({}, s);
+  var getterSpec = Object.assign({}, signing.signerOf(s));
   Object.defineProperty(getterSpec, "digestAlgorithm", {
     get: function () { this.detached = true; return "sha256"; }, enumerable: true, configurable: true,
   });
@@ -657,11 +822,8 @@ async function testBadInput() {
   // A platform object nested in a spec carries accessors of its own, and a Node KeyObject holds
   // several. Those belong to the platform, so the refusal covers the argument and not what is
   // under it: an ordinary signer carries exactly such a key.
-  var nestedGetter = Object.assign({}, s);
-  nestedGetter.nested = {};
-  Object.defineProperty(nestedGetter.nested, "computed", {
-    get: function () { return 1; }, enumerable: true, configurable: true,
-  });
+  var nestedGetter = Object.assign({}, signing.signerOf(s));
+  nestedGetter.key = s.keyObject;
   check("while an accessor nested inside a spec leaves it usable",
     Buffer.isBuffer(await pki.cms.sign(CONTENT, nestedGetter)));
   // The snapshot has to carry a Symbol key across, or the copy loses it before the check reads
@@ -669,15 +831,15 @@ async function testBadInput() {
   var symOpts = { signedAttributes: true };
   symOpts[Symbol("signedAttribute")] = false;
   await rejects("a Symbol-named unknown option survives the snapshot and is refused", function () {
-    return pki.cms.sign(CONTENT, s, symOpts);
+    return pki.cms.sign(CONTENT, signing.signerOf(s), symOpts);
   }, "cms/bad-input");
   // A `constructor` the caller wrote themselves resolves on their object, so the copy carries it.
   // An inherited one came from a class, and the retained prototype resolves it on the copy anyway.
   await rejects("an own constructor field survives the snapshot and is refused", function () {
-    return pki.cms.sign(CONTENT, s, { signedAttributes: true, constructor: 123 });
+    return pki.cms.sign(CONTENT, signing.signerOf(s), { signedAttributes: true, constructor: 123 });
   }, "cms/bad-input");
 
-  await rejects("content not a Buffer", function () { return pki.cms.sign("string", s); }, "cms/bad-input");
+  await rejects("content not a Buffer", function () { return pki.cms.sign("string", signing.signerOf(s)); }, "cms/bad-input");
   await rejects("no signers", function () { return pki.cms.sign(CONTENT, []); }, "cms/bad-input");
   // A sparse or nullish signer list must be a typed cms/bad-input, never a native error: Array.prototype.map
   // SKIPS a hole, which would otherwise surface downstream as an ERR_INVALID_ARG_TYPE from Buffer.concat.
@@ -686,25 +848,25 @@ async function testBadInput() {
   await rejects("a signer array with a hole", function () { var h = [makeSigner("ec-p256")]; h[2] = makeSigner("ec-p256"); return pki.cms.sign(CONTENT, h); }, "cms/bad-input");
   await rejects("a huge sparse signer array fails fast", function () { return pki.cms.sign(CONTENT, new Array(1000000)); }, "cms/bad-input");
   // signed attributes are REQUIRED for a non-data eContentType (RFC 5652 sec. 5.3).
-  await rejects("signedAttributes:false with a non-data eContentType", function () { return pki.cms.sign(CONTENT, makeSigner("ec-p256"), { eContentType: "tSTInfo", signedAttributes: false }); }, "cms/bad-input");
+  await rejects("signedAttributes:false with a non-data eContentType", function () { return pki.cms.sign(CONTENT, signing.signerOf(makeSigner("ec-p256")), { eContentType: "tSTInfo", signedAttributes: false }); }, "cms/bad-input");
   // an additional signed attribute that duplicates a built-in type is rejected (RFC 5652 sec. 5.3).
-  await rejects("a duplicated signed-attribute type", function () { return pki.cms.sign(CONTENT, makeSigner("ec-p256"), { additionalSignedAttributes: [{ type: "messageDigest", values: [pki.asn1.build.octetString(Buffer.alloc(32))] }] }); }, "cms/bad-input");
+  await rejects("a duplicated signed-attribute type", function () { return pki.cms.sign(CONTENT, signing.signerOf(makeSigner("ec-p256")), { additionalSignedAttributes: [{ type: "messageDigest", values: [pki.asn1.build.octetString(Buffer.alloc(32))] }] }); }, "cms/bad-input");
   await rejects("signer without a cert", function () { return pki.cms.sign(CONTENT, { key: s.key }); }, "cms/bad-input");
   await rejects("signer cert a bad type", function () { return pki.cms.sign(CONTENT, { cert: 12345, key: s.key }); }, "cms/bad-input");
   await rejects("signer key a bad type", function () { return pki.cms.sign(CONTENT, { cert: s.cert, key: 12345 }); }, "cms/bad-input");
-  await rejects("an invalid signingTime Date", function () { return pki.cms.sign(CONTENT, s, { signingTime: new Date("not a date") }); }, "cms/bad-input");
-  await rejects("a non-Date signingTime", function () { return pki.cms.sign(CONTENT, s, { signingTime: "2026-01-01" }); }, "cms/bad-input");
+  await rejects("an invalid signingTime Date", function () { return pki.cms.sign(CONTENT, signing.signerOf(s), { signingTime: new Date("not a date") }); }, "cms/bad-input");
+  await rejects("a non-Date signingTime", function () { return pki.cms.sign(CONTENT, signing.signerOf(s), { signingTime: "2026-01-01" }); }, "cms/bad-input");
   // A year DER cannot carry is refused in this verb's domain, not as an asn1/* error out of the codec,
   // on each of the three routes a signingTime is written: buffered, streamed, and countersign.
   var y10k = new Date("+010000-01-01T00:00:00Z");
-  await rejects("a year-10000 signingTime (buffered)", function () { return pki.cms.sign(CONTENT, s, { signingTime: y10k }); }, "cms/bad-input");
-  await rejects("a year-10000 signingTime (streamed)", function () { return pki.cms.sign(_chunksOf(CONTENT, 4), s, { detached: true, signingTime: y10k }); }, "cms/bad-input");
-  await rejects("a year-10000 signingTime (countersign)", async function () { return pki.cms.countersign(await pki.cms.sign(CONTENT, s), s, { signingTime: y10k }); }, "cms/bad-input");
+  await rejects("a year-10000 signingTime (buffered)", function () { return pki.cms.sign(CONTENT, signing.signerOf(s), { signingTime: y10k }); }, "cms/bad-input");
+  await rejects("a year-10000 signingTime (streamed)", function () { return pki.cms.sign(_chunksOf(CONTENT, 4), signing.signerOf(s), { detached: true, signingTime: y10k }); }, "cms/bad-input");
+  await rejects("a year-10000 signingTime (countersign)", async function () { return pki.cms.countersign(await pki.cms.sign(CONTENT, signing.signerOf(s)), signing.signerOf(s), { signingTime: y10k }); }, "cms/bad-input");
   // A value that inherits from Date.prototype and holds no instant. `instanceof Date` says yes to
   // it, so a check keyed on that lets it through and the `getTime()` that follows throws a raw
   // TypeError from inside a verb whose every refusal is a typed one.
   await rejects("a signingTime that inherits from Date and holds no instant",
-    function () { return pki.cms.sign(CONTENT, s, { signingTime: Object.create(Date.prototype) }); }, "cms/bad-input");
+    function () { return pki.cms.sign(CONTENT, signing.signerOf(s), { signingTime: Object.create(Date.prototype) }); }, "cms/bad-input");
   // an unsupported signer key algorithm (X25519 is a KEM key, not a signing key).
   var x = crypto.generateKeyPairSync("x25519");
   var xSpki = x.publicKey.export({ format: "der", type: "spki" });
@@ -716,12 +878,12 @@ async function testBadInput() {
 async function testSchemeAndInputs() {
   var un = "cms/unsupported-algorithm";
   // unsupported digest per key family.
-  await rejects("RSA + unsupported digest", function () { return pki.cms.sign(CONTENT, Object.assign(makeSigner("rsa"), { digestAlgorithm: "sha1" })); }, un);
-  await rejects("ECDSA + unsupported digest", function () { return pki.cms.sign(CONTENT, Object.assign(makeSigner("ec-p256"), { digestAlgorithm: "sha1" })); }, un);
-  await rejects("Ed25519 + unsupported digest", function () { return pki.cms.sign(CONTENT, Object.assign(makeSigner("ed25519"), { digestAlgorithm: "sha1" })); }, un);
+  await rejects("RSA + unsupported digest", function () { return pki.cms.sign(CONTENT, signing.signerOf(Object.assign(makeSigner("rsa"), { digestAlgorithm: "sha1" }))); }, un);
+  await rejects("ECDSA + unsupported digest", function () { return pki.cms.sign(CONTENT, signing.signerOf(Object.assign(makeSigner("ec-p256"), { digestAlgorithm: "sha1" }))); }, un);
+  await rejects("Ed25519 + unsupported digest", function () { return pki.cms.sign(CONTENT, signing.signerOf(Object.assign(makeSigner("ed25519"), { digestAlgorithm: "sha1" }))); }, un);
   // a digestAlgorithm that contradicts an id-RSASSA-PSS key's SPKI-pinned hash is rejected
   // fail-closed (the key forbids that digest), not silently signed under the wrong hash.
-  await rejects("PSS-pinned key + conflicting digestAlgorithm", function () { return pki.cms.sign(CONTENT, Object.assign(makeSigner("rsa-pss", { pssHash: "sha384" }), { digestAlgorithm: "sha256" })); }, "cms/bad-input");
+  await rejects("PSS-pinned key + conflicting digestAlgorithm", function () { return pki.cms.sign(CONTENT, signing.signerOf(Object.assign(makeSigner("rsa-pss", { pssHash: "sha384" }), { digestAlgorithm: "sha256" }))); }, "cms/bad-input");
   // an EC signer on an unsupported curve (secp256k1).
   var k1 = crypto.generateKeyPairSync("ec", { namedCurve: "secp256k1" });
   var k1cert = signing.minimalCert(k1.publicKey.export({ format: "der", type: "spki" }));
@@ -756,21 +918,21 @@ async function testSchemeAndInputs() {
   check("v1 signer certificate -> verifies", (await pki.cms.verify(await pki.cms.sign(CONTENT, v1))).valid === true);
 
   // signing-time supplied as a Date, and a post-2050 time (GeneralizedTime).
-  var st = await pki.cms.verify(await pki.cms.sign(CONTENT, makeSigner("ec-p256"), { signingTime: new Date("2030-06-01T00:00:00Z") }));
+  var st = await pki.cms.verify(await pki.cms.sign(CONTENT, signing.signerOf(makeSigner("ec-p256")), { signingTime: new Date("2030-06-01T00:00:00Z") }));
   check("signingTime Date -> verifies", st.valid === true);
-  var g2050 = await pki.cms.verify(await pki.cms.sign(CONTENT, makeSigner("ec-p256"), { signingTime: new Date("2060-06-01T00:00:00Z") }));
+  var g2050 = await pki.cms.verify(await pki.cms.sign(CONTENT, signing.signerOf(makeSigner("ec-p256")), { signingTime: new Date("2060-06-01T00:00:00Z") }));
   check("post-2050 signingTime (GeneralizedTime) -> verifies", g2050.valid === true);
 
   // an additional signed attribute keyed by OID NAME (not a dotted string), with a Uint8Array value.
-  var byName = await pki.cms.verify(await pki.cms.sign(CONTENT, makeSigner("ec-p256"), { additionalSignedAttributes: [{ type: "signingCertificateV2", values: [new Uint8Array(pki.asn1.build.sequence([]))] }] }));
+  var byName = await pki.cms.verify(await pki.cms.sign(CONTENT, signing.signerOf(makeSigner("ec-p256")), { additionalSignedAttributes: [{ type: "signingCertificateV2", values: [new Uint8Array(pki.asn1.build.sequence([]))] }] }));
   check("additional signed attribute by OID name -> verifies", byName.valid === true);
 
   // a ski sid whose SKI extension value is not an OCTET STRING fails closed.
-  await rejects("ski sid with a malformed SKI value", function () { return pki.cms.sign(CONTENT, makeSigner("ec-p256", { ski: true, badSki: true }), { sid: "ski" }); }, "cms/no-ski");
+  await rejects("ski sid with a malformed SKI value", function () { return pki.cms.sign(CONTENT, signing.signerOf(makeSigner("ec-p256", { ski: true, badSki: true })), { sid: "ski" }); }, "cms/no-ski");
 
   // an additional signed attribute with no values is non-conformant (RFC 5652 SET SIZE 1..MAX)
   // and fails closed at config time rather than producing a malformed CMS.
-  await rejects("additional attribute with no values", function () { return pki.cms.sign(CONTENT, makeSigner("ec-p256"), { additionalSignedAttributes: [{ type: "1.2.3.4.5" }] }); }, "cms/bad-input");
+  await rejects("additional attribute with no values", function () { return pki.cms.sign(CONTENT, signing.signerOf(makeSigner("ec-p256")), { additionalSignedAttributes: [{ type: "1.2.3.4.5" }] }); }, "cms/bad-input");
 }
 
 // Flip the named-curve OID tag inside an EC SubjectPublicKeyInfo (0x06 -> 0x04) so it no longer
@@ -798,52 +960,52 @@ function _v1Signer() {
 // ---- ML-DSA (RFC 9882): the first post-quantum SignerInfo, pure mode, empty context ----
 async function testMlDsa() {
   // A1 -- ML-DSA-65 attached, signed attrs present, default SHA-512 message digest.
-  var a1 = await pki.cms.verify(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65")));
+  var a1 = await pki.cms.verify(await pki.cms.sign(CONTENT, signing.signerOf(makeSigner("ml-dsa-65"))));
   check("A1 ML-DSA-65 attached signed-attrs -> valid", a1.valid === true);
   // A2 -- ML-DSA-44 with the SHAKE256 message digest (the sec. 3.3 SHOULD path).
-  var a2 = await pki.cms.verify(await pki.cms.sign(CONTENT, Object.assign(makeSigner("ml-dsa-44"), { digestAlgorithm: "shake256" })));
+  var a2 = await pki.cms.verify(await pki.cms.sign(CONTENT, signing.signerOf(Object.assign(makeSigner("ml-dsa-44"), { digestAlgorithm: "shake256" }))));
   check("A2 ML-DSA-44 shake256 digest -> valid", a2.valid === true);
   // A3 -- ML-DSA-87 detached; correct content verifies, wrong content does not.
   var s87 = makeSigner("ml-dsa-87");
-  var det = await pki.cms.sign(CONTENT, s87, { detached: true });
+  var det = await pki.cms.sign(CONTENT, signing.signerOf(s87), { detached: true });
   check("A3 ML-DSA-87 detached + content -> valid", (await pki.cms.verify(det, { content: CONTENT })).valid === true);
   check("A3 ML-DSA-87 detached + wrong content -> invalid", (await pki.cms.verify(det, { content: Buffer.from("other") })).valid === false);
   // A4 -- ML-DSA-65 with NO signed attributes (signature over the content directly).
-  var a4 = await pki.cms.verify(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65"), { signedAttributes: false }));
+  var a4 = await pki.cms.verify(await pki.cms.sign(CONTENT, signing.signerOf(makeSigner("ml-dsa-65")), { signedAttributes: false }));
   check("A4 ML-DSA-65 no-signed-attrs -> valid", a4.valid === true);
   // A5 -- multi-signer: a classical ECDSA signer + an ML-DSA signer over one SignedData.
-  var a5 = await pki.cms.verify(await pki.cms.sign(CONTENT, [makeSigner("ec-p256"), makeSigner("ml-dsa-65")]));
+  var a5 = await pki.cms.verify(await pki.cms.sign(CONTENT, signing.signerOf([makeSigner("ec-p256"), makeSigner("ml-dsa-65")])));
   check("A5 mixed ECDSA + ML-DSA multi-signer -> all valid", a5.valid === true && a5.signers.length === 2 && a5.signers.every(function (x) { return x.ok; }));
   // A6 -- subjectKeyIdentifier signer identifier (v3 SignerInfo).
-  var a6 = await pki.cms.verify(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-44", { ski: true }), { sid: "ski" }));
+  var a6 = await pki.cms.verify(await pki.cms.sign(CONTENT, signing.signerOf(makeSigner("ml-dsa-44", { ski: true })), { sid: "ski" }));
   check("A6 ML-DSA-44 sid=ski -> valid", a6.valid === true && a6.signers[0].sid.subjectKeyIdentifier != null);
   // A7 -- byte-level: default digestAlgorithm is SHA-512 params-absent; signatureAlgorithm params absent; PEM round-trips.
-  var der = await pki.cms.sign(CONTENT, makeSigner("ml-dsa-44"));
+  var der = await pki.cms.sign(CONTENT, signing.signerOf(makeSigner("ml-dsa-44")));
   var parsed = pki.schema.cms.parse(der);
   check("A7 digestAlgorithm == sha512", parsed.signerInfos[0].digestAlgorithm.name === "sha512");
   check("A7 signatureAlgorithm == id-ml-dsa-44, params absent", parsed.signerInfos[0].signatureAlgorithm.name === "id-ml-dsa-44" && parsed.signerInfos[0].signatureAlgorithm.parameters == null);
-  var pem = await pki.cms.sign(CONTENT, makeSigner("ml-dsa-44"), { pem: true });
+  var pem = await pki.cms.sign(CONTENT, signing.signerOf(makeSigner("ml-dsa-44")), { pem: true });
   check("A7 PEM output", typeof pem === "string" && pem.indexOf("-----BEGIN CMS-----") === 0 && (await pki.cms.verify(pem)).valid === true);
   // A9 -- ML-DSA-44 + SHA-256: SHA-256 IS suitable for ML-DSA-44 (Table 1) -> MUST be accepted
   // (the negative control for the per-parameter-set digest-strength gate).
-  var a9 = await pki.cms.verify(await pki.cms.sign(CONTENT, Object.assign(makeSigner("ml-dsa-44"), { digestAlgorithm: "sha256" })));
+  var a9 = await pki.cms.verify(await pki.cms.sign(CONTENT, signing.signerOf(Object.assign(makeSigner("ml-dsa-44"), { digestAlgorithm: "sha256" }))));
   check("A9 ML-DSA-44 + sha256 (suitable) -> valid", a9.valid === true);
 
   // R9 -- no-signed-attrs + a non-`data` eContentType is rejected at config time.
-  await rejects("R9 ML-DSA no-attrs non-data eContentType", function () { return pki.cms.sign(CONTENT, makeSigner("ml-dsa-65"), { signedAttributes: false, eContentType: "signedData" }); }, "cms/bad-input");
+  await rejects("R9 ML-DSA no-attrs non-data eContentType", function () { return pki.cms.sign(CONTENT, signing.signerOf(makeSigner("ml-dsa-65")), { signedAttributes: false, eContentType: "signedData" }); }, "cms/bad-input");
   // R10 -- no-signed-attrs generation MUST emit digestAlgorithm = SHA-512 (RFC 9882 sec. 3.3).
-  var r10 = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65"), { signedAttributes: false }));
+  var r10 = pki.schema.cms.parse(await pki.cms.sign(CONTENT, signing.signerOf(makeSigner("ml-dsa-65")), { signedAttributes: false }));
   check("R10 no-attrs digestAlgorithm == sha512 params-absent", r10.signerInfos[0].digestAlgorithm.name === "sha512" && r10.signerInfos[0].digestAlgorithm.parameters == null);
   // R13 -- no-attrs signing MUST emit SHA-512 even when the caller requests another suitable digest
   // (RFC 9882 sec. 3.3: without signed attributes the digestAlgorithm has no meaning, so the signer
   // forces the interoperable SHA-512 rather than carry a value a strict peer would reject).
-  var r13 = pki.schema.cms.parse(await pki.cms.sign(CONTENT, Object.assign(makeSigner("ml-dsa-44"), { digestAlgorithm: "shake256" }), { signedAttributes: false }));
+  var r13 = pki.schema.cms.parse(await pki.cms.sign(CONTENT, signing.signerOf(Object.assign(makeSigner("ml-dsa-44"), { digestAlgorithm: "shake256" })), { signedAttributes: false }));
   check("R13 no-attrs ML-DSA forces sha512 digestAlgorithm", r13.signerInfos[0].digestAlgorithm.name === "sha512");
   // R12 (sign side, Q1 = ENFORCE) -- a below-strength digest for the parameter set is refused at
   // config time: SHA-256 (128-bit) under ML-DSA-87 (lambda 256) / ML-DSA-65 (lambda 192).
-  await rejects("R12 ML-DSA-87 + sha256 (below strength) -> reject", function () { return pki.cms.sign(CONTENT, Object.assign(makeSigner("ml-dsa-87"), { digestAlgorithm: "sha256" })); }, "cms/unsupported-algorithm");
-  await rejects("R12 ML-DSA-65 + sha256 (below strength) -> reject", function () { return pki.cms.sign(CONTENT, Object.assign(makeSigner("ml-dsa-65"), { digestAlgorithm: "sha256" })); }, "cms/unsupported-algorithm");
-  await rejects("R8 ML-DSA-65 + sha3-512 (unwired digest) -> reject", function () { return pki.cms.sign(CONTENT, Object.assign(makeSigner("ml-dsa-65"), { digestAlgorithm: "sha3-512" })); }, "cms/unsupported-algorithm");
+  await rejects("R12 ML-DSA-87 + sha256 (below strength) -> reject", function () { return pki.cms.sign(CONTENT, signing.signerOf(Object.assign(makeSigner("ml-dsa-87"), { digestAlgorithm: "sha256" }))); }, "cms/unsupported-algorithm");
+  await rejects("R12 ML-DSA-65 + sha256 (below strength) -> reject", function () { return pki.cms.sign(CONTENT, signing.signerOf(Object.assign(makeSigner("ml-dsa-65"), { digestAlgorithm: "sha256" }))); }, "cms/unsupported-algorithm");
+  await rejects("R8 ML-DSA-65 + sha3-512 (unwired digest) -> reject", function () { return pki.cms.sign(CONTENT, signing.signerOf(Object.assign(makeSigner("ml-dsa-65"), { digestAlgorithm: "sha3-512" }))); }, "cms/unsupported-algorithm");
   // R11 -- an ML-DSA-44 CryptoKey against an ML-DSA-65 certificate is a fail-closed mismatch.
   var subtle = require("../../lib/webcrypto").webcrypto.subtle;
   var key44 = await subtle.importKey("pkcs8", makeSigner("ml-dsa-44").key, { name: "ML-DSA-44" }, false, ["sign"]);
@@ -901,33 +1063,33 @@ async function testSlhDsa() {
   // every one of the twelve pure sets signs and verifies, carrying its RFC 9814 sec. 4 pinned digest.
   for (var i = 0; i < SLH_DSA_SETS.length; i++) {
     var set = SLH_DSA_SETS[i];
-    var der = await pki.cms.sign(CONTENT, makeSigner("slh-dsa-" + set));
+    var der = await pki.cms.sign(CONTENT, signing.signerOf(makeSigner("slh-dsa-" + set)));
     check("SLH-DSA " + set + " -> verifies", (await pki.cms.verify(der)).valid === true);
     check("SLH-DSA " + set + " -> digestAlgorithm == " + SLH_DSA_PINNED[set], pki.schema.cms.parse(der).signerInfos[0].digestAlgorithm.name === SLH_DSA_PINNED[set]);
   }
   // detached, no-signed-attributes, and mixed with a classical signer, on the fast sha2-128f set.
-  var det = await pki.cms.sign(CONTENT, makeSigner("slh-dsa-sha2-128f"), { detached: true });
+  var det = await pki.cms.sign(CONTENT, signing.signerOf(makeSigner("slh-dsa-sha2-128f")), { detached: true });
   check("SLH-DSA detached + content -> valid", (await pki.cms.verify(det, { content: CONTENT })).valid === true);
-  check("SLH-DSA no-attrs -> valid", (await pki.cms.verify(await pki.cms.sign(CONTENT, makeSigner("slh-dsa-sha2-128f"), { signedAttributes: false }))).valid === true);
-  var mixed = await pki.cms.verify(await pki.cms.sign(CONTENT, [makeSigner("ec-p256"), makeSigner("slh-dsa-sha2-128f")]));
+  check("SLH-DSA no-attrs -> valid", (await pki.cms.verify(await pki.cms.sign(CONTENT, signing.signerOf(makeSigner("slh-dsa-sha2-128f")), { signedAttributes: false }))).valid === true);
+  var mixed = await pki.cms.verify(await pki.cms.sign(CONTENT, signing.signerOf([makeSigner("ec-p256"), makeSigner("slh-dsa-sha2-128f")])));
   check("SLH-DSA + ECDSA multi-signer -> all valid", mixed.valid === true && mixed.signers.length === 2 && mixed.signers.every(function (x) { return x.ok; }));
   // sid=subjectKeyIdentifier.
-  check("SLH-DSA sid=ski -> valid", (await pki.cms.verify(await pki.cms.sign(CONTENT, makeSigner("slh-dsa-shake-128f", { ski: true }), { sid: "ski" }))).valid === true);
+  check("SLH-DSA sid=ski -> valid", (await pki.cms.verify(await pki.cms.sign(CONTENT, signing.signerOf(makeSigner("slh-dsa-shake-128f", { ski: true })), { sid: "ski" }))).valid === true);
   // signatureAlgorithm / signer-key parameter-set disagreement is a fail-closed mismatch (sameKeyOid).
   // Rewritten in the ENCODING, on the SignerInfo's own AlgorithmIdentifier (the last one), so the
   // signer certificate keeps naming sha2-128f and what disagrees is the parameter set the message
   // asks to be verified under.
-  var p128 = await pki.cms.sign(CONTENT, makeSigner("slh-dsa-sha2-128f"));
+  var p128 = await pki.cms.sign(CONTENT, signing.signerOf(makeSigner("slh-dsa-sha2-128f")));
   var m = surgery.replaceLastAlgId(p128, pki.oid.byName("id-slh-dsa-sha2-128f"),
     function () { return b.sequence([b.oid(pki.oid.byName("id-slh-dsa-sha2-256f"))]); });
   check("SLH-DSA parameter-set swap changed the DER", !m.der.equals(p128));
   check("SLH-DSA sig-alg / key set mismatch -> unsupported", (function (r) { return r.valid === false && r.signers[0].code === "cms/unsupported-algorithm"; })(await pki.cms.verify(m.der)));
   // a caller digestAlgorithm that contradicts the parameter set's RFC 9814 sec. 4 pinned digest
   // (sha2-128f pins SHA-256) is rejected at config time rather than emitting a non-conformant digest.
-  await rejects("SLH-DSA + contradicting digestAlgorithm -> reject", function () { return pki.cms.sign(CONTENT, Object.assign(makeSigner("slh-dsa-sha2-128f"), { digestAlgorithm: "sha512" })); }, "cms/bad-input");
+  await rejects("SLH-DSA + contradicting digestAlgorithm -> reject", function () { return pki.cms.sign(CONTENT, signing.signerOf(Object.assign(makeSigner("slh-dsa-sha2-128f"), { digestAlgorithm: "sha512" }))); }, "cms/bad-input");
   // a SHAKE-digest SLH-DSA SignerInfo (shake-128f pins SHAKE128) whose digestAlgorithm carries a
   // present parameter (even DER NULL) is rejected -- RFC 8702 sec. 3.1 requires SHAKE params absent.
-  var pShk = await pki.cms.sign(CONTENT, makeSigner("slh-dsa-shake-128f"));
+  var pShk = await pki.cms.sign(CONTENT, signing.signerOf(makeSigner("slh-dsa-shake-128f")));
   var shk = surgery.replaceLastAlgId(pShk, pki.oid.byName("shake128"),
     function (n) { return surgery.algIdWithParams(n.children[0].bytes, b.nullValue()); });
   check("SLH-DSA shake128 digest-params splice changed the DER", !shk.der.equals(pShk));
@@ -937,7 +1099,7 @@ async function testSlhDsa() {
   }, "cms/bad-algorithm-parameters");
   // RFC 9814 sec. 4: a message-digest that is not the parameter set's paired hash is rejected on
   // verify -- SHA-256 on sha2-256f (which pairs SHA-512, twice the 256-bit tree hash) fails closed.
-  var p256f = await pki.cms.sign(CONTENT, makeSigner("slh-dsa-sha2-256f"));
+  var p256f = await pki.cms.sign(CONTENT, signing.signerOf(makeSigner("slh-dsa-sha2-256f")));
   var wrongMd = surgery.replaceLastAlgId(p256f, pki.oid.byName("sha512"),
     function () { return b.sequence([b.oid(pki.oid.byName("sha256"))]); });
   check("SLH-DSA digest swap changed the DER", !wrongMd.der.equals(p256f));
@@ -1016,7 +1178,7 @@ async function testKeyOnlySigner() {
   // else in the message contradicts it.
   var certA = makeSigner("ec-p256"), certB = makeSigner("ec-p256");
   check("a certificate-backed signer whose key matches its certificate signs",
-    pki.schema.cms.parse(await pki.cms.sign(CONTENT, certA)).signerInfos.length === 1);
+    pki.schema.cms.parse(await pki.cms.sign(CONTENT, signing.signerOf(certA))).signerInfos.length === 1);
   await rejects("a certificate-backed signer whose key is NOT its certificate's is refused", function () {
     return pki.cms.sign(CONTENT, { cert: certA.cert, key: certB.key });
   }, "cms/bad-input");
@@ -1079,12 +1241,12 @@ async function testKeyOnlySigner() {
   // means.
   var certSigner = makeSigner("ec-p256");
   await rejects("key-only + another signer under id-cct-PKIData", function () {
-    return pki.cms.sign(CONTENT, [certSigner, { key: keyPkcs8, spki: spki, keyIdentifier: keyId }],
+    return pki.cms.sign(CONTENT, [signing.signerOf(certSigner), { key: keyPkcs8, spki: spki, keyIdentifier: keyId }],
       { eContentType: "id-cct-PKIData" });
   }, "cms/bad-input");
   check("the same pair over ordinary content is not this rule's business",
     pki.schema.cms.parse(await pki.cms.sign(CONTENT,
-      [certSigner, { key: keyPkcs8, spki: spki, keyIdentifier: keyId }])).signerInfos.length === 2);
+      [signing.signerOf(certSigner), { key: keyPkcs8, spki: spki, keyIdentifier: keyId }])).signerInfos.length === 2);
 
   // Generated extractable, then the private half re-imported non-extractable --
   // the shape a key that lives in a token has, without needing one.
@@ -1138,7 +1300,7 @@ async function testKeyOnlySigner() {
   check("key-only signer alongside a second signer is refused (RFC 5272 sec. 3.2)",
     (await (async function () {
       try {
-        await pki.cms.sign(CONTENT, [{ key: keyPkcs8, spki: spki, keyIdentifier: keyId }, withCert],
+        await pki.cms.sign(CONTENT, [{ key: keyPkcs8, spki: spki, keyIdentifier: keyId }, signing.signerOf(withCert)],
           { eContentType: "id-cct-PKIData" });
         return "NO-THROW";
       } catch (e) { return e.code; }

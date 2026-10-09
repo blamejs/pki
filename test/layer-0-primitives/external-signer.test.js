@@ -60,7 +60,7 @@ async function p256Signer() {
 // which is what makes the deterministic-signature control meaningful.
 function rootSpec(spki, cn) {
   return {
-    subject: cn || "CN=External Signer Root",
+    subject: cn || "External Signer Root",
     subjectPublicKey: spki,
     serialNumber: 20260920n,
     notBefore: NOT_BEFORE,
@@ -200,9 +200,9 @@ async function testCallerObjectIsReadOnce() {
       return subtle.sign({ name: "Ed25519" }, e.pair.privateKey, bytes);
     },
   };
-  var csr = await code(pki.csr.sign({ subject: "CN=good.example", subjectPublicKey: e.spki }, { key: rewriting }));
+  var csr = await code(pki.csr.sign({ subject: "good.example", subjectPublicKey: e.spki }, { key: rewriting }));
   if (csr === "NO-THROW") {
-    var built = await pki.csr.sign({ subject: "CN=good.example", subjectPublicKey: e.spki }, { key: rewriting });
+    var built = await pki.csr.sign({ subject: "good.example", subjectPublicKey: e.spki }, { key: rewriting });
     check("a callback that rewrites the bytes it was handed does not rewrite the artifact",
       pki.schema.csr.parse(built).subject.dn.indexOf("good.example") !== -1);
   } else {
@@ -221,7 +221,7 @@ async function testCallerObjectIsReadOnce() {
       return subtle.sign({ name: "Ed25519" }, e.pair.privateKey, bytes);
     },
   };
-  await pki.csr.sign({ subject: "CN=good.example", subjectPublicKey: e.spki }, { key: probing });
+  await pki.csr.sign({ subject: "good.example", subjectPublicKey: e.spki }, { key: probing });
   check("the copy handed to the callback has a backing buffer of its own (" + reachable + ")",
     reachable !== null && reachable <= 4096);
 
@@ -351,14 +351,14 @@ async function testEverySigningVerbTakesTheForm() {
 
   await drive("x509.sign", async function () {
     await pki.x509.sign({
-      subject: "CN=Leaf", subjectPublicKey: leafSpki, notBefore: NOT_BEFORE, notAfter: NOT_AFTER,
+      subject: "Leaf", subjectPublicKey: leafSpki, notBefore: NOT_BEFORE, notAfter: NOT_AFTER,
     }, { key: e.signer, cert: caCert });
   });
   await drive("crl.sign", async function () {
     await pki.crl.sign({ thisUpdate: NOT_BEFORE, nextUpdate: NOT_AFTER, crlNumber: 1n, revoked: [] }, { key: e.signer, cert: caCert });
   });
   await drive("csr.sign", async function () {
-    await pki.csr.sign({ subject: "CN=Requester", subjectPublicKey: e.spki }, { key: e.signer });
+    await pki.csr.sign({ subject: "Requester", subjectPublicKey: e.spki }, { key: e.signer });
   });
   await drive("cms.sign", async function () {
     await pki.cms.sign(Buffer.from("content"), { key: e.signer, cert: caCert });
@@ -371,7 +371,7 @@ async function testEverySigningVerbTakesTheForm() {
   await drive("cmp.build", async function () {
     var csrDer = await pki.csr.sign({ subject: "client", subjectPublicKey: leafSpki }, { key: leafPair.privateKey });
     await pki.cmp.build({
-      header: { sender: { directoryName: "CN=client" }, recipient: { directoryName: "CN=CA" } },
+      header: { sender: { directoryName: "client" }, recipient: { directoryName: "CA" } },
       body: { p10cr: csrDer },
     }, { key: e.signer, cert: caCert });
   });
@@ -383,7 +383,7 @@ async function testEverySigningVerbTakesTheForm() {
   });
   await drive("attrcert.sign", async function () {
     await pki.attrcert.sign({
-      holder: { entityName: { directoryName: "CN=Alice" } },
+      holder: { entityName: { directoryName: "Alice" } },
       notBeforeTime: NOT_BEFORE, notAfterTime: NOT_AFTER,
       attributes: { role: { roleName: { uniformResourceIdentifier: "urn:role:admin" } } },
     }, { cert: caCert, key: e.signer });
@@ -391,7 +391,7 @@ async function testEverySigningVerbTakesTheForm() {
   // RFC 3161 sec. 2.3 requires the TSA certificate to assert the timeStamping EKU and nothing else,
   // so the timestamp runs under a certificate minted for the same key rather than the CA's own.
   var tsaCert = await pki.x509.sign({
-    subject: "CN=External Signer TSA", subjectPublicKey: e.spki, serialNumber: 20260921n,
+    subject: "External Signer TSA", subjectPublicKey: e.spki, serialNumber: 20260921n,
     notBefore: NOT_BEFORE, notAfter: NOT_AFTER,
     extensions: { keyUsage: ["digitalSignature"], extendedKeyUsage: ["timeStamping"], extendedKeyUsageCritical: true },
   }, { key: e.pair.privateKey, cert: caCert });
@@ -424,14 +424,14 @@ async function testABadSignatureIsRefusedEverywhere() {
     if (verdict === "NO-THROW") accepted.push(name);
   }
   await mustRefuse("x509.sign", function () {
-    return pki.x509.sign({ subject: "CN=Leaf", subjectPublicKey: e.spki, notBefore: NOT_BEFORE, notAfter: NOT_AFTER },
+    return pki.x509.sign({ subject: "Leaf", subjectPublicKey: e.spki, notBefore: NOT_BEFORE, notAfter: NOT_AFTER },
       { key: wrongKey, cert: caCert });
   });
   await mustRefuse("crl.sign", function () {
     return pki.crl.sign({ thisUpdate: NOT_BEFORE, nextUpdate: NOT_AFTER, crlNumber: 1n, revoked: [] }, { key: wrongKey, cert: caCert });
   });
   await mustRefuse("csr.sign", function () {
-    return pki.csr.sign({ subject: "CN=Requester", subjectPublicKey: e.spki }, { key: wrongKey });
+    return pki.csr.sign({ subject: "Requester", subjectPublicKey: e.spki }, { key: wrongKey });
   });
   await mustRefuse("cms.sign", function () {
     return pki.cms.sign(Buffer.from("content"), { key: wrongKey, cert: caCert });

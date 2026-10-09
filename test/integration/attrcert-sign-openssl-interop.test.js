@@ -55,9 +55,9 @@ async function run() {
   // A tampered signatureValue byte fails the parse + verify round trip.
   var aa2 = signing.makeSigner("ec-p256");
   var good = await pki.attrcert.sign({
-    holder: { entityName: { directoryName: "CN=Tamper" } }, notBeforeTime: NB, notAfterTime: NA,
+    holder: { entityName: { directoryName: "Tamper" } }, notBeforeTime: NB, notAfterTime: NA,
     attributes: { role: { roleName: { uniformResourceIdentifier: "urn:r" } } },
-  }, { name: "CN=Tamper AA", publicKey: aa2.spki, key: aa2.key });
+  }, { name: "Tamper AA", publicKey: aa2.spki, key: aa2.key });
   var bad = Buffer.from(good); bad[bad.length - 1] ^= 0xff;   // flip a signatureValue byte
   // The signature oracle: verify the emitted signature under the AA key; the tampered one must fail.
   var okGood = await _verifyAcSignature(good, aa2.spki);

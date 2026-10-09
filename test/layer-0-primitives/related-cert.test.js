@@ -67,8 +67,13 @@ var CERT_TIME = 1800000000;   // seconds since the epoch
 var FRESH = { maxAge: 300, at: new Date((CERT_TIME + 60) * 1000) };
 // The vectors below are about everything EXCEPT freshness, so they state the policy once here rather than
 // thirty times. The freshness arms themselves call the verb directly, with their own window and instant.
+/* The verb returns a verdict object. These vectors are about whether the PROOF verifies, which is
+   `valid`, so the helper reads that one field and the arms below are unchanged. The verdict's own
+   shape, and the keyUsage gate that can make `valid` false while the signature itself verified, are
+   driven directly through the verb in testVerdictShapeAndKeyUsageGate. */
 function verifyFresh(rc, cert, opts) {
-  return pki.relatedCert.verifyRequest(rc, cert, Object.assign({}, FRESH, opts || {}));
+  return pki.relatedCert.verifyRequest(rc, cert, Object.assign({}, FRESH, opts || {}))
+    .then(function (v) { return v.valid; });
 }
 
 // A certificate whose signatureAlgorithm is whatever is named, over whatever key is given. Hand-built,
@@ -260,16 +265,16 @@ async function testCsrAttribute() {
     (await codeAsync(pki.relatedCert.verifyRequest(rc, held.cert))) === "relatedcert/no-freshness-policy");
   var atNow = new Date((CERT_TIME + 60) * 1000);
   check("C11a: CONTROL inside the window it verifies",
-    (await pki.relatedCert.verifyRequest(rc, held.cert, { maxAge: 300, at: atNow })) === true);
+    (await pki.relatedCert.verifyRequest(rc, held.cert, { maxAge: 300, at: atNow })).valid === true);
   check("C11b: and one second past the window is refused, the proof being unchanged",
     (await codeAsync(pki.relatedCert.verifyRequest(rc, held.cert, { maxAge: 59, at: atNow }))) === "relatedcert/stale-request");
   check("C11c: exactly at the window is still fresh, the bound being inclusive",
-    (await pki.relatedCert.verifyRequest(rc, held.cert, { maxAge: 60, at: atNow })) === true);
+    (await pki.relatedCert.verifyRequest(rc, held.cert, { maxAge: 60, at: atNow })).valid === true);
   check("C11d: a requestTime in the future is refused, so a producer cannot set one that stays fresh",
     (await codeAsync(pki.relatedCert.verifyRequest(rc, held.cert,
       { maxAge: 300, at: new Date((CERT_TIME - 1) * 1000) }))) === "relatedcert/stale-request");
   check("C11e: a maxAge of 0 admits only the instant itself",
-    (await pki.relatedCert.verifyRequest(rc, held.cert, { maxAge: 0, at: new Date(CERT_TIME * 1000) })) === true &&
+    (await pki.relatedCert.verifyRequest(rc, held.cert, { maxAge: 0, at: new Date(CERT_TIME * 1000) })).valid === true &&
     (await codeAsync(pki.relatedCert.verifyRequest(rc, held.cert, { maxAge: 0, at: atNow }))) === "relatedcert/stale-request");
   check("C11f: a negative or non-integer maxAge is refused at the door",
     (await codeAsync(pki.relatedCert.verifyRequest(rc, held.cert, { maxAge: -1, at: atNow }))) === "relatedcert/bad-input" &&
@@ -327,7 +332,31 @@ async function testCsrAttribute() {
   check("C19: a missing requestTime is refused", await badSpec(less("requestTime")));
   check("C20: an unknown field in the attribute spec is refused", await badSpec(Object.assign({ nonce: 1 }, ok)));
 
-  return { held: held, heldParsed: heldParsed, subject: subject, rc: rc, certID: certID, preimage: preimage };
+  /* A held certificate confined to one keyUsage, with a proof made by its own key, and the freshness
+     window that proof needs. `null` mints one carrying no keyUsage extension at all. Each gets its
+     own serial so the certID binding check has a certificate to match. */
+  var kuSerial = 100;
+  async function heldWithKeyUsage(keyUsage, alg) {
+    kuSerial += 1;
+    var opts = { cn: "KU " + (keyUsage === null ? "none" : keyUsage), serial: kuSerial };
+    if (keyUsage !== null) opts.exts = [signing.keyUsageExt(keyUsage)];
+    var h = signing.makeSigner(alg || "ec-p256", opts);
+    var hp = pki.schema.x509.parse(h.cert);
+    var cid = { issuer: hp.issuer.bytes, serialNumber: hp.serialNumber };
+    var pre = pki.relatedCert.requestSignedData({ certID: cid, requestTime: CERT_TIME });
+    // An EdDSA key fixes its own digest, so naming one is the error OpenSSL reports.
+    var edwards = alg === "ed25519" || alg === "ed448";
+    var sig = crypto.sign(edwards ? null : "sha256", pre, { key: h.keyObject, dsaEncoding: "der" });
+    return {
+      cert: h.cert,
+      fresh: FRESH,
+      rc: { certID: cid, requestTime: BigInt(CERT_TIME), locationInfo: ["https://a.example/"],
+        signature: { unusedBits: 0, bytes: sig } },
+    };
+  }
+
+  return { held: held, heldParsed: heldParsed, subject: subject, rc: rc, certID: certID,
+    preimage: preimage, heldWithKeyUsage: heldWithKeyUsage };
 }
 
 // ---- the parser's own refusals, on bytes no builder of ours emits ----------
@@ -763,7 +792,91 @@ async function run() {
   await testExtensionParsing(ctx);
   await testPlacementAndAlgorithms(ctx);
   await testCertificateBindingSurvivesAReplacedHash();
+  await testVerdictShapeAndKeyUsageGate(ctx);
   console.log("CHECKS " + helpers.getChecks());
+}
+
+/* The verb used to answer with a bare boolean, which cannot say WHICH check failed: a key the
+   certificate never authorized for signing and a signature that simply does not verify both read as
+   `false`, and a caller acting on one as if it were the other acts on the wrong fact. It now answers
+   the verdict object `pki.possession.verifyRequest` answers with, keeping the two apart.
+
+   The gate's bit set is NOT possession's. RFC 9763 sec. 3.1 states that "if the related certificate
+   is a key establishment certificate (e.g., using RSA key transport or Elliptic Curve Cryptography
+   (ECC) key agreement), the private key is used to sign one time for proof of possession (POP)", so
+   keyEncipherment and keyAgreement authorize this one signature where they authorize no other.
+   Measured before the gate: a certificate confined to any single usage, cRLSign included, verified
+   true, so possession's three-bit set would have begun refusing two shapes the document admits. */
+async function testVerdictShapeAndKeyUsageGate(ctx) {
+  var rc = ctx.rc, held = ctx.held;
+
+  var v = await pki.relatedCert.verifyRequest(rc, held.cert, FRESH);
+  check("V1: the verdict names the proof's own outcome and the authorization separately",
+    v.valid === true && v.verified === true && v.signerMaySign === true);
+  /* The verdict carries the algorithm because it is DERIVED: the structure names none, so the verb
+     picks one from the certificate's own signature OID and a caller cannot otherwise tell which
+     digest the proof was checked under. It does NOT echo certID or requestTime: the caller passed
+     those in, and copying the decoded issuer back would invite a byte comparison against a name this
+     verb judged equal under the RFC 5280 sec. 7.1 folding, where equal names are routinely
+     different bytes and no public comparison exists to do it correctly. */
+  check("V2: the verdict names the algorithm it verified under, which the request does not carry",
+    v.signatureAlgorithm != null && typeof v.signatureAlgorithm.oid === "string");
+  check("V2a: and it does not echo back the request's own fields",
+    v.certID === undefined && v.requestTime === undefined);
+  check("V3: a passing verdict carries no failure code or reason",
+    v.code === undefined && v.reason === undefined);
+
+  // A proof that does not verify: the signature failed, the key was allowed to make it.
+  var other = signing.makeSigner("ec-p256", { cn: "Other", serial: 44 });
+  var forged = crypto.sign("sha256", ctx.preimage, { key: other.keyObject, dsaEncoding: "der" });
+  var bad = await pki.relatedCert.verifyRequest({ certID: rc.certID, requestTime: rc.requestTime,
+    locationInfo: rc.locationInfo, signature: { unusedBits: 0, bytes: forged } }, held.cert, FRESH);
+  check("V4: a failed signature is reported as the signature, with the authorization intact",
+    bad.valid === false && bad.verified === false && bad.signerMaySign === true &&
+    bad.code === "relatedcert/bad-signature");
+
+  /* The gate itself. A certificate confined to cRLSign authorizes no signature over a request, so
+     the proof is unauthorized even though the bytes verify: the two facts are reported apart, which
+     is the whole reason for the shape. */
+  var confined = await ctx.heldWithKeyUsage("cRLSign");
+  var gated = await pki.relatedCert.verifyRequest(confined.rc, confined.cert, confined.fresh);
+  check("V5: a certificate confined to cRLSign is refused, and the signature's own verdict is kept",
+    gated.valid === false && gated.verified === true && gated.signerMaySign === false &&
+    gated.code === "relatedcert/signer-may-not-sign");
+
+  /* WHICH establishment bit counts comes from the subject key, because sec. 3.1 admits a key
+     establishment CERTIFICATE and a bit the key's own family cannot perform does not make one.
+     Measured under the union of both bits: an EC certificate asserting only keyEncipherment, which
+     RFC 8813 sec. 3 makes a MUST NOT for id-ecPublicKey, and an RSA certificate asserting only
+     keyAgreement, which RFC 3279 sec. 2.3.1 does not list, both reported signerMaySign and a valid
+     proof. Both arms of the matrix are driven, in both directions. */
+  var USAGE_MATRIX = [
+    ["ec-p256", "keyAgreement", true], ["ec-p256", "keyEncipherment", false],
+    ["rsa", "keyEncipherment", true], ["rsa", "keyAgreement", false],
+    ["ec-p256", "digitalSignature", true], ["ec-p256", "nonRepudiation", true],
+    ["rsa", "digitalSignature", true], ["rsa", "nonRepudiation", true],
+    ["ed25519", "digitalSignature", true], ["ed25519", "keyAgreement", false],
+    ["ed25519", "keyEncipherment", false],
+  ];
+  var matrixWrong = [];
+  for (var i = 0; i < USAGE_MATRIX.length; i++) {
+    var row = USAGE_MATRIX[i];
+    var h = await ctx.heldWithKeyUsage(row[1], row[0]);
+    var r = await pki.relatedCert.verifyRequest(h.rc, h.cert, h.fresh);
+    var wantCode = row[2] ? undefined : "relatedcert/signer-may-not-sign";
+    if (r.valid !== row[2] || r.signerMaySign !== row[2] || r.code !== wantCode) {
+      matrixWrong.push(row[0] + "/" + row[1] + " -> valid=" + r.valid +
+        " signerMaySign=" + r.signerMaySign + " code=" + r.code);
+    }
+  }
+  check("V6: an establishment usage authorizes the proof only where the subject key's own family " +
+    "performs that establishment mechanism, and a signature usage always does" +
+    (matrixWrong.length ? " [" + matrixWrong.join("; ") + "]" : ""), matrixWrong.length === 0);
+  // CONTROL: a certificate carrying no keyUsage at all is unconstrained and still verifies.
+  var none = await ctx.heldWithKeyUsage(null);
+  var noneV = await pki.relatedCert.verifyRequest(none.rc, none.cert, none.fresh);
+  check("V7: CONTROL a certificate with no keyUsage extension is unconstrained",
+    noneV.valid === true && noneV.signerMaySign === true);
 }
 
 /* The extension binds a request to ONE certificate by a digest over that certificate's bytes, so what

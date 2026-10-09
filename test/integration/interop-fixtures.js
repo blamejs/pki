@@ -307,7 +307,8 @@ module.exports = {
     {
       desc: "a SignedData we sign verifies under `openssl cms -verify` across RSA / RSASSA-PSS / ECDSA / Ed25519 / Ed448 (attached + detached); openssl REJECTS a tampered copy",
       run: async function (ctx) {
-        var makeSigner = require("../helpers/signing").makeSigner;
+        var signing = require("../helpers/signing");
+        var makeSigner = signing.makeSigner;
         var content = Buffer.from("pki.cms.sign cross-implementation content");
         var contentPath = ctx.tmpFile(content, "content.bin");
         // Every classical signer key algorithm the primitive advertises must round-trip through
@@ -323,7 +324,7 @@ module.exports = {
           var alg = algs[i];
           var signer = makeSigner(alg);
           var cp = ctx.tmpFile(ctx.pki.schema.x509.pemEncode(signer.cert, "CERTIFICATE"), "cert.pem");
-          var att = ctx.tmpFile(await ctx.pki.cms.sign(content, signer), "att.der");
+          var att = ctx.tmpFile(await ctx.pki.cms.sign(content, signing.signerOf(signer)), "att.der");
           var a = ctx.runOpenssl(["cms", "-verify", "-noverify", "-inform", "DER", "-in", att, "-certfile", cp], { allowNonZero: true });
           var skippable = alg === "ed25519" || alg === "ed448" || alg.indexOf("ml-dsa") === 0 || alg.indexOf("slh-dsa") === 0;
           if (a.code !== 0 && skippable) {
@@ -335,7 +336,7 @@ module.exports = {
         // detached content + a negative (tampered content must be rejected), on ec-p256.
         var s = makeSigner("ec-p256");
         var certPath = ctx.tmpFile(ctx.pki.schema.x509.pemEncode(s.cert, "CERTIFICATE"), "cert.pem");
-        var det = ctx.tmpFile(await ctx.pki.cms.sign(content, s, { detached: true }), "det.der");
+        var det = ctx.tmpFile(await ctx.pki.cms.sign(content, signing.signerOf(s), { detached: true }), "det.der");
         var d = ctx.runOpenssl(["cms", "-verify", "-noverify", "-inform", "DER", "-in", det, "-content", contentPath, "-certfile", certPath], { allowNonZero: true });
         ctx.check("openssl cms -verify accepts our detached SignedData over the content", d.code === 0);
         var wrong = ctx.tmpFile(Buffer.from("an entirely different content"), "wrong.bin");

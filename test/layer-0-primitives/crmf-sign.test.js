@@ -167,7 +167,7 @@ async function testProofOfPossession() {
 
 async function testControlsAndRegInfo() {
   var s = makeSigner("ec-p256");
-  var der = await pki.crmf.build({ certTemplate: tpl(s.spki), controls: { regToken: "tok", authenticator: "maiden", oldCertID: { issuer: { directoryName: "CN=CA" }, serialNumber: 42n }, protocolEncrKey: s.spki }, regInfo: { utf8Pairs: "k?v" } }, { key: s.key });
+  var der = await pki.crmf.build({ certTemplate: tpl(s.spki), controls: { regToken: "tok", authenticator: "maiden", oldCertID: { issuer: { directoryName: "CA" }, serialNumber: 42n }, protocolEncrKey: s.spki }, regInfo: { utf8Pairs: "k?v" } }, { key: s.key });
   var m = parse(der)[0];
   check("controls round-trip (4 entries)", m.certReq.controls.length === 4);
   check("regInfo round-trips (1 entry)", m.regInfo.length === 1);
@@ -237,7 +237,7 @@ async function testCoverageEdges() {
   check("pre-encoded control not valid DER -> crmf/bad-input", await codeOf(pki.crmf.build({ certTemplate: tpl(s.spki), controls: [Buffer.from([0x30, 0x80])] }, { key: s.key })) === "crmf/bad-input");
   check("pre-encoded control type not an OID -> crmf/bad-input", await codeOf(pki.crmf.build({ certTemplate: tpl(s.spki), controls: [B.sequence([B.integer(1n), B.utf8("x")])] }, { key: s.key })) === "crmf/bad-input");
   // oldCertID shape guard.
-  check("oldCertID missing serialNumber -> crmf/bad-input", await codeOf(pki.crmf.build({ certTemplate: tpl(s.spki), controls: { oldCertID: { issuer: { directoryName: "CN=CA" } } } }, { key: s.key })) === "crmf/bad-input");
+  check("oldCertID missing serialNumber -> crmf/bad-input", await codeOf(pki.crmf.build({ certTemplate: tpl(s.spki), controls: { oldCertID: { issuer: { directoryName: "CA" } } } }, { key: s.key })) === "crmf/bad-input");
   // a batch element that is not an object.
   check("non-object batch message -> crmf/bad-input", await codeOf(pki.crmf.build({ messages: [5] }, { key: s.key })) === "crmf/bad-input");
 }
@@ -1788,7 +1788,7 @@ async function testPopoPrivKeyArms() {
 
   // V11 -- RFC 9810 sec. 5.2.8.3: "When using agreeMAC or encryptedKey choices, the pvno cmp2021(3)
   // MUST be used." That is a CMP header rule the CRMF layer cannot enforce for itself.
-  var cmpHdr = { sender: { directoryName: "CN=client" }, recipient: { directoryName: "CN=CA" }, transactionID: Buffer.alloc(16, 7) };
+  var cmpHdr = { sender: { directoryName: "client" }, recipient: { directoryName: "CA" }, transactionID: Buffer.alloc(16, 7) };
   var cmpSig = { key: s.key, cert: s.cert };
   var cmpEnc = await pki.cmp.build({ header: cmpHdr, body: { ir: encSpec } }, cmpSig);
   check("POP a CMP request carrying an encryptedKey POP announces cmp2021(3)",

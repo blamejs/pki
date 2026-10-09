@@ -56,7 +56,7 @@ function verifySig(spkiDer, preimage, sig, hash) {
 
 async function run() {
   var s = makeSigner("ec-p256");
-  var HDR = { sender: { directoryName: "CN=client" }, recipient: { directoryName: "CN=CA" }, transactionID: Buffer.alloc(16, 7) };
+  var HDR = { sender: { directoryName: "client" }, recipient: { directoryName: "CA" }, transactionID: Buffer.alloc(16, 7) };
   var SIG = { key: s.key, cert: s.cert };
   async function csrDer() { return pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: s.spki }, s.key); }
 
@@ -248,7 +248,7 @@ async function run() {
   check("6b. p10cr body arm octet is 0xA4 ([4])", bodyTagOctet(await pki.cmp.build({ header: HDR, body: { p10cr: await csrDer() } }, SIG)) === 0xa4);
   check("6c. cr body arm octet is 0xA2 ([2])", bodyTagOctet(await pki.cmp.build({ header: HDR, body: { cr: irMsg.body.ir } }, SIG)) === 0xa2);
   check("6d. kur body arm octet is 0xA7 ([7])", bodyTagOctet(await pki.cmp.build({ header: HDR, body: { kur: irMsg.body.ir } }, SIG)) === 0xa7);
-  check("6e. rr body arm octet is 0xAB ([11], NOT [15]/0xAF)", bodyTagOctet(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n } }] } }, SIG)) === 0xab);
+  check("6e. rr body arm octet is 0xAB ([11], NOT [15]/0xAF)", bodyTagOctet(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CA", serialNumber: 42n } }] } }, SIG)) === 0xab);
   check("6f. genm body arm octet is 0xB5 ([21])", bodyTagOctet(await pki.cmp.build({ header: HDR, body: { genm: [{ infoType: "caCerts" }] } }, SIG)) === 0xb5);
   check("6g. certConf body arm octet is 0xB8 ([24])", bodyTagOctet(await pki.cmp.build({ header: HDR, body: { certConf: [{ certHash: Buffer.alloc(32, 1), certReqId: 0 }] } }, SIG)) === 0xb8);
   check("6h. pollReq body arm octet is 0xB9 ([25])", bodyTagOctet(await pki.cmp.build({ header: HDR, body: { pollReq: [{ certReqId: 0 }] } }, SIG)) === 0xb9);
@@ -358,8 +358,8 @@ async function run() {
   var certPem = Buffer.from(pki.schema.x509.pemEncode(s.cert, "CERTIFICATE"));
   check("13i. a PEM-armored opts.cert -> cmp/bad-input, not cmp/bad-der after signing", await codeOf(pki.cmp.build(irMsg, { key: s.key, cert: certPem })) === "cmp/bad-input");
   check("13j. a PEM-armored opts.extraCerts entry -> cmp/bad-input, not cmp/bad-der", await codeOf(pki.cmp.build(irMsg, Object.assign({ extraCerts: [certPem] }, SIG))) === "cmp/bad-input");
-  check("14. rr round-trips; certDetails re-decodes via the CertTemplate walk", parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n } }] } }, SIG)).body.arm === "rr");
-  var tplDer = pki.crmf.buildCertTemplate({ serialNumber: 42n, issuer: "CN=CA" });
+  check("14. rr round-trips; certDetails re-decodes via the CertTemplate walk", parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CA", serialNumber: 42n } }] } }, SIG)).body.arm === "rr");
+  var tplDer = pki.crmf.buildCertTemplate({ serialNumber: 42n, issuer: "CA" });
   check("14b. pki.crmf.buildCertTemplate produces a CertTemplate DER usable as rr certDetails", pki.asn1.decode(tplDer).tagNumber === asn1.TAGS.SEQUENCE && parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: tplDer }] } }, SIG)).body.arm === "rr");
   // A pre-encoded certDetails must survive every byte-source form the byte guard accepts. As an
   // ArrayBuffer or DataView a narrowed check would miss it and demand the { issuer, serialNumber } it
@@ -531,31 +531,31 @@ async function run() {
   check("21aa. build without opts -> cmp/bad-input (protection required)", await codeOf(pki.cmp.build(irMsg)) === "cmp/bad-input");
   // an rr carrying crlEntryDetails (a pre-encoded Extensions DER) + a random-salt PBMAC1 (no salt supplied).
   var crlExts = asn1.build.sequence([asn1.build.sequence([asn1.build.oid("2.5.29.21"), asn1.build.octetString(Buffer.from("0a0101", "hex"))])]);   // Extensions { reasonCode keyCompromise }
-  check("21bb. rr with crlEntryDetails round-trips", parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n }, crlEntryDetails: crlExts }] } }, SIG)).body.arm === "rr");
+  check("21bb. rr with crlEntryDetails round-trips", parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CA", serialNumber: 42n }, crlEntryDetails: crlExts }] } }, SIG)).body.arm === "rr");
   // The pre-encoded crlEntryDetails (reasonCode keyCompromise) must survive every byte-source form. As
   // an ArrayBuffer or DataView it would otherwise fall through as a { reason }-less object and be
   // silently replaced by a generated unspecified(0) reasonCode -- a different revocation reason than the
   // caller encoded. Equal bodyBytes proves the Extensions survived unchanged.
-  var ceBuf = parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n }, crlEntryDetails: crlExts }] } }, SIG)).bodyBytes;
+  var ceBuf = parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CA", serialNumber: 42n }, crlEntryDetails: crlExts }] } }, SIG)).bodyBytes;
   var crlExtsAb = crlExts.buffer.slice(crlExts.byteOffset, crlExts.byteOffset + crlExts.byteLength);
-  check("21bb2. crlEntryDetails as an ArrayBuffer preserves the caller's Extensions, not a generated unspecified(0)", (parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n }, crlEntryDetails: crlExtsAb }] } }, SIG)).bodyBytes).equals(ceBuf));
-  check("21bb3. crlEntryDetails as a DataView preserves the caller's Extensions", (parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n }, crlEntryDetails: new DataView(crlExtsAb) }] } }, SIG)).bodyBytes).equals(ceBuf));
+  check("21bb2. crlEntryDetails as an ArrayBuffer preserves the caller's Extensions, not a generated unspecified(0)", (parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CA", serialNumber: 42n }, crlEntryDetails: crlExtsAb }] } }, SIG)).bodyBytes).equals(ceBuf));
+  check("21bb3. crlEntryDetails as a DataView preserves the caller's Extensions", (parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CA", serialNumber: 42n }, crlEntryDetails: new DataView(crlExtsAb) }] } }, SIG)).bodyBytes).equals(ceBuf));
   // A crlEntryDetails.reason getter cannot make the encoded reason differ from the validated one: build()
   // deep-copies the caller's message at entry, so a getter is invoked exactly once and its LATER values
   // never reach the encoder. This getter returns keyCompromise on the first read and cessationOfOperation
   // on every read after; the built message must still encode keyCompromise, matching a plain { reason }.
-  var refReasonBody = parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n }, crlEntryDetails: { reason: "keyCompromise" } }] } }, SIG)).bodyBytes;
+  var refReasonBody = parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CA", serialNumber: 42n }, crlEntryDetails: { reason: "keyCompromise" } }] } }, SIG)).bodyBytes;
   var reasonReads = 0, reasonSpec = {};
   Object.defineProperty(reasonSpec, "reason", { enumerable: true, get: function () { reasonReads += 1; return reasonReads === 1 ? "keyCompromise" : "cessationOfOperation"; } });
-  var getterReasonBody = parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n }, crlEntryDetails: reasonSpec }] } }, SIG)).bodyBytes;
+  var getterReasonBody = parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CA", serialNumber: 42n }, crlEntryDetails: reasonSpec }] } }, SIG)).bodyBytes;
   check("21bb5. a crlEntryDetails.reason getter's later values never reach the encoder (entry deep-copy)", getterReasonBody.equals(refReasonBody) && reasonReads === 1);
   // crlEntryDetails is { reason } | pre-encoded Extensions DER. A value outside that union that is neither a
   // byte source nor a plain record -- an empty array, or an exotic like a Date -- must be refused, not read
   // as a keyless record: the fallback would find no `reason` and emit a generated unspecified(0) reasonCode,
   // turning a malformed input into a real revocation request. An empty PLAIN record stays valid (unspecified).
-  check("21bb7. an array crlEntryDetails is refused, not defaulted to unspecified(0)", await codeOf(pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n }, crlEntryDetails: [] }] } }, SIG)) === "cmp/bad-rev-req");
-  check("21bb8. a non-record (Date) crlEntryDetails is refused", await codeOf(pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n }, crlEntryDetails: new Date() }] } }, SIG)) === "cmp/bad-rev-req");
-  check("21bb9. an empty plain-record crlEntryDetails stays valid (unspecified(0))", parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n }, crlEntryDetails: {} }] } }, SIG)).body.arm === "rr");
+  check("21bb7. an array crlEntryDetails is refused, not defaulted to unspecified(0)", await codeOf(pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CA", serialNumber: 42n }, crlEntryDetails: [] }] } }, SIG)) === "cmp/bad-rev-req");
+  check("21bb8. a non-record (Date) crlEntryDetails is refused", await codeOf(pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CA", serialNumber: 42n }, crlEntryDetails: new Date() }] } }, SIG)) === "cmp/bad-rev-req");
+  check("21bb9. an empty plain-record crlEntryDetails stays valid (unspecified(0))", parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CA", serialNumber: 42n }, crlEntryDetails: {} }] } }, SIG)).body.arm === "rr");
   // buildCrlStatusList composes a crlUpdate genm body straight from the caller's request: pki.cmp.session
   // hands it the request with no entry deep-copy, so the issuer it puts on the wire and the issuer it binds
   // the response to (the returned issuerName) must come from ONE read of the caller's field. An issuer whose
@@ -594,7 +594,7 @@ async function run() {
   // 24. content round-trips through the parser.
   var mIp = parse(await pki.cmp.build({ header: HDR, body: { ip: { caPubs: [CERT], response: [{ certReqId: 0, status: { status: 0, statusString: ["ok"] }, certifiedKeyPair: { certificate: CERT }, rspInfo: Buffer.from([1, 2]) }] } } }, SIG));
   check("24a. ip CertRepMessage round-trips (caPubs + a granting CertResponse + certificate)", mIp.body.arm === "ip" && !!mIp.body.decoded);
-  check("24b. rp RevRepContent round-trips (status + revCerts CertId)", parse(await pki.cmp.build({ header: HDR, body: { rp: { status: [{ status: 0 }], revCerts: [{ issuer: { directoryName: "CN=CA" }, serialNumber: 42n }] } } }, SIG)).body.arm === "rp");
+  check("24b. rp RevRepContent round-trips (status + revCerts CertId)", parse(await pki.cmp.build({ header: HDR, body: { rp: { status: [{ status: 0 }], revCerts: [{ issuer: { directoryName: "CA" }, serialNumber: 42n }] } } }, SIG)).body.arm === "rp");
   check("24c. error ErrorMsgContent round-trips (status + errorCode + errorDetails + failInfo)", parse(await pki.cmp.build({ header: HDR, body: { error: { pKIStatusInfo: { status: 2, failInfo: ["badRequest"] }, errorCode: 7, errorDetails: ["denied"] } } }, SIG)).body.arm === "error");
   check("24d. pollRep round-trips (certReqId + checkAfter + reason)", parse(await pki.cmp.build({ header: HDR, body: { pollRep: [{ certReqId: 0, checkAfter: 120, reason: ["still working"] }] } }, SIG)).body.arm === "pollRep");
   check("24e. krp KeyRecRepContent round-trips (status + caCerts + keyPairHist)", parse(await pki.cmp.build({ header: HDR, body: { krp: { status: { status: 0 }, caCerts: [CERT], keyPairHist: [{ certificate: CERT }] } } }, SIG)).body.arm === "krp");

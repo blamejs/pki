@@ -80,7 +80,7 @@ function pbmac1AlgId(o) {
 
 async function run() {
   var s = makeSigner("ec-p256");
-  var HDR = { sender: { directoryName: [{ commonName: "Test Signer" }] }, recipient: { directoryName: "CN=CA" }, transactionID: Buffer.alloc(16, 7), senderNonce: Buffer.alloc(16, 5) };
+  var HDR = { sender: { directoryName: [{ commonName: "Test Signer" }] }, recipient: { directoryName: "CA" }, transactionID: Buffer.alloc(16, 7), senderNonce: Buffer.alloc(16, 5) };
   var SIG = { key: s.key, cert: s.cert };
   var IRBODY = { ir: { certTemplate: { subject: [{ commonName: "leaf" }], publicKey: s.spki } } };
   function hdr(over) { return Object.assign({}, HDR, over || {}); }
@@ -219,7 +219,7 @@ async function run() {
   var caKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   var caKey = caKp.privateKey.export({ format: "der", type: "pkcs8" });
   var caSpki = caKp.publicKey.export({ format: "der", type: "spki" });
-  var caCert = await pki.x509.sign({ subject: "CN=Test CMP CA", subjectPublicKey: caSpki, serialNumber: 1, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: true } }, { key: caKey });
+  var caCert = await pki.x509.sign({ subject: "Test CMP CA", subjectPublicKey: caSpki, serialNumber: 1, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: true } }, { key: caKey });
   var signerKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   var signerKey = signerKp.privateKey.export({ format: "der", type: "pkcs8" });
   var signerSpki = signerKp.publicKey.export({ format: "der", type: "spki" });
@@ -773,7 +773,7 @@ async function run() {
   check("20a. opts=null is treated as the default (empty) opts", (await pki.cmp.verify(await buildSig(), null)).valid === true);
   check("20b. opts as a Buffer -> throws cmp/bad-input", await codeOf(pki.cmp.verify(await buildSig(), Buffer.from("x"))) === "cmp/bad-input");
   check("20b2. opts as a string -> throws cmp/bad-input", await codeOf(pki.cmp.verify(await buildSig(), "x")) === "cmp/bad-input");
-  var minHdr = { sender: { directoryName: [{ commonName: "Test Signer" }] }, recipient: { directoryName: "CN=CA" }, transactionID: Buffer.alloc(16, 7), senderNonce: Buffer.alloc(16, 5) };
+  var minHdr = { sender: { directoryName: [{ commonName: "Test Signer" }] }, recipient: { directoryName: "CA" }, transactionID: Buffer.alloc(16, 7), senderNonce: Buffer.alloc(16, 5) };
   var minV = await pki.cmp.verify(await pki.cmp.build({ header: minHdr, body: IRBODY }, SIG), { signerCert: s.cert });
   check("20c. a first-message header (no recipNonce) verifies; the verdict echoes null for the absent recipNonce and surfaces the present transactionID/senderNonce", minV.valid === true && Buffer.isBuffer(minV.transactionID) && Buffer.isBuffer(minV.senderNonce) && minV.recipNonce === null);
   // trustAnchors as a SINGLE root cert (not an array); no opts.time -> the signer path is validated at the
@@ -2040,7 +2040,7 @@ async function run() {
   // RFC 9810 sec. 5.1.1: a client MUST populate the transactionID when the message carries a
   // KemCiphertextInfo; a header given none is filled with a fresh one, and the derivation binds
   // to that value, which the receiver reads off the header.
-  var kemFilled = await pki.cmp.build({ header: { sender: { directoryName: "CN=c" }, recipient: { directoryName: "CN=CA" } }, body: IRBODY },
+  var kemFilled = await pki.cmp.build({ header: { sender: { directoryName: "c" }, recipient: { directoryName: "CA" } }, body: IRBODY },
     { kem: { key: kemKey.key, ciphertext: kemEncap.ct, kemAlgorithm: kemEncap.algorithm } });
   var kemFilledHdr = pki.schema.cmp.parse(kemFilled).header;
   check("24ac. a KEM message given no transaction identifier is filled with a fresh one and the derivation binds to it",

@@ -58,13 +58,13 @@ async function runOwnPropertyOptionVectors() {
   var priv = await pki.key.export(kp.privateKey);
   var pub = await pki.key.export(kp.publicKey);
   var aa = await pki.x509.sign({
-    subject: "CN=AA", subjectPublicKey: pub,
+    subject: "AA", subjectPublicKey: pub,
     notBefore: new Date("2020-01-01Z"), notAfter: new Date("2040-01-01Z"),
     extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "cRLSign"] },
   }, { key: priv });
   var signer = { cert: aa, key: priv };
   function acSpec(over) {
-    var s = { holder: { entityName: { directoryName: "CN=H" } }, serialNumber: 1n,
+    var s = { holder: { entityName: { directoryName: "H" } }, serialNumber: 1n,
       notBeforeTime: new Date("2021-01-01Z"), notAfterTime: new Date("2031-01-01Z"),
       attributes: { role: { roleName: { uniformResourceIdentifier: "urn:x" } } } };
     Object.keys(over).forEach(function (k) { s[k] = over[k]; });
@@ -88,11 +88,11 @@ async function runOwnPropertyOptionVectors() {
   // The holder form the caller named is the one that is found.
   await agrees("attrcert.sign holder", function (o) {
     return pki.attrcert.sign(acSpec({ holder: o }), signer).then(function (der) { return der.length > 0; });
-  }, "entityName", { directoryName: "CN=H" });
+  }, "entityName", { directoryName: "H" });
 
   // A control the caller asked for reaches the request.
   await agrees("crmf.build controls", function (o) {
-    return pki.crmf.build({ certTemplate: { subject: "CN=x", publicKey: pub }, controls: o }, priv, {})
+    return pki.crmf.build({ certTemplate: { subject: "x", publicKey: pub }, controls: o }, priv, {})
       .then(function (der) { return (pki.schema.crmf.parse(der).messages[0].controls || []).length; });
   }, "authenticator", "hunter2");
 
@@ -100,7 +100,7 @@ async function runOwnPropertyOptionVectors() {
   // transport answers so the call reaches the arm read rather than stopping at the network.
   function sessionWith(seen) {
     return pki.cmp.session({ url: "http://cmp.invalid/x", mac: { secret: Buffer.from("s") },
-      recipient: { directoryName: "CN=R" }, sender: { directoryName: "CN=S" },
+      recipient: { directoryName: "R" }, sender: { directoryName: "S" },
       transport: function () {
         seen.sent = true;
         return Promise.reject(new Error("the request was built; the response is not what this pins"));
@@ -111,7 +111,7 @@ async function runOwnPropertyOptionVectors() {
     return sessionWith(seen).enroll(o).then(
       function () { return seen.sent === true; },
       function (e) { if (seen.sent === true) return true; throw e; });
-  }, "ir", { certTemplate: { subject: "CN=x", publicKey: pub }, key: priv });
+  }, "ir", { certTemplate: { subject: "x", publicKey: pub }, key: priv });
 
   await agrees("cmp.session info", function (o) {
     var seen = {};
@@ -130,7 +130,7 @@ async function runOwnPropertyOptionVectors() {
 
   // The message arm the caller named is the one that is encoded.
   await agrees("cmp.build body arm", function (o) {
-    return pki.cmp.build({ header: { sender: { directoryName: "CN=S" }, recipient: { directoryName: "CN=R" } },
+    return pki.cmp.build({ header: { sender: { directoryName: "S" }, recipient: { directoryName: "R" } },
       body: o }, { mac: { secret: Buffer.from("s") } }).then(function (der) { return der.length > 0; });
   }, "genm", []);
 
@@ -163,7 +163,7 @@ async function runOwnPropertyOptionVectors() {
   // acceptance (RFC 5937 sec. 3.2).
   var aaAnchor = pki.path.anchorFromCert(pki.schema.x509.parse(aa));
   var leafNoPolicy = await pki.x509.sign({
-    subject: "CN=leaf.example", subjectPublicKey: pub,
+    subject: "leaf.example", subjectPublicKey: pub,
     notBefore: new Date("2021-01-01Z"), notAfter: new Date("2031-01-01Z"),
     extensions: { basicConstraints: { cA: false } },
   }, { cert: aa, key: priv });

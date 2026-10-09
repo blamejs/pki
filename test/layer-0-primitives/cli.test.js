@@ -980,7 +980,7 @@ async function run() {
     check("a requested extension other than the subjectAltName is named, not copied and not dropped",
       await (async function () {
         var pair = await pki.key.generate("Ed25519");
-        var der = await pki.csr.sign({ subject: "CN=ku.example",
+        var der = await pki.csr.sign({ subject: "ku.example",
           subjectPublicKey: await pki.key.export(pair.publicKey),
           extensionRequest: { keyUsage: ["digitalSignature"] } },
         { key: await pki.key.export(pair.privateKey) });
@@ -994,9 +994,9 @@ async function run() {
     check("a requested name of a form the copy does not write refuses the issuance, naming the form",
       await (async function () {
         var pair = await pki.key.generate("Ed25519");
-        var der = await pki.csr.sign({ subject: "CN=dir.example",
+        var der = await pki.csr.sign({ subject: "dir.example",
           subjectPublicKey: await pki.key.export(pair.publicKey),
-          extensionRequest: { subjectAltName: ["ok.example", { directoryName: "CN=dir.example" }] } },
+          extensionRequest: { subjectAltName: ["ok.example", { directoryName: "dir.example" }] } },
         { key: await pki.key.export(pair.privateKey) });
         var p = path.join(tmp, "dir-req.der");
         fs.writeFileSync(p, der);
@@ -1018,7 +1018,7 @@ async function run() {
           pki.asn1.build.octetString(pki.asn1.build.sequence([
             pki.asn1.build.contextPrimitive(2, Buffer.from("crit.example", "latin1"))])),
         ]);
-        var der = await pki.csr.sign({ subject: "CN=crit.example",
+        var der = await pki.csr.sign({ subject: "crit.example",
           subjectPublicKey: await pki.key.export(pair.publicKey), extensionRequest: [crit] },
         { key: await pki.key.export(pair.privateKey) });
         var p = path.join(tmp, "crit-req.der");
@@ -1036,7 +1036,7 @@ async function run() {
     check("an address the request asked for is copied as an address",
       await (async function () {
         var pair = await pki.key.generate("Ed25519");
-        var der = await pki.csr.sign({ subject: "CN=ip.example",
+        var der = await pki.csr.sign({ subject: "ip.example",
           subjectPublicKey: await pki.key.export(pair.publicKey),
           extensionRequest: { subjectAltName: [{ iPAddress: "10.0.0.7" }, { rfc822Name: "a@b.example" },
             { uniformResourceIdentifier: "https://ip.example/p" }] } },

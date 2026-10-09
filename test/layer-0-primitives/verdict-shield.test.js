@@ -141,13 +141,13 @@ function testSyncResults() {
 async function testAttrcert() {
   var aa = makeSigner("ed25519");
   var ac = await pki.attrcert.sign({
-    holder: { entityName: { directoryName: "CN=Shield Holder" } },
+    holder: { entityName: { directoryName: "Shield Holder" } },
     notBeforeTime: new Date("2026-01-01T00:00:00Z"),
     notAfterTime: new Date("2027-01-01T00:00:00Z"),
     attributes: { role: { roleName: { uniformResourceIdentifier: "urn:role:shield" } } },
-  }, { name: "CN=Shield AA", publicKey: aa.spki, key: aa.key });
+  }, { name: "Shield AA", publicKey: aa.spki, key: aa.key });
   await survives("pki.attrcert.verify",
-    pki.attrcert.verify(ac, { name: "CN=Shield AA", publicKey: aa.spki },
+    pki.attrcert.verify(ac, { name: "Shield AA", publicKey: aa.spki },
       { time: new Date("2026-06-01T00:00:00Z"), revocationStatus: "notRevoked" }),
     "valid", true);
 }
@@ -156,7 +156,7 @@ async function testCmp() {
   var s = makeSigner("ed25519");
   var csr = await pki.csr.sign({ subject: [{ commonName: "shield" }], subjectPublicKey: s.spki }, { key: s.key });
   var msg = await pki.cmp.build({
-    header: { sender: { directoryName: [{ commonName: "Test Signer" }] }, recipient: { directoryName: "CN=Shield CA" },
+    header: { sender: { directoryName: [{ commonName: "Test Signer" }] }, recipient: { directoryName: "Shield CA" },
       transactionID: Buffer.alloc(16, 1), senderNonce: Buffer.alloc(16, 2) },
     body: { p10cr: csr },
   }, { key: s.key, cert: s.cert });

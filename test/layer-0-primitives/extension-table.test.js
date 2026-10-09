@@ -341,7 +341,7 @@ async function testTheAttributeCertificateDoorReadsItsOwnTable() {
     notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2036-01-01T00:00:00Z"),
   }, { key: key });
   var acDer = await pki.attrcert.sign({
-    holder: { entityName: [{ directoryName: "CN=Holder" }] },
+    holder: { entityName: [{ directoryName: "Holder" }] },
     attributes: { role: { roleName: "https://example.test/role/admin" } }, serialNumber: 1n,
     notBeforeTime: new Date("2026-01-01T00:00:00Z"), notAfterTime: new Date("2027-01-01T00:00:00Z"),
     extensions: { noRevAvail: true },
@@ -363,7 +363,7 @@ async function testTheAttributeCertificateDoorReadsItsOwnTable() {
   var refused = null;
   try {
     await pki.attrcert.sign({
-      holder: { entityName: [{ directoryName: "CN=Holder" }] },
+      holder: { entityName: [{ directoryName: "Holder" }] },
       attributes: { role: { roleName: "https://example.test/role/admin" } }, serialNumber: 2n,
       notBeforeTime: new Date("2026-01-01T00:00:00Z"), notAfterTime: new Date("2027-01-01T00:00:00Z"),
       extensions: [b.sequence([b.oid(pki.oid.byName("noRevAvail")), b.boolean(true), b.octetString(b.nullValue())])],
@@ -381,7 +381,7 @@ async function testTheAttributeCertificateDoorReadsItsOwnTable() {
   var aki = b.sequence([b.oid(pki.oid.byName("cRLDistributionPoints")),
     b.octetString(b.sequence([b.sequence([dpName])]))]);
   var withAki = await pki.attrcert.sign({
-    holder: { entityName: [{ directoryName: "CN=Holder" }] },
+    holder: { entityName: [{ directoryName: "Holder" }] },
     attributes: { role: { roleName: "https://example.test/role/admin" } }, serialNumber: 3n,
     notBeforeTime: new Date("2026-01-01T00:00:00Z"), notAfterTime: new Date("2027-01-01T00:00:00Z"),
     extensions: [aki],
@@ -392,7 +392,7 @@ async function testTheAttributeCertificateDoorReadsItsOwnTable() {
   var akiRefused = null;
   try {
     await pki.attrcert.sign({
-      holder: { entityName: [{ directoryName: "CN=Holder" }] },
+      holder: { entityName: [{ directoryName: "Holder" }] },
       attributes: { role: { roleName: "https://example.test/role/admin" } }, serialNumber: 4n,
       notBeforeTime: new Date("2026-01-01T00:00:00Z"), notAfterTime: new Date("2027-01-01T00:00:00Z"),
       extensions: [badAki],

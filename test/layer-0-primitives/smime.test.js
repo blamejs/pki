@@ -145,6 +145,75 @@ async function run() {
   callableFit.cert = fit.cert; callableFit.key = fit.key;
   check("0t. CONTROL: a callable descriptor with a fit certificate signs",
     (await codeOf(function () { return pki.smime.sign(MSG, [callableFit]); })) === "NO-THROW");
+  /* WHICH own names a function carries is the engine's choice, and the descriptor copier has to
+     treat all of them as machinery or the unknown-field door refuses the copy. On Node 24.21.0,
+     the version `engines.node` floors at, every non-strict function carries own `arguments` and
+     `caller`; on 26.9.0 none does. So the shape is MINTED here rather than declared, and this
+     vector holds on either engine: a function declared in this file is strict and would carry
+     neither, which is exactly how the gap reached a release. */
+  function asDescriptor(fn) { fn.cert = fit.cert; fn.key = fit.key; return fn; }
+  /* The own `arguments` and `caller` every non-strict function carries on the engine floor, minted
+     so the vector holds on either engine. A function declared in this file is strict and carries
+     neither, which is how the gap reached a release. */
+  function withFloorShape(fn) {
+    ["arguments", "caller"].forEach(function (n) {
+      Object.defineProperty(fn, n, { value: null, writable: false, enumerable: false, configurable: true });
+    });
+    return fn;
+  }
+  /* EVERY callable kind, because each carries a different set of own names and a different
+     prototype chain, and the rule has to answer for all of them. Three were refused before the
+     machinery name was also marked SEEN: a derived class's own `length` was skipped and then read
+     off the base class as a field, and a generator's and async generator's own `prototype` was
+     skipped and then its generator-prototype OBJECT was walked, which read as a signer nested too
+     deeply to copy. */
+  var CALLABLE_KINDS = [
+    ["ordinary", function () { return asDescriptor(function () {}); }],
+    ["ordinary carrying the engine floor's own arguments and caller",
+      function () { return asDescriptor(withFloorShape(function () {})); }],
+    ["generator", function () { return asDescriptor(function* () { yield 1; }); }],
+    ["async", function () { return asDescriptor(async function () { return 1; }); }],
+    ["async generator", function () { return asDescriptor(async function* () { yield 1; }); }],
+    ["bound", function () { return asDescriptor((function bindMe() {}).bind(null)); }],
+    ["class", function () { return asDescriptor(class Plain {}); }],
+    ["derived class", function () { return asDescriptor(class Derived extends (class Base {}) {}); }],
+    ["method shorthand", function () { return asDescriptor(({ m: function () {} }).m); }],
+  ];
+  var kindsRefused = [];
+  for (var ck = 0; ck < CALLABLE_KINDS.length; ck++) {
+    var mk = CALLABLE_KINDS[ck][1];
+    var kindCode = await codeOf(function () { return pki.smime.sign(MSG, [mk()]); });
+    if (kindCode !== "NO-THROW") kindsRefused.push(CALLABLE_KINDS[ck][0] + " -> " + kindCode);
+  }
+  check("0u. every callable kind is read as the descriptor it is, whatever own names and prototype " +
+    "chain the engine gave it" + (kindsRefused.length ? " [refused: " + kindsRefused.join("; ") + "]" : ""),
+  kindsRefused.length === 0);
+  // CONTROL: the machinery exemption reaches machinery only. A field a caller ASSIGNED is
+  // enumerable, so a misspelled one is still the unknown field it is, on every kind.
+  var typoRefused = 0;
+  for (var tk = 0; tk < CALLABLE_KINDS.length; tk++) {
+    var mkt = CALLABLE_KINDS[tk][1];
+    var withTypo = mkt();
+    withTypo.digestAlgoritm = "sha384";
+    if ((await codeOf(function () { return pki.smime.sign(MSG, [withTypo]); })) === "cms/bad-input") typoRefused++;
+  }
+  check("0v. CONTROL: a misspelled field is still refused on every one of them (" +
+    typoRefused + "/" + CALLABLE_KINDS.length + ")", typoRefused === CALLABLE_KINDS.length);
+  /* The same rule read from the other side: a prototype-level METHOD is declined as a field, so a
+     data property of the same name one level further up is not read as one either. The value
+     `desc.digestAlgorithm` holds is the method that shadows it, so copying the base's string set
+     the field to a function and reached the digest resolver as `unsupported RSA digest algorithm
+     undefined` rather than signing under the default. */
+  function ShadowBase() {}
+  ShadowBase.prototype.digestAlgorithm = "sha512";
+  function ShadowDerived() {}
+  ShadowDerived.prototype = Object.create(ShadowBase.prototype);
+  ShadowDerived.prototype.digestAlgorithm = function () { return "a method, not a digest name"; };
+  var shadowed = Object.create(ShadowDerived.prototype);
+  shadowed.cert = fit.cert; shadowed.key = fit.key;
+  check("0w. a method on the descriptor's prototype is not a field, and neither is a same-named " +
+    "data property it shadows",
+  (await codeOf(function () { return pki.smime.sign(MSG, [shadowed]); })) === "NO-THROW");
   // A primitive is not a descriptor, whatever a built-in prototype has been made to carry: it is
   // refused here rather than read through boxing.
   var primErr = null;
@@ -155,13 +224,18 @@ async function run() {
   } finally { delete String.prototype.cert; delete String.prototype.key; }
   check("0u. a primitive descriptor is refused as bad input, never read through a polluted built-in prototype",
     primErr !== null && primErr.code === "smime/bad-input");
-  // A descriptor's own Symbol-keyed and constructor-named fields travel with it, as the CMS layer
-  // read them from the caller's object.
+  /* A descriptor's own Symbol-keyed and constructor-named fields still travel with it to the CMS
+     layer, and that layer now refuses them: a field a signing verb does not read is a request it
+     never carried out, which is the door `pkcs12.build` has held the same descriptors to all along.
+     What this pins is that they ARRIVE, so the refusal names them rather than the reader dropping
+     them in silence. */
   var symKey = Symbol("note");
   var withSym = { cert: fit.cert, key: fit.key, constructor: "mine" };
   withSym[symKey] = "kept";
-  check("0v. own Symbol-keyed and constructor-named fields sign as before",
-    (await codeOf(function () { return pki.smime.sign(MSG, [withSym]); })) === "NO-THROW");
+  check("0v. own Symbol-keyed and constructor-named fields arrive, and are refused by name",
+    (await codeOf(function () { return pki.smime.sign(MSG, [withSym]); })) === "cms/bad-input");
+  check("0v. CONTROL the same descriptor without them signs",
+    (await codeOf(function () { return pki.smime.sign(MSG, [{ cert: fit.cert, key: fit.key }]); })) === "NO-THROW");
   // The prototype walk is bounded: a proxy that names itself as its own prototype is refused,
   // and so is a chain deeper than any descriptor has.
   var cyclic = new Proxy({ cert: fit.cert, key: fit.key }, { getPrototypeOf: function () { return cyclic; } });

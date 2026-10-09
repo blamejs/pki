@@ -38,7 +38,7 @@ function verifyProtection(m, spki) {
 async function run() {
   var arms = ["rsa", "ec-p256", "ed25519"];
   if (ctx.opensslSupports("ML-DSA")) arms.push("ml-dsa-65");
-  var HDR = { sender: { directoryName: "CN=client" }, recipient: { directoryName: "CN=CA" }, transactionID: Buffer.alloc(16, 7) };
+  var HDR = { sender: { directoryName: "client" }, recipient: { directoryName: "CA" }, transactionID: Buffer.alloc(16, 7) };
 
   for (var i = 0; i < arms.length; i++) {
     var alg = arms[i];

@@ -23,7 +23,9 @@ var S = signing.makeSigner("ec-p256");
 var NB = new Date("2026-01-01T00:00:00Z");
 var NA = new Date("2027-01-01T00:00:00Z");
 var AT = new Date("2026-06-01T00:00:00Z");
-var TRUST = { name: "CN=Example AA", publicKey: S.spki };
+// A bare name string is a common name, so it is written as one: a string opening as an RFC 4514
+// distinguished name is refused rather than certified as a commonName holding the whole text.
+var TRUST = { name: "Example AA", publicKey: S.spki };
 
 var HONEST = null;      // built on the first round, since the harness entry point is async
 var HONEST_TBS = null;  // its signed AttributeCertificateInfo range
@@ -60,13 +62,13 @@ module.exports.fuzz = async function (data) {
   var d = Buffer.from(data);
   if (!HONEST) {
     HONEST = await pki.attrcert.sign({
-      holder: { entityName: { directoryName: "CN=Alice" } },
+      holder: { entityName: { directoryName: "Alice" } },
       notBeforeTime: NB, notAfterTime: NA,
       attributes: { role: { roleName: { uniformResourceIdentifier: "urn:role:admin" } } },
       // RFC 5755 sec. 6: without it the AC is rightly refused, and this AC exists to reach the
       // paths PAST the gates, so the honest one carries the issuer's never-revoke statement.
       extensions: { noRevAvail: true },
-    }, { name: "CN=Example AA", publicKey: S.spki, key: S.key });
+    }, { name: "Example AA", publicKey: S.spki, key: S.key });
     var h = await pki.attrcert.verify(HONEST, TRUST, { time: AT });
     if (h.verified !== true) throw new Error("attrcert-verify fuzz: a genuine attribute certificate failed to verify");
     HONEST_TBS = Buffer.from(pki.schema.attrcert.parse(HONEST).tbsBytes);

@@ -357,6 +357,7 @@ async function testPathThroughAnIntermediate() {
     agreeVerdict.valid === false && agreeVerdict.signerMaySign === false);
   check("P6: and the signature still verifies, so the authorization gate is separate from the cryptography",
     agreeVerdict.verified === true && agreeVerdict.pathValidated === true);
+
   check("P7: the reason names the key usage rather than leaving valid false unexplained",
     typeof agreeVerdict.reason === "string" && agreeVerdict.reason.indexOf("keyUsage") >= 0);
   // The controls: digitalSignature is accepted, and so is a certificate with no keyUsage at all, which

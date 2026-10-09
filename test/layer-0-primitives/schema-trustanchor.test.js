@@ -337,22 +337,22 @@ function testTheBuilderRefusesEveryBadSpec() {
     ]) }] })));
 
   check("30d. certPath.policySet must be a non-empty array of dotted-decimal identifiers",
-    buildCode(base({ certPath: { taName: "CN=R", policySet: [] } })) === BAD &&
-    buildCode(base({ certPath: { taName: "CN=R", policySet: "2.23.140.1.2.1" } })) === BAD &&
-    buildCode(base({ certPath: { taName: "CN=R", policySet: [42] } })) === BAD &&
-    buildCode(base({ certPath: { taName: "CN=R", policySet: ["anyPolicy"] } })) === BAD);
+    buildCode(base({ certPath: { taName: "R", policySet: [] } })) === BAD &&
+    buildCode(base({ certPath: { taName: "R", policySet: "2.23.140.1.2.1" } })) === BAD &&
+    buildCode(base({ certPath: { taName: "R", policySet: [42] } })) === BAD &&
+    buildCode(base({ certPath: { taName: "R", policySet: ["anyPolicy"] } })) === BAD);
   check("30e. and the refusal names the field rather than the structure under it",
-    buildMessage(base({ certPath: { taName: "CN=R", policySet: [] } })).indexOf("certPath.policySet") !== -1 &&
-    buildMessage(base({ certPath: { taName: "CN=R", policySet: [42] } })).indexOf("certPath.policySet") !== -1);
+    buildMessage(base({ certPath: { taName: "R", policySet: [] } })).indexOf("certPath.policySet") !== -1 &&
+    buildMessage(base({ certPath: { taName: "R", policySet: [42] } })).indexOf("certPath.policySet") !== -1);
 
   check("30f. a policy flag is the boolean it documents, and an unknown flag name is refused",
-    buildCode(base({ certPath: { taName: "CN=R", policySet: ["2.23.140.1.2.1"],
+    buildCode(base({ certPath: { taName: "R", policySet: ["2.23.140.1.2.1"],
       policyFlags: { requireExplicitPolicy: "yes" } } })) === BAD &&
-    buildCode(base({ certPath: { taName: "CN=R", policyFlags: { nosuchFlag: true } } })) === BAD);
+    buildCode(base({ certPath: { taName: "R", policyFlags: { nosuchFlag: true } } })) === BAD);
   check("30g. CONTROL false and an absent flag are the two off forms, and neither is refused",
-    Buffer.isBuffer(pki.trustanchor.build(base({ certPath: { taName: "CN=R",
+    Buffer.isBuffer(pki.trustanchor.build(base({ certPath: { taName: "R",
       policyFlags: { requireExplicitPolicy: false, inhibitAnyPolicy: false } } }))) &&
-    Buffer.isBuffer(pki.trustanchor.build(base({ certPath: { taName: "CN=R", policyFlags: {} } }))));
+    Buffer.isBuffer(pki.trustanchor.build(base({ certPath: { taName: "R", policyFlags: {} } }))));
 
   // Both empty forms are refused, and each by the rule that owns it: an empty relative-name array
   // is the RFC 5914 sec. 2 rule this module states, while an empty commonName STRING never reaches
@@ -362,14 +362,14 @@ function testTheBuilderRefusesEveryBadSpec() {
     buildCode(base({ certPath: { taName: [] } })) === BAD &&
     buildCode(base({ certPath: { taName: "" } })) === "trustanchor/bad-name");
   check("30i. pathLenConstraint must be a non-negative integer",
-    buildCode(base({ certPath: { taName: "CN=R", pathLenConstraint: -1 } })) === BAD &&
-    buildCode(base({ certPath: { taName: "CN=R", pathLenConstraint: 1.5 } })) === BAD &&
-    buildCode(base({ certPath: { taName: "CN=R", pathLenConstraint: "2" } })) === BAD);
+    buildCode(base({ certPath: { taName: "R", pathLenConstraint: -1 } })) === BAD &&
+    buildCode(base({ certPath: { taName: "R", pathLenConstraint: 1.5 } })) === BAD &&
+    buildCode(base({ certPath: { taName: "R", pathLenConstraint: "2" } })) === BAD);
   check("30j. nameConstr must be well-formed NameConstraints DER",
-    buildCode(base({ certPath: { taName: "CN=R", nameConstr: Buffer.from("0500", "hex") } })) === BAD &&
-    buildCode(base({ certPath: { taName: "CN=R", nameConstr: Buffer.alloc(0) } })) === BAD);
+    buildCode(base({ certPath: { taName: "R", nameConstr: Buffer.from("0500", "hex") } })) === BAD &&
+    buildCode(base({ certPath: { taName: "R", nameConstr: Buffer.alloc(0) } })) === BAD);
   check("30k. an unknown certPath field is refused rather than dropped",
-    buildCode(base({ certPath: { taName: "CN=R", nosuchField: 1 } })) === BAD);
+    buildCode(base({ certPath: { taName: "R", nosuchField: 1 } })) === BAD);
 
   // Three refusals, three codes: the empty key identifier is this module's own rule, bytes that are
   // not DER at all are its input rule, and DER that is not a SubjectPublicKeyInfo is the SPKI rule
@@ -428,7 +428,7 @@ function testTheBuilderRefusesEveryBadSpec() {
     Buffer.isBuffer(withCert) && certBack.certificate !== null &&
     certBack.certificate.subject.dn.indexOf("Example Root") !== -1);
   check("30r. and bytes that are not a certificate at that member are refused",
-    buildCode(base({ certPath: { taName: "CN=R", certificate: Buffer.from("0500", "hex") } })) !== "NO-THROW");
+    buildCode(base({ certPath: { taName: "R", certificate: Buffer.from("0500", "hex") } })) !== "NO-THROW");
   // The builder reads its own output back before returning it, so a spec whose parts disagree fails
   // the build rather than reaching an operator. The certificate-match rule is the reachable way to
   // make them disagree: every part here is well formed on its own, and only the pair is wrong.
@@ -446,7 +446,7 @@ function testTheBuilderIsTheParsersInverse() {
       taInfo: {
         pubKey: SPKI, keyId: KEYID, taTitle: "Example Root CA", taTitleLangTag: "en-US",
         certPath: {
-          taName: "CN=Example Root",
+          taName: "Example Root",
           policySet: ["2.23.140.1.2.1"],
           policyFlags: { requireExplicitPolicy: true },
           pathLenConstraint: 3,
@@ -478,7 +478,7 @@ function testTheBuilderIsTheParsersInverse() {
   check("30. the builder refuses what the parser refuses: requireExplicitPolicy with no policySet",
     codeOf(function () {
       return pki.trustanchor.build({ anchors: [{ taInfo: { pubKey: SPKI, keyId: KEYID,
-        certPath: { taName: "CN=Example Root", policyFlags: { requireExplicitPolicy: true } } } }] });
+        certPath: { taName: "Example Root", policyFlags: { requireExplicitPolicy: true } } } }] });
     }) === "trustanchor/bad-input");
   check("31. ...and an empty anchor list",
     codeOf(function () { return pki.trustanchor.build({ anchors: [] }); }) === "trustanchor/bad-input");
@@ -496,11 +496,11 @@ async function testTheAnchorsDriveValidation() {
   var key = await pki.key.export(pair.privateKey);
   var pub = await pki.key.export(pair.publicKey);
   var rootCert = await pki.x509.sign({
-    subject: "CN=TA Root", subjectPublicKey: pub, notBefore: NB, notAfter: NA,
+    subject: "TA Root", subjectPublicKey: pub, notBefore: NB, notAfter: NA,
     extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] },
   }, { key: key });
   var leaf = await pki.x509.sign({
-    subject: "CN=leaf.example", subjectPublicKey: pub, notBefore: NB, notAfter: NA,
+    subject: "leaf.example", subjectPublicKey: pub, notBefore: NB, notAfter: NA,
     extensions: { basicConstraints: { cA: false }, subjectAltName: [{ dNSName: "leaf.example" }],
       certificatePolicies: [{ oid: "2.23.140.1.2.1" }] },
   }, { cert: rootCert, key: key });
@@ -513,7 +513,7 @@ async function testTheAnchorsDriveValidation() {
       pubKey: rootSpki, keyId: rootKeyId, certPath: certPath } }] });
   }
 
-  var plain = pki.trust.parseTrustAnchorList(listWith({ taName: "CN=TA Root" }));
+  var plain = pki.trust.parseTrustAnchorList(listWith({ taName: "TA Root" }));
   check("33. a parsed list becomes trust-store entries pki.trust.anchor accepts",
     plain.anchors.length === 1 && typeof plain.anchors[0].algorithm === "string");
   var res = await pki.path.validate([leaf], { trustAnchors: [pki.trust.anchor(plain.anchors[0])], time: T });
@@ -524,7 +524,7 @@ async function testTheAnchorsDriveValidation() {
   // have to survive that call and a copy of it, or an operator doing the obvious thing gets an
   // unconstrained anchor and every restriction the list stated is silently dropped.
   var restricted = pki.trust.parseTrustAnchorList(listWith({
-    taName: "CN=TA Root", policySet: ["1.3.6.1.4.1.99999.44"] }));
+    taName: "TA Root", policySet: ["1.3.6.1.4.1.99999.44"] }));
   var viaAnchor = await pki.path.validate([leaf], {
     trustAnchors: [pki.trust.anchor(restricted.anchors[0])], time: T,
     userInitialPolicySet: ["2.23.140.1.2.1"], initialExplicitPolicy: true });
@@ -540,7 +540,7 @@ async function testTheAnchorsDriveValidation() {
   // The entry is reachable, so the restrictions it carries must not be the ones anchor() enforces.
   // Editing them on the entry is the cheapest way to weaken a published anchor, and the private
   // record anchor() reads from keeps its own copy for the same reason it copies the name and key.
-  var editable = pki.trust.parseTrustAnchorList(listWith({ taName: "CN=TA Root", pathLenConstraint: 0 }));
+  var editable = pki.trust.parseTrustAnchorList(listWith({ taName: "TA Root", pathLenConstraint: 0 }));
   editable.anchors[0].constraints.pathLenConstraint = 100;
   check("34c. editing the entry's constraints does not change what anchor() enforces",
     pki.trust.anchor(editable.anchors[0]).constraints.pathLenConstraint === 0);
@@ -548,13 +548,13 @@ async function testTheAnchorsDriveValidation() {
   // RFC 5937 sec. 3.2: the anchor's name constraints intersect (permitted) and union (excluded)
   // with the caller's, so an anchor that excludes the leaf's name refuses it.
   var excluded = pki.trust.parseTrustAnchorList(listWith({
-    taName: "CN=TA Root", nameConstr: nameConstraints(null, ["leaf.example"]) }));
+    taName: "TA Root", nameConstr: nameConstraints(null, ["leaf.example"]) }));
   var resExcluded = await pki.path.validate([leaf],
     { trustAnchors: [pki.trust.anchor(excluded.anchors[0])], time: T });
   check("35. an anchor's excluded subtree refuses a name inside it",
     resExcluded.valid === false);
   var permitted = pki.trust.parseTrustAnchorList(listWith({
-    taName: "CN=TA Root", nameConstr: nameConstraints(["other.test"], null) }));
+    taName: "TA Root", nameConstr: nameConstraints(["other.test"], null) }));
   var resPermitted = await pki.path.validate([leaf],
     { trustAnchors: [pki.trust.anchor(permitted.anchors[0])], time: T });
   check("36. an anchor's permitted subtree refuses a name outside it", resPermitted.valid === false);
@@ -563,11 +563,11 @@ async function testTheAnchorsDriveValidation() {
   // ... and the initial-explicit-policy value is false, set the initial-explicit-policy value to
   // true." So the anchor can turn it on where the caller did not.
   var noPolicyLeaf = await pki.x509.sign({
-    subject: "CN=nopolicy.example", subjectPublicKey: pub, notBefore: NB, notAfter: NA,
+    subject: "nopolicy.example", subjectPublicKey: pub, notBefore: NB, notAfter: NA,
     extensions: { basicConstraints: { cA: false } },
   }, { cert: rootCert, key: key });
   var strict = pki.trust.parseTrustAnchorList(listWith({
-    taName: "CN=TA Root", policySet: ["2.23.140.1.2.1"], policyFlags: { requireExplicitPolicy: true } }));
+    taName: "TA Root", policySet: ["2.23.140.1.2.1"], policyFlags: { requireExplicitPolicy: true } }));
   var resStrict = await pki.path.validate([noPolicyLeaf],
     { trustAnchors: [pki.trust.anchor(strict.anchors[0])], time: T });
   check("37. an anchor requiring an explicit policy refuses a certificate carrying none",
@@ -579,7 +579,7 @@ async function testTheAnchorsDriveValidation() {
 
   // policySet intersects with the caller's user-initial-policy-set.
   var otherPolicy = pki.trust.parseTrustAnchorList(listWith({
-    taName: "CN=TA Root", policySet: ["1.3.6.1.4.1.99999.44"] }));
+    taName: "TA Root", policySet: ["1.3.6.1.4.1.99999.44"] }));
   var resIntersect = await pki.path.validate([leaf], {
     trustAnchors: [pki.trust.anchor(otherPolicy.anchors[0])], time: T,
     userInitialPolicySet: ["2.23.140.1.2.1"], initialExplicitPolicy: true,
@@ -590,7 +590,7 @@ async function testTheAnchorsDriveValidation() {
   // the other side's set alone. Filtering it literally would compare a concrete identifier against
   // the wildcard identifier, find no match, and refuse a path both sides accept.
   var anchorAny = pki.trust.parseTrustAnchorList(listWith({
-    taName: "CN=TA Root", policySet: [pki.oid.byName("anyPolicy")] }));
+    taName: "TA Root", policySet: [pki.oid.byName("anyPolicy")] }));
   var resAnchorAny = await pki.path.validate([leaf], {
     trustAnchors: [pki.trust.anchor(anchorAny.anchors[0])], time: T,
     userInitialPolicySet: ["2.23.140.1.2.1"], initialExplicitPolicy: true,
@@ -600,7 +600,7 @@ async function testTheAnchorsDriveValidation() {
     resAnchorAny.userConstrainedPolicySet.join(",") === "2.23.140.1.2.1");
   var resCallerAny = await pki.path.validate([leaf], {
     trustAnchors: [pki.trust.anchor(pki.trust.parseTrustAnchorList(listWith({
-      taName: "CN=TA Root", policySet: ["2.23.140.1.2.1"] })).anchors[0])], time: T,
+      taName: "TA Root", policySet: ["2.23.140.1.2.1"] })).anchors[0])], time: T,
     initialExplicitPolicy: true,
   });
   check("39c. ...and a caller naming none leaves the anchor's alone",
@@ -609,14 +609,14 @@ async function testTheAnchorsDriveValidation() {
 
   // pathLenConstraint: "set the max_path_length state variable equal to the pathLenConstraint".
   var interm = await pki.x509.sign({
-    subject: "CN=Intermediate", subjectPublicKey: pub, notBefore: NB, notAfter: NA,
+    subject: "Intermediate", subjectPublicKey: pub, notBefore: NB, notAfter: NA,
     extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] },
   }, { cert: rootCert, key: key });
   var deepLeaf = await pki.x509.sign({
-    subject: "CN=deep.example", subjectPublicKey: pub, notBefore: NB, notAfter: NA,
+    subject: "deep.example", subjectPublicKey: pub, notBefore: NB, notAfter: NA,
     extensions: { basicConstraints: { cA: false } },
   }, { cert: interm, key: key });
-  var capped = pki.trust.parseTrustAnchorList(listWith({ taName: "CN=TA Root", pathLenConstraint: 0 }));
+  var capped = pki.trust.parseTrustAnchorList(listWith({ taName: "TA Root", pathLenConstraint: 0 }));
   var resCapped = await pki.path.validate([interm, deepLeaf],
     { trustAnchors: [pki.trust.anchor(capped.anchors[0])], time: T });
   check("40. an anchor's pathLenConstraint bounds the intermediates below it",
@@ -638,7 +638,7 @@ async function testTheAnchorsDriveValidation() {
       pki.asn1.build.boolean(true), pki.asn1.build.integer(0n)])),
   ]);
   var viaExts = pki.trust.parseTrustAnchorList(pki.trustanchor.build({ anchors: [{ taInfo: {
-    pubKey: rootSpki, keyId: rootKeyId, certPath: { taName: "CN=TA Root" }, exts: [bcPathLenZero] } }] }));
+    pubKey: rootSpki, keyId: rootKeyId, certPath: { taName: "TA Root" }, exts: [bcPathLenZero] } }] }));
   var resExts = await pki.path.validate([interm, deepLeaf],
     { trustAnchors: [pki.trust.anchor(viaExts.anchors[0])], time: T });
   check("41d. a basicConstraints pathLenConstraint in exts bounds the path", resExts.valid === false);
@@ -646,7 +646,7 @@ async function testTheAnchorsDriveValidation() {
   // The same limit carried by the certificate an anchor is supplied as. The chain is issued under
   // an unconstrained root, because the signer refuses to issue a CA below a pathLen-0 issuer.
   var rootCapped = await pki.x509.sign({
-    subject: "CN=TA Root", subjectPublicKey: pub, notBefore: NB, notAfter: NA,
+    subject: "TA Root", subjectPublicKey: pub, notBefore: NB, notAfter: NA,
     extensions: { basicConstraints: { cA: true, pathLen: 0 }, keyUsage: ["keyCertSign"] },
   }, { key: key });
   var viaCertArm = pki.trust.parseTrustAnchorList(
@@ -668,7 +668,7 @@ async function testTheAnchorsDriveValidation() {
     ["taInfo", { taInfo: null }],
     ["certPath", { taInfo: { pubKey: rootSpki, keyId: rootKeyId, certPath: null } }],
     ["certPath.policyFlags", { taInfo: { pubKey: rootSpki, keyId: rootKeyId,
-      certPath: { taName: "CN=TA Root", policyFlags: null } } }],
+      certPath: { taName: "TA Root", policyFlags: null } } }],
   ];
   var untyped = [];
   for (var ni = 0; ni < nested.length; ni++) {
@@ -692,9 +692,9 @@ async function testTheAnchorsDriveValidation() {
   check("41b. CONTROL: a non-enumerable initialExplicitPolicy refuses a certificate carrying no policy",
     hiddenNone.valid === false);
   var constrainers = [
-    ["pathLenConstraint", listWith({ taName: "CN=TA Root", pathLenConstraint: 100 })],
-    ["policySet", listWith({ taName: "CN=TA Root", policySet: ["2.23.140.1.2.1"] })],
-    ["all-false policyFlags", listWith({ taName: "CN=TA Root",
+    ["pathLenConstraint", listWith({ taName: "TA Root", pathLenConstraint: 100 })],
+    ["policySet", listWith({ taName: "TA Root", policySet: ["2.23.140.1.2.1"] })],
+    ["all-false policyFlags", listWith({ taName: "TA Root",
       policyFlags: { inhibitPolicyMapping: false, requireExplicitPolicy: false, inhibitAnyPolicy: false } })],
   ];
   var widened = [];
@@ -724,7 +724,7 @@ async function testTheAnchorsDriveValidation() {
 
 function testTheFormatIsDetected() {
   var der = pki.trustanchor.build({ anchors: [{ taInfo: {
-    pubKey: SPKI, keyId: KEYID, certPath: { taName: "CN=Example Root" } } }] });
+    pubKey: SPKI, keyId: KEYID, certPath: { taName: "Example Root" } } }] });
   check("42. pki.schema.parse detects a TrustAnchorList and routes it to this parser",
     pki.schema.detectFormat(der) === "trustanchor" && pki.schema.parse(der).anchors.length === 1);
   check("43. the format is enumerated among the others",

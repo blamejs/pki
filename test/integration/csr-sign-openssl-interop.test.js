@@ -114,7 +114,7 @@ async function run() {
   // here is that the proof openssl accepted verifies, not what window a CA should choose.
   check("the proof in the request openssl accepted verifies here too",
     (await pki.relatedCert.verifyRequest(rcAttr.relatedCertRequest, rcHeld.cert,
-      { maxAge: 300, at: new Date(rcWhen * 1000) })) === true);
+      { maxAge: 300, at: new Date(rcWhen * 1000) })).valid === true);
 
   // RFC 9883: a request for a key that cannot sign, signed by another key. The most important thing an
   // independent implementation confirms here is a NEGATIVE: `openssl req -verify` FAILS on such a

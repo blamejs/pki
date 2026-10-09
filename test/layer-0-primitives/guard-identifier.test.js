@@ -927,8 +927,98 @@ async function testConsumersFailClosed() {
   }
 }
 
+// guard.identifier.isOwnMachineryName answers, for a reader that COPIES a value's own keys, which
+// of those keys the value carries by construction rather than because a caller assigned it. The
+// callable arm is derived from the engine, because which names a function makes OWN is the engine's
+// choice: on Node 24.21.0, the version engines.node floors at, every non-strict function carries
+// own `arguments` and `caller`, and on 26.9.0 none does. These mint the shape rather than declaring
+// a function, so they answer the same on either engine.
+function testOwnMachineryName() {
+  function withOwn(names) {
+    var fn = function () {};
+    names.forEach(function (n) {
+      Object.defineProperty(fn, n, { value: null, writable: false, enumerable: false, configurable: true });
+    });
+    return fn;
+  }
+  var fn = withOwn(["arguments", "caller"]);
+  ["length", "name", "prototype", "arguments", "caller"].forEach(function (n) {
+    check("isOwnMachineryName: a callable's own non-enumerable `" + n + "` is machinery",
+      identifier.isOwnMachineryName(fn, n) === true);
+  });
+  // A field a caller assigned is enumerable, so it stays a field whatever it is named.
+  fn.digestAlgorithm = "sha384";
+  fn.caller2 = 1;
+  check("isOwnMachineryName: an assigned field is not machinery",
+    identifier.isOwnMachineryName(fn, "digestAlgorithm") === false &&
+    identifier.isOwnMachineryName(fn, "caller2") === false);
+  // The same name, assigned and therefore enumerable, is a field and not machinery: the rule is
+  // the pair, not the name alone.
+  var shadow = function () {};
+  Object.defineProperty(shadow, "caller", { value: "x", writable: true, enumerable: true, configurable: true });
+  check("isOwnMachineryName: an enumerable own `caller` is a field the caller named",
+    identifier.isOwnMachineryName(shadow, "caller") === false);
+  // The arm reaches callables only. A plain object carrying the same name is unaffected, and the
+  // structural names it does answer for are its own.
+  var plain = {};
+  Object.defineProperty(plain, "caller", { value: null, enumerable: false, configurable: true });
+  check("isOwnMachineryName: a plain object's own `caller` is not function machinery",
+    identifier.isOwnMachineryName(plain, "caller") === false);
+  check("isOwnMachineryName: a RegExp's own lastIndex is still machinery",
+    identifier.isOwnMachineryName(/x/g, "lastIndex") === true);
+  check("isOwnMachineryName: a name the value does not own answers false",
+    identifier.isOwnMachineryName(fn, "neverPresent") === false);
+  /* The machinery is a DATA property on every supported engine, so an ACCESSOR a caller installed
+     under one of those names is the caller's and reaches the unknown-field refusal by its name.
+     Asking the descriptor leaves the getter uninvoked either way. */
+  var accessorNamed = function () {};
+  var getterRuns = 0;
+  Object.defineProperty(accessorNamed, "name", {
+    get: function () { getterRuns++; return "installed by the caller"; }, enumerable: false, configurable: true,
+  });
+  check("isOwnMachineryName: an accessor under a machinery name is not machinery",
+    identifier.isOwnMachineryName(accessorNamed, "name") === false);
+  check("isOwnMachineryName: and deciding that did not invoke the getter", getterRuns === 0);
+
+  /* `isMachineryName` is the form a check that WALKS the prototype chain asks, and the difference
+     is not cosmetic: a PLAIN strict function -- what this file produces, what every ES module
+     produces -- owns neither `arguments` nor `caller`, and `Function.prototype` carries both as the
+     restricted accessors, so a chain walk reaches them there and the own-only form answers false.
+     Measured: that refused a plain callable signer descriptor at both direct `pki.cms` doors while
+     the engine floor's own-property shape passed. */
+  var plainFn = function () {};
+  ["arguments", "caller"].forEach(function (n) {
+    check("isOwnMachineryName: a strict function does not OWN `" + n + "`, so the own-only form says no",
+      Object.getOwnPropertyDescriptor(plainFn, n) === undefined &&
+      identifier.isOwnMachineryName(plainFn, n) === false);
+    check("isMachineryName: and the chain-walking form says yes",
+      identifier.isMachineryName(plainFn, n) === true);
+  });
+  check("isMachineryName: an owned machinery name is machinery either way",
+    identifier.isMachineryName(fn, "arguments") === true &&
+    identifier.isMachineryName(plainFn, "length") === true);
+  check("isMachineryName: a field the caller assigned is still theirs",
+    identifier.isMachineryName(fn, "digestAlgorithm") === false);
+  /* An OWN property under a machinery name is the caller's, so it stays refused by name. It takes
+     `defineProperty` to make one: assigning `fn.arguments` on a strict function reaches
+     `Function.prototype`'s restricted setter, which throws. */
+  var ownShadow = function () {};
+  Object.defineProperty(ownShadow, "arguments", {
+    value: "sha384", writable: true, enumerable: true, configurable: true,
+  });
+  check("isMachineryName: an own property under a machinery name is not machinery",
+    identifier.isMachineryName(ownShadow, "arguments") === false);
+  check("isMachineryName: a non-callable reaches no part of the callable arm",
+    identifier.isMachineryName({}, "arguments") === false &&
+    identifier.isMachineryName(plain, "caller") === false);
+  check("isOwnMachineryName: an absent value answers false rather than throwing",
+    identifier.isOwnMachineryName(null, "length") === false &&
+    identifier.isOwnMachineryName(undefined, "length") === false);
+}
+
 async function run() {
   testAcceptsCanonical();
+  testOwnMachineryName();
   testSyntaxRejects();
   testBoundsRejects();
   testBoundsWaived();

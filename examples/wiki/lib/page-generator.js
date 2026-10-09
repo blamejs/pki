@@ -781,7 +781,7 @@ function build(opts) {
       code: 'var crl = pki.schema.crl.parse(crlDer);\nvar revoked = crl.revokedCertificates.filter(function (r) {\n  return r.serialNumber === cert.serialNumber;   // both are BigInt\n});\nrevoked[0] && revoked[0].revocationDate;         // Date',
       more: "/crl" },
     { q: "Create a certificate signing request",
-      code: '// sign(spec, key, opts) -- the signing key is the SECOND argument, not an option\nvar csrPem = await pki.csr.sign(\n  { subject: "CN=example.com", subjectPublicKey: spkiDer },\n  { key: keyDer },\n  { pem: true }\n);',
+      code: '// sign(spec, key, opts) -- the signing key is the SECOND argument, not an option\nvar csrPem = await pki.csr.sign(\n  { subject: "example.com", subjectPublicKey: spkiDer },\n  { key: keyDer },\n  { pem: true }\n);',
       more: "/csr" },
     { q: "Open a PKCS#12 keystore",
       code: '// The password is a positional argument; omitting it is not the empty password\nvar store = await pki.pkcs12.open(p12Bytes, "changeit");\nstore.macVerified;        // the integrity MAC checked out',
