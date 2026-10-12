@@ -5682,7 +5682,6 @@
     "pkcs12/too-deep",
     "pkcs12/too-many-elements",
     "pkcs12/unsupported-algorithm",
-    "pkcs8/bad-algorithm-parameters",
     "pkcs8/bad-attributes",
     "pkcs8/bad-order",
     "pkcs8/bad-version",

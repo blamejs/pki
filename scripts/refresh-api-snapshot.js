@@ -201,11 +201,20 @@ function extractErrorCodes(libDir, namespaceHints) {
   (namespaceHints || []).forEach(function (k) {
     if (typeof k === "string" && /^[A-Za-z][\w$]*$/.test(k)) domains[k.toLowerCase()] = true;
   });
+  // A literal in a COMPARISON or a `case` label is a code being READ, not one being
+  // thrown: `if (e.code === "tuf/bad-signature")` sits beside the throw that produces it.
+  // Counting those would let a stale read keep a code in the frozen set after its throw
+  // was deleted, so the freeze would report nothing on the removal it exists to catch.
+  // The test is on what precedes the literal, which is what tells a read from an argument;
+  // a code reached only through a variable is still seen, because the assignment that
+  // names it is not a comparison.
+  var READ_POSITION = /(?:===|!==|==|!=|\bcase)\s*$/;
   var codes = {}, stems = {};
   sources.forEach(function (src) {
     _CODE_ANY.lastIndex = 0;
     while ((m = _CODE_ANY.exec(src)) !== null) {
       if (!domains[m[1]]) continue;
+      if (READ_POSITION.test(src.slice(Math.max(0, m.index - 8), m.index))) continue;
       var code = m[1] + "/" + m[2];
       if (code.charAt(code.length - 1) === "-") stems[code] = true;
       else codes[code] = true;

@@ -320,10 +320,29 @@ async function runNullIsAbsenceVectors() {
     return pki.cms.compress(data, { level: o === null ? null : undefined })
       .then(function (der) { return der.length > 0; });
   });
-  await agreesWithOmitted("csr.sign spec.includeCertificate (via possession)", function (o) {
-    return pki.csr.sign({ subject: "r", subjectPublicKey: spki }, key, {
-      pem: o === null ? null : undefined,
-    }).then(function (out) { return Buffer.isBuffer(out) ? "der" : "pem"; });
+  // The possession statement is what reads `includeCertificate`, so the vector has to carry
+  // one: varying any other option leaves the defaulting this pins unexercised. The observable
+  // is whether the statement put the certificate on the wire, which is what the flag decides.
+  var possCert = await pki.x509.sign({ subject: "poss signer", subjectPublicKey: spki,
+    notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"] } }, { key: key });
+  var possParsed = pki.schema.x509.parse(possCert);
+  var possIssuer = possParsed.issuer.bytes;
+  var possSerial = possParsed.serialNumber;
+  function possessionCsr(flag) {
+    var statement = { signer: { issuer: possIssuer, serialNumber: possSerial }, certificate: possCert };
+    if (flag !== undefined) statement.includeCertificate = flag;
+    return pki.csr.sign({ subject: "r", subjectPublicKey: spki,
+      privateKeyPossessionStatement: statement }, key);
+  }
+  // The arrival control: `false` leaves the certificate off the wire, so it MUST encode shorter
+  // than an omitted flag. Without this the null-equals-omitted check below would pass even if
+  // nothing read the flag at all.
+  var possOmitted = (await possessionCsr(undefined)).length;
+  var possFalse = (await possessionCsr(false)).length;
+  check("csr.sign includeCertificate: false emits the compact statement (omitted " + possOmitted +
+    "B, false " + possFalse + "B)", possFalse < possOmitted);
+  await agreesWithOmitted("csr.sign privateKeyPossessionStatement.includeCertificate", function (o) {
+    return possessionCsr(o === null ? null : undefined).then(function (der) { return "csr=" + der.length; });
   });
   await agreesWithOmitted("x509.extension opts.critical", function (o) {
     return Promise.resolve(pki.x509.extension("certificatePolicies", ["domain-validated"],
