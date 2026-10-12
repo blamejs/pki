@@ -270,7 +270,226 @@ async function run() {
   // two must agree.
   await runOwnPropertyOptionVectors();
 
+  // ---- a switch option is the boolean it documents, typed at the verb's door ----
+  // A switch read with `!== false`, `=== true` or a truthiness test answers for every value, so a
+  // boolean that arrived as a string or a number selects a state the caller did not ask for and the
+  // call succeeds without saying so. Each door below accepts true, false and absence, and refuses
+  // everything else with its own typed code.
+  await runSwitchDoorVectors();
+
   console.log("CHECKS " + helpers.getChecks());
+}
+
+// A value standing for "the option was not passed at all", which is one of the accepted forms.
+var OMIT = { omitted: true };
+
+// A transport that answers, so a client verb reaches the option read instead of stopping at the
+// network. The status it reports is not what these vectors pin.
+function stubTransport() {
+  return Promise.resolve({ status: 503, headers: {}, body: Buffer.alloc(0) });
+}
+
+async function doorVerdict(run, v) {
+  try { await run(v); return { refused: false, code: "", msg: "" }; }
+  catch (e) {
+    return { refused: true, code: (e && e.code) || (e && e.name) || "throw",
+      msg: String((e && e.message) || "") };
+  }
+}
+
+// The verdict under test is "this door refused THIS option", which is the typed code plus the
+// option's own name in the message. A fixture that fails for another reason raises a different
+// code, or the same code about something else, and does not pass as the door's answer. Naming the
+// option is itself part of the contract: a caller told only "bad input" cannot find the typo.
+function refusedOption(r, code, option) {
+  return r.refused && r.code === code && r.msg.indexOf(option) !== -1;
+}
+
+// `run(v)` drives the shipped verb with the switch set to `v`, or omitted when `v` is OMIT.
+// `controls` narrows the accepted-value control set for a verb where one boolean is refused on its
+// own merits, which is a different and correct refusal.
+async function switchDoor(label, run, code, option, controls) {
+  // The control. Both booleans and the two absence forms must get PAST this door, or the refusals
+  // below would be the fixture failing rather than the switch being typed.
+  var ctl = controls ||
+    [["true", true], ["false", false], ["an omitted option", OMIT], ["null", null]];
+  for (var c = 0; c < ctl.length; c++) {
+    var got = await doorVerdict(run, ctl[c][1]);
+    check(label + " accepts " + ctl[c][0] + (refusedOption(got, code, option) ? " (refused " + got.msg.slice(0, 90) + ")" : ""),
+      !refusedOption(got, code, option));
+  }
+  var bad = ["false", "true", "no", 0, 1, "", "0"];
+  for (var i = 0; i < bad.length; i++) {
+    var r = await doorVerdict(run, bad[i]);
+    check(label + " refuses " + JSON.stringify(bad[i]) + " with " + code + " naming the option" +
+      (refusedOption(r, code, option) ? "" : " (got " + (r.refused ? r.code + ": " + r.msg.slice(0, 70) : "NO-THROW") + ")"),
+      refusedOption(r, code, option));
+  }
+}
+
+async function runSwitchDoorVectors() {
+  var NB = new Date("2026-01-01T00:00:00Z"), NA = new Date("2036-01-01T00:00:00Z");
+  var kp = await pki.key.generate("Ed25519");
+  var key = await pki.key.export(kp.privateKey);
+  var spki = await pki.key.export(kp.publicKey);
+  var caDer = await pki.x509.sign({
+    subject: "Switch CA", subjectPublicKey: spki, notBefore: NB, notAfter: NA,
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "cRLSign"], subjectKeyIdentifier: true },
+  }, { key: key });
+  var signerDer = await pki.x509.sign({
+    subject: "switch signer", subjectPublicKey: spki, notBefore: NB, notAfter: NA,
+    extensions: { keyUsage: ["digitalSignature"] },
+  }, { cert: caDer, key: key });
+  var leafDer = await pki.x509.sign({
+    subject: "leaf.switch", subjectPublicKey: spki, notBefore: NB, notAfter: NA,
+  }, { cert: caDer, key: key });
+  var tsaDer = await pki.x509.sign({
+    subject: "Switch TSA", subjectPublicKey: spki, notBefore: NB, notAfter: NA,
+    extensions: { keyUsage: ["digitalSignature"], extendedKeyUsage: ["timeStamping"], extendedKeyUsageCritical: true },
+  }, { key: key });
+  var signers = [{ cert: signerDer, key: key }];
+  var data = Buffer.from("payload");
+  var imprint = { hashAlgorithm: "sha256",
+    hashedMessage: Buffer.from(await pki.webcrypto.subtle.digest("SHA-256", data)) };
+
+  // The switch written into an options bag, or left out of it when the value is OMIT.
+  function withSwitch(base, k, v) {
+    var o = {};
+    Object.keys(base).forEach(function (bk) { o[bk] = base[bk]; });
+    if (v !== OMIT) o[k] = v;
+    return o;
+  }
+
+  // ---- CMS ----
+  await switchDoor("cms.sign opts.certificates", function (v) {
+    return pki.cms.sign(data, signers, withSwitch({ eContentType: "data", detached: false }, "certificates", v));
+  }, "cms/bad-input", "certificates");
+
+  await switchDoor("cms.sign opts.signedAttributes", function (v) {
+    return pki.cms.sign(data, signers, withSwitch({ eContentType: "data", detached: false }, "signedAttributes", v));
+  }, "cms/bad-input", "signedAttributes");
+
+  // Read two ways in one module (`!== true` for the shape, `!opts.detached` for the content), so
+  // `detached: "false"` took the attached branch and then omitted the content from it.
+  await switchDoor("cms.sign opts.detached", function (v) {
+    return pki.cms.sign(data, signers, withSwitch({ eContentType: "data" }, "detached", v));
+  }, "cms/bad-input", "detached");
+
+  await switchDoor("cms.digest opts.detached", function (v) {
+    return pki.cms.digest(data, withSwitch({}, "detached", v));
+  }, "cms/bad-input", "detached");
+
+  var baseCms = await pki.cms.sign(data, signers, { eContentType: "data", detached: false });
+  await switchDoor("cms.countersign opts.certificates", function (v) {
+    return pki.cms.countersign(baseCms, signers, withSwitch({ signerIndex: 0 }, "certificates", v));
+  }, "cms/bad-input", "certificates");
+
+  await switchDoor("cms.authenticate opts.authenticatedAttributes", function (v) {
+    return pki.cms.authenticate(data, [{ kek: Buffer.alloc(32, 7), kekId: Buffer.from("k") }],
+      withSwitch({ macAlgorithm: "hmac-sha256" }, "authenticatedAttributes", v));
+  }, "cms/bad-input", "authenticatedAttributes");
+
+  // ---- OCSP ----
+  var respData = { responderID: "byName", responses: [{ cert: leafDer, issuer: caDer, status: "good" }] };
+  await switchDoor("ocsp.sign opts.embedCert", function (v) {
+    return pki.ocsp.sign(respData, { cert: caDer, key: key }, withSwitch({}, "embedCert", v));
+  }, "ocsp/bad-input", "embedCert");
+
+  await switchDoor("ocsp.sign opts.extendedRevoke", function (v) {
+    return pki.ocsp.sign(respData, { cert: caDer, key: key }, withSwitch({}, "extendedRevoke", v));
+  }, "ocsp/bad-input", "extendedRevoke");
+
+  // ---- TSP ----
+  await switchDoor("tsp.sign opts.ordering", function (v) {
+    return pki.tsp.sign(imprint, { cert: tsaDer, key: key },
+      withSwitch({ policy: "1.3.6.1.4.1.1", serialNumber: 1 }, "ordering", v));
+  }, "tsp/bad-input", "ordering");
+
+  // ---- S/MIME: the header-protection control. Read by coercion, `protectHeaders: "true"` left
+  // RFC 9788 header protection off and the message went out unprotected.
+  await switchDoor("smime.sign opts.protectHeaders", function (v) {
+    return pki.smime.sign(data, signers, withSwitch({ headers: { Subject: "s" } }, "protectHeaders", v));
+  }, "smime/bad-input", "protectHeaders");
+
+  await switchDoor("smime.encrypt opts.protectHeaders", function (v) {
+    return pki.smime.encrypt(data, [signerDer], withSwitch({ headers: { Subject: "s" } }, "protectHeaders", v));
+  }, "smime/bad-input", "protectHeaders");
+
+  // ---- PKCS#12 public-key integrity ----
+  await switchDoor("pkcs12.build opts.integrity.certificates", function (v) {
+    return pki.pkcs12.build({ key: key, cert: signerDer }, {
+      integrity: withSwitch({ mode: "public-key", signer: { cert: signerDer, key: key } }, "certificates", v),
+      mac: false, password: "pw",
+    });
+  }, "pkcs12/bad-input", "certificates");
+
+  // ---- revocation: the delta-CRL merge. One line below it, `nonce` was already read this way.
+  await switchDoor("path.crlChecker opts.useDeltas", function (v) {
+    return pki.path.crlChecker([], withSwitch({}, "useDeltas", v));
+  }, "path/bad-input", "useDeltas");
+
+  await switchDoor("path.fetchingChecker opts.useDeltas", function (v) {
+    return pki.path.fetchingChecker(withSwitch({ transport: stubTransport }, "useDeltas", v));
+  }, "path/bad-input", "useDeltas");
+
+  // ---- the extension criticality flags. The rule was written for basicConstraints.critical and
+  // the six sibling flags were left coerced, so `keyUsageCritical: "false"` emitted it critical.
+  var CRITICALITY = ["keyUsageCritical", "extendedKeyUsageCritical", "certificatePoliciesCritical",
+    "policyMappingsCritical", "qcStatementsCritical", "tlsFeatureCritical"];
+  // Each flag is paired with a value its own extension accepts: RFC 5280 sec. 4.2.1.5 refuses a
+  // policy mapping to or from anyPolicy, and a qcStatements entry is { statementId, info }.
+  var CRIT_VALUE = {
+    keyUsageCritical: { keyUsage: ["digitalSignature"] },
+    extendedKeyUsageCritical: { extendedKeyUsage: ["clientAuth"] },
+    certificatePoliciesCritical: { certificatePolicies: ["domain-validated"] },
+    policyMappingsCritical: { certificatePolicies: ["domain-validated"],
+      policyMappings: [{ issuerDomainPolicy: "domain-validated", subjectDomainPolicy: "organization-validated" }] },
+    qcStatementsCritical: { qcStatements: [{ statementId: "1.3.6.1.4.1.99999.9" }] },
+    tlsFeatureCritical: { tlsFeature: ["status_request"] },
+  };
+  var CRIT_VERBS = [
+    ["x509.sign", "x509/bad-input", function (ext) {
+      return pki.x509.sign({ subject: "crit", subjectPublicKey: spki, notBefore: NB, notAfter: NA,
+        extensions: ext }, { key: key });
+    }],
+    // The csr spec carries the requested v3 extensions as `extensionRequest`.
+    ["csr.sign", "csr/bad-input", function (ext) {
+      return pki.csr.sign({ subject: "crit", subjectPublicKey: spki, extensionRequest: ext }, key);
+    }],
+  ];
+  for (var ci = 0; ci < CRITICALITY.length; ci++) {
+    for (var vi = 0; vi < CRIT_VERBS.length; vi++) {
+      await switchDoor(CRIT_VERBS[vi][0] + " extensions." + CRITICALITY[ci],
+        (function (flag, drive) {
+          return function (v) { return drive(withSwitch(CRIT_VALUE[flag], flag, v)); };
+        })(CRITICALITY[ci], CRIT_VERBS[vi][2]), CRIT_VERBS[vi][1], CRITICALITY[ci]);
+    }
+  }
+
+  // ---- the enrollment clients' cross-origin redirect switch. It WEAKENS a check, and read by
+  // truthiness `allowCrossOriginRedirect: "false"` allowed the redirect it was meant to refuse.
+  // The transport answers so the call reaches the read rather than stopping at the network; what
+  // it answers does not matter, because the verdict under test is this door's own refusal.
+  await switchDoor("est.cacerts opts.allowCrossOriginRedirect", function (v) {
+    return pki.est.cacerts("https://est.invalid",
+      withSwitch({ transport: stubTransport }, "allowCrossOriginRedirect", v));
+  }, "est/bad-input", "allowCrossOriginRedirect");
+
+  await switchDoor("scep.getCACert opts.allowCrossOriginRedirect", function (v) {
+    return pki.scep.getCACert("http://scep.invalid/scep",
+      withSwitch({ transport: stubTransport }, "allowCrossOriginRedirect", v));
+  }, "scep/bad-input", "allowCrossOriginRedirect");
+
+  // This CSR advertises no key-encryption attribute, so `requestedEncryption: true` contradicts it
+  // and is refused on its own merits (RFC 7030 sec. 4.4.1). The control set is the three values
+  // this request can carry; what the vectors below pin is that a non-boolean is refused for being
+  // one, rather than passing the door and being read as whichever state its truthiness matched.
+  var csrDer = await pki.csr.sign({ subject: "switch requester", subjectPublicKey: spki }, key);
+  await switchDoor("est.serverkeygen opts.requestedEncryption", function (v) {
+    return pki.est.serverkeygen("https://est.invalid", csrDer,
+      withSwitch({ transport: stubTransport }, "requestedEncryption", v));
+  }, "est/bad-input", "requestedEncryption",
+  [["false", false], ["an omitted option", OMIT], ["null", null]]);
 }
 
 module.exports = { run: run };
