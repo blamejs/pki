@@ -158,6 +158,16 @@ async function run() {
   check("SK-11. the encrypted key encapsulates id-data (not SignedData)", (await codeOf(pki.est.serverkeygen(BASE, CSR_ASYM, { transport: fakeTransport(skReply(ENC_PART, envelopedKeyCI({ innerType: ID_DATA, skid: KID }).toString("base64"))) }))) === "est/bad-key-part");
   var t12 = fakeTransport(skReply(ENC_PART, envelopedKeyCI({ skid: KID }).toString("base64")));
   check("SK-12. opts contradicts the CSR (pre-transport)", (await codeOf(pki.est.serverkeygen(BASE, CSR_ASYM, { transport: t12, requestedEncryption: false }))) === "est/bad-input" && t12.calls.length === 0);
+  // SK-12b: `null` is the documented absent form of the switch, so it states no override and the
+  // CSR's own answer stands. Read as a present value it coerced to `false` and contradicted the
+  // CSR the caller never disagreed with. The control is the omitted option, which must agree.
+  var t12b = fakeTransport(skReply(ENC_PART, envelopedKeyCI({ skid: KID }).toString("base64")));
+  var t12c = fakeTransport(skReply(ENC_PART, envelopedKeyCI({ skid: KID }).toString("base64")));
+  var nullVerdict = await codeOf(pki.est.serverkeygen(BASE, CSR_ASYM, { transport: t12b, requestedEncryption: null }));
+  var omittedVerdict = await codeOf(pki.est.serverkeygen(BASE, CSR_ASYM, { transport: t12c }));
+  check("SK-12b. requestedEncryption: null states no override, so it reads as the omitted option does" +
+    " (null -> " + nullVerdict + ", omitted -> " + omittedVerdict + ")",
+    nullVerdict === omittedVerdict && t12b.calls.length === t12c.calls.length && t12c.calls.length === 1);
   check("SK-13a. a NULL cipher on the serverkeygen channel", (await codeOf(pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport(skReply("application/pkcs8", pkcs8.toString("base64"), { tls: { cipher: { name: "ECDHE-RSA-NULL-SHA", standardName: "TLS_ECDHE_RSA_WITH_NULL_SHA" } } })) }))) === "est/weak-cipher");
   check("SK-13b. an EXPORT cipher", (await codeOf(pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport(skReply("application/pkcs8", pkcs8.toString("base64"), { tls: { cipher: { name: "EXP-RC4-MD5" } } })) }))) === "est/weak-cipher");
   check("SK-13c. an anonymous cipher", (await codeOf(pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport(skReply("application/pkcs8", pkcs8.toString("base64"), { tls: { cipher: { standardName: "TLS_ECDH_anon_WITH_AES_128_CBC_SHA" } } })) }))) === "est/weak-cipher");

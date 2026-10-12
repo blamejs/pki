@@ -2829,6 +2829,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/identity-match.js:match", "lib/ocsp.js:httpRequest",
         "lib/cms-sign.js:_attachTimestamp", "lib/cms-sign.js:_timestampImprint",
         "lib/ocsp.js:_buildRequest",
+        "lib/revocation-fetch.js:fetchingChecker", "lib/tuf.js:checkExpiry", "lib/tuf.js:verifySignatures",
       ],
       reason: "The options door a public verb opens with: settle the caller's options object, then refuse any key the verb does not accept. Both steps ARE the shared primitives, already factored into guard-identifier, so what repeats is the pair of calls and nothing else; the arguments differ at every site, since each verb has its own accepted-key table and its own label. Settling has to happen at the verb, before it reads anything, so the call cannot move inside the key check. family-subset so any 3+ match as more verbs adopt the door.",
     },
@@ -3590,6 +3591,73 @@ function testRequirementSwitchReadByCoercion() {
   });
   bad = _filterMarkers(bad, "requirement-switch-read-by-coercion");
   _report("no option that turns a check on is read by coercion (silent-disable vector, codebase-wide)", bad);
+}
+
+function testOptoutSwitchReadByCoercion() {
+  // class: optout-switch-read-by-coercion
+  // A CODEBASE-WIDE vector scan, the mirror of the one above. An option the caller turns OFF is
+  // read by comparing it to `false`, so every value that is not that boolean selects the other
+  // state: `certificates: "false"` out of a config file embedded the signer certificate the
+  // caller asked to withhold, `detached: "false"` emitted a detached message with no content, and
+  // `allowCrossOriginRedirect: "false"` allowed the redirect the check exists to refuse. The call
+  // succeeds either way, because the value passed the unknown-key door and nothing else looked at
+  // it. Read such an option through guard.identifier.booleanOption (absence is off) or
+  // booleanOptionDefaultOn (absence is on), which admit true, false and absence and refuse the
+  // rest with the module's own typed code; the comparisons below are then correct reads of a value
+  // already known to be a boolean.
+  //
+  // Comparing to the boolean `false` is what makes the shape unambiguous: the author has declared
+  // the value a boolean, so there is no safe direction for a non-boolean to be read in, unlike the
+  // `=== true` reads above where a weakening switch correctly fails closed. A presence test
+  // (`!!o.validity`) does not compare to `false` and is not this shape.
+  //
+  // Rename-proof: it matches the receiver family and the comparison, never a symbol, a function or
+  // an error code. A module that type-checks the option itself is recognized rather than flagged,
+  // file-wide, because that check belongs at the verb's door while the read sits wherever the
+  // decision is made -- cms-sign types `signedAttributes` once and reads it in four functions, and
+  // a value-or-switch option (`signingTime` is a time or `false`, `mac` is a descriptor or
+  // `false`) is typed by the test its own type needs. What stays flagged is a switch no boundary
+  // in its own file ever types. This fires on a NEW one ANYWHERE in lib, including a file never
+  // yet reviewed.
+  var RECV = "(?:opts|options|o|cfg|settings|params|spec|extSpec|ig)";
+  var NAME = "([A-Za-z_$][\\w$]*)";
+  var READS = [
+    new RegExp("\\b" + RECV + "\\s*\\.\\s*" + NAME + "\\s*!==\\s*false"),
+    new RegExp("\\b" + RECV + "\\s*\\.\\s*" + NAME + "\\s*===\\s*false"),
+  ];
+  var bad = [];
+  _libFiles().forEach(function (f) {
+    var rel = path.relative(REPO_ROOT, f);
+    var src = fs.readFileSync(f, "utf8");
+    var lines = _lines(src);
+    for (var i = 0; i < lines.length; i++) {
+      if (/^\s*(\/\/|\*)/.test(lines[i])) continue;
+      var name = null;
+      for (var s = 0; s < READS.length && name === null; s++) {
+        var m = lines[i].match(READS[s]);
+        if (m) name = m[1];
+      }
+      if (name === null) continue;
+      var nameRe = name.replace(/[.$]/g, "\\$&");
+      var typed =
+        // Routed through the switch guard, either default.
+        new RegExp("booleanOption(?:DefaultOn)?\\s*\\([^)]*" + nameRe).test(src) ||
+        // A module's own assert, or the type test a value-or-switch option needs.
+        new RegExp("_assertBool\\s*\\([^)]*" + nameRe).test(src) ||
+        new RegExp("assertEncodable\\s*\\([^)]*" + nameRe).test(src) ||
+        new RegExp("typeof\\s+[\\w$.\\[\\]]*" + nameRe).test(src) ||
+        // Typed by name through a list of option names the module walks with a typeof test.
+        (/!==\s*["']boolean["']/.test(src) && new RegExp("[\"']" + nameRe + "[\"']").test(src));
+      if (!typed) {
+        bad.push({ file: rel, line: i + 1,
+          content: "opts." + name + " is a switch the caller turns off, compared to false here without " +
+            "being typed -- every other value selects the state the caller did not ask for and the call " +
+            "succeeds; read it through guard.identifier.booleanOption / booleanOptionDefaultOn(value, E, code, label)" });
+      }
+    }
+  });
+  bad = _filterMarkers(bad, "optout-switch-read-by-coercion");
+  _report("no option that turns something off is read by coercion (silent-inversion vector, codebase-wide)", bad);
 }
 
 function testOptionBagReadByEnumerableKey() {
@@ -5604,6 +5672,7 @@ function run() {
   testNumberNarrowsUnboundedInteger();
   testNanDateComparisonUnguarded();
   testRequirementSwitchReadByCoercion();
+  testOptoutSwitchReadByCoercion();
   testOptionBagReadByEnumerableKey();
   testEddsaVerifyGate();
   testCborMapPairAccessOutsideCodec();
