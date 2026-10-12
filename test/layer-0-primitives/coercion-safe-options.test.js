@@ -277,7 +277,98 @@ async function run() {
   // everything else with its own typed code.
   await runSwitchDoorVectors();
 
+  // ---- a null option reads as an omitted one ----
+  // A presence test written against `undefined` alone takes a `null` as a value the caller
+  // stated, so an option left out as null was validated as if it were content and refused,
+  // or forwarded as a value nobody set. Each pair below drives the same verb twice and the
+  // two outcomes have to agree.
+  await runNullIsAbsenceVectors();
+
   console.log("CHECKS " + helpers.getChecks());
+}
+
+// `null` and an omitted option must reach the same outcome. Comparing the two is the whole
+// assertion: either both are accepted or both are refused the same way, and a difference is
+// the option being read as content on one path and absence on the other.
+async function agreesWithOmitted(label, run) {
+  var a = await settled(function () { return run({}); });
+  var b = await settled(function () { return run(null); });
+  check(label + ": omitted reaches the verb (" + a.slice(0, 70) + ")", a.indexOf("throw:") !== 0);
+  check(label + ": null reads as omitted" + (a === b ? "" : " (omitted " + a.slice(0, 60) +
+    " / null " + b.slice(0, 60) + ")"), a === b);
+}
+
+async function runNullIsAbsenceVectors() {
+  var NB = new Date("2026-01-01T00:00:00Z"), NA = new Date("2036-01-01T00:00:00Z");
+  var kp = await pki.key.generate("Ed25519");
+  var key = await pki.key.export(kp.privateKey);
+  var spki = await pki.key.export(kp.publicKey);
+  var cert = await pki.x509.sign({ subject: "null-abs", subjectPublicKey: spki,
+    notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"] } }, { key: key });
+  var data = Buffer.from("payload");
+
+  // An option whose absence selects a default: the default has to be what null selects.
+  await agreesWithOmitted("cms.digest opts.digestAlgorithm", function (o) {
+    return pki.cms.digest(data, { digestAlgorithm: o === null ? null : undefined })
+      .then(function (der) { return pki.schema.cms.parse(der).digestAlgorithm.name; });
+  });
+  await agreesWithOmitted("cms.digest opts.contentType", function (o) {
+    return pki.cms.digest(data, { contentType: o === null ? null : undefined })
+      .then(function (der) { return pki.schema.cms.parse(der).encapContentInfo.eContentType; });
+  });
+  await agreesWithOmitted("cms.compress opts.level", function (o) {
+    return pki.cms.compress(data, { level: o === null ? null : undefined })
+      .then(function (der) { return der.length > 0; });
+  });
+  await agreesWithOmitted("csr.sign spec.includeCertificate (via possession)", function (o) {
+    return pki.csr.sign({ subject: "r", subjectPublicKey: spki }, key, {
+      pem: o === null ? null : undefined,
+    }).then(function (out) { return Buffer.isBuffer(out) ? "der" : "pem"; });
+  });
+  await agreesWithOmitted("x509.extension opts.critical", function (o) {
+    return Promise.resolve(pki.x509.extension("certificatePolicies", ["domain-validated"],
+      { critical: o === null ? null : undefined })).then(function (der) {
+      return pki.asn1.decode(der).children.length;
+    });
+  });
+  await agreesWithOmitted("cms.sign opts.signingTime", function (o) {
+    return pki.cms.sign(data, [{ cert: cert, key: key }],
+      { eContentType: "data", detached: false, signingTime: o === null ? null : undefined })
+      .then(function (der) {
+        var si = pki.schema.cms.parse(der).signerInfos[0];
+        return (si.signedAttrs || []).length;
+      });
+  });
+  await agreesWithOmitted("path.crlChecker opts.useDeltas", function (o) {
+    return Promise.resolve(typeof pki.path.crlChecker([],
+      { useDeltas: o === null ? null : undefined }).check);
+  });
+
+  // ---- the two options where `null` is a VALUE, not absence ----
+  // `expectedTopOrigin: null` states that the ceremony must be unframed (WebAuthn sec. 5.8.1),
+  // so it is a check the caller asked for and not an option they left out. Read as absence the
+  // check silently stopped running, which is the regression this pins.
+  check("webauthn.verify expectedTopOrigin: null is a stated expectation, not an omission",
+    (function () {
+      var src = require("node:fs").readFileSync(
+        require("node:path").join(__dirname, "..", "..", "lib", "webauthn.js"), "utf8");
+      return src.indexOf("opts.expectedTopOrigin !== undefined") !== -1;
+    })());
+
+  // A trust anchor's members RESTRICT what it may certify, so a `null` is a malformed spec
+  // rather than an omission: reading it as absent would build a wider anchor than described.
+  var anchorNulls = [
+    ["certPath", { taInfo: { pubKey: spki, keyId: Buffer.from([1]), certPath: null } }],
+    ["policyFlags", { taInfo: { pubKey: spki, keyId: Buffer.from([1]),
+      certPath: { taName: "TA", policyFlags: null } } }],
+  ];
+  for (var ai = 0; ai < anchorNulls.length; ai++) {
+    var verdict = await settled(function () {
+      return pki.trustanchor.build({ anchors: [anchorNulls[ai][1]] });
+    });
+    check("trustanchor.build a null " + anchorNulls[ai][0] + " is refused, not read as absent (" +
+      verdict.slice(0, 60) + ")", verdict.indexOf("throw:trustanchor/bad-input") === 0);
+  }
 }
 
 // A value standing for "the option was not passed at all", which is one of the accepted forms.
