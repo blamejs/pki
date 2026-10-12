@@ -4948,9 +4948,12 @@
     "pki.x509.parseDn": "0.8.2"
   },
   "errorCodes": [
+    "acme/bad-account",
     "acme/bad-alternate",
+    "acme/bad-authorization",
     "acme/bad-certid",
     "acme/bad-certificate-chain",
+    "acme/bad-challenge",
     "acme/bad-contact",
     "acme/bad-directory",
     "acme/bad-identifier",
@@ -4958,6 +4961,7 @@
     "acme/bad-key",
     "acme/bad-link",
     "acme/bad-order",
+    "acme/bad-orders-list",
     "acme/bad-problem",
     "acme/bad-redirect",
     "acme/bad-renewal-info",
@@ -6031,9 +6035,7 @@
     "webcrypto",
     "x509"
   ],
-  "errorCodeStems": [
-    "acme/bad-"
-  ],
+  "errorCodeStems": [],
   "errorCodesWithoutVector": [
     "acme/bad-renewal-info",
     "acme/bad-retry-after",
