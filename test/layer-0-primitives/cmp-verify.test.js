@@ -243,7 +243,11 @@ async function run() {
   var noKuKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   var noKuKey = noKuKp.privateKey.export({ format: "der", type: "pkcs8" });
   var noKuSpki = noKuKp.publicKey.export({ format: "der", type: "spki" });
-  var noKuCert = await pki.x509.sign({ subject: [{ commonName: "Test Signer" }], subjectPublicKey: noKuSpki, serialNumber: 3, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["keyEncipherment"], authorityKeyIdentifier: true } }, { key: caKey, cert: caCert });
+  /* keyAgreement rather than keyEncipherment: the question is a keyUsage that OMITS
+     digitalSignature, and keyAgreement is the establishment bit RFC 5480 sec. 3 lists for an EC key,
+     where RFC 8813 sec. 3 makes keyEncipherment a MUST NOT for one. The certificate is conforming
+     and still may not sign, which is the whole point. */
+  var noKuCert = await pki.x509.sign({ subject: [{ commonName: "Test Signer" }], subjectPublicKey: noKuSpki, serialNumber: 3, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["keyAgreement"], authorityKeyIdentifier: true } }, { key: caKey, cert: caCert });
   var noKuDer = await pki.cmp.build({ header: HDR, body: await p10Body(noKuSpki, noKuKey) }, { key: noKuKey, cert: noKuCert });
   var t9d = await pki.cmp.verify(noKuDer, { signerCert: noKuCert, trustAnchors: [caCert], time: T });
   check("9d. a signer cert whose keyUsage omits digitalSignature -> cmp/untrusted-signer", t9d.trusted === false && t9d.code === "cmp/untrusted-signer");

@@ -287,6 +287,33 @@ async function testCaCrossField() {
   // a proper CA cert with pathLen 0 is accepted.
   var der = await pki.x509.sign(Object.assign({ extensions: { basicConstraints: { cA: true, pathLen: 0 }, keyUsage: ["keyCertSign"] } }, base), { key: s.key });
   check("CA with pathLen 0 accepted", pki.schema.x509.parse(der).version === 3);
+
+  /* RFC 8813 sec. 3 makes keyEncipherment and dataEncipherment a MUST NOT for an id-ecPublicKey
+     subject key, and the producer check is what stops the toolkit emitting one. Measured before the
+     rule existed: both were EMITTED and `pki.lint.certificate` reported no error-severity finding.
+     The signer is held to the rfc5280 profile on every call, and sec. 4.2.1.3 of that document is
+     the clause that delegates the per-algorithm bits, so the row runs here. */
+  var ec = makeSigner("ec-p256");
+  function ecSpec(usages) {
+    return { subject: "ec usage", subjectPublicKey: ec.spki, notBefore: NB, notAfter: NA,
+      extensions: { keyUsage: usages } };
+  }
+  check("an EC spec asserting keyEncipherment is refused by the producer check",
+    await codeOf(pki.x509.sign(ecSpec(["keyEncipherment"]), { key: ec.key })) === "x509/profile-violation");
+  check("an EC spec asserting dataEncipherment is refused too",
+    await codeOf(pki.x509.sign(ecSpec(["dataEncipherment"]), { key: ec.key })) === "x509/profile-violation");
+  check("CONTROL an EC spec asserting keyAgreement still signs",
+    Buffer.isBuffer(await pki.x509.sign(ecSpec(["keyAgreement"]), { key: ec.key })));
+  check("CONTROL an EC spec asserting digitalSignature still signs",
+    Buffer.isBuffer(await pki.x509.sign(ecSpec(["digitalSignature"]), { key: ec.key })));
+  // CONTROL: the rule is the subject key's, so an RSA key still takes the key-transport bit.
+  var rsaSigner = makeSigner("rsa");
+  check("CONTROL an RSA spec asserting keyEncipherment still signs",
+    Buffer.isBuffer(await pki.x509.sign({ subject: "rsa usage", subjectPublicKey: rsaSigner.spki,
+      notBefore: NB, notAfter: NA, extensions: { keyUsage: ["keyEncipherment"] } }, { key: rsaSigner.key })));
+  // The escape an operator reproducing a real misissuance needs is still the one the gate documents.
+  check("CONTROL profile \"none\" emits what the spec describes",
+    Buffer.isBuffer(await pki.x509.sign(ecSpec(["keyEncipherment"]), { key: ec.key }, { profile: "none" })));
 }
 
 /** The producer check runs `pki.lint` over the certificate this spec describes and refuses to sign one
@@ -2405,7 +2432,10 @@ async function testExtensionEncoder() {
   // spec.extensions yields the same Extension (OID, criticality, value), so the two forms cannot
   // drift. [name, value, opts for the standalone call, the object-form knob it corresponds to, CA carrier]
   var rows = [
-    ["keyUsage", ["digitalSignature", "keyEncipherment"], undefined, {}],
+    // Two bits, to prove both spec forms emit the same NamedBitList. keyAgreement rather than
+    // keyEncipherment because the subject key is EC and RFC 8813 sec. 3 makes that bit a MUST NOT
+    // for one; which pair is set is incidental to what this row compares.
+    ["keyUsage", ["digitalSignature", "keyAgreement"], undefined, {}],
     ["keyUsage", ["digitalSignature"], { critical: false }, { keyUsageCritical: false }],
     ["extendedKeyUsage", ["serverAuth", "clientAuth"], undefined, {}],
     ["extendedKeyUsage", ["serverAuth"], { critical: true }, { extendedKeyUsageCritical: true }],

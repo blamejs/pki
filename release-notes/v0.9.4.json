@@ -1,0 +1,14 @@
+{
+  "version": "0.9.4",
+  "date": "2026-10-12",
+  "headline": "Refuse to issue an elliptic curve certificate asserting a key usage its own algorithm forbids.",
+  "summary": "RFC 5280 states no per-algorithm key usage set of its own: section 4.2.1.3 says appropriate values for particular algorithms are specified elsewhere, and for elliptic curve that is RFC 8813, which makes keyEncipherment and dataEncipherment a MUST NOT. The toolkit emitted such a certificate and reported nothing about it. The rule now runs in the profile every authoring call is held to, so the signer refuses the spec and the linter names the clause.",
+  "sections": {
+    "Security": [
+      "`pki.x509.sign` refuses a spec whose elliptic curve subject key asserts `keyEncipherment` or `dataEncipherment`, and `pki.lint.certificate` reports it as `lint/rfc5480/ec-key-usage-forbidden`. RFC 5280 sec. 4.2.1.3 delegates the per-algorithm key usage values (\"appropriate values for keyUsage extensions for particular algorithms are specified in [RFC3279], [RFC4055], and [RFC4491]\"), RFC 5480 updates RFC 3279 for elliptic curve, and RFC 8813 sec. 3 states the prohibition outright for a certificate indicating `id-ecPublicKey`. Measured before this: both bits were emitted and no error-severity finding was reported, so a certificate violating a MUST NOT left the signer unremarked. One finding names both bits where both are set, since an operator clearing them clears them together. The RSA side has no such row: RFC 3279 sec. 2.3.1 states a MAY list and no prohibition, so an error-severity finding there would promote a MAY-list omission to a MUST NOT and stop the signer emitting a certificate a caller may want. `opts.profile: \"none\"` still emits what a spec describes, which is what reproducing a real misissuance needs."
+    ],
+    "Added": [
+      "`rfc5480` joins `pki.lint.profiles()`, naming the elliptic curve rows on their own so a caller can ask for them alone. They also ride with the `rfc5280` profile, because that is the profile whose own clause delegates the question and the one every authoring call is held to."
+    ]
+  }
+}

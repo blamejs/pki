@@ -70,10 +70,16 @@ async function run() {
   var issuingCa = await pki.x509.sign({ subject: [{ commonName: "Issuing CA" }],
     subjectPublicKey: edPub, notBefore: NB, notAfter: NA,
     extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] } }, { key: edPriv });
+  /* `profile: "none"` runs no producer rules, which is what a file that lints a CORPUS needs: the
+     rows here are about certificates a CA emitted, and several of the shapes they catch are ones
+     this toolkit's own signer refuses. RFC 8813 sec. 3 makes keyEncipherment a MUST NOT for an EC
+     key, so the S18 vector cannot mint its own subject without the escape the build gate documents
+     for exactly this. Nothing in this file asserts that the signer refuses anything, so the escape
+     hides no regression. */
   function sign(over, pub, subject) {
     return pki.x509.sign({ subject: subject === undefined ? [{ commonName: "A Person" }] : subject,
       subjectPublicKey: pub || edPub, notBefore: NB, notAfter: NA, extensions: exts(over) },
-      { cert: issuingCa, key: edPriv });
+      { cert: issuingCa, key: edPriv }, { profile: "none" });
   }
   function signSelf(over, pub) {
     return pki.x509.sign({ subject: [{ commonName: "A Person" }], subjectPublicKey: pub || edPub,

@@ -52,10 +52,16 @@ async function run() {
     });
     return e;
   }
+  /* `profile: "none"` runs no producer rules, which is what a file that lints a CORPUS needs: the
+     rows here are about certificates a CA emitted, and several of the shapes they catch are ones
+     this toolkit's own signer refuses. RFC 8813 sec. 3 makes keyEncipherment a MUST NOT for an EC
+     key, so the P17 vector cannot mint its own subject without the escape the build gate documents
+     for exactly this. Nothing in this file asserts that the signer refuses anything, so the escape
+     hides no regression. */
   function signEc(over, subject) {
     return pki.x509.sign({ subject: subject === undefined ? [{ commonName: "example.com" }] : subject,
       subjectPublicKey: ecPub, notBefore: NB, notAfter: NA, extensions: conformingExts(over) },
-      { key: ecPriv });
+      { key: ecPriv }, { profile: "none" });
   }
   function lint(der) { return pki.lint.certificate(der, { profile: "cabf-tls" }); }
   async function lintEc(over, subject) { return lint(await signEc(over, subject)); }
