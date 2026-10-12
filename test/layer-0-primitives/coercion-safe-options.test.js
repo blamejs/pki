@@ -318,6 +318,16 @@ async function switchDoor(label, run, code, option, controls) {
     check(label + " accepts " + ctl[c][0] + (refusedOption(got, code, option) ? " (refused " + got.msg.slice(0, 90) + ")" : ""),
       !refusedOption(got, code, option));
   }
+  // `null` is the absent form, so it has to reach the same verdict the omitted option reaches.
+  // Accepting both is not enough: a consumer that tests presence with `!== undefined` takes a
+  // `null` as a value the caller stated and reads it as the off state, which is a different answer
+  // from the default an omitted option selects. Only comparing the two outcomes sees that.
+  var nullVerdict = await doorVerdict(run, null);
+  var omitVerdict = await doorVerdict(run, OMIT);
+  check(label + ": null reads as the omitted option does (null -> " +
+    (nullVerdict.refused ? nullVerdict.code : "accepted") + ", omitted -> " +
+    (omitVerdict.refused ? omitVerdict.code : "accepted") + ")",
+    nullVerdict.refused === omitVerdict.refused && nullVerdict.code === omitVerdict.code);
   var bad = ["false", "true", "no", 0, 1, "", "0"];
   for (var i = 0; i < bad.length; i++) {
     var r = await doorVerdict(run, bad[i]);
