@@ -165,6 +165,15 @@ function testObjects() {
   var noFin = Object.assign({}, ORDER); delete noFin.finalize;
   check("43a. order without finalize rejected", code(function () { pki.acme.validate("order", noFin); }) === "acme/missing-field");
   check("43b. empty authorizations rejected", code(function () { pki.acme.validate("order", Object.assign({}, ORDER, { authorizations: [] })); }) === "acme/bad-order");
+  // 43c. Each resource kind is refused with its OWN code, so the code names the resource an
+  // operator has to go and look at. These were assembled from a stem at runtime and so were
+  // frozen by nothing; the two below had no test naming them at all.
+  check("43c. a non-object authorization -> acme/bad-authorization",
+    code(function () { pki.acme.validate("authorization", "not-an-object"); }) === "acme/bad-authorization");
+  check("43d. a non-object challenge -> acme/bad-challenge",
+    code(function () { pki.acme.validate("challenge", "not-an-object"); }) === "acme/bad-challenge");
+  check("43e. a non-object directory -> acme/bad-directory",
+    code(function () { pki.acme.validate("directory", "not-an-object"); }) === "acme/bad-directory");
   // 44. an authorization identifier value beginning *. rejected (sec. 7.1.4).
   check("44. authz wildcard value rejected", code(function () { pki.acme.validate("authorization", Object.assign({}, AUTHZ, { identifier: { type: "dns", value: "*.example.org" } })); }) === "acme/bad-identifier");
   // 45. wildcard flag true / false / absent all accepted for the authz shape.

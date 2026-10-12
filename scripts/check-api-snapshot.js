@@ -80,6 +80,50 @@ try {
     process.exit(1);
   }
 
+  // The error-code surface. A `domain/reason` code is a contract an operator
+  // switches on, so a code the baseline recorded and the source no longer throws
+  // was renamed or deleted under them. A code no test names is the hole that
+  // freeze exists to close: nothing would catch its rename, so a NEW code arrives
+  // with a vector, and the recorded residual that predates the rule only shrinks.
+  if (baseline.errorCodes) {
+    var liveCodes = snap.extractErrorCodes(null, Object.keys(pki));
+    var assertedCodes = snap.extractAssertedCodes();
+    var codeVerdict = snap.checkErrorCodes(baseline, liveCodes.codes, assertedCodes);
+
+    if (codeVerdict.removed.length > 0) {
+      console.error("[check-api-snapshot] " + codeVerdict.removed.length +
+        " frozen error code(s) no longer thrown by the source:");
+      codeVerdict.removed.forEach(function (c) { console.error("  - " + c); });
+      console.error("[check-api-snapshot] an error code is a stable contract callers switch on. " +
+        "Restore it, or make the removal a deliberate breaking change: regenerate the baseline " +
+        "with `node scripts/refresh-api-snapshot.js` and record it in the release notes.");
+      process.exit(1);
+    }
+
+    if (codeVerdict.unasserted.length > 0) {
+      console.error("[check-api-snapshot] " + codeVerdict.unasserted.length +
+        " error code(s) no test names:");
+      codeVerdict.unasserted.forEach(function (c) { console.error("  - " + c); });
+      console.error("[check-api-snapshot] add a vector that drives the shipped path and asserts " +
+        "the code, so a later rename is caught by something.");
+      process.exit(1);
+    }
+
+    console.log("[check-api-snapshot] error codes: " + liveCodes.codes.length + " across " +
+      liveCodes.domains.length + " domain(s); " +
+      (baseline.errorCodesWithoutVector || []).length + " in the recorded residual" +
+      (codeVerdict.closed.length > 0 ? ", " + codeVerdict.closed.length + " of which now have one" : "") +
+      (liveCodes.stems.length > 0 ? "; " + liveCodes.stems.length +
+        " code(s) are built from a stem and are not frozen by name" : "") + ".");
+    if (codeVerdict.added.length > 0) {
+      console.log("[check-api-snapshot] " + codeVerdict.added.length +
+        " new error code(s), each named by a test — refresh the baseline at the next release.");
+    }
+  } else {
+    console.log("[check-api-snapshot] baseline carries no error-code surface; " +
+      "run `node scripts/refresh-api-snapshot.js` to record it.");
+  }
+
   if (diff.additive.length > 0) {
     console.log("[check-api-snapshot] " + diff.additive.length +
       " additive change(s) — refresh the baseline at the next release " +
