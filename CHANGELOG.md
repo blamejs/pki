@@ -4,6 +4,29 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.9.5 — 2026-10-12
+
+Refuse a non-boolean switch option instead of reading it as the state the caller did not ask for.
+
+### Changed
+
+- For every one of these switches, `true` and `false` pass, `null` and an omitted option select the documented default, and any other value is refused with that module's own `domain/reason` code naming the option. For every value that was already valid the emitted bytes are unchanged. A call that passes a non-boolean to one of these options now throws instead of building a message the other way: pass the boolean, or omit the option to take its default.
+- `opts.pem` is unchanged and still takes `true` or a PEM label string where a verb documents one, as do `signingTime` (a time or `false`) and `pki.pkcs12.build`'s `mac` (a descriptor or `false`). These carry a value as well as an off form, and each is held to the type its own value needs.
+
+### Fixed
+
+- `pki.cms.sign` refuses a non-boolean `detached`. The option decided the message shape in one place and whether the content was carried in another, so `detached: "false"` took the attached branch and then omitted the content from it, emitting an attached SignedData with nothing in it.
+- `pki.cms.authenticate` refuses a non-boolean `authenticatedAttributes`. With `false` the MAC covers the content octets directly (RFC 6211 sec. 2), so the two values are structurally different messages and a mistyped one produced the message the caller had declined.
+- `pki.cms.digest` refuses a non-boolean `detached`; `pki.cms.sign` and `pki.cms.countersign` refuse a non-boolean `signedAttributes`; `pki.ocsp.sign` refuses a non-boolean `embedCert` or `extendedRevoke`; `pki.tsp.sign` refuses a non-boolean `ordering`; `pki.pkcs12.build` refuses a non-boolean `integrity.certificates`; `pki.path.crlChecker` and `pki.path.fetchingChecker` refuse a non-boolean `useDeltas`.
+- `pki.est.serverkeygen` reads a `null` `requestedEncryption` as the absent option it documents rather than as a stated `false`. It tested whether the caller had stated an override by presence alone, so a `null` counted as stated and coerced to `false`, and a request against a CSR that does advertise key encryption was refused for contradicting a CSR the caller never disagreed with.
+
+### Security
+
+- `pki.smime.sign` and `pki.smime.encrypt` refuse a non-boolean `protectHeaders`. Read by comparison to `true`, a value of any other type left RFC 9788 header protection off and the message went out unprotected with no error, so a caller that asked for the protection did not get it and was not told.
+- The `pki.est` and `pki.scep` verbs refuse a non-boolean `allowCrossOriginRedirect`. Read by truthiness, `"false"` allowed the cross-origin redirect on an unsafe method that the check exists to refuse (RFC 7030 sec. 3.2.1), which is the opposite of what that value states.
+- `pki.cms.sign` and `pki.cms.countersign` refuse a non-boolean `certificates`, the switch that withholds the signer chain. A value of any other type embedded the certificates the caller asked to leave out.
+- `pki.x509.sign` and `pki.csr.sign` refuse a non-boolean criticality flag (`keyUsageCritical`, `extendedKeyUsageCritical`, `certificatePoliciesCritical`, `policyMappingsCritical`, `qcStatementsCritical`, `tlsFeatureCritical`). A value of any other type could emit an extension critical that the caller asked to be non-critical, and RFC 5280 sec. 6.1 requires a relying party that does not recognize a critical extension to reject the certificate.
+
 ## v0.9.4 — 2026-10-12
 
 Refuse to issue an elliptic curve certificate asserting a key usage its own algorithm forbids.

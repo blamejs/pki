@@ -220,6 +220,31 @@ security-only patches after the next major releases.
   cannot carry the attribute at all: RFC 8933 sec. 6 gives it a place in an
   `AuthenticatedData` alone, and the plaintext of an `EnvelopedData` came back
   before with the requirement neither applied nor reported.
+- **A control carried out backwards by the value that turned it off (CWE-20).**
+  The mirror of the entry above, in the other direction: a switch that turns a
+  part of the message off was compared against `false`, so a value outside the
+  documented domain selected the on state and the message was built the way the
+  caller had declined. A `"false"` read out of a config file or a JSON round trip
+  is such a value. `certificates` on `pki.cms.sign` and `pki.cms.countersign`
+  withholds the signer chain, and a mistyped value embedded it; `protectHeaders`
+  on `pki.smime.sign` and `pki.smime.encrypt` turns RFC 9788 header protection
+  on, and a mistyped value sent the message unprotected; `allowCrossOriginRedirect`
+  on the `pki.est` and `pki.scep` verbs allowed the cross-origin redirect on an
+  unsafe method that RFC 7030 sec. 3.2.1 has the client refuse; a mistyped
+  criticality flag on `pki.x509.sign` or `pki.csr.sign` could emit an extension
+  critical that the caller asked to be non-critical, which RFC 5280 sec. 6.1
+  requires a relying party that does not recognize it to reject. `detached` on
+  `pki.cms.sign` decided the message shape in one place and whether the content
+  was carried in another, so one mistyped value emitted an attached SignedData
+  with no content in it. Each of these switches, with `signedAttributes`,
+  `authenticatedAttributes`, `embedCert`, `extendedRevoke`, `ordering`,
+  `integrity.certificates`, `useDeltas` and `requestedEncryption`, takes `true`,
+  `false`, `null` or an absent option at the door of every verb that accepts it,
+  and refuses anything else with that module's `bad-input` code naming the
+  option, before the work the switch governs runs and before any request goes
+  out. An option that carries a value as well as an off form keeps its own type:
+  `pem` takes `true` or a PEM label string, `signingTime` a time or `false`, and
+  `pki.pkcs12.build`'s `mac` a descriptor or `false`.
 - **A verdict describing a check that ran on a different value (CWE-367).** A
   verify verb reads one option to decide whether a rule applies and reads it again
   for the value the rule uses, so an option supplied through an accessor can
