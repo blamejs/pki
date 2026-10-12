@@ -665,7 +665,19 @@ function run() {
       wrongRefusals.length === 0);
   })();
   check("pki.lint.rules() enumerates the registry with stable ids", pki.lint.rules().length > 10 && pki.lint.rules().every(function (r) { return typeof r.id === "string" && typeof r.citation === "string"; }));
-  check("pki.lint.rules('rfc5280') filters to one profile", pki.lint.rules("rfc5280").every(function (r) { return r.source === "rfc5280"; }));
+  /* A profile is a SET of rows rather than a filter on one source: every other profile already
+     carries the rfc5280 extension-syntax row, and rfc5280 itself carries the rows the documents its
+     own clauses DELEGATE to, since sec. 4.2.1.3 states that "appropriate values for keyUsage
+     extensions for particular algorithms are specified in [RFC3279], [RFC4055], and [RFC4491]" and
+     RFC 8813 is where the elliptic curve answer now is. The allowed sources are named rather than
+     counted, so a third one cannot join the profile unremarked. */
+  var RFC5280_PROFILE_SOURCES = { "rfc5280": 1, "rfc5480": 1 };
+  var foreign = pki.lint.rules("rfc5280").filter(function (r) { return !RFC5280_PROFILE_SOURCES[r.source]; });
+  check("pki.lint.rules('rfc5280') carries its own rows and the ones its clauses delegate" +
+    (foreign.length ? " [" + foreign.map(function (r) { return r.id + " from " + r.source; }).join("; ") + "]" : ""),
+  foreign.length === 0);
+  check("pki.lint.rules('rfc5480') returns the delegated rows under their own name",
+    pki.lint.rules("rfc5480").some(function (r) { return r.source === "rfc5480"; }));
   // The data path never throws, and the byte sources it accepts are the ones the parsers accept.
   // A caller who read the bytes over the network holds a Uint8Array rather than a Buffer, and the
   // promise that a whole corpus lints without a try/catch has to cover that caller too.
@@ -758,6 +770,52 @@ function run() {
     has(pki.lint.certificate(makeCert({ spki: kemUnaligned, exts: [keyUsage([2], true), ski()] })), "lint/rfc9935/kem-key-length"));
   check("a non-KEM cert never carries the rfc9935 rows",
     !has(pki.lint.certificate(REAL), "lint/rfc9935/kem-key-usage") && !has(pki.lint.certificate(REAL), "lint/rfc9935/kem-key-length"));
+
+  /* ---- RFC 8813 sec. 3: the two bits an EC key MUST NOT assert ----
+     RFC 5280 sec. 4.2.1.3 does not state the per-algorithm bits itself: "appropriate values for
+     keyUsage extensions for particular algorithms are specified in [RFC3279], [RFC4055], and
+     [RFC4491]". RFC 5480 updates RFC 3279 for elliptic curve, and RFC 8813 sec. 3 adds the
+     prohibition outright: "If the keyUsage extension is present in a certificate that indicates
+     id-ecPublicKey in SubjectPublicKeyInfo, then the following values MUST NOT be present:"
+     keyEncipherment, dataEncipherment. The row therefore belongs to the profile every authoring
+     call is held to, because that is the profile whose own clause delegates the question.
+
+     Measured before the row existed: `pki.x509.sign` EMITTED an EC certificate asserting only
+     keyEncipherment and `pki.lint.certificate` reported no error-severity finding, so the toolkit
+     produced a certificate violating a MUST NOT and said nothing. */
+  var ecSpki = require("node:crypto").generateKeyPairSync("ec", { namedCurve: "P-256" })
+    .publicKey.export({ format: "der", type: "spki" });
+  function ecKuCert(bits) { return makeCert({ spki: ecSpki, exts: [keyUsage(bits, true), ski()] }); }
+  check("an EC cert asserting keyEncipherment -> lint/rfc5480/ec-key-usage-forbidden",
+    has(pki.lint.certificate(ecKuCert([2])), "lint/rfc5480/ec-key-usage-forbidden"));
+  check("an EC cert asserting dataEncipherment -> lint/rfc5480/ec-key-usage-forbidden",
+    has(pki.lint.certificate(ecKuCert([3])), "lint/rfc5480/ec-key-usage-forbidden"));
+  check("an EC cert asserting both -> the row fires once, naming both bits",
+    (function () {
+      var f = pki.lint.certificate(ecKuCert([2, 3])).findings
+        .filter(function (x) { return x.id === "lint/rfc5480/ec-key-usage-forbidden"; });
+      return f.length === 1 && f[0].context && f[0].context.bits === "keyEncipherment, dataEncipherment";
+    })());
+  // CONTROL: every bit RFC 5480 sec. 3 lists for an EC end entity, and the CA bits beside them.
+  [[0], [1], [4], [0, 1, 4], [5], [6], [4, 7], [4, 8]].forEach(function (bits) {
+    check("CONTROL an EC cert asserting [" + bits.join(",") + "] is silent on the row",
+      !has(pki.lint.certificate(ecKuCert(bits)), "lint/rfc5480/ec-key-usage-forbidden"));
+  });
+  check("CONTROL an EC cert with no keyUsage at all is unconstrained",
+    !has(pki.lint.certificate(makeCert({ spki: ecSpki, exts: [ski()] })), "lint/rfc5480/ec-key-usage-forbidden"));
+  /* CONTROL: the row is scoped to the EC key, and an RSA certificate asserting keyEncipherment is
+     the ordinary key-transport certificate RFC 3279 sec. 2.3.1 lists it for. That section states a
+     MAY list and no prohibition, so the RSA side has no error row: one would promote a MAY-list
+     omission to a MUST NOT and stop `pki.x509.sign` emitting a certificate a caller may want. */
+  var rsaSpkiOk = require("node:crypto").generateKeyPairSync("rsa", { modulusLength: 2048 })
+    .publicKey.export({ format: "der", type: "spki" });
+  check("CONTROL an RSA cert asserting keyEncipherment is silent (sec. 2.3.1 lists it)",
+    !has(pki.lint.certificate(makeCert({ spki: rsaSpkiOk, exts: [keyUsage([2], true), ski()] })),
+      "lint/rfc5480/ec-key-usage-forbidden"));
+  check("CONTROL an RSA cert asserting keyAgreement draws no error row either",
+    pki.lint.certificate(makeCert({ spki: rsaSpkiOk, exts: [keyUsage([4], true), ski()] })).findings
+      .filter(function (f) { return f.severity === "error" || f.severity === "fatal"; })
+      .every(function (f) { return f.id.indexOf("rfc5480") === -1; }));
 
   // ---- RFC 9881 sec. 5 (ML-DSA) + RFC 9909 sec. 6 (SLH-DSA) key usage rows ----
   // Both clauses are the same pair of requirements, conditioned on keyUsage being PRESENT:

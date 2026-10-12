@@ -1948,6 +1948,22 @@ security-only patches after the next major releases.
   the outcome it exists to prevent. The comparison now takes the rule from the
   attribute; every other attribute keeps the case-insensitive rule.
 
+- **A key usage the subject key's own algorithm forbids (CWE-1288).** RFC 5280
+  §4.2.1.3 states no per-algorithm bit set of its own: "appropriate values for
+  keyUsage extensions for particular algorithms are specified in [RFC3279],
+  [RFC4055], and [RFC4491]". RFC 8813 §3 is where the elliptic-curve answer now
+  is, and it is a prohibition: for a certificate indicating `id-ecPublicKey`,
+  `keyEncipherment` and `dataEncipherment` MUST NOT be present. Measured,
+  `pki.x509.sign` emitted an EC certificate asserting `keyEncipherment` and
+  `pki.lint.certificate` reported no error-severity finding, so the toolkit
+  produced a certificate violating a MUST NOT and said nothing about it. The row
+  runs in the profile every authoring call is held to, so the signer refuses the
+  spec with `x509/profile-violation` and the linter reports
+  `lint/rfc5480/ec-key-usage-forbidden`. There is no RSA counterpart: RFC 3279
+  §2.3.1 states a MAY list and no prohibition, so an error there would promote a
+  MAY-list omission to a MUST NOT. `opts.profile: "none"` still emits what a spec
+  describes, for reproducing a real misissuance.
+
 - **An establishment usage that authorized a key that cannot perform it (CWE-863).**
   `pki.relatedCert.verifyRequest` admits a key-establishment certificate's key as
   the signer of a proof of possession, which RFC 9763 §3.1 has such a key do once.

@@ -972,7 +972,9 @@ async function testChannelBoundOverRealTransport() {
   var certDer = await pki.x509.sign({
     subject: "localhost", subjectPublicKey: s.spki,
     notBefore: new Date("2024-01-01T00:00:00Z"), notAfter: new Date("2044-01-01T00:00:00Z"),
-    extensions: { basicConstraints: { cA: true }, keyUsage: ["digitalSignature", "keyEncipherment", "keyCertSign"], subjectAltName: [{ dNSName: "localhost" }], subjectKeyIdentifier: true },
+    // No keyEncipherment: the key is EC, RFC 8813 sec. 3 makes that bit a MUST NOT for one, and a
+    // TLS server authenticates with digitalSignature. The bit was never what this vector is about.
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["digitalSignature", "keyCertSign"], subjectAltName: [{ dNSName: "localhost" }], subjectKeyIdentifier: true },
   }, { key: s.key });
   var certPem = pki.schema.x509.pemEncode(certDer, "CERTIFICATE");
   var keyPem = pki.schema.pkcs8.pemEncode(s.key, "PRIVATE KEY");

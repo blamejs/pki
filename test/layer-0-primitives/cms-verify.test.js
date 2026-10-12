@@ -1342,7 +1342,11 @@ async function testTrustSeam() {
   // a leaf asserting keyEncipherment alone must not verify a signature, however well it chains.
   // Path validation checks the CA's keyCertSign, not the target's signing usage, so the format
   // that KNOWS a signature was made asks the question.
-  var noSignKp = require("crypto").generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  /* The key is RSA, not EC: keyEncipherment ALONE is the ordinary key-transport certificate RFC 3279
+     sec. 2.3.1 lists that bit for, so this is a certificate a conforming CA issues and the vector is
+     the sharper for it. On an EC key the same bit is a MUST NOT (RFC 8813 sec. 3), which makes the
+     certificate non-conforming for a second reason and the question being asked here less clear. */
+  var noSignKp = require("crypto").generateKeyPairSync("rsa", { modulusLength: 2048 });
   var noSignKey = noSignKp.privateKey.export({ format: "der", type: "pkcs8" });
   var noSignCert = await pki.x509.sign({
     subject: [{ commonName: "no-signing-usage.example" }],
