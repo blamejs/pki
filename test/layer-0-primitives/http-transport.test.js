@@ -544,7 +544,7 @@ async function testSystemStore() {
   // No explicit anchor, but useSystemStore:true -> the anchor gate passes; the connection to a
   // dead port then fails as a transport error (proving the gate did not fire).
   var code = await codeOf(t({ method: "GET", url: "https://127.0.0.1:1/x", tls: { useSystemStore: true }, timeout: 500 }));
-  check("13 useSystemStore:true opts into the bundled roots (anchor gate bypassed)", code === "transport/transport-error" || code === "transport/server-auth-failed");
+  check("13 useSystemStore:true opts into the platform store (anchor gate bypassed)", code === "transport/transport-error" || code === "transport/server-auth-failed");
 }
 
 // ---- protocol-client error parameterization --------------------------------
@@ -669,7 +669,7 @@ async function testSystemStoreLoaded() {
   var s = await startServer(tls, function (req, res) { res.end("x"); });
   try {
     var t = pki.transport.https({});
-    // useSystemStore loads the OS system + bundled CA store; a self-signed loopback cert is not in it,
+    // useSystemStore loads the platform CA store; a self-signed loopback cert is not in it,
     // so authentication fails closed -- the loader ran and the store is real, not a trust-all fallback.
     var code = await codeOf(t({ method: "GET", url: urlFor(s.port), tls: { useSystemStore: true, servername: "localhost" } }));
     check("14h useSystemStore loads the system store (a self-signed cert outside it fails closed)", code === "transport/server-auth-failed");
@@ -1019,6 +1019,325 @@ async function testPeerChain() {
         { tls: { anchors: anchors } }))) === "transport/blocked-address");
   } finally {
     await new Promise(function (res) { srv.close(res); });
+  }
+}
+
+/* tls.distrustedKeys refuses a server whose verified chain carries a listed key, on every hop the
+ * transport opens: the direct request, peerChain, the origin inside a CONNECT tunnel, and the TLS
+ * connection to an https proxy. A key listed for the origin is refused on the proxy hop as well,
+ * and a transport default cannot be narrowed by a request's own list. */
+async function testDistrust() {
+  var ca = signing.makeSigner("ec-p384", { cn: "distrust-ca.example" });
+  var caCert = await pki.x509.sign({
+    subject: "distrust-ca.example", subjectPublicKey: ca.spki,
+    notBefore: new Date("2024-01-01T00:00:00Z"), notAfter: new Date("2044-01-01T00:00:00Z"),
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: true },
+  }, { key: ca.key });
+  var leaf = signing.makeSigner("ec-p256", { cn: "localhost" });
+  var leafCert = await pki.x509.sign({
+    subject: "localhost", subjectPublicKey: leaf.spki,
+    notBefore: new Date("2024-01-01T00:00:00Z"), notAfter: new Date("2044-01-01T00:00:00Z"),
+    extensions: { subjectAltName: [{ dNSName: "localhost" }, { iPAddress: "127.0.0.1" }], keyUsage: ["digitalSignature"] },
+  }, { key: ca.key, cert: caCert });
+  var caPem = pki.schema.x509.pemEncode(caCert, "CERTIFICATE");
+  var caKey = pki.trust.spkiDigest(caCert), leafKey = pki.trust.spkiDigest(leafCert);
+  var unrelated = pki.trust.spkiDigest(signing.makeSigner("ed25519").cert);
+  var requests = 0;
+  var srv = https.createServer({
+    cert: pki.schema.x509.pemEncode(leafCert, "CERTIFICATE") + caPem,
+    key: pki.schema.pkcs8.pemEncode(leaf.key, "PRIVATE KEY"),
+  }, function (req, res) { requests += 1; res.end("ok"); });
+  srv.on("clientError", function () {});
+  var port = await new Promise(function (res) { srv.listen(0, "127.0.0.1", function () { res(srv.address().port); }); });
+  var proxyTls = await selfSigned("Distrust Proxy");
+  var proxyKey = pki.trust.spkiDigest(proxyTls.certDer);
+  var px = await startConnectProxy({});
+  var spx = await startConnectProxy({ tls: proxyTls });
+  try {
+    var t = pki.transport.https({});
+    var url = urlFor(port, "/");
+    check("D1 CONTROL the server is reached with no list", (await t({ method: "GET", url: url, tls: { anchors: [caPem] } })).status === 200);
+    check("D1b CONTROL an unrelated listed key leaves the server reachable",
+      (await t({ method: "GET", url: url, tls: { anchors: [caPem], distrustedKeys: [unrelated] } })).status === 200);
+    var before = requests;
+    var msg = "";
+    var codeCa = await t({ method: "GET", url: url, tls: { anchors: [caPem], distrustedKeys: [caKey] } })
+      .then(function () { return "NO-THROW"; }, function (e) { msg = String(e.message) + " " + String(e.cause && e.cause.message); return e.code; });
+    check("D2 a chain carrying a distrusted CA key is refused (" + codeCa + ")", codeCa === "transport/server-key-distrusted");
+    check("D2b the refusal names the key", msg.indexOf(caKey) !== -1);
+    check("D2c the refused request never reached the application", requests === before);
+    check("D3 a distrusted server key is refused",
+      (await codeOf(t({ method: "GET", url: url, tls: { anchors: [caPem], distrustedKeys: [leafKey.toUpperCase()] } }))) === "transport/server-key-distrusted");
+    check("D3b an accepting checkServerIdentity does not lift the refusal",
+      (await codeOf(t({ method: "GET", url: url, tls: { anchors: [caPem], distrustedKeys: [caKey], checkServerIdentity: function () { return undefined; } } }))) === "transport/server-key-distrusted");
+
+    var guarded = pki.transport.https({ tls: { anchors: [caPem], distrustedKeys: [caKey] } });
+    check("D4 a transport default list is applied", (await codeOf(guarded({ method: "GET", url: url }))) === "transport/server-key-distrusted");
+    check("D4b a request list that omits the default's key does not lift it",
+      (await codeOf(guarded({ method: "GET", url: url, tls: { distrustedKeys: [unrelated] } }))) === "transport/server-key-distrusted");
+    check("D4c an empty request list does not lift it",
+      (await codeOf(guarded({ method: "GET", url: url, tls: { distrustedKeys: [] } }))) === "transport/server-key-distrusted");
+
+    before = requests;
+    check("D5 a malformed entry is transport/bad-input",
+      (await codeOf(t({ method: "GET", url: url, tls: { anchors: [caPem], distrustedKeys: ["not-a-digest"] } }))) === "transport/bad-input");
+    var ctorCode = "NO-THROW";
+    try { pki.transport.https({ tls: { anchors: [caPem], distrustedKeys: "x" } }); } catch (e) { ctorCode = e.code; }
+    check("D5b a malformed transport default is transport/bad-input when the transport is built", ctorCode === "transport/bad-input");
+    var defaultList = [caKey];
+    var builtOnce = pki.transport.https({ tls: { anchors: [caPem], distrustedKeys: defaultList } });
+    defaultList.length = 0;
+    check("D5e the default list is read when the transport is built, so emptying it afterwards removes no key",
+      (await codeOf(builtOnce({ method: "GET", url: url }))) === "transport/server-key-distrusted");
+    var typoCode = "NO-THROW";
+    try { pki.transport.https({ tls: { anchors: [caPem], distrustKeys: [caKey] } }); } catch (e) { typoCode = e.code; }
+    check("D5f a misspelled key in the default tls bag is refused when the transport is built", typoCode === "transport/bad-input");
+    check("D5g a misspelled key in a request's tls bag is refused before any socket opens",
+      (await codeOf(t({ method: "GET", url: url, tls: { anchors: [caPem], distrustKeys: [caKey] } }))) === "transport/bad-input");
+    check("D5c ...and no request was sent", requests === before);
+    var est = pki.transport.https({ errPrefix: "est" });
+    check("D5d a protocol client's prefix carries to the refusal",
+      (await codeOf(est({ method: "GET", url: url, tls: { anchors: [caPem], distrustedKeys: [caKey] } }))) === "est/server-key-distrusted");
+
+    check("D6 peerChain refuses the same chain",
+      (await codeOf(pki.transport.peerChain({ url: url }, { tls: { anchors: [caPem], distrustedKeys: [caKey] } }))) === "transport/server-key-distrusted");
+    var commented = Buffer.from("# Trust bundle for the distrust vectors.\n# The comment header is longer than one line of a PEM block,\n# so the armor starts well past byte 64.\n" + caPem, "latin1");
+    check("D6a an anchor given as a PEM Buffer with a comment header ahead of the armor is read as PEM",
+      (await t({ method: "GET", url: url, tls: { anchors: [commented] } })).status === 200);
+    check("D6a2 ...and is a configured anchor for the distrust check, so an unrelated list leaves the server reachable",
+      (await t({ method: "GET", url: url, tls: { anchors: [commented], distrustedKeys: [unrelated] } })).status === 200);
+    check("D6b CONTROL peerChain returns the chain with no list",
+      (await pki.transport.peerChain({ url: url }, { tls: { anchors: [caPem] } })).peerChain.length === 2);
+
+    var viaHttpProxy = { url: "http://127.0.0.1:" + px.port };
+    check("D7 CONTROL the origin is reached through an http proxy",
+      (await t({ method: "GET", url: url, tls: { anchors: [caPem] }, proxy: viaHttpProxy })).status === 200);
+    check("D7b the origin inside the tunnel is refused when its chain carries a distrusted key",
+      (await codeOf(t({ method: "GET", url: url, tls: { anchors: [caPem], distrustedKeys: [caKey] }, proxy: viaHttpProxy }))) === "transport/server-key-distrusted");
+
+    var pTrust = { anchors: [proxyTls.certPem], servername: "localhost" };
+    var viaHttpsProxy = { url: "https://127.0.0.1:" + spx.port, tls: pTrust };
+    check("D8 CONTROL the origin is reached through an https proxy",
+      (await t({ method: "GET", url: url, tls: { anchors: [caPem] }, proxy: viaHttpsProxy })).status === 200);
+    check("D8b a proxy whose key is listed in proxy.tls.distrustedKeys is refused",
+      (await codeOf(t({ method: "GET", url: url, tls: { anchors: [caPem] },
+        proxy: { url: viaHttpsProxy.url, tls: Object.assign({}, pTrust, { distrustedKeys: [proxyKey] }) } }))) === "transport/proxy-key-distrusted");
+    check("D8c a proxy whose key is listed for the origin is refused as well",
+      (await codeOf(t({ method: "GET", url: url, tls: { anchors: [caPem], distrustedKeys: [proxyKey] }, proxy: viaHttpsProxy }))) === "transport/proxy-key-distrusted");
+    check("D8d the origin behind an https proxy is refused when its chain carries a distrusted key",
+      (await codeOf(t({ method: "GET", url: url, tls: { anchors: [caPem], distrustedKeys: [caKey] }, proxy: viaHttpsProxy }))) === "transport/server-key-distrusted");
+    check("D8e a malformed proxy.tls.distrustedKeys is transport/bad-proxy",
+      (await codeOf(t({ method: "GET", url: url, tls: { anchors: [caPem] },
+        proxy: { url: viaHttpsProxy.url, tls: Object.assign({}, pTrust, { distrustedKeys: [1] }) } }))) === "transport/bad-proxy");
+
+    // A chain longer than the peer-chain cap is still checked to its root. Eighteen certificates:
+    // a root, sixteen intermediates and the leaf, with the root listed.
+    var longRoot = signing.makeSigner("ec-p256");
+    var longRootCert = await pki.x509.sign({ subject: "long-root.example", subjectPublicKey: longRoot.spki,
+      notBefore: new Date("2024-01-01T00:00:00Z"), notAfter: new Date("2044-01-01T00:00:00Z"),
+      extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] } }, { key: longRoot.key });
+    var upper = { cert: longRootCert, key: longRoot.key }, sent = [];
+    for (var li = 0; li < 16; li++) {
+      var ik = signing.makeSigner("ec-p256");
+      var ic = await pki.x509.sign({ subject: "long-int-" + li + ".example", subjectPublicKey: ik.spki,
+        notBefore: new Date("2024-01-01T00:00:00Z"), notAfter: new Date("2044-01-01T00:00:00Z"),
+        extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] } }, upper);
+      sent.unshift(pki.schema.x509.pemEncode(ic, "CERTIFICATE"));
+      upper = { cert: ic, key: ik.key };
+    }
+    var longLeaf = signing.makeSigner("ec-p256");
+    var longLeafCert = await pki.x509.sign({ subject: "localhost", subjectPublicKey: longLeaf.spki,
+      notBefore: new Date("2024-01-01T00:00:00Z"), notAfter: new Date("2044-01-01T00:00:00Z"),
+      extensions: { subjectAltName: [{ iPAddress: "127.0.0.1" }], keyUsage: ["digitalSignature"] } }, upper);
+    var longSrv = https.createServer({ cert: pki.schema.x509.pemEncode(longLeafCert, "CERTIFICATE") + sent.join(""),
+      key: pki.schema.pkcs8.pemEncode(longLeaf.key, "PRIVATE KEY") }, function (req, res) { res.end("ok"); });
+    longSrv.on("clientError", function () {});
+    var longPort = await new Promise(function (res) { longSrv.listen(0, "127.0.0.1", function () { res(longSrv.address().port); }); });
+    try {
+      var longAnchor = [pki.schema.x509.pemEncode(longRootCert, "CERTIFICATE")];
+      check("D10 CONTROL an eighteen-certificate chain is reached with no list",
+        (await t({ method: "GET", url: urlFor(longPort, "/"), tls: { anchors: longAnchor } })).status === 200);
+      check("D10b the root of an eighteen-certificate chain is still checked against the list",
+        (await codeOf(t({ method: "GET", url: urlFor(longPort, "/"), tls: { anchors: longAnchor,
+          distrustedKeys: [pki.trust.spkiDigest(longRootCert)] } }))) === "transport/server-key-distrusted");
+    } finally { await new Promise(function (res) { longSrv.close(res); }); }
+
+    // A server that sends an expired decoy carrying the listed intermediate's name and key
+    // identifier ahead of the real intermediate. OpenSSL verifies through the real one, which it
+    // prefers for being in its validity period. Node's issuerCertificate links take the first sent
+    // certificate whose name and key identifier match, without checking a signature, so a walk of
+    // those links reads the decoy. The check has to see the key that actually signed each link.
+    var dRoot = signing.makeSigner("ec-p384");
+    var dRootCert = await pki.x509.sign({ subject: "Decoy Test Root", subjectPublicKey: dRoot.spki,
+      notBefore: new Date("2024-01-01T00:00:00Z"), notAfter: new Date("2044-01-01T00:00:00Z"),
+      extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: true } }, { key: dRoot.key });
+    var dInter = signing.makeSigner("ec-p384");
+    var dInterCert = await pki.x509.sign({ subject: "Listed Intermediate", subjectPublicKey: dInter.spki,
+      notBefore: new Date("2024-01-01T00:00:00Z"), notAfter: new Date("2044-01-01T00:00:00Z"),
+      extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: true } }, { key: dRoot.key, cert: dRootCert });
+    var dLeaf = signing.makeSigner("ec-p256");
+    var dLeafCert = await pki.x509.sign({ subject: "localhost", subjectPublicKey: dLeaf.spki,
+      notBefore: new Date("2024-01-01T00:00:00Z"), notAfter: new Date("2044-01-01T00:00:00Z"),
+      extensions: { subjectAltName: [{ dNSName: "localhost" }, { iPAddress: "127.0.0.1" }], keyUsage: ["digitalSignature"] } },
+      { key: dInter.key, cert: dInterCert });
+    function skiOf(der) {
+      var ext = pki.schema.x509.parse(der).extensions.filter(function (e) { return e.oid === pki.oid.byName("subjectKeyIdentifier"); })[0];
+      return pki.asn1.read.octetString(pki.asn1.decode(ext.value));
+    }
+    var decoySigner = signing.makeSigner("ec-p384");
+    var decoyKey = signing.makeSigner("ec-p384");
+    var decoyRootCert = await pki.x509.sign({ subject: "Decoy Test Root", subjectPublicKey: decoySigner.spki,
+      notBefore: new Date("2018-01-01T00:00:00Z"), notAfter: new Date("2044-01-01T00:00:00Z"),
+      extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: Buffer.from(skiOf(dRootCert)) } }, { key: decoySigner.key });
+    var unrelatedRootCert = await pki.x509.sign({ subject: "Unrelated Decoy Root", subjectPublicKey: decoySigner.spki,
+      notBefore: new Date("2018-01-01T00:00:00Z"), notAfter: new Date("2044-01-01T00:00:00Z"),
+      extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: true } }, { key: decoySigner.key });
+    var decoyOpts = { subject: "Listed Intermediate", subjectPublicKey: decoyKey.spki,
+      notBefore: new Date("2019-01-01T00:00:00Z"), notAfter: new Date("2020-01-01T00:00:00Z"),
+      extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: Buffer.from(skiOf(dInterCert)) } };
+    var decoyUnderUnrelated = await pki.x509.sign(decoyOpts, { key: decoySigner.key, cert: unrelatedRootCert });
+    var decoyNamingRoot = await pki.x509.sign(decoyOpts, { key: decoySigner.key, cert: decoyRootCert });
+    var dPem = function (d) { return pki.schema.x509.pemEncode(d, "CERTIFICATE"); };
+    var dAnchors = [dPem(dRootCert)];
+    var dListed = [pki.trust.spkiDigest(dInterCert)];
+    var decoys = [["a decoy issued by an unrelated root", decoyUnderUnrelated], ["a decoy naming the configured root", decoyNamingRoot]];
+    for (var dvi = 0; dvi < decoys.length; dvi++) {
+      var dSrv = https.createServer({ cert: dPem(dLeafCert) + dPem(decoys[dvi][1]) + dPem(dInterCert),
+        key: pki.schema.pkcs8.pemEncode(dLeaf.key, "PRIVATE KEY") }, function (req, res) { res.end("ok"); });
+      dSrv.on("clientError", function () {});
+      var dPort = await new Promise(function (res) { dSrv.listen(0, "127.0.0.1", function () { res(dSrv.address().port); }); });
+      try {
+        var dUrl = urlFor(dPort, "/");
+        var label = decoys[dvi][0];
+        check("D11 CONTROL the server is reached with " + label + " sent and no list",
+          (await t({ method: "GET", url: dUrl, tls: { anchors: dAnchors } })).status === 200);
+        var dCode = await codeOf(t({ method: "GET", url: dUrl, tls: { anchors: dAnchors, distrustedKeys: dListed } }));
+        check("D11b a chain verified through a listed key is refused although " + label + " was sent ahead of it (" + dCode + ")",
+          dCode !== "NO-THROW" && dCode.indexOf("transport/") === 0);
+        check("D11c peerChain refuses it too (" + label + ")",
+          (await codeOf(pki.transport.peerChain({ url: dUrl }, { tls: { anchors: dAnchors, distrustedKeys: dListed } }))) !== "NO-THROW");
+        check("D11d the origin inside a CONNECT tunnel refuses it too (" + label + ")",
+          (await codeOf(t({ method: "GET", url: dUrl, tls: { anchors: dAnchors, distrustedKeys: dListed }, proxy: viaHttpProxy }))) !== "NO-THROW");
+      } finally { await new Promise(function (res) { dSrv.close(res); }); }
+    }
+
+    // A second certificate for the intermediate's own key, expired and issued by a root the server
+    // also sends and the client does not trust. Every link of that path is signed, so a walk that
+    // only proves signatures follows it to the untrusted root, while OpenSSL authenticated through
+    // the listed root. The walk has to end at a configured anchor, through certificates in their
+    // validity window.
+    var untrusted = signing.makeSigner("ec-p384");
+    var untrustedRoot = await pki.x509.sign({ subject: "Untrusted Sent Root", subjectPublicKey: untrusted.spki,
+      notBefore: new Date("2018-01-01T00:00:00Z"), notAfter: new Date("2044-01-01T00:00:00Z"),
+      extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: true } }, { key: untrusted.key });
+    var expiredCross = await pki.x509.sign({ subject: "Listed Intermediate", subjectPublicKey: dInter.spki,
+      notBefore: new Date("2019-01-01T00:00:00Z"), notAfter: new Date("2020-01-01T00:00:00Z"),
+      extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: Buffer.from(skiOf(dInterCert)) } },
+      { key: untrusted.key, cert: untrustedRoot });
+    var xSrv = https.createServer({ cert: dPem(dLeafCert) + dPem(expiredCross) + dPem(dInterCert) + dPem(untrustedRoot),
+      key: pki.schema.pkcs8.pemEncode(dLeaf.key, "PRIVATE KEY") }, function (req, res) { res.end("ok"); });
+    xSrv.on("clientError", function () {});
+    var xPort = await new Promise(function (res) { xSrv.listen(0, "127.0.0.1", function () { res(xSrv.address().port); }); });
+    try {
+      var rootListed = [pki.trust.spkiDigest(dRootCert)];
+      check("D12 CONTROL the server is reached with the untrusted cross path sent and no list",
+        (await t({ method: "GET", url: urlFor(xPort, "/"), tls: { anchors: dAnchors } })).status === 200);
+      var xCode = await codeOf(t({ method: "GET", url: urlFor(xPort, "/"), tls: { anchors: dAnchors, distrustedKeys: rootListed } }));
+      check("D12b a session authenticated under a listed root is refused although a signed path to an untrusted root was sent (" + xCode + ")",
+        xCode === "transport/server-key-distrusted");
+      check("D12c peerChain refuses it too",
+        (await codeOf(pki.transport.peerChain({ url: urlFor(xPort, "/") }, { tls: { anchors: dAnchors, distrustedKeys: rootListed } }))) === "transport/server-key-distrusted");
+    } finally { await new Promise(function (res) { xSrv.close(res); }); }
+
+    // An intermediate in the trust anchors. OpenSSL looks in the trust store for an issuer first, so
+    // it can verify through the stored intermediate while node's issuerCertificate links follow the
+    // certificate the server sent for the same key. The two chains part above that key, and the
+    // check has to cover the branch through the store as well.
+    var sRA = signing.makeSigner("ec-p256"), sRB = signing.makeSigner("ec-p256"), sKI = signing.makeSigner("ec-p256");
+    var sRoot = function (s, name) {
+      return pki.x509.sign({ subject: name, subjectPublicKey: s.spki, notBefore: new Date("2024-01-01T00:00:00Z"), notAfter: new Date("2044-01-01T00:00:00Z"),
+        extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: true } }, { key: s.key });
+    };
+    var RA = await sRoot(sRA, "Store Root A"), RB = await sRoot(sRB, "Store Root B");
+    var sInter = function (rootCert, rootKey) {
+      return pki.x509.sign({ subject: "Store Inter", subjectPublicKey: sKI.spki, notBefore: new Date("2024-01-01T00:00:00Z"), notAfter: new Date("2044-01-01T00:00:00Z"),
+        extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: true } }, { cert: rootCert, key: rootKey });
+    };
+    var IA = await sInter(RA, sRA.key), IB = await sInter(RB, sRB.key);
+    var sLeaf = signing.makeSigner("ec-p256");
+    var sLeafCert = await pki.x509.sign({ subject: "localhost", subjectPublicKey: sLeaf.spki, notBefore: new Date("2024-01-01T00:00:00Z"), notAfter: new Date("2044-01-01T00:00:00Z"),
+      extensions: { subjectAltName: [{ iPAddress: "127.0.0.1" }], keyUsage: ["digitalSignature"] } }, { cert: IA, key: sKI.key });
+    var storeCases = [
+      ["the server sends the root B intermediate and root A's intermediate is stored", [sLeafCert, IB], [RA, RB, IA], RA],
+      ["the server sends the root A intermediate and root B's intermediate is stored", [sLeafCert, IA], [RA, RB, IB], RB],
+    ];
+    for (var sci = 0; sci < storeCases.length; sci++) {
+      var sc = storeCases[sci];
+      var sSrv = https.createServer({ cert: sc[1].map(dPem).join(""), key: pki.schema.pkcs8.pemEncode(sLeaf.key, "PRIVATE KEY") },
+        function (req, res) { res.end("ok"); });
+      sSrv.on("clientError", function () {});
+      var sPort = await new Promise(function (res) { sSrv.listen(0, "127.0.0.1", function () { res(sSrv.address().port); }); });
+      try {
+        var sAnchors = sc[2].map(dPem);
+        check("D13 CONTROL the session is reached with no list (" + sc[0] + ")",
+          (await t({ method: "GET", url: urlFor(sPort, "/"), tls: { anchors: sAnchors } })).status === 200);
+        check("D13a CONTROL an unrelated listed key leaves it reachable (" + sc[0] + ")",
+          (await t({ method: "GET", url: urlFor(sPort, "/"), tls: { anchors: sAnchors, distrustedKeys: [unrelated] } })).status === 200);
+        var sCode = await codeOf(t({ method: "GET", url: urlFor(sPort, "/"), tls: { anchors: sAnchors, distrustedKeys: [pki.trust.spkiDigest(sc[3])] } }));
+        check("D13b a root reached through the stored intermediate is checked against the list (" + sc[0] + "): " + sCode,
+          sCode === "transport/server-key-distrusted");
+        check("D13c peerChain checks it too (" + sc[0] + ")",
+          (await codeOf(pki.transport.peerChain({ url: urlFor(sPort, "/") }, { tls: { anchors: sAnchors, distrustedKeys: [pki.trust.spkiDigest(sc[3])] } }))) === "transport/server-key-distrusted");
+        check("D13d the origin inside a CONNECT tunnel checks it too (" + sc[0] + ")",
+          (await codeOf(t({ method: "GET", url: urlFor(sPort, "/"), tls: { anchors: sAnchors, distrustedKeys: [pki.trust.spkiDigest(sc[3])] }, proxy: viaHttpProxy }))) === "transport/server-key-distrusted");
+      } finally { await new Promise(function (res) { sSrv.close(res); }); }
+    }
+
+    // The walk's own tests, each with only an unrelated key listed, so a refusal is the walk's and
+    // not a listed key's. With the intermediate stored, OpenSSL verifies through the stored copy, and
+    // node's links follow what the server sent.
+    // No basicConstraints and no keyUsage: node's issuer match accepts it, and it is not a CA.
+    var nonCaCopy = await pki.x509.sign({ subject: "Store Inter", subjectPublicKey: sKI.spki, notBefore: new Date("2024-01-01T00:00:00Z"), notAfter: new Date("2044-01-01T00:00:00Z") },
+      { cert: RA, key: sRA.key });
+    var walkCases = [
+      ["a non-CA copy of the intermediate is sent ahead of it", [sLeafCert, nonCaCopy, IA], [RA, IA]],
+      ["the server's chain ends at a root that is not an anchor", [sLeafCert, IB, RB], [RA, IA]],
+    ];
+    for (var wci = 0; wci < walkCases.length; wci++) {
+      var wc = walkCases[wci];
+      var wSrv = https.createServer({ cert: wc[1].map(dPem).join(""), key: pki.schema.pkcs8.pemEncode(sLeaf.key, "PRIVATE KEY") },
+        function (req, res) { res.end("ok"); });
+      wSrv.on("clientError", function () {});
+      var wPort = await new Promise(function (res) { wSrv.listen(0, "127.0.0.1", function () { res(wSrv.address().port); }); });
+      try {
+        var wAnchors = wc[2].map(dPem);
+        check("D14 CONTROL the session is reached with no list (" + wc[0] + ")",
+          (await t({ method: "GET", url: urlFor(wPort, "/"), tls: { anchors: wAnchors } })).status === 200);
+        check("D14b with a list set, a walk that is not a path of its own is refused (" + wc[0] + ")",
+          (await codeOf(t({ method: "GET", url: urlFor(wPort, "/"), tls: { anchors: wAnchors, distrustedKeys: [unrelated] } }))) === "transport/server-key-distrusted");
+      } finally { await new Promise(function (res) { wSrv.close(res); }); }
+    }
+    check("D15 an identity mismatch is reported as one while a list is set",
+      (await codeOf(t({ method: "GET", url: url, tls: { anchors: [caPem], servername: "wrong.invalid", distrustedKeys: [unrelated] } }))) === "transport/server-auth-failed");
+    check("D16 a DER anchor is a configured anchor for the check",
+      (await t({ method: "GET", url: url, tls: { anchors: [caCert], distrustedKeys: [unrelated] } })).status === 200);
+    check("D16b an anchor that is not PEM adds no anchor key, and the connection fails closed",
+      (await codeOf(t({ method: "GET", url: url, tls: { anchors: ["not a certificate"], distrustedKeys: [unrelated] } }))) !== "NO-THROW");
+    check("D16c an anchor whose armored body is not a certificate adds no anchor key, and the request still runs under the good one",
+      (await t({ method: "GET", url: url, tls: { anchors: [caPem, "-----BEGIN CERTIFICATE-----\nZm9v\n-----END CERTIFICATE-----\n"], distrustedKeys: [unrelated] } })).status === 200);
+    check("D17 useSystemStore with an anchor and a list reads the platform store's anchors as well",
+      (await t({ method: "GET", url: url, tls: { anchors: [caPem], useSystemStore: true, distrustedKeys: [unrelated] } })).status === 200);
+
+    var lib = require("../../lib/http-transport");
+    var mine = [proxyKey];
+    var snap = lib.snapshotProxy({ url: viaHttpsProxy.url, tls: { anchors: [proxyTls.certPem], distrustedKeys: mine } });
+    mine[0] = unrelated;
+    check("D9 snapshotProxy copies the proxy distrust list rather than sharing the caller's array",
+      snap.tls.distrustedKeys !== mine && snap.tls.distrustedKeys[0] === proxyKey);
+  } finally {
+    await new Promise(function (res) { srv.close(res); });
+    px.srv.close();
+    spx.srv.close();
   }
 }
 
@@ -1581,6 +1900,7 @@ async function main() {
   await testSystemStore();
   await testErrorFactoryParam();
   await testPeerChain();
+  await testDistrust();
   await testProxyConnect();
   console.log("CHECKS " + helpers.getChecks());
 }

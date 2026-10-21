@@ -80,12 +80,21 @@ function capture(rootExports, meta) {
   Object.keys(rootExports).sort().forEach(function (k) {
     surface[k] = _describe(rootExports[k], 0, []);
   });
-  return {
+  var out = {
     generator:        "scripts/refresh-api-snapshot.js",
     packageVersion:   meta.packageVersion || null,
     surface:          surface,
     sinceByPrimitive: meta.sinceByPrimitive || {},
   };
+  // The error-code surface rides in the same baseline as the API surface, because
+  // a `domain/reason` code is the same kind of promise: an operator switches on it.
+  if (meta.errorCodes) {
+    out.errorCodes = meta.errorCodes;
+    out.errorCodeDomains = meta.errorCodeDomains || [];
+    out.errorCodeStems = meta.errorCodeStems || [];
+    out.errorCodesWithoutVector = meta.errorCodesWithoutVector || [];
+  }
+  return out;
 }
 
 // Scan the shipped source for every `@primitive <token>` … `@since <ver>`
@@ -106,6 +115,152 @@ function extractSince(libDir) {
       });
     });
   return out;
+}
+
+// Strip comments, keeping string literals. The error-code scan below reads
+// literals off the source, and `framework-error.js` documents how to define an
+// error class with an @example that throws `my/bad-input`; a scan that reads
+// comments admits that example as a shipped code and `my` as a domain. A `//`
+// inside a string (`http://`) must not open a comment, so this walks characters
+// rather than matching a pattern.
+function _stripComments(src) {
+  var out = "", i = 0, n = src.length;
+  while (i < n) {
+    var c = src[i], d = src[i + 1];
+    if (c === "\"" || c === "'" || c === "`") {
+      var q = c; out += c; i++;
+      while (i < n) {
+        if (src[i] === "\\") { out += src[i] + (src[i + 1] || ""); i += 2; continue; }
+        out += src[i];
+        if (src[i] === q) { i++; break; }
+        i++;
+      }
+      continue;
+    }
+    if (c === "/" && d === "/") { while (i < n && src[i] !== "\n") i++; continue; }
+    if (c === "/" && d === "*") {
+      i += 2;
+      while (i < n && !(src[i] === "*" && src[i + 1] === "/")) i++;
+      i += 2;
+      continue;
+    }
+    out += c; i++;
+  }
+  return out;
+}
+
+function _jsFilesUnder(dir, out) {
+  out = out || [];
+  fs.readdirSync(dir, { withFileTypes: true }).forEach(function (e) {
+    var p = path.join(dir, e.name);
+    if (e.isDirectory()) _jsFilesUnder(p, out);
+    else if (/\.js$/.test(e.name)) out.push(p);
+  });
+  return out;
+}
+
+// A code-shaped literal is not necessarily a code: `application/pkcs7-mime`,
+// `text/plain`, `multipart/mixed` and `message/rfc822` are media types and share
+// the shape exactly. So the DOMAIN set is derived first, from literals sitting in
+// an error factory's own first argument, and only then is a code-shaped literal
+// accepted on the strength of its domain. A media type cannot be admitted that
+// way, because nothing throws `application/...`.
+//
+// The callee names vary per module (`_err`, `E`, `_signE`, `_ctErr`, `NS.E`, a bare
+// `CmsError`, and `lib/lint.js`'s `_cfg`), so matching the call is only half of the
+// answer: a pattern over factory names is a naming convention, and `_cfg` is what
+// happens when a module does not follow it. Anchoring there omitted the whole `lint`
+// domain, codes and all, from a gate whose job is to notice exactly that.
+//
+// So the domain set is a UNION of two sources that fail in different directions:
+// the call shape below, which finds a domain no namespace is named after, and the
+// shipped namespace list, which is authoritative and has no naming convention to
+// break. A media type cannot enter through either: nothing throws
+// `application/...`, and no namespace is called `application`, `text`, `multipart`
+// or `message`.
+var _CODE_FACTORY = /(?:\b(?:_?err|_?E|[A-Za-z_$][\w$]*(?:Err|Error|E|_cfg))\s*)\(\s*["']([a-z][a-z0-9]*)\/([a-z][a-z0-9-]*)["']/g;
+var _CODE_ANY = /["']([a-z][a-z0-9]*)\/([a-z][a-z0-9-]*)["']/g;
+
+// Every `domain/reason` the shipped source can throw, as a sorted array.
+// A literal ending in a dash is a STEM a value is appended to
+// (`"acme/bad-" + _codeSlug(kind)`), so it is not a whole code; stems are
+// returned separately rather than silently dropped, because a gate that claims to
+// freeze the surface has to say which part of it it cannot see.
+// `namespaceHints` is the shipped namespace list (`Object.keys(pki)`), the half of the
+// domain set that does not depend on how a module names its error factory.
+function extractErrorCodes(libDir, namespaceHints) {
+  libDir = libDir || path.join(__dirname, "..", "lib");
+  var sources = _jsFilesUnder(libDir).sort().map(function (f) {
+    return _stripComments(fs.readFileSync(f, "utf8"));
+  });
+  var domains = {}, m;
+  sources.forEach(function (src) {
+    _CODE_FACTORY.lastIndex = 0;
+    while ((m = _CODE_FACTORY.exec(src)) !== null) domains[m[1]] = true;
+  });
+  (namespaceHints || []).forEach(function (k) {
+    if (typeof k === "string" && /^[A-Za-z][\w$]*$/.test(k)) domains[k.toLowerCase()] = true;
+  });
+  // A literal in a COMPARISON or a `case` label is a code being READ, not one being
+  // thrown: `if (e.code === "tuf/bad-signature")` sits beside the throw that produces it.
+  // Counting those would let a stale read keep a code in the frozen set after its throw
+  // was deleted, so the freeze would report nothing on the removal it exists to catch.
+  // The test is on what precedes the literal, which is what tells a read from an argument;
+  // a code reached only through a variable is still seen, because the assignment that
+  // names it is not a comparison.
+  var READ_POSITION = /(?:===|!==|==|!=|\bcase)\s*$/;
+  var codes = {}, stems = {};
+  sources.forEach(function (src) {
+    _CODE_ANY.lastIndex = 0;
+    while ((m = _CODE_ANY.exec(src)) !== null) {
+      if (!domains[m[1]]) continue;
+      if (READ_POSITION.test(src.slice(Math.max(0, m.index - 8), m.index))) continue;
+      var code = m[1] + "/" + m[2];
+      if (code.charAt(code.length - 1) === "-") stems[code] = true;
+      else codes[code] = true;
+    }
+  });
+  return {
+    codes: Object.keys(codes).sort(),
+    domains: Object.keys(domains).sort(),
+    stems: Object.keys(stems).sort(),
+  };
+}
+
+// The codes a test names. Comments are stripped here too: a code mentioned only
+// in a test's prose is not a test that asserts it.
+function extractAssertedCodes(testDir) {
+  testDir = testDir || path.join(__dirname, "..", "test");
+  var joined = _jsFilesUnder(testDir).map(function (f) {
+    return _stripComments(fs.readFileSync(f, "utf8"));
+  }).join("\n");
+  var found = {}, m;
+  _CODE_ANY.lastIndex = 0;
+  while ((m = _CODE_ANY.exec(joined)) !== null) found[m[1] + "/" + m[2]] = true;
+  return found;
+}
+
+// The two verdicts over the code surface.
+//
+// `removed` is the freeze: a `domain/reason` is a contract an operator switches
+// on, so a code the baseline recorded and the source no longer throws was renamed
+// or deleted under them.
+//
+// `unasserted` is the coverage rule: a code no test names is a code whose rename
+// no gate would catch, which is the hole the freeze exists to close. The baseline
+// carries the residual that predates the rule, and it may only shrink: a code
+// outside it has to arrive with a test that names it.
+function checkErrorCodes(baseline, live, asserted) {
+  var baseCodes = (baseline && baseline.errorCodes) || [];
+  var allowed = (baseline && baseline.errorCodesWithoutVector) || [];
+  var liveSet = {};
+  live.forEach(function (c) { liveSet[c] = true; });
+  return {
+    removed: baseCodes.filter(function (c) { return !liveSet[c]; }),
+    added: live.filter(function (c) { return baseCodes.indexOf(c) === -1; }),
+    unasserted: live.filter(function (c) { return !asserted[c] && allowed.indexOf(c) === -1; }),
+    closed: allowed.filter(function (c) { return asserted[c] || !liveSet[c]; }),
+  };
 }
 
 // Parse a plain "X.Y.Z" version into comparable numbers. Returns null for a
@@ -323,6 +478,9 @@ module.exports = {
   compare:      compare,
   formatDiff:   formatDiff,
   extractSince: extractSince,
+  extractErrorCodes:   extractErrorCodes,
+  extractAssertedCodes: extractAssertedCodes,
+  checkErrorCodes:     checkErrorCodes,
   checkSince:   checkSince,
   checkSinceDropped: checkSinceDropped,
   extractOriginated: extractOriginated,
@@ -350,7 +508,46 @@ if (require.main === module) {
     process.exit(2);
   }
 
-  var snapshot = capture(pki, { packageVersion: pkg.version, sinceByPrimitive: sinceByPrimitive });
+  // The error-code surface. The residual of codes no test names may only SHRINK:
+  // a refresh that absorbed a new one would hand the next release a code whose
+  // rename nothing would catch, and `release.js regen` runs this script, so a
+  // silent absorb is exactly how the gate would rot.
+  var liveCodes = extractErrorCodes(null, Object.keys(pki));
+  var assertedCodes = extractAssertedCodes();
+  // A baseline that carries no code surface yet has no residual to compare against,
+  // so the first refresh RECORDS what is there. Every refresh after it enforces.
+  var firstRecord = !(prior && prior.errorCodes);
+  if (!firstRecord) {
+    var codeVerdict = checkErrorCodes(prior, liveCodes.codes, assertedCodes);
+    if (codeVerdict.unasserted.length > 0) {
+      process.stderr.write("[refresh-api-snapshot] " + codeVerdict.unasserted.length +
+        " error code(s) no test names, and outside the recorded residual:\n");
+      codeVerdict.unasserted.forEach(function (c) { process.stderr.write("  - " + c + "\n"); });
+      process.stderr.write("[refresh-api-snapshot] add a vector that drives the shipped path and " +
+        "asserts the code, so a later rename is caught. The residual in api-snapshot.json " +
+        "(errorCodesWithoutVector) records what predates this rule and only shrinks.\n");
+      process.exit(2);
+    }
+  }
+  var priorAllowed = firstRecord
+    ? liveCodes.codes.filter(function (c) { return !assertedCodes[c]; })
+    : (prior.errorCodesWithoutVector || []);
+  var stillWithoutVector = priorAllowed.filter(function (c) {
+    return !assertedCodes[c] && liveCodes.codes.indexOf(c) !== -1;
+  });
+
+  var snapshot = capture(pki, {
+    packageVersion: pkg.version,
+    sinceByPrimitive: sinceByPrimitive,
+    errorCodes: liveCodes.codes,
+    errorCodeDomains: liveCodes.domains,
+    errorCodeStems: liveCodes.stems,
+    errorCodesWithoutVector: stillWithoutVector,
+  });
+  if (priorAllowed.length !== stillWithoutVector.length) {
+    process.stdout.write("[refresh-api-snapshot] residual shrank: " + priorAllowed.length +
+      " -> " + stillWithoutVector.length + " error code(s) without a vector\n");
+  }
 
   // @originated gate: when this refresh removes a documented @primitive path while
   // the exported surface is unchanged, the path was CORRECTED (not deleted) — the

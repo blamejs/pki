@@ -2782,6 +2782,85 @@ async function run() {
   var r176 = await s176.session.info({ caCerts: true });
   check("176b. a verified error body answering a genm -> outcome:rejected with its PKIStatusInfo", r176.outcome === "rejected" && r176.status.status.code === 2);
 
+  // ===== 177. opts.distrustedKeys reaches all three chains a session validates =====
+  // The response signer (through pki.cmp.verify), the issued certificate, and the key generation
+  // authority (through pki.cmp.openKeyPackage). Each vector lists a key that only one of them carries.
+  var dkUnrelated = crypto.createHash("sha256").update(signing.makeSigner("ec-p256").spki).digest("hex");
+  var dkSigner = pki.trust.spkiDigest(H.signerCert);
+  var dkLeaf = pki.trust.spkiDigest(certDer);
+  var dkCa = pki.trust.spkiDigest(H.caCert);
+  check("177a. CONTROL a list naming an unrelated key leaves the enrollment issued",
+    (await mk([H.ip(0, 0, certDer), H.pkiconf()], { distrustedKeys: [dkUnrelated] })
+      .session.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
+  var s177b = mk([H.ip(0, 0, certDer), H.pkiconf()], { distrustedKeys: [dkSigner] });
+  var c177b = await codeOf(s177b.session.enroll(H.irRequest(CLIENT.spki)));
+  check("177b. a listed key on the response signer refuses the response (" + c177b + ")",
+    c177b === "cmp/untrusted-signer" && s177b.transport.calls.length === 1);
+  check("177c. a listed key on the anchor refuses the response",
+    (await codeOf(mk([H.ip(0, 0, certDer), H.pkiconf()], { distrustedKeys: [dkCa] })
+      .session.enroll(H.irRequest(CLIENT.spki)))) === "cmp/untrusted-signer");
+  var s177d = mk([H.ip(0, 0, certDer), H.pkiconf()], { distrustedKeys: [dkLeaf] });
+  var c177d = await codeOf(s177d.session.enroll(H.irRequest(CLIENT.spki)));
+  check("177d. a listed key on the issued certificate refuses it before the certConf (" + c177d + ")",
+    c177d === "cmp/bad-cert-response");
+  var kgaDk = await H.centralKeyGeneration(pki, CLIENT);
+  check("177e. CONTROL central key generation with an unrelated list delivers the key",
+    (await mk([H.ip(0, 0, kgaDk.deliveredCert, { privateKey: kgaDk.container }), H.pkiconf()],
+      { acceptCentralKeyGeneration: true, distrustedKeys: [dkUnrelated] })
+      .session.enroll(H.irCentralRequest(pki))).outcome === "issued");
+  var c177f = await codeOf(mk([H.ip(0, 0, kgaDk.deliveredCert, { privateKey: kgaDk.container }), H.pkiconf()],
+    { acceptCentralKeyGeneration: true, distrustedKeys: [pki.trust.spkiDigest(kgaDk.cert)] })
+    .session.enroll(H.irCentralRequest(pki)));
+  check("177f. a listed key on the key generation authority refuses the delivery (" + c177f + ")",
+    c177f === "cmp/unauthorized-kga");
+  check("177g. a malformed list is refused when the session is built",
+    codeOfSync(function () { mk([], { distrustedKeys: ["nope"] }); }) === "cmp/bad-input");
+  check("177h. a list that is not an array is refused when the session is built",
+    codeOfSync(function () { mk([], { distrustedKeys: dkSigner }); }) === "cmp/bad-input");
+  var liveList = [dkSigner];
+  var s177i = mk([H.ip(0, 0, certDer), H.pkiconf()], { distrustedKeys: liveList });
+  liveList.pop();
+  check("177i. the list is read once at construction, so emptying it afterwards removes no key",
+    (await codeOf(s177i.session.enroll(H.irRequest(CLIENT.spki)))) === "cmp/untrusted-signer");
+  var kgaMacDk = await H.centralKeyGeneration(pki, CLIENT, { password: KGA_MAC_SECRET });
+  function macDkSession(list, extra) {
+    return pki.cmp.session(Object.assign({ url: URL, mac: { secret: KGA_MAC_SECRET },
+      transport: H.fakeCa(pki, [H.ip(0, 0, kgaMacDk.deliveredCert, { privateKey: kgaMacDk.container }), H.pkiconf()],
+        { macSecret: KGA_MAC_SECRET }).transport,
+      sleep: function () { return Promise.resolve(); }, acceptCentralKeyGeneration: true,
+      trustAnchors: [kgaMacDk.anchor], distrustedKeys: list }, extra || {}));
+  }
+  check("177j. CONTROL a shared-secret session with anchors and an unrelated list is issued",
+    (await macDkSession([dkUnrelated]).enroll(H.irCentralRequest(pki))).outcome === "issued");
+  check("177k. a shared-secret session refuses an issued certificate whose key is listed",
+    (await codeOf(macDkSession([pki.trust.spkiDigest(kgaMacDk.deliveredCert)]).enroll(H.irCentralRequest(pki)))) === "cmp/bad-cert-response");
+  check("177l. and refuses a key generation authority whose key is listed",
+    (await codeOf(macDkSession([pki.trust.spkiDigest(kgaMacDk.cert)]).enroll(H.irCentralRequest(pki)))) === "cmp/unauthorized-kga");
+  check("177m. under the shared-secret exemption a key generation authority whose key is listed is still refused",
+    (await codeOf(macDkSession([pki.trust.spkiDigest(kgaMacDk.cert)], { authorizedBySharedSecret: true })
+      .enroll(H.irCentralRequest(pki)))) === "cmp/unauthorized-kga");
+  check("177m2. CONTROL under the exemption an unrelated list delivers the key",
+    (await macDkSession([dkUnrelated], { authorizedBySharedSecret: true })
+      .enroll(H.irCentralRequest(pki))).outcome === "issued");
+  // A root key update installs a new root, so a listed new root key is refused like a listed key on
+  // any chain the session validates.
+  check("177o. a rootCaKeyUpdate whose new root key is listed is refused",
+    (await codeOf(mk([H.genpOf("rootCaKeyUpdate", rootUpd)], { distrustedKeys: [pki.trust.spkiDigest(NEW_ROOT)] })
+      .session.info({ rootCaCert: OLD_ROOT }))) === "cmp/bad-info-value");
+  check("177o2. CONTROL the same update with an unrelated list is answered",
+    (await mk([H.genpOf("rootCaKeyUpdate", rootUpd)], { distrustedKeys: [dkUnrelated] })
+      .session.info({ rootCaCert: OLD_ROOT })).outcome === "answered");
+  check("177n2. a shared-secret session with no anchors accepts an empty list, which refuses nothing",
+    codeOfSync(function () {
+      pki.cmp.session({ url: URL, mac: { secret: KGA_MAC_SECRET }, transport: mk([]).transport,
+        authorizedBySharedSecret: true, acceptCentralKeyGeneration: true, distrustedKeys: [] });
+    }) === "NO-THROW");
+  check("177n. a shared-secret session with no anchors validates no path, so a list is refused when it is built",
+    codeOfSync(function () {
+      pki.cmp.session({ url: URL, mac: { secret: KGA_MAC_SECRET }, transport: mk([]).transport,
+        authorizedBySharedSecret: true, acceptCentralKeyGeneration: true, distrustedKeys: [dkUnrelated] });
+    }) === "cmp/bad-input");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

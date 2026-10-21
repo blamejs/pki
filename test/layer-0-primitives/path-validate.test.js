@@ -6339,6 +6339,33 @@ async function testFetchingChecker() {
     rFallback.valid === true && fbLeafCalls.length === 2 &&
     fbLeafCalls[0].url.indexOf(OCSP_URL) === 0 && fbLeafCalls[1].url === CRL_URL);
 
+  // When both sources fail, the reason names both failures. Reporting only the CRL's would hide
+  // a responder fault that has a different cause.
+  var tBothFail = (function () {
+    var o = {};
+    o[OCSP_URL] = function () { return Promise.reject(new Error("responder down")); };
+    o[CRL_URL] = function () { return Promise.resolve({ status: 503, headers: {}, body: Buffer.alloc(0) }); };
+    return withInter(o);
+  })();
+  var rBothFail = await run(bothPath, fetching(tBothFail, { retries: 0 }));
+  var bothFailRow = rowOf(rBothFail, 1, "revocation");
+  check("F22b. an undetermined row names the OCSP failure as well as the CRL failure",
+    rBothFail.valid === false && typeof bothFailRow.reason === "string" &&
+    bothFailRow.reason.indexOf("responder down") !== -1 && bothFailRow.reason.indexOf("503") !== -1 &&
+    bothFailRow.reason.indexOf("OCSP") !== -1 && bothFailRow.reason.indexOf("CRL") !== -1);
+
+  // The list validate hands the checker reaches the OCSP acceptance gate, so a response signed by
+  // a distrusted key is not taken as an answer.
+  var fetchOcsp = pki.path.fetchingChecker({ transport: withInter((function () { var o = {}; o[OCSP_URL] = ok(goodResp, "application/ocsp-response"); return o; })()) });
+  var interParsed = pki.schema.x509.parse(interO);
+  var fetchIssuer = { workingPublicKey: interKeys.spki, workingIssuerName: interParsed.subject, issuerCert: interParsed };
+  var leafOcspParsed = pki.schema.x509.parse(leafOcspOnly);
+  var fetchedGood = await fetchOcsp.check(leafOcspParsed, fetchIssuer, { time: T2027, historicalMode: false });
+  check("F22c. CONTROL the fetched response is good with no list", fetchedGood.status === "good");
+  var fetchedListed = await fetchOcsp.check(leafOcspParsed, fetchIssuer, { time: T2027, historicalMode: false,
+    distrustedKeys: [require("crypto").createHash("sha256").update(interKeys.spki).digest("hex")] });
+  check("F22d. a fetched response signed by a distrusted key is not an answer", fetchedListed.status === "unknown");
+
   // RFC 6960 sec. 2.3: an error response carries no signature, so it is never an answer and
   // RFC 5019 sec. 6.1 never caches one.
   var errStatuses = [1, 2, 3, 5, 6];

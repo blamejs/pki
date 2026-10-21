@@ -199,6 +199,96 @@ async function run() {
   check("S14. a second call does not hand back the first call's emptied array",
     pki.trust.systemAnchors({ path: twoRoots }).anchors.length === 2);
 
+  // ---- S20-S23: a certificate that is not self-issued is not an anchor ---------------------
+  // A Windows store export carries the Intermediate Certification Authorities store as well as
+  // the roots, and that store is a cache of certificates the machine has seen. OpenSSL's default
+  // verification needs a self-issued certificate at the top of a chain, so an intermediate there
+  // helps build a chain and never ends one. Read as an anchor, it would be trusted on its own and
+  // never revocation-checked.
+  var ikp = await pki.key.generate("Ed25519");
+  var ipriv = await pki.key.export(ikp.privateKey);
+  var ipub = await pki.key.export(ikp.publicKey);
+  var inter = await pki.x509.sign({
+    subject: "Cached Intermediate", subjectPublicKey: ipub, notBefore: NB, notAfter: NA,
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] },
+  }, { cert: rootA, key: priv });
+  var underInter = await pki.x509.sign({
+    subject: "leaf-under-cache.example", subjectPublicKey: pub, notBefore: NB, notAfter: NA,
+    extensions: { basicConstraints: { cA: false } },
+  }, { cert: inter, key: ipriv });
+  var exported = writeBundle("exported-store.pem", pemA + pki.schema.x509.pemEncode(inter, "CERTIFICATE") + pemB);
+  var exp = pki.trust.systemAnchors({ path: exported });
+  check("S20. a certificate that is not self-issued is not returned as an anchor",
+    exp.anchors.length === 2 && exp.anchors.every(function (a) { return a.name.dn !== "CN=Cached Intermediate"; }));
+  check("S20b. ...it is reported in skipped with its reason",
+    exp.skipped.length === 1 && exp.skipped[0].label === "CERTIFICATE" &&
+    String(exp.skipped[0].reason).indexOf("trust/not-self-issued") === 0);
+  check("S20c. ...and returned in intermediates, as DER, for chain building",
+    Array.isArray(exp.intermediates) && exp.intermediates.length === 1 &&
+    Buffer.isBuffer(exp.intermediates[0]) && exp.intermediates[0].equals(inter));
+  var alone = await pki.path.validate([underInter], { trustAnchors: exp.anchors, time: T })
+    .then(function (r) { return r.valid; }, function (e) { return e.code; });
+  check("S21. a leaf under the cached intermediate does not validate against the anchors alone", alone !== true);
+  var built = await pki.path.build(underInter, { trustAnchors: exp.anchors, candidates: exp.intermediates, time: T });
+  check("S21b. ...and validates to the root when the intermediates are candidates", built.valid === true);
+  var noInter = pki.trust.systemAnchors({ path: twoRoots });
+  check("S21c. a bundle of roots reports an empty intermediates list", Array.isArray(noInter.intermediates) && noInter.intermediates.length === 0);
+
+  // An operator excludes a root, or an intermediate, by the digest of its key.
+  var dkp = await pki.key.generate("Ed25519");
+  var dpub = await pki.key.export(dkp.publicKey);
+  var dpriv = await pki.key.export(dkp.privateKey);
+  var rootD = await pki.x509.sign({
+    subject: "Root D", subjectPublicKey: dpub, notBefore: NB, notAfter: NA,
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] },
+  }, { key: dpriv });
+  var withD = writeBundle("with-d.pem", pemA + pki.schema.x509.pemEncode(rootD, "CERTIFICATE") +
+    pki.schema.x509.pemEncode(inter, "CERTIFICATE"));
+  var filtered = pki.trust.systemAnchors({ path: withD, distrustedKeys: [pki.trust.spkiDigest(rootD)] });
+  check("S22. opts.distrustedKeys keeps a listed root out of the anchors",
+    filtered.anchors.length === 1 && filtered.anchors[0].name.dn === "CN=Root A");
+  check("S22b. ...and reports it as distrusted",
+    filtered.skipped.some(function (s) { return String(s.reason).indexOf("trust/distrusted-key") === 0; }));
+  var filteredInter = pki.trust.systemAnchors({ path: withD, distrustedKeys: [pki.trust.spkiDigest(inter)] });
+  check("S22c. a listed intermediate is neither an anchor nor a chain-building candidate",
+    filteredInter.intermediates.length === 0 && filteredInter.anchors.length === 2 &&
+    filteredInter.skipped.some(function (s) { return String(s.reason).indexOf("trust/distrusted-key") === 0; }));
+  var nodeAll = pki.trust.systemAnchors({ path: missing, allowNodeBundle: true });
+  var nodeFiltered = pki.trust.systemAnchors({ path: missing, allowNodeBundle: true,
+    distrustedKeys: [pki.trust.spkiDigest(tls.rootCertificates[0])] });
+  check("S22d. the list applies to Node's set as well",
+    nodeFiltered.anchors.length === nodeAll.anchors.length - 1 &&
+    nodeFiltered.anchors.length + nodeFiltered.skipped.length === tls.rootCertificates.length);
+  check("S23. a malformed distrustedKeys is trust/bad-input",
+    code(function () { pki.trust.systemAnchors({ path: twoRoots, distrustedKeys: ["nope"] }); }) === "trust/bad-input");
+  check("S23b. distrustedKeys: null reads as omitted",
+    pki.trust.systemAnchors({ path: twoRoots, distrustedKeys: null }).anchors.length === 2);
+  check("S23c. a list that removes every anchor refuses rather than returning none",
+    code(function () { pki.trust.systemAnchors({ path: one, distrustedKeys: [pki.trust.spkiDigest(rootA)] }); }) === "trust/no-anchors");
+
+  // A certificate whose name carries a control byte cannot be compared under RFC 5280 sec. 7.1, so
+  // it is reported and is neither an anchor nor an intermediate. The byte is patched into the
+  // encoded name after signing; systemAnchors reads names, not signatures.
+  var ctl = Buffer.from(await pki.x509.sign({
+    subject: "CtlMarker", subjectPublicKey: ipub, notBefore: NB, notAfter: NA,
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] },
+  }, { cert: rootA, key: priv }));
+  var at = ctl.indexOf(Buffer.from("CtlMarker", "latin1"));
+  ctl[at + 3] = 0x01;
+  var withCtl = pki.trust.systemAnchors({ path: writeBundle("with-ctl.pem", pemA + pki.schema.x509.pemEncode(ctl, "CERTIFICATE")) });
+  check("S25. a certificate whose name cannot be compared is reported and offered as neither an anchor nor an intermediate",
+    at > 0 && withCtl.anchors.length === 1 && withCtl.intermediates.length === 0 && withCtl.skipped.length === 1 &&
+    String(withCtl.skipped[0].reason).indexOf("trust/bad-input") === 0 &&
+    String(withCtl.skipped[0].reason).indexOf("control byte") !== -1);
+
+  // ---- S24: allowNodeBundle is a boolean, and nothing else reads as one ---------------------
+  check("S24. allowNodeBundle: \"true\" is refused rather than read as off",
+    code(function () { pki.trust.systemAnchors({ path: missing, allowNodeBundle: "true" }); }) === "trust/bad-input");
+  check("S24b. allowNodeBundle: 1 is refused",
+    code(function () { pki.trust.systemAnchors({ path: missing, allowNodeBundle: 1 }); }) === "trust/bad-input");
+  check("S24c. allowNodeBundle: null reads as omitted",
+    code(function () { pki.trust.systemAnchors({ path: missing, allowNodeBundle: null }); }) === "trust/no-readable-store");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

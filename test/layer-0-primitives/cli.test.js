@@ -16,8 +16,11 @@ var path = require("path");
 var fs = require("fs");
 var os = require("os");
 var spawnSync = require("child_process").spawnSync;
+var execFile = require("child_process").execFile;
+var https = require("node:https");
 var pki = require("../../index.js");
 var asn1 = require("../../lib/asn1-der");
+var signing = require("../helpers/signing");
 
 var BIN = path.join(__dirname, "..", "..", "bin", "pki.js");
 var FIXTURE = path.join(__dirname, "..", "fixtures", "pkijs-selfsigned-ec.pem");
@@ -25,6 +28,15 @@ var FIXTURE = path.join(__dirname, "..", "fixtures", "pkijs-selfsigned-ec.pem");
 function cli(args) {
   var r = spawnSync(process.execPath, [BIN].concat(args), { encoding: "utf8" });
   return { status: r.status, stdout: r.stdout || "", stderr: r.stderr || "" };
+}
+// The command run without blocking this process, for a vector whose server runs in this process.
+function cliAsync(args) {
+  return new Promise(function (resolve) {
+    execFile(process.execPath, [BIN].concat(args), { encoding: "utf8" }, function (err, stdout, stderr) {
+      var status = err ? (typeof err.code === "number" ? err.code : -1) : 0;
+      resolve({ status: status, stdout: stdout || "", stderr: stderr || "" });
+    });
+  });
 }
 function cliBuf(args) {
   var r = spawnSync(process.execPath, [BIN].concat(args), { encoding: null });
@@ -315,6 +327,86 @@ async function run() {
     check("a missing argument still fails, on stderr (exit " + missingStays.status + ")",
       missingStays.status !== 0 && missingStays.stdout === "" &&
       missingStays.stderr.indexOf("usage: pki csr") !== -1);
+
+    /* ---- a flag a verb does not take is a usage error ----
+     * The parser stored any unknown --name as a switch, so a misspelled flag ran the command
+     * without it and a value written after it became a positional argument. Each verb is driven
+     * with a flag no verb takes. The refusal names the flag, prints the verb's usage on stderr,
+     * and lists the flags the verb takes. That list is compared both ways with the flags the
+     * verb's synopsis (its "usage:" line and the "[" lines under it) names, so the parser's
+     * table and the usage text cannot drift apart. */
+    var synopsisFlags = function (usage) {
+      var lines = usage.split("\n"), set = {};
+      for (var li = 0; li < lines.length; li++) {
+        var t = lines[li].trim();
+        if (li > 0 && t.charAt(0) !== "[") break;
+        (t.match(/--[a-z][a-z0-9-]*/g) || []).forEach(function (f) { set[f] = true; });
+      }
+      return Object.keys(set);
+    };
+    var refusalGaps = [], tableGaps = [];
+    verbList.forEach(function (verb) {
+      var r = cli([verb, "--zz-not-a-flag"]);
+      if (r.status === 0 || r.stderr.indexOf("--zz-not-a-flag") === -1 ||
+        r.stderr.indexOf("usage: pki " + verb) === -1 || r.stdout !== "") {
+        refusalGaps.push(verb + " -> exit " + r.status + " " + JSON.stringify(r.stderr.slice(0, 70)));
+        return;
+      }
+      var listed = (/; it takes (.*)$/m.exec(r.stderr) || [])[1];
+      var takes = listed ? listed.split(", ") : [];
+      var documented = synopsisFlags(cli([verb, "--help"]).stdout).concat(["--help"]);
+      var extra = takes.filter(function (f) { return documented.indexOf(f) === -1; });
+      var missing = documented.filter(function (f) { return takes.indexOf(f) === -1; });
+      if (!listed || extra.length || missing.length) {
+        tableGaps.push(verb + " takes [" + takes.join(" ") + "] documents [" + documented.join(" ") + "]");
+      }
+    });
+    check("UF1 every verb refuses a flag it does not take, naming it, with its usage on stderr (" +
+      verbList.length + " verbs): " + refusalGaps.join("; "), refusalGaps.length === 0);
+    check("UF2 the flags each verb takes are the flags its usage documents (" + verbList.length +
+      " verbs): " + tableGaps.join("; "), tableGaps.length === 0);
+    /* CONTROL: each documented flag, alone, is not refused as one the verb does not take. A value
+     * flag with nothing after it stops at "requires a value" and a switch stops at the verb's
+     * missing-argument check, so no verb does any work here. */
+    var acceptGaps = [];
+    verbList.forEach(function (verb) {
+      synopsisFlags(cli([verb, "--help"]).stdout).forEach(function (flag) {
+        var r = cli([verb, flag]);
+        if (/does not take|does not read/.test(r.stderr)) acceptGaps.push(verb + " " + flag);
+      });
+    });
+    check("UF3 CONTROL every flag a verb documents is accepted by that verb: " + acceptGaps.join(", "),
+      acceptGaps.length === 0);
+    var eqForm = cli(["fetch", "https://nothing.invalid/", "--distrusted-key=abc"]);
+    check("UF4 pki fetch refuses --distrusted-key=abc as a usage error naming the flag (exit " +
+      eqForm.status + ")",
+    eqForm.status !== 0 && eqForm.stderr.split("\n")[0].indexOf("--distrusted-key") !== -1 &&
+      eqForm.stderr.indexOf("pki: transport/") === -1 &&
+      eqForm.stderr.indexOf("usage: pki fetch") !== -1 && eqForm.stdout === "");
+    var eqKnown = cli(["lint", FIXTURE, "--profile=rfc5280"]);
+    check("UF4b the --name=value form is refused for a flag the verb takes, too (exit " +
+      eqKnown.status + ")",
+    eqKnown.status !== 0 && eqKnown.stderr.indexOf("--profile") !== -1 &&
+      eqKnown.stderr.indexOf("usage: pki lint") !== -1 && eqKnown.stdout === "");
+    var nope = cli(["verify", FIXTURE, "--anchor", FIXTURE, "--time", "2030-01-01T00:00:00Z", "--nope"]);
+    check("UF5 pki verify refuses an unknown switch --nope rather than validating without it (exit " +
+      nope.status + ")",
+    nope.status !== 0 && nope.stdout === "" && nope.stderr.indexOf("--nope") !== -1 &&
+      nope.stderr.indexOf("usage: pki verify") !== -1);
+    var parseFlag = cli(["parse", FIXTURE, "--json"]);
+    check("UF6 pki parse refuses a flag although it takes none (exit " + parseFlag.status + ")",
+      parseFlag.status !== 0 && parseFlag.stdout === "" && parseFlag.stderr.indexOf("--json") !== -1);
+    var bare = cli(["verify", FIXTURE, "--anchor", FIXTURE, "--"]);
+    check("UF7 a bare -- is refused as a flag the verb does not take (exit " + bare.status + ")",
+      bare.status !== 0 && bare.stdout === "" && bare.stderr.indexOf("usage: pki verify") !== -1);
+    var protoFlag = cli(["verify", FIXTURE, "--anchor", FIXTURE, "--constructor"]);
+    check("UF8 a flag named like an Object.prototype property is refused, not read as a table entry (exit " +
+      protoFlag.status + ")",
+    protoFlag.status !== 0 && protoFlag.stdout === "" && protoFlag.stderr.indexOf("--constructor") !== -1);
+    var helpBeside = cli(["verify", "--nope", "--help"]);
+    check("UF9 CONTROL --help beside an unknown flag still answers help with exit 0 (exit " +
+      helpBeside.status + ")",
+    helpBeside.status === 0 && helpBeside.stdout.indexOf("usage: pki verify") === 0);
 
     /* ---- inspect reaches every format the library renders ----
      * `pki inspect` called pki.inspect.certificate, so the CLI could not open a CRL, a CSR or a
@@ -1099,6 +1191,140 @@ async function run() {
     var fetchHelp = cli(["fetch", "--help"]).stdout;
     check("pki fetch's help says it is not a verification and names the verb that is",
       /not a verification|does not verify/i.test(fetchHelp) && /pki verify/.test(fetchHelp));
+    check("pki fetch's help says --system reads the platform store only and names the refusal of an empty one",
+      /platform certificate store only/.test(fetchHelp) && /bundled/.test(fetchHelp) &&
+        /transport\/no-trust-anchors/.test(fetchHelp));
+
+    /* ---- --distrusted-key ----
+     * Each value is the SHA-256 digest of a certificate's DER SubjectPublicKeyInfo. On verify the list
+     * reaches pki.path.validate as distrustedKeys; on fetch it reaches the handshake's
+     * tls.distrustedKeys. The flag repeats, and one value may hold several digests separated by
+     * commas, so a list written either way is applied whole. */
+    var intKey = path.join(tmp, "int.key"), intCert = path.join(tmp, "int.der");
+    var intLeaf = path.join(tmp, "int-leaf.der");
+    check("an intermediate CA and a leaf under it are issued for the distrust vectors",
+      cli(["keygen", "--alg", "Ed25519", "--out", intKey]).status === 0 &&
+        cli(["issue", "--key", intKey, "--subject", "CN=int.example", "--ca", "--days", "60",
+          "--issuer-cert", caCert, "--issuer-key", caKey, "--out", intCert]).status === 0 &&
+        cli(["issue", "--key", reqKey, "--subject", "CN=int-leaf.example", "--days", "30",
+          "--issuer-cert", intCert, "--issuer-key", intKey, "--out", intLeaf]).status === 0);
+    var intDigest = pki.trust.spkiDigest(fs.readFileSync(intCert));
+    var rootDigest = pki.trust.spkiDigest(fs.readFileSync(caCert));
+    var leafDigest = pki.trust.spkiDigest(fs.readFileSync(intLeaf));
+    var otherDigest = pki.trust.spkiDigest(signing.makeSigner("ed25519").cert);
+    var verifyWith = function (extra) { return cli(["verify", intCert, intLeaf, "--anchor", caCert].concat(extra)); };
+    var refusedAsDistrusted = function (r) { return r.status === 1 && /^invalid/.test(r.stdout) && /path\/distrusted-key/.test(r.stdout); };
+
+    var dkCtl = verifyWith([]);
+    check("DK1 CONTROL pki verify accepts the three-certificate path with no --distrusted-key",
+      dkCtl.status === 0 && dkCtl.stdout === "valid\n");
+    check("DK1b CONTROL an unrelated listed key leaves the path valid",
+      verifyWith(["--distrusted-key", otherDigest]).status === 0);
+    check("DK2 pki verify refuses the path when the intermediate's key is listed",
+      refusedAsDistrusted(verifyWith(["--distrusted-key", intDigest])));
+    check("DK2b pki verify refuses the path when the anchor's key is listed",
+      refusedAsDistrusted(verifyWith(["--distrusted-key", rootDigest])));
+    check("DK2c pki verify refuses the path when the target's key is listed, in upper case",
+      refusedAsDistrusted(verifyWith(["--distrusted-key", leafDigest.toUpperCase()])));
+    check("DK3 a comma-separated value applies every digest it holds, not only the first",
+      refusedAsDistrusted(verifyWith(["--distrusted-key", otherDigest + "," + intDigest])));
+    check("DK3b a repeated --distrusted-key applies every occurrence, not only the last",
+      refusedAsDistrusted(verifyWith(["--distrusted-key", intDigest, "--distrusted-key", otherDigest])));
+    var dkBad = verifyWith(["--distrusted-key", "nope"]);
+    check("DK4 a malformed digest exits non-zero with path/bad-input and prints no verdict",
+      dkBad.status === 1 && /path\/bad-input/.test(dkBad.stderr) && /distrustedKeys/.test(dkBad.stderr) &&
+        dkBad.stdout === "");
+    var dkEmpty = verifyWith(["--distrusted-key", intDigest + ","]);
+    check("DK4b an empty entry after a comma is refused as path/bad-input rather than dropped",
+      dkEmpty.status === 1 && /path\/bad-input/.test(dkEmpty.stderr) && dkEmpty.stdout === "");
+    check("DK4c --distrusted-key with no value is a usage error",
+      (function () { var r = cli(["verify", intCert, intLeaf, "--anchor", caCert, "--distrusted-key"]);
+        return r.status !== 0 && /--distrusted-key requires a value/.test(r.stderr); })());
+    check("DK5 pki verify's help names --distrusted-key",
+      /--distrusted-key/.test(cli(["verify", "--help"]).stdout));
+    check("DK5b pki fetch's help names --distrusted-key", /--distrusted-key/.test(fetchHelp));
+    /* A misspelled --distrusted-key ran the validation with no distrust list. Written last, the
+     * typo was a switch and the path came back valid; written before a digest, the digest became a
+     * certificate path and the error named a file rather than the flag. */
+    var typoLast = verifyWith(["--distrusted-keys"]);
+    check("DK6 pki verify refuses --distrusted-keys rather than validating with no distrust list (exit " +
+      typoLast.status + ", stdout " + JSON.stringify(typoLast.stdout) + ")",
+    typoLast.status !== 0 && typoLast.stdout === "" &&
+      typoLast.stderr.indexOf("--distrusted-keys") !== -1 &&
+      typoLast.stderr.indexOf("usage: pki verify") !== -1);
+    var typoValue = verifyWith(["--distrusted-keys", intDigest]);
+    check("DK6b pki verify refuses --distrusted-keys <hex> by naming the flag, not the digest as a file (exit " +
+      typoValue.status + ")",
+    typoValue.status !== 0 && typoValue.stdout === "" &&
+      typoValue.stderr.indexOf("--distrusted-keys") !== -1 &&
+      typoValue.stderr.indexOf("cannot read") === -1);
+    check("DK6c CONTROL the correctly spelled flag still refuses the path",
+      refusedAsDistrusted(verifyWith(["--distrusted-key", intDigest])));
+
+    /* The fetch vectors run against a loopback TLS server in this process, so the command is
+     * spawned without blocking it. */
+    var tlsCa = signing.makeSigner("ec-p384", { cn: "cli-distrust-ca.example" });
+    var tlsCaCert = await pki.x509.sign({
+      subject: "cli-distrust-ca.example", subjectPublicKey: tlsCa.spki,
+      notBefore: new Date("2024-01-01T00:00:00Z"), notAfter: new Date("2044-01-01T00:00:00Z"),
+      extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: true },
+    }, { key: tlsCa.key });
+    var tlsLeaf = signing.makeSigner("ec-p256", { cn: "localhost" });
+    var tlsLeafCert = await pki.x509.sign({
+      subject: "localhost", subjectPublicKey: tlsLeaf.spki,
+      notBefore: new Date("2024-01-01T00:00:00Z"), notAfter: new Date("2044-01-01T00:00:00Z"),
+      extensions: { subjectAltName: [{ dNSName: "localhost" }, { iPAddress: "127.0.0.1" }], keyUsage: ["digitalSignature"] },
+    }, { key: tlsCa.key, cert: tlsCaCert });
+    var tlsCaPem = pki.schema.x509.pemEncode(tlsCaCert, "CERTIFICATE");
+    var tlsCaFile = path.join(tmp, "tls-ca.pem");
+    fs.writeFileSync(tlsCaFile, tlsCaPem);
+    var tlsCaDigest = pki.trust.spkiDigest(tlsCaCert), tlsLeafDigest = pki.trust.spkiDigest(tlsLeafCert);
+    var handshakes = 0;
+    var srv = https.createServer({
+      cert: pki.schema.x509.pemEncode(tlsLeafCert, "CERTIFICATE") + tlsCaPem,
+      key: pki.schema.pkcs8.pemEncode(tlsLeaf.key, "PRIVATE KEY"),
+    }, function (req, res) { res.end("ok"); });
+    srv.on("clientError", function () {});
+    srv.on("secureConnection", function () { handshakes += 1; });
+    var port = await new Promise(function (res) { srv.listen(0, "127.0.0.1", function () { res(srv.address().port); }); });
+    try {
+      var fUrl = "https://127.0.0.1:" + port + "/";
+      var fetchWith = function (extra) { return cliAsync(["fetch", fUrl, "--anchor", tlsCaFile].concat(extra)); };
+      var refusedFetch = function (r) { return r.status !== 0 && /transport\/server-key-distrusted/.test(r.stderr) && r.stdout.indexOf("-----BEGIN") === -1; };
+      var fCtl = await fetchWith([]);
+      check("DF1 CONTROL pki fetch prints the chain with no --distrusted-key",
+        fCtl.status === 0 && fCtl.stdout.indexOf("-----BEGIN CERTIFICATE-----") !== -1);
+      check("DF1b CONTROL an unrelated listed key leaves the endpoint reachable",
+        (await fetchWith(["--distrusted-key", otherDigest])).status === 0);
+      check("DF2 pki fetch refuses the endpoint when its CA's key is listed",
+        refusedFetch(await fetchWith(["--distrusted-key", tlsCaDigest])));
+      check("DF3 a comma-separated value applies every digest it holds",
+        refusedFetch(await fetchWith(["--distrusted-key", otherDigest + "," + tlsLeafDigest])));
+      check("DF3b a repeated --distrusted-key applies every occurrence",
+        refusedFetch(await fetchWith(["--distrusted-key", tlsLeafDigest, "--distrusted-key", otherDigest])));
+      var handshakesBefore = handshakes;
+      var fBad = await fetchWith(["--distrusted-key", "nope"]);
+      check("DF4 a malformed digest exits non-zero with transport/bad-input before any handshake",
+        fBad.status !== 0 && /transport\/bad-input/.test(fBad.stderr) && /distrustedKeys/.test(fBad.stderr) &&
+          fBad.stdout === "" && handshakes === handshakesBefore);
+      /* The --name=value form was stored as a switch named "distrusted-key=<hex>", so the endpoint
+       * whose CA key was listed was fetched and printed. */
+      var handshakesBeforeEq = handshakes;
+      var fEq = await fetchWith(["--distrusted-key=" + tlsCaDigest]);
+      check("DF5 pki fetch refuses --distrusted-key=<hex> before any handshake rather than fetching " +
+        "with no distrust list (exit " + fEq.status + ")",
+      fEq.status !== 0 && fEq.stdout === "" && fEq.stderr.indexOf("--distrusted-key") !== -1 &&
+        fEq.stderr.indexOf("usage: pki fetch") !== -1 && handshakes === handshakesBeforeEq);
+      var fTypo = await fetchWith(["--distrusted-keys", tlsCaDigest]);
+      check("DF5b pki fetch refuses --distrusted-keys before any handshake (exit " + fTypo.status + ")",
+        fTypo.status !== 0 && fTypo.stdout === "" && fTypo.stderr.indexOf("--distrusted-keys") !== -1 &&
+          handshakes === handshakesBeforeEq);
+      var fSys = await fetchWith(["--system", "--out", path.join(tmp, "fetched.pem")]);
+      check("DF6 CONTROL pki fetch still takes --system and --out (exit " + fSys.status + ")",
+        fSys.status === 0 && fs.readFileSync(path.join(tmp, "fetched.pem"), "utf8").indexOf("-----BEGIN CERTIFICATE-----") === 0);
+    } finally {
+      await new Promise(function (res) { srv.close(function () { res(); }); });
+    }
 
     /* A file can be one complete DER value AND a well-formed PEM block at once, which the library
      * refuses rather than guessing. Its advice is "pass PEM as a string, or the DER value on its

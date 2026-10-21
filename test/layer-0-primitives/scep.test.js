@@ -18,6 +18,7 @@ var b = pki.asn1.build;
 var cmsSign = require("../../lib/cms-sign");
 var cmsEncrypt = require("../../lib/cms-encrypt");
 var fakeTransport = require("../helpers/fake-transport").fakeTransport;
+var signing = require("../helpers/signing");
 var nodeCrypto = require("node:crypto");
 var O = function (n) { return pki.oid.byName(n); };
 
@@ -781,6 +782,120 @@ async function testProxyThreadsThrough() {
   // transport rejects it as a config error rather than accepting a truncated anchor and failing at connect.
   var dvCode = await codeOf(pki.scep.getCACaps("https://ca.example/scep", { tls: { useSystemStore: true }, proxy: { url: "https://p:8080", tls: { anchors: [new DataView(new ArrayBuffer(4))] } } }));
   check("proxy: a DataView CA anchor is refused as scep/bad-proxy (snapshot preserves it for validation)", dvCode === "scep/bad-proxy");
+}
+
+// tls.distrustedKeys is typed at each verb and forwarded on every hop, the redirect target included.
+async function testDistrustedKeys() {
+  var hex = pki.trust.spkiDigest(F.caCert);
+  var caps = { status: 200, headers: { "content-type": "text/plain" }, body: "AES\r\n" };
+  var t0 = fakeTransport(caps);
+  var c0 = await pki.scep.getCACaps("https://ca.example/scep", { transport: t0 });
+  check("distrust: CONTROL with no list the request carries no distrust list", c0.AES === true && t0.calls[0].tls.distrustedKeys == null);
+
+  var list = [hex.toUpperCase()];
+  var t1 = fakeTransport(caps);
+  await pki.scep.getCACaps("https://ca.example/scep", { transport: t1, tls: { distrustedKeys: list } });
+  var sent = t1.calls.length === 1 ? t1.calls[0].tls.distrustedKeys : null;
+  check("distrust: getCACaps forwards tls.distrustedKeys", Array.isArray(sent) && sent.length === 1 && sent[0] === hex);
+  check("distrust: the forwarded list is a frozen copy, not the caller's array", sent !== list && Object.isFrozen(sent));
+
+  var t2 = fakeTransport([{ status: 302, headers: { location: "https://mirror.example/scep", "content-type": "text/plain" }, body: "" }, caps]);
+  await pki.scep.getCACaps("https://ca.example/scep", { transport: t2, tls: { cert: Buffer.from("C"), key: Buffer.from("K"), distrustedKeys: [hex] } });
+  check("distrust: the list survives a cross-origin redirect while the client credential is dropped",
+    t2.calls.length === 2 && t2.calls[1].tls.cert === null && Array.isArray(t2.calls[1].tls.distrustedKeys) && t2.calls[1].tls.distrustedKeys[0] === hex);
+
+  var cl = await rsaClient();
+  var csr = await pki.csr.sign({ subject: "device.example", subjectPublicKey: cl.pub, challengePassword: "s3cret" }, { key: cl.key });
+  var issued = await pki.x509.sign({ subject: "device.example", subjectPublicKey: cl.pub, notBefore: new Date("2026-01-01"), notAfter: new Date("2027-01-01") }, { key: F.caKey, cert: F.caCert });
+  var t3 = caTransport(async function (p) {
+    var env = await cmsEncrypt.encrypt(certsOnly([issued]), [{ cert: cl.cert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+    return buildCertRep({ statusCode: "0", transactionId: p.transactionId, recipientNonce: p.senderNonce, content: env });
+  });
+  var enrollList = [hex];
+  var enrollBase = { csr: csr, caCert: F.caCert, signer: { cert: cl.cert, key: cl.key }, recipientKey: { cert: cl.cert, key: cl.key } };
+  var pEnroll = pki.scep.enroll("http://ca.example/scep", Object.assign({ transport: t3, tls: { distrustedKeys: enrollList } }, enrollBase));
+  enrollList.push(pki.trust.spkiDigest(issued));
+  var out3 = await pEnroll;
+  var sent3 = t3.calls.length === 1 ? t3.calls[0].tls.distrustedKeys : null;
+  check("distrust: enroll forwards the list taken at the call, not a later mutation of the caller's array",
+    out3.status === "SUCCESS" && Array.isArray(sent3) && sent3.length === 1 && sent3[0] === hex);
+
+  var t4 = fakeTransport(caps);
+  check("distrust: a malformed list is scep/bad-input on getCACaps", (await codeOf(pki.scep.getCACaps("https://ca.example/scep", { transport: t4, tls: { distrustedKeys: ["nope"] } }))) === "scep/bad-input");
+  check("distrust: and no request was sent", t4.calls.length === 0);
+  var t5 = fakeTransport(caps);
+  check("distrust: a malformed list is scep/bad-input on enroll", (await codeOf(pki.scep.enroll("http://ca.example/scep", Object.assign({ transport: t5, tls: { distrustedKeys: [Buffer.alloc(31)] } }, enrollBase)))) === "scep/bad-input" && t5.calls.length === 0);
+  var f = await queryFixture();
+  var t6 = fakeTransport(caps);
+  check("distrust: a malformed list is scep/bad-input on getCert", (await codeOf(pki.scep.getCert("http://ca.example/scep", Object.assign({ certificate: F.issuedCert, transport: t6, tls: { distrustedKeys: {} } }, f.base)))) === "scep/bad-input" && t6.calls.length === 0);
+
+  // A misspelled setting in the tls bag is refused before any request goes out, on every network verb.
+  var misVerbs = [
+    ["getCACaps", function (o) { return pki.scep.getCACaps("https://ca.example/scep", o); }],
+    ["getCACert", function (o) { return pki.scep.getCACert("https://ca.example/scep", o); }],
+    ["getNextCACert", function (o) { return pki.scep.getNextCACert("https://ca.example/scep", Object.assign({ caCertificate: F.caCert }, o)); }],
+    ["enroll", function (o) { return pki.scep.enroll("http://ca.example/scep", Object.assign({}, enrollBase, o)); }],
+    ["getCert", function (o) { return pki.scep.getCert("http://ca.example/scep", Object.assign({ certificate: F.issuedCert }, f.base, o)); }],
+  ];
+  for (var mv = 0; mv < misVerbs.length; mv++) {
+    var spellings = ["distrustKeys", "distrustedKey"];
+    for (var sp = 0; sp < spellings.length; sp++) {
+      var tMis = fakeTransport(caps);
+      var misTls = { anchors: [F.caCert] };
+      misTls[spellings[sp]] = [hex];
+      check("distrust: " + misVerbs[mv][0] + " refuses tls." + spellings[sp] + " scep/bad-input and sends nothing",
+        (await codeOf(misVerbs[mv][1]({ transport: tMis, tls: misTls }))) === "scep/bad-input" && tMis.calls.length === 0);
+    }
+  }
+  var tSpelled = fakeTransport(caps);
+  await pki.scep.getCACaps("https://ca.example/scep", { transport: tSpelled, tls: { anchors: [F.caCert], distrustedKeys: [hex] } });
+  check("distrust: CONTROL the correctly spelled bag is accepted and forwarded",
+    tSpelled.calls.length === 1 && Array.isArray(tSpelled.calls[0].tls.distrustedKeys) && tSpelled.calls[0].tls.distrustedKeys[0] === hex);
+  var tNullTls = fakeTransport(caps);
+  await pki.scep.getCACaps("https://ca.example/scep", { transport: tNullTls, tls: null });
+  check("distrust: CONTROL a null tls is accepted", tNullTls.calls.length === 1);
+
+  // The list is the one given at the call: getCACaps reads it before it returns.
+  var tLate = fakeTransport(caps);
+  var lateOpts = { transport: tLate, tls: { distrustedKeys: [hex] } };
+  var pLate = pki.scep.getCACaps("https://ca.example/scep", lateOpts);
+  lateOpts.tls.distrustedKeys = [];
+  await pLate;
+  check("distrust: getCACaps sends the list given at the call after tls.distrustedKeys is replaced",
+    tLate.calls.length === 1 && Array.isArray(tLate.calls[0].tls.distrustedKeys) && tLate.calls[0].tls.distrustedKeys[0] === hex);
+
+  // A tls record whose settings sit on its prototype is read the same way by every verb.
+  for (var iv = 0; iv < misVerbs.length; iv++) {
+    var tInh = fakeTransport(caps);
+    await codeOf(misVerbs[iv][1]({ transport: tInh, tls: Object.create({ distrustedKeys: [hex] }) }));
+    check("distrust: " + misVerbs[iv][0] + " forwards a distrust list the tls record inherits",
+      tInh.calls.length === 1 && Array.isArray(tInh.calls[0].tls.distrustedKeys) && tInh.calls[0].tls.distrustedKeys[0] === hex);
+  }
+
+  var https = require("node:https");
+  var srvKey = signing.makeSigner("ec-p256", { cn: "localhost" });
+  var srvDer = await pki.x509.sign({
+    subject: "localhost", subjectPublicKey: srvKey.spki,
+    notBefore: new Date("2024-01-01T00:00:00Z"), notAfter: new Date("2044-01-01T00:00:00Z"),
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["digitalSignature", "keyCertSign"], subjectAltName: [{ dNSName: "localhost" }], subjectKeyIdentifier: true },
+  }, { key: srvKey.key });
+  var srvPem = pki.schema.x509.pemEncode(srvDer, "CERTIFICATE");
+  var hits = 0;
+  var srv = https.createServer({ cert: srvPem, key: pki.schema.pkcs8.pemEncode(srvKey.key, "PRIVATE KEY") }, function (req, res) {
+    hits += 1;
+    res.writeHead(200, { "content-type": "text/plain" });
+    res.end("AES\r\n");
+  });
+  srv.on("clientError", function () {});
+  await new Promise(function (resolve) { srv.listen(0, "127.0.0.1", resolve); });
+  try {
+    var url = "https://127.0.0.1:" + srv.address().port + "/scep";
+    var okCaps = await pki.scep.getCACaps(url, { tls: { anchors: [srvPem], servername: "localhost" } });
+    check("distrust: CONTROL the real transport reaches the pinned server with no list", okCaps.AES === true && hits === 1);
+    check("distrust: a server whose key is listed is refused over the real transport",
+      (await codeOf(pki.scep.getCACaps(url, { tls: { anchors: [srvPem], servername: "localhost", distrustedKeys: [pki.trust.spkiDigest(srvDer)] } }))) === "scep/server-key-distrusted");
+    check("distrust: and the refused server answered no request", hits === 1);
+  } finally { srv.close(); }
 }
 
 // A CA transport double: decrypt the POSTed request to echo its senderNonce, encrypt the payload to the
@@ -1693,6 +1808,7 @@ async function main() {
   await testInputGuards();
   await testGetCACaps();
   await testProxyThreadsThrough();
+  await testDistrustedKeys();
   await testGetCACert();
   await testGetNextCACert();
   await testEnrollSuccess();

@@ -1051,8 +1051,132 @@ async function testInjectedTransportMustReturnAPromise() {
 
 }
 
+// ---- tls.distrustedKeys: typed at the verb, forwarded on every hop --------
+async function testDistrustedKeys() {
+  var hex = pki.trust.spkiDigest(S.cert);
+  var t0 = fakeTransport(cacertsOK([S.cert]));
+  var r0 = await pki.est.cacerts(BASE, { transport: t0 });
+  check("DK-1 CONTROL with no list the request carries no distrust list", r0.certificates.length === 1 && t0.calls[0].tls.distrustedKeys == null);
+
+  var list = [hex.toUpperCase()];
+  var t1 = fakeTransport(cacertsOK([S.cert]));
+  await pki.est.cacerts(BASE, { transport: t1, tls: { distrustedKeys: list } });
+  var sent = t1.calls.length === 1 ? t1.calls[0].tls.distrustedKeys : null;
+  check("DK-2 cacerts forwards tls.distrustedKeys to the transport", Array.isArray(sent) && sent.length === 1 && sent[0] === hex);
+  check("DK-2 the forwarded list is a frozen copy, not the caller's array", sent !== list && Object.isFrozen(sent));
+
+  var t2 = fakeTransport([{ status: 302, headers: { location: "https://mirror.example/.well-known/est/cacerts" }, body: "" }, cacertsOK([S.cert])]);
+  await pki.est.cacerts(BASE, { transport: t2, tls: { distrustedKeys: [hex] } });
+  check("DK-3 the distrust list survives a cross-origin redirect while the credentials are dropped",
+    t2.calls.length === 2 && t2.calls[1].tls.cert === null && Array.isArray(t2.calls[1].tls.distrustedKeys) && t2.calls[1].tls.distrustedKeys[0] === hex);
+
+  var t3 = fakeTransport(enrollOK([S.cert]));
+  await pki.est.simpleenroll(BASE, CSR, { transport: t3, tls: { distrustedKeys: [hex] } });
+  check("DK-4 simpleenroll forwards the list", t3.calls.length === 1 && Array.isArray(t3.calls[0].tls.distrustedKeys) && t3.calls[0].tls.distrustedKeys[0] === hex);
+  var t3b = fakeTransport({ status: 204, headers: {}, body: "" });
+  await codeOf(pki.est.csrattrs(BASE, { transport: t3b, tls: { distrustedKeys: [hex] } }));
+  check("DK-4 csrattrs forwards the list", t3b.calls.length === 1 && Array.isArray(t3b.calls[0].tls.distrustedKeys) && t3b.calls[0].tls.distrustedKeys[0] === hex);
+
+  var t4 = fakeTransport(cacertsOK([S.cert]));
+  check("DK-5 a malformed list is est/bad-input on cacerts", (await codeOf(pki.est.cacerts(BASE, { transport: t4, tls: { distrustedKeys: ["nope"] } }))) === "est/bad-input");
+  check("DK-5 and no request was sent", t4.calls.length === 0);
+  var t5 = fakeTransport(enrollOK([S.cert]));
+  check("DK-5 a malformed list is est/bad-input on simpleenroll", (await codeOf(pki.est.simpleenroll(BASE, CSR, { transport: t5, tls: { distrustedKeys: "nope" } }))) === "est/bad-input" && t5.calls.length === 0);
+
+  var srvKey = makeSigner("ec-p256", { serial: 0x78, cn: "localhost" });
+  var srvDer = await pki.x509.sign({
+    subject: "localhost", subjectPublicKey: srvKey.spki,
+    notBefore: new Date("2024-01-01T00:00:00Z"), notAfter: new Date("2044-01-01T00:00:00Z"),
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["digitalSignature", "keyCertSign"], subjectAltName: [{ dNSName: "localhost" }], subjectKeyIdentifier: true },
+  }, { key: srvKey.key });
+  var srvPem = pki.schema.x509.pemEncode(srvDer, "CERTIFICATE");
+  var hits = 0;
+  var srv = https.createServer({ cert: srvPem, key: pki.schema.pkcs8.pemEncode(srvKey.key, "PRIVATE KEY") }, function (req, res) {
+    hits += 1;
+    res.writeHead(200, { "content-type": "application/pkcs7-mime" });
+    res.end(pki.est.transferEncode(certsOnly([S.cert])));
+  });
+  srv.on("clientError", function () {});
+  await new Promise(function (resolve) { srv.listen(0, "127.0.0.1", resolve); });
+  try {
+    var url = "https://127.0.0.1:" + srv.address().port;
+    var ok = await pki.est.cacerts(url, { tls: { anchors: [srvPem], servername: "localhost" } });
+    check("DK-6 CONTROL the real transport reaches the pinned server with no list", ok.certificates.length === 1 && hits === 1);
+    check("DK-6 a server whose key is listed is refused over the real transport",
+      (await codeOf(pki.est.cacerts(url, { tls: { anchors: [srvPem], servername: "localhost", distrustedKeys: [pki.trust.spkiDigest(srvDer)] } }))) === "est/server-key-distrusted");
+    check("DK-6 and the refused server answered no request", hits === 1);
+  } finally { srv.close(); }
+}
+
+// ---- tls: refused for an unknown setting, and taken at the synchronous verb door ----
+async function testTlsTakenAtTheDoor() {
+  var hex = pki.trust.spkiDigest(S.cert);
+  var fullReq = await pki.cmc.build({ requests: [{ tcr: CSR }] }, { cert: S.cert, key: S.key });
+  var queued = { status: 202, headers: { "retry-after": "60" }, body: "" };
+  var verbs = [
+    ["cacerts", function (o) { return pki.est.cacerts(BASE, o); }, function () { return cacertsOK([S.cert]); }],
+    ["csrattrs", function (o) { return pki.est.csrattrs(BASE, o); }, function () { return { status: 204, headers: {}, body: "" }; }],
+    ["simpleenroll", function (o) { return pki.est.simpleenroll(BASE, CSR, o); }, function () { return queued; }],
+    ["simplereenroll", function (o) { return pki.est.simplereenroll(BASE, GOOD_REENROLL, o); }, function () { return queued; }, { oldCert: REAL_CERT }],
+    ["serverkeygen", function (o) { return pki.est.serverkeygen(BASE, CSR, o); }, function () { return queued; }],
+    ["fullcmc", function (o) { return pki.est.fullcmc(BASE, fullReq, o); }, function () { return queued; }],
+  ];
+  function bag(t, tls, extra) { return Object.assign({ transport: t, tls: tls }, extra || {}); }
+  function carries(t) {
+    var d = t.calls.length === 1 ? t.calls[0].tls.distrustedKeys : null;
+    return Array.isArray(d) && d.length === 1 && d[0] === hex;
+  }
+  for (var i = 0; i < verbs.length; i++) {
+    var name = verbs[i][0], run = verbs[i][1], resp = verbs[i][2], extra = verbs[i][3];
+
+    // A misspelled setting is refused before any request goes out.
+    var tMis = fakeTransport(resp());
+    check("TD-1 " + name + " refuses tls.distrustKeys est/bad-input",
+      (await codeOf(run(bag(tMis, { anchors: [S.cert], distrustKeys: [hex] }, extra)))) === "est/bad-input" && tMis.calls.length === 0);
+    var tMis2 = fakeTransport(resp());
+    check("TD-1 " + name + " refuses tls.distrustedKey est/bad-input",
+      (await codeOf(run(bag(tMis2, { anchors: [S.cert], distrustedKey: [hex] }, extra)))) === "est/bad-input" && tMis2.calls.length === 0);
+    var tOk = fakeTransport(resp());
+    await codeOf(run(bag(tOk, { anchors: [S.cert], distrustedKeys: [hex] }, extra)));
+    check("TD-1 CONTROL " + name + " accepts the correctly spelled bag and forwards the list", carries(tOk));
+    var tNull = fakeTransport(resp());
+    await codeOf(run(bag(tNull, null, extra)));
+    check("TD-1 CONTROL " + name + " accepts a null tls", tNull.calls.length === 1);
+
+    // The policy is the one the caller passed at the call; a change made right after it does not reach the request.
+    var tA = fakeTransport(resp());
+    var oA = bag(tA, { distrustedKeys: [hex] }, extra);
+    var pA = run(oA);
+    oA.tls.distrustedKeys = [];
+    await codeOf(pA);
+    check("TD-2 " + name + " sends the list given at the call after tls.distrustedKeys is replaced", carries(tA));
+    var tB = fakeTransport(resp());
+    var listB = [hex];
+    var pB = run(bag(tB, { distrustedKeys: listB }, extra));
+    listB.length = 0;
+    await codeOf(pB);
+    check("TD-2 " + name + " sends the list given at the call after the caller's array is emptied", carries(tB));
+    var tC = fakeTransport(resp());
+    var oC = bag(tC, { distrustedKeys: [hex] }, extra);
+    var pC = run(oC);
+    oC.tls = { distrustedKeys: [] };
+    await codeOf(pC);
+    check("TD-2 " + name + " sends the list given at the call after opts.tls is replaced", carries(tC));
+
+    // A defaults bag carries tls on its prototype.
+    var tD = fakeTransport(resp());
+    var oD = Object.create({ tls: { distrustedKeys: [hex] } });
+    oD.transport = tD;
+    if (extra) Object.assign(oD, extra);
+    await codeOf(run(oD));
+    check("TD-3 " + name + " forwards a tls inherited from a defaults bag", carries(tD));
+  }
+}
+
 async function main() {
   await setup();
+  await testDistrustedKeys();
+  await testTlsTakenAtTheDoor();
   await testCsrFormsAndDefaultTransport();
   await testMoreBranches();
   await testAuthScopeAndScheme();

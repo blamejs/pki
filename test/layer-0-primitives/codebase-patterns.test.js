@@ -150,6 +150,7 @@ var VALID_ALLOW_CLASSES = {
   "wiki-port-cross-artifact-drift": 1,
   "schema-build-drops-parsed-field": 1,
   "guard-shape-reinlined": 1,
+  "caller-option-presence-tested-against-undefined": 1,
   "guard-reads-runtime-live": 1,
   // A record an operator receives whose computed key comes from the code rather than the input.
   // The marker states which argument supplies the key and that every caller passes a literal, so
@@ -2182,7 +2183,11 @@ function testAllowMarkersAreRegistered() {
   var files = _libFiles().concat(_testFiles());
   var seen = {};
   var bad = [];
-  var re = /allow:([a-z0-9][a-z0-9-]*)/g;
+  // Both marker forms: the line-level `allow:<class>` and the file-level
+  // `codebase-patterns:allow-file <class>`. The file-level form was not covered, so a class
+  // misspelled there went unreported; the exemption then matched nothing and the detector
+  // fired, which is the safe direction but says nothing about the typo that caused it.
+  var re = /(?:allow:|allow-file\s+)([a-z0-9][a-z0-9-]*)/g;
   for (var i = 0; i < files.length; i++) {
     var rel = _relPath(files[i]);
     if (seen[rel]) continue;
@@ -2830,8 +2835,29 @@ function testNoDuplicateCodeBlocks() {
         "lib/cms-sign.js:_attachTimestamp", "lib/cms-sign.js:_timestampImprint",
         "lib/ocsp.js:_buildRequest",
         "lib/revocation-fetch.js:fetchingChecker", "lib/tuf.js:checkExpiry", "lib/tuf.js:verifySignatures",
+        "lib/path-validate.js:verifyOcspResponse",
       ],
       reason: "The options door a public verb opens with: settle the caller's options object, then refuse any key the verb does not accept. Both steps ARE the shared primitives, already factored into guard-identifier, so what repeats is the pair of calls and nothing else; the arguments differ at every site, since each verb has its own accepted-key table and its own label. Settling has to happen at the verb, before it reads anything, so the call cannot move inside the key check. family-subset so any 3+ match as more verbs adopt the door.",
+    },
+    {
+      // The run of per-option type checks a verb makes over its own bag: one line per
+      // option, each `if (opts.X != null && typeof opts.X !== "<type>") throw`.
+      mode: "family-subset",
+      files: [
+        "lib/acme.js:_renewalWindow", "lib/acme.js:_scheduleRenewal",
+        "lib/cmp-session.js:session", "lib/pki-build.js:validateBcSpec",
+      ],
+      reason: "The per-option type check a verb runs over its own bag. The shape repeats because the rule does: an option the caller supplied is held to the type it documents, and an absent one takes the default. What differs at every line is the option, its accepted type and the message an operator reads, and a helper would still be called once per option with those same three arguments. The uniformity arrived when every presence test was made to read null as absence, which is the rule being applied rather than code waiting to be shared.",
+    },
+    {
+      // The forwarding run a wrapper makes to hand a caller's options to the verb
+      // underneath it: one line per option, each `if (opts.X != null) inner.X = opts.X`.
+      mode: "family-subset",
+      files: [
+        "lib/cmp-session.js:_buildOpts", "lib/http-transport.js:onProxyResponse",
+        "lib/smime.js:_cmsEncryptOpts", "lib/smime.js:decrypt",
+      ],
+      reason: "The forwarding run a wrapper makes to pass a caller's options down to the verb it composes. Each line copies one option only when the caller supplied one, so an option left out takes the inner verb's own default instead of arriving as a value nobody set. The option names and the destination differ at every line and the set differs at every wrapper, so what repeats is the conditional copy, which is the smallest form the rule has.",
     },
     {
       // The caps a decoder declares before it reads a byte: one guard.limits call per cap it
@@ -3658,6 +3684,49 @@ function testOptoutSwitchReadByCoercion() {
   });
   bad = _filterMarkers(bad, "optout-switch-read-by-coercion");
   _report("no option that turns something off is read by coercion (silent-inversion vector, codebase-wide)", bad);
+}
+
+function testCallerOptionPresenceTestedAgainstUndefined() {
+  // class: caller-option-presence-tested-against-undefined
+  // A CODEBASE-WIDE vector scan. An option the caller left out has two forms, `undefined`
+  // and `null`, and a presence test written against `undefined` alone takes a `null` as a
+  // value they stated. The two readings then disagree: the same absent option is validated
+  // as content on one path and skipped on another. Measured before this rule landed,
+  // `pki.est.serverkeygen` refused `requestedEncryption: null` for contradicting a CSR the
+  // caller never disagreed with, `pki.cms.compress` refused `level: null` as a non-integer,
+  // and `downloadCertificate` reported `boundToKey: true` for a binding given as null.
+  // Ask presence as `!= null` / `== null` so both absent forms answer together.
+  //
+  // Two kinds of site are recognized rather than flagged, and both are real:
+  //   - a line that already compares against null is null-aware by construction.
+  //   - a site where `null` is a stated VALUE carries an allow marker naming this class.
+  //     `expectedTopOrigin: null` states that a WebAuthn ceremony must be unframed, and
+  //     every member of a trust anchor RESTRICTS what it may certify, so reading a null as
+  //     an omission there would drop a restriction the caller named.
+  //
+  // Rename-proof: it matches the receiver family and the comparison, never a symbol. It
+  // fires on a NEW option read this way ANYWHERE in lib, including a file never reviewed.
+  var RECV = "(?:opts|options|o|cfg|settings|params|spec|extSpec|ig|vopts)";
+  var READ = new RegExp("\\b" + RECV + "\\.([A-Za-z_$][\\w$]*)\\s*(?:!==|===)\\s*undefined");
+  var bad = [];
+  _libFiles().forEach(function (f) {
+    var rel = path.relative(REPO_ROOT, f);
+    var lines = _lines(_stripCommentsAndLiterals(fs.readFileSync(f, "utf8")));
+    for (var i = 0; i < lines.length; i++) {
+      if (/^\s*(\/\/|\*|\/\*)/.test(lines[i])) continue;
+      var m = lines[i].match(READ);
+      if (!m) continue;
+      // Already null-aware: the same line also compares against null, so both absent
+      // forms are answered together however the test is spelled.
+      if (/[!=]==?\s*null/.test(lines[i])) continue;
+      bad.push({ file: rel, line: i + 1,
+        content: "opts." + m[1] + " has its presence tested against undefined alone, so a null " +
+          "option the caller left out reads as a value they stated -- ask it as `!= null` " +
+          "(or mark the line when null is a stated value for this option)" });
+    }
+  });
+  bad = _filterMarkers(bad, "caller-option-presence-tested-against-undefined");
+  _report("no caller option has its presence tested against undefined alone (null-is-a-value vector, codebase-wide)", bad);
 }
 
 function testOptionBagReadByEnumerableKey() {
@@ -5137,8 +5206,14 @@ function testNoInternalProvenanceInComments() {
 // marker, the @enforced-by / @guard-* / @validator-* enforcement tags, and the allow:<class> exemption
 // tags. Any other comment is flagged. A genuine, unavoidable exception carries `allow:narrative-comment`.
 function testNoNarrativeCommentsInLib() {
+  // `codebase-patterns:allow-file` is the file-level form of the same exemption marker the
+  // line-level `allow:<class>` carries, documented at the head of this file and honored by
+  // _filterMarkers. It belongs in this list for the same reason: a marker is machinery, not
+  // prose. No lib file had used the file-level form before, which is why its absence here
+  // went unnoticed. Both forms are held to naming a registered class by
+  // testAllowMarkersNameRegisteredClasses, so neither can exempt a class that does not exist.
   var FUNCTIONAL = ["SPDX-License-Identifier", "Copyright (c)", "@module", "@primitive", "@internal",
-    "@enforced-by", "@guard-", "@validator-", "allow:"];
+    "@enforced-by", "@guard-", "@validator-", "allow:", "codebase-patterns:allow-file"];
   function isFunctional(text) {
     for (var i = 0; i < FUNCTIONAL.length; i++) if (text.indexOf(FUNCTIONAL[i]) !== -1) return true;
     return false;
@@ -5673,6 +5748,7 @@ function run() {
   testNanDateComparisonUnguarded();
   testRequirementSwitchReadByCoercion();
   testOptoutSwitchReadByCoercion();
+  testCallerOptionPresenceTestedAgainstUndefined();
   testOptionBagReadByEnumerableKey();
   testEddsaVerifyGate();
   testCborMapPairAccessOutsideCodec();

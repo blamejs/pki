@@ -2136,8 +2136,87 @@ async function testInjectedTransportMustReturnAPromise() {
     (await codeOf(plain.newAccount({ termsOfServiceAgreed: true }))) === "acme/bad-input");
 }
 
+// ---- tls.distrustedKeys: typed when the client is built, forwarded on every request ----
+async function testDistrustedKeys() {
+  var hex = pki.trust.spkiDigest(signing.makeSigner("ec-p256", { cn: "ca-host.example" }).cert);
+  var s0 = A.acmeServer({});
+  await pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, s0)).newAccount({});
+  check("DK-1 CONTROL with no list no request carries a distrust list", s0.calls.length > 0 && s0.calls.every(function (c) { return (c.tls || {}).distrustedKeys == null; }));
+
+  var list = [hex.toUpperCase()];
+  var s1 = A.acmeServer({});
+  var acme1 = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, s1, { tls: { anchors: [ACCT.spki], distrustedKeys: list } }));
+  await acme1.newAccount({});
+  check("DK-2 every request carries the typed list", s1.calls.length > 0 && s1.calls.every(function (c) {
+    var d = (c.tls || {}).distrustedKeys; return Array.isArray(d) && d.length === 1 && d[0] === hex && d !== list && Object.isFrozen(d);
+  }));
+
+  var sXo = A.acmeServer({ redirects: { "/dir-dk": "https://other.example/directory" } });
+  await pki.acme.client(A.URLS.base + "/dir-dk", A.clientOpts(ACCT, sXo, { tls: { anchors: [ACCT.spki], cert: Buffer.from([1]), key: Buffer.from([1]), distrustedKeys: [hex] } })).newAccount({});
+  var xo = sXo.calls.filter(function (c) { return new URL(c.url).origin === "https://other.example"; });
+  check("DK-3 the list survives a cross-origin redirect while the client credential is dropped", xo.length > 0 && xo.every(function (c) {
+    var t = c.tls || {}; return t.cert === null && Array.isArray(t.distrustedKeys) && t.distrustedKeys[0] === hex;
+  }));
+
+  var badCode = null;
+  try { pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, A.acmeServer({}), { tls: { distrustedKeys: ["nope"] } })); }
+  catch (e) { badCode = e && e.code; }
+  check("DK-4 a malformed list is acme/bad-input when the client is built", badCode === "acme/bad-input");
+  var holeCode = null;
+  try { pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, A.acmeServer({}), { tls: { distrustedKeys: new Array(1) } })); }
+  catch (e2) { holeCode = e2 && e2.code; }
+  check("DK-4 a list with a hole is acme/bad-input", holeCode === "acme/bad-input");
+
+  // A misspelled setting in the tls bag is refused when the client is built, so a caller who asked for
+  // a distrust list does not run without one.
+  [["distrustKeys", "distrustKeys"], ["distrustedKey", "distrustedKey"]].forEach(function (row) {
+    var sMis = A.acmeServer({});
+    var misTls = { anchors: [ACCT.spki] };
+    misTls[row[0]] = [hex];
+    var misCode = null, misMsg = "";
+    try { pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sMis, { tls: misTls })); }
+    catch (e3) { misCode = e3 && e3.code; misMsg = String(e3 && e3.message); }
+    check("DK-5 tls." + row[1] + " is refused acme/bad-input and names the setting",
+      misCode === "acme/bad-input" && misMsg.indexOf(row[1]) !== -1 && sMis.calls.length === 0);
+  });
+  var sOk = A.acmeServer({});
+  await pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sOk, { tls: { anchors: [ACCT.spki], distrustedKeys: [hex] } })).newAccount({});
+  check("DK-5 CONTROL the correctly spelled bag is accepted and forwarded",
+    sOk.calls.length > 0 && sOk.calls.every(function (c) { var d = (c.tls || {}).distrustedKeys; return Array.isArray(d) && d[0] === hex; }));
+  var sNull = A.acmeServer({});
+  await pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sNull, { tls: null })).newAccount({});
+  check("DK-5 CONTROL a null tls is still accepted", sNull.calls.length > 0);
+
+  var https = require("node:https");
+  var srvKey = signing.makeSigner("ec-p256", { cn: "localhost" });
+  var srvDer = await pki.x509.sign({
+    subject: "localhost", subjectPublicKey: srvKey.spki,
+    notBefore: new Date("2024-01-01T00:00:00Z"), notAfter: new Date("2044-01-01T00:00:00Z"),
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["digitalSignature", "keyCertSign"], subjectAltName: [{ dNSName: "localhost" }], subjectKeyIdentifier: true },
+  }, { key: srvKey.key });
+  var srvPem = pki.schema.x509.pemEncode(srvDer, "CERTIFICATE");
+  var hits = 0;
+  var srv = https.createServer({ cert: srvPem, key: pki.schema.pkcs8.pemEncode(srvKey.key, "PRIVATE KEY") }, function (req, res) {
+    hits += 1;
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(A.directory()));
+  });
+  srv.on("clientError", function () {});
+  await new Promise(function (resolve) { srv.listen(0, "127.0.0.1", resolve); });
+  try {
+    var dirUrl = "https://127.0.0.1:" + srv.address().port + "/directory";
+    var base = { accountKey: ACCT.key, accountJwk: ACCT.jwk, alg: "ES256" };
+    var okDir = await pki.acme.client(dirUrl, Object.assign({}, base, { tls: { anchors: [srvPem], servername: "localhost" } })).directory();
+    check("DK-5 CONTROL the real transport reaches the pinned server with no list", okDir && okDir.newNonce === A.URLS.newNonce && hits === 1);
+    var refused = pki.acme.client(dirUrl, Object.assign({}, base, { tls: { anchors: [srvPem], servername: "localhost", distrustedKeys: [pki.trust.spkiDigest(srvDer)] } }));
+    check("DK-5 a server whose key is listed is refused over the real transport", (await codeOf(refused.directory())) === "acme/server-key-distrusted");
+    check("DK-5 and the refused server answered no request", hits === 1);
+  } finally { srv.close(); }
+}
+
 async function main() {
   await setup();
+  await testDistrustedKeys();
   await testInjectedTransportMustReturnAPromise();
   await testHappyFlow();
   await testNewAuthz();

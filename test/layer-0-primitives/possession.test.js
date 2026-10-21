@@ -1004,8 +1004,66 @@ async function testMatrix() {
   }
 }
 
+// opts.distrustedKeys reaches the signature certificate's path validation. A key listed for the anchor,
+// the intermediate or the signature certificate itself makes the path invalid, and a malformed list is
+// refused under this verb's own code before any other check can answer for the request.
+async function testDistrustedKeys() {
+  var rootKp = signing.makeSigner("ec-p256");
+  var rootDer = await pki.x509.sign({
+    subject: "Distrust Root", subjectPublicKey: rootKp.spki, serialNumber: 0x41n,
+    notBefore: NB, notAfter: NA,
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "cRLSign"] },
+  }, { key: rootKp.key });
+  var interKp = signing.makeSigner("ec-p256");
+  var interDer = await pki.x509.sign({
+    subject: "Distrust Issuing CA", subjectPublicKey: interKp.spki, serialNumber: 0x42n,
+    notBefore: NB, notAfter: NA,
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "cRLSign"] },
+  }, { cert: rootDer, key: rootKp.key });
+  var sigKp = signing.makeSigner("ec-p256");
+  var sigCertDer = await pki.x509.sign({
+    subject: "kem.example", subjectPublicKey: sigKp.spki, serialNumber: 0x43n,
+    notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"] },
+  }, { cert: interDer, key: interKp.key });
+  var sigParsed = pki.schema.x509.parse(sigCertDer);
+  var kem = crypto.generateKeyPairSync("ml-kem-768");
+  var der = await pki.csr.sign({
+    subject: "kem.example", subjectPublicKey: kem.publicKey.export({ format: "der", type: "spki" }),
+    privateKeyPossessionStatement: {
+      signer: { issuer: sigParsed.issuer.bytes, serialNumber: sigParsed.serialNumber },
+      certificate: sigCertDer,
+    },
+  }, { key: sigKp.key });
+  function opts(list) {
+    return { trustAnchors: [rootDer], time: AT, intermediates: [interDer], distrustedKeys: list };
+  }
+  var unrelated = crypto.createHash("sha256").update(signing.makeSigner("ec-p256").spki).digest("hex");
+
+  var control = await pki.possession.verifyRequest(der, opts([unrelated]));
+  check("DK0: CONTROL a list naming an unrelated key leaves the request valid",
+    control.valid === true && control.pathValidated === true);
+  var cases = [["the anchor", rootDer], ["the intermediate", interDer], ["the signature certificate", sigCertDer]];
+  for (var i = 0; i < cases.length; i++) {
+    var v = await pki.possession.verifyRequest(der, opts([unrelated, pki.trust.spkiDigest(cases[i][1])]));
+    check("DK" + (i + 1) + ": a listed key on " + cases[i][0] + " makes the path invalid and the request not valid",
+      v.pathValidated === false && v.valid === false && v.verified === true);
+  }
+  var asBytes = await pki.possession.verifyRequest(der,
+    opts([Buffer.from(pki.trust.spkiDigest(interDer), "hex")]));
+  check("DK4: a listed key given as 32 bytes is refused the same way", asBytes.pathValidated === false);
+  check("DK5: a malformed list is possession/bad-input",
+    (await codeAsync(pki.possession.verifyRequest(der, opts(["nope"])))) === "possession/bad-input");
+  check("DK6: a list that is not an array is possession/bad-input",
+    (await codeAsync(pki.possession.verifyRequest(der, opts(pki.trust.spkiDigest(rootDer))))) === "possession/bad-input");
+  var plainKp = signing.makeSigner("ec-p256");
+  var plainCsr = await pki.csr.sign({ subject: "plain.example", subjectPublicKey: plainKp.spki }, { key: plainKp.key });
+  check("DK7: a malformed list is refused before a request with no statement is answered as absent",
+    (await codeAsync(pki.possession.verifyRequest(plainCsr, opts(["nope"])))) === "possession/bad-input");
+}
+
 async function run() {
   testSurface();
+  await testDistrustedKeys();
   var w = await world();
   await testDecode(w);
   await testSanComparisonIsBounded();

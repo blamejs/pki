@@ -2112,6 +2112,66 @@ async function run() {
     poisonVerdict.valid === false);
   check("23av. and cannot capture the caller's plaintext secret through it", stolen === null);
 
+  // ===== 27. opts.distrustedKeys reaches every chain this verb and openKeyPackage walk =====
+  // A listed key on the anchor, an intermediate or the signer itself leaves the signer untrusted, and a
+  // malformed list is cmp/bad-input on every route, including the ones that answer with a verdict.
+  var dkUnrelated = nodeCrypto.createHash("sha256").update(makeSigner("ec-p256").spki).digest("hex");
+  function dkSig(list) {
+    return { signerCert: leafCert, trustAnchors: [caCert], intermediates: [], time: T, distrustedKeys: list };
+  }
+  var dkControl = await pki.cmp.verify(tightMsg, dkSig([dkUnrelated]));
+  check("27a. CONTROL a list naming an unrelated key leaves the signer trusted",
+    dkControl.valid === true && dkControl.trusted === true);
+  var dkCases = [["the intermediate", intCert], ["the anchor", caCert], ["the signer", leafCert]];
+  for (var dki = 0; dki < dkCases.length; dki++) {
+    var dkV = await pki.cmp.verify(tightMsg, dkSig([dkUnrelated, pki.trust.spkiDigest(dkCases[dki][1])]));
+    check("27" + "bcd"[dki] + ". a listed key on " + dkCases[dki][0] + " leaves the signer untrusted (" + dkV.code + ")",
+      dkV.valid === true && dkV.trusted === false && dkV.code === "cmp/untrusted-signer");
+  }
+  check("27e. a malformed list is cmp/bad-input",
+    (await codeOf(pki.cmp.verify(tightMsg, dkSig(["nope"])))) === "cmp/bad-input");
+  check("27f. a malformed list is cmp/bad-input on an unprotected message that is otherwise a verdict",
+    (await codeOf(pki.cmp.verify(makeUnprotected(tightMsg), dkSig(["nope"])))) === "cmp/bad-input");
+  check("27g. a list without trustAnchors is refused, no signer chain being validated",
+    (await codeOf(pki.cmp.verify(tightMsg, { signerCert: leafCert, distrustedKeys: [dkUnrelated] }))) === "cmp/bad-input");
+  check("27h. a list on a PBMAC1-protected message is refused, MAC protection walking no chain",
+    (await codeOf(pki.cmp.verify(macDer, { sharedSecret: "hunter2", distrustedKeys: [dkUnrelated] }))) === "cmp/bad-input");
+  check("27i. a list on a KEM-protected message is refused for the same reason",
+    (await codeOf(pki.cmp.verify(kemMsg, { kem: { sharedSecret: kemEncap.ss }, distrustedKeys: [dkUnrelated] }))) === "cmp/bad-input");
+
+  function dkOpen(list) {
+    return { key: kgaEeKt.key, trustAnchors: [kgaRoot.cert], intermediates: [openSubCa.cert], distrustedKeys: list };
+  }
+  var dkOpened = await pki.cmp.openKeyPackage(chainedContainer, dkOpen([dkUnrelated]));
+  check("27j. CONTROL openKeyPackage with an unrelated list delivers the key",
+    dkOpened.keys.length === 1 && dkOpened.trusted === true);
+  var dkKgaCases = [["the intermediate", openSubCa.cert], ["the anchor", kgaRoot.cert], ["the authority", dkOpened.kga]];
+  for (var dkj = 0; dkj < dkKgaCases.length; dkj++) {
+    var dkOutcome = await codeOf(pki.cmp.openKeyPackage(chainedContainer,
+      dkOpen([pki.trust.spkiDigest(dkKgaCases[dkj][1])])));
+    check("27" + "klm"[dkj] + ". openKeyPackage refuses an authority with a listed key on " + dkKgaCases[dkj][0] + " (" + dkOutcome + ")",
+      dkOutcome === "cmp/unauthorized-kga");
+  }
+  check("27n. openKeyPackage refuses a malformed list as cmp/bad-input",
+    (await codeOf(pki.cmp.openKeyPackage(chainedContainer, dkOpen(["nope"])))) === "cmp/bad-input");
+  check("27o. and before a container that does not decode is reported",
+    (await codeOf(pki.cmp.openKeyPackage(Buffer.from([0x30, 0x82, 0xff]), dkOpen(["nope"])))) === "cmp/bad-input");
+  // The exemption replaces the authority's chain check, not the check of its key: a listed
+  // authority key is refused whichever rule authorized it.
+  var exemptContainer = await sealed(keyPackage([deliveredPkcs8]), [{ password: "hunter2" }]);
+  var exemptOk = await pki.cmp.openKeyPackage(exemptContainer, { password: "hunter2", authorizedBySharedSecret: true, distrustedKeys: [dkUnrelated] });
+  check("27p. CONTROL under the shared-secret exemption an unrelated list delivers the key", exemptOk.keys.length === 1);
+  check("27p2. under the exemption a listed authority key is refused",
+    (await codeOf(pki.cmp.openKeyPackage(exemptContainer,
+      { password: "hunter2", authorizedBySharedSecret: true, distrustedKeys: [pki.trust.spkiDigest(exemptOk.kga)] }))) === "cmp/unauthorized-kga");
+  // An empty list refuses nothing, so it is accepted where a non-empty one has no chain to act on.
+  check("27q. an empty list on a PBMAC1-protected message is accepted",
+    (await codeOf(pki.cmp.verify(macDer, { sharedSecret: "hunter2", distrustedKeys: [] }))) !== "cmp/bad-input");
+  check("27r. an empty list on a KEM-protected message is accepted",
+    (await codeOf(pki.cmp.verify(kemMsg, { kem: { sharedSecret: kemEncap.ss }, distrustedKeys: [] }))) !== "cmp/bad-input");
+  check("27s. an empty list with a signer certificate and no anchors is accepted",
+    (await codeOf(pki.cmp.verify(tightMsg, { signerCert: leafCert, distrustedKeys: [] }))) !== "cmp/bad-input");
+
   // ===== 22. PBMAC1 dispatches on the immutable OID, not the mutable registry display name (LAST: mutates oid) =====
   var oidMsg = await buildMac("hunter2");
   pki.oid.register(pki.oid.byName("hmacWithSHA256"), "renamed-hmac-256");   // a documented display-name override

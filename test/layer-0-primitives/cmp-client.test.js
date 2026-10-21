@@ -268,7 +268,43 @@ async function run() {
     check("22 the real transport round-trips 200 ip", r22.status === 200 && r22.response.body.arm === "ip");
     check("22 the negotiated TLS protocol + peer cert are surfaced", /^TLSv1\.[23]$/.test(r22.tls.protocol) && Buffer.isBuffer(r22.tls.peerCertificate));
     check("22 an untrusted server (no anchor) fails closed", (await codeOf(pki.cmp.transfer(url22, f.irDer, { tls: { useSystemStore: true, servername: "localhost" } }))) === "cmp/server-auth-failed");
+    check("22 a server whose key is listed in tls.distrustedKeys is refused",
+      (await codeOf(pki.cmp.transfer(url22, f.irDer, { tls: { anchors: [tlsSrv.certPem], servername: "localhost", distrustedKeys: [pki.trust.spkiDigest(tlsSrv.certPem)] } }))) === "cmp/server-key-distrusted");
   } finally { srv.srv.close(); }
+
+  // 23. tls.distrustedKeys is typed at the door and forwarded to the transport as a frozen copy.
+  var s23c = A.cmpOpts(A.pkixcmp(200, f.ipDer));
+  await pki.cmp.transfer(BASE, f.irDer, s23c.opts);
+  check("23 CONTROL with no list the request carries no distrust list", s23c.transport.calls.length === 1 && s23c.transport.calls[0].tls.distrustedKeys == null);
+  var dkHex = pki.trust.spkiDigest(A.CERT_DER);
+  var dkList = [dkHex.toUpperCase()];
+  var s23 = A.cmpOpts(A.pkixcmp(200, f.ipDer), { tls: { anchors: [A.CERT_DER], distrustedKeys: dkList } });
+  await pki.cmp.transfer(BASE, f.irDer, s23.opts);
+  var dkSent = s23.transport.calls.length === 1 ? s23.transport.calls[0].tls.distrustedKeys : null;
+  check("23 opts.tls.distrustedKeys reaches the request tls", Array.isArray(dkSent) && dkSent.length === 1 && dkSent[0] === dkHex);
+  check("23 the forwarded list is a frozen copy, not the caller's array", dkSent !== dkList && Object.isFrozen(dkSent));
+  var s23b = A.cmpOpts(A.pkixcmp(200, f.ipDer), { tls: { anchors: [A.CERT_DER], distrustedKeys: ["nope"] } });
+  check("23 a malformed list is cmp/bad-input", (await codeOf(pki.cmp.transfer(BASE, f.irDer, s23b.opts))) === "cmp/bad-input");
+  check("23 and no request was sent", s23b.transport.calls.length === 0);
+  // A misspelled setting in the tls bag is refused before any request goes out.
+  var misSpellings = ["distrustKeys", "distrustedKey"];
+  for (var ms = 0; ms < misSpellings.length; ms++) {
+    var misTls = { anchors: [A.CERT_DER] };
+    misTls[misSpellings[ms]] = [dkHex];
+    var s23m = A.cmpOpts(A.pkixcmp(200, f.ipDer), { tls: misTls });
+    check("23 tls." + misSpellings[ms] + " is refused cmp/bad-input and no request was sent",
+      (await codeOf(pki.cmp.transfer(BASE, f.irDer, s23m.opts))) === "cmp/bad-input" && s23m.transport.calls.length === 0);
+  }
+  var s23n = A.cmpOpts(A.pkixcmp(200, f.ipDer), { tls: null });
+  await pki.cmp.transfer(BASE, f.irDer, s23n.opts);
+  check("23 CONTROL a null tls is accepted", s23n.transport.calls.length === 1);
+  // The list is the one given at the call.
+  var s23l = A.cmpOpts(A.pkixcmp(200, f.ipDer), { tls: { anchors: [A.CERT_DER], distrustedKeys: [dkHex] } });
+  var p23l = pki.cmp.transfer(BASE, f.irDer, s23l.opts);
+  s23l.opts.tls.distrustedKeys = [];
+  await p23l;
+  check("23 the request carries the list given at the call after tls.distrustedKeys is replaced",
+    s23l.transport.calls.length === 1 && Array.isArray(s23l.transport.calls[0].tls.distrustedKeys) && s23l.transport.calls[0].tls.distrustedKeys[0] === dkHex);
 
   // An injected transport that yields no promise is a wiring fault in the caller's own code, so it is
   // reported as a typed option error naming the option rather than a confusing response verdict.
