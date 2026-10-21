@@ -12,6 +12,7 @@
 // transport.calls records every request so a test asserts the exact chained nonces / stable transactionID.
 
 var nodeCrypto = require("node:crypto");
+var signing = require("./signing");
 var fakeTransport = require("./fake-transport").fakeTransport;
 var reprotect = require("./cmp-reprotect").reprotect;
 
@@ -507,7 +508,10 @@ function _breakRsaPrivate(pki, pk8) {
 async function centralKeyGeneration(pki, client, o) {
   o = o || {};
   var password = o.password;
-  var kgaKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  // `o.kgaKey` ({ keyObject }, a P-256 private KeyObject) is the authority's key in place of a fresh
+  // one. Its certificate is built outside pki.x509.sign, which refuses to certify a compromised key.
+  var kgaKp = o.kgaKey ? { privateKey: o.kgaKey.keyObject, publicKey: nodeCrypto.createPublicKey(o.kgaKey.keyObject) }
+    : nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
   var kgaKey = kgaKp.privateKey.export({ format: "der", type: "pkcs8" });
   // By default the authority is a PKI management entity of the same CA, so the session's own anchor
   // authorizes it. `o.foreign` makes it self-signed instead: an authority under no accepted anchor.
@@ -525,11 +529,25 @@ async function centralKeyGeneration(pki, client, o) {
   }
   var issuer = o.foreign ? { key: kgaKey }
     : (o.viaIntermediate ? { key: interKey, cert: interCert } : { key: _caKeyPk8, cert: _caCertDer });
-  var kgaCert = await pki.x509.sign({ subject: [{ commonName: "cmp-kga.example" }],
-    subjectPublicKey: kgaKp.publicKey.export({ format: "der", type: "spki" }), serialNumber: 0x6b67,
-    notBefore: o.notBefore || NB, notAfter: o.notAfter || NA,
-    extensions: { basicConstraints: { cA: true }, keyUsage: ["digitalSignature", "keyCertSign"],
-      extendedKeyUsage: ["cmKGA"], subjectKeyIdentifier: true } }, issuer);
+  var kgaCert;
+  if (o.kgaKey) {
+    var kb = pki.asn1.build;
+    var kgaSpki = kgaKp.publicKey.export({ format: "der", type: "spki" });
+    var kgaBits = pki.asn1.read.bitString(pki.asn1.decode(kgaSpki).children[1]).bytes;
+    kgaCert = signing.rawSignedCert({ subject: "cmp-kga.example", issuerName: pki.schema.x509.parse(_caCertDer).subject.bytes,
+      spki: kgaSpki, issuerKey: nodeCrypto.createPrivateKey({ key: _caKeyPk8, format: "der", type: "pkcs8" }), serial: 0x6b67,
+      ca: true, keyUsageByte: 0x84, notBefore: new Date("2020-01-01T00:00:00Z"), notAfter: new Date("2049-01-01T00:00:00Z"),
+      exts: [
+        kb.sequence([kb.oid(pki.oid.byName("extKeyUsage")), kb.octetString(kb.sequence([kb.oid(pki.oid.byName("cmKGA"))]))]),
+        kb.sequence([kb.oid(pki.oid.byName("subjectKeyIdentifier")), kb.octetString(kb.octetString(nodeCrypto.createHash("sha1").update(kgaBits).digest()))]),
+      ] });
+  } else {
+    kgaCert = await pki.x509.sign({ subject: [{ commonName: "cmp-kga.example" }],
+      subjectPublicKey: kgaKp.publicKey.export({ format: "der", type: "spki" }), serialNumber: 0x6b67,
+      notBefore: o.notBefore || NB, notAfter: o.notAfter || NA,
+      extensions: { basicConstraints: { cA: true }, keyUsage: ["digitalSignature", "keyCertSign"],
+        extendedKeyUsage: ["cmKGA"], subjectKeyIdentifier: true } }, issuer);
+  }
   // `o.dh` delivers a finite-field Diffie-Hellman key: a well-formed OneAsymmetricKey that neither
   // signs nor encapsulates; its PrivateKeyInfo carries the exponent alone, so the pair check proves
   // it by the public value the exponent generates.

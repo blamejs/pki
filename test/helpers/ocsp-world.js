@@ -64,7 +64,8 @@ async function signCert(o) {
 
 // makeOcspWorld(alg) -> { issuerKeyPkcs8, issuerCertDer, responderKeyPkcs8, responderCertDer,
 //   targetCertDer, altCaCertDer, delegateOpts } for one-line vectors. `delegateOpts(overrides)`
-// re-mints a responder delegate cert with custom EKU / nocheck / validity for the reject family.
+// re-mints a responder delegate cert with custom EKU / nocheck / validity / key (`spki`) for the
+// reject family.
 async function makeOcspWorld(alg) {
   alg = alg || "ec-p256";
   var ra = RESP_ALG[alg];
@@ -86,7 +87,7 @@ async function makeOcspWorld(alg) {
     if (overrides.keyUsage) exts.push(ext("keyUsage", false, overrides.keyUsage));
     if (overrides.nocheck !== false) exts.push(ext("ocspNoCheck", false, b.nullValue()));
     if (overrides.extraExts) overrides.extraExts.forEach(function (e) { exts.push(e); });
-    return signCert({ serial: overrides.serial || 2, issuerCN: overrides.issuerCN || "OCSP Mini CA", subjectCN: "OCSP Responder", spki: respSpki, issuerKey: overrides.issuerKey || caKp.privateKey, exts: exts, notAfter: overrides.notAfter });
+    return signCert({ serial: overrides.serial || 2, issuerCN: overrides.issuerCN || "OCSP Mini CA", subjectCN: "OCSP Responder", spki: overrides.spki || respSpki, issuerKey: overrides.issuerKey || caKp.privateKey, exts: exts, notAfter: overrides.notAfter });
   }
   var responderCertDer = await delegate({});
 

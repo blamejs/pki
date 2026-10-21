@@ -12,7 +12,9 @@
 // One builder, so a vector breaks exactly one thing and everything else stays conformant. Every
 // option defaults to the valid value; passing one substitutes a single defect.
 
+var crypto = require("crypto");
 var pki = require("../../index.js");
+var signing = require("./signing");
 
 function b64u(buf) { return Buffer.from(buf).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
 
@@ -121,7 +123,14 @@ async function mint(o) {
   // the anchor, with nothing left to chain once the anchor is recognized.
   var chain = o.x5c || [leafDer, rootDer];
   var selfOnlyDer = null;
-  if (o.x5cSelfOnly) {
+  // selfOnlyKey ({ spki, keyObject }, a P-256 key) is the key of the x5cSelfOnly certificate in place
+  // of the fixture's own root key. The certificate is built outside pki.x509.sign, which refuses to
+  // certify a compromised key.
+  if (o.x5cSelfOnly && o.selfOnlyKey) {
+    selfOnlyDer = signing.rawSignedCert({ subject: "Test Self-Anchored Signer", spki: o.selfOnlyKey.spki,
+      issuerKey: o.selfOnlyKey.keyObject, serial: 55, ca: true, keyUsageByte: 0x86, notBefore: NB, notAfter: NA });
+    chain = [selfOnlyDer];
+  } else if (o.x5cSelfOnly) {
     // A self-signed certificate that both signs the BLOB and IS the pinned anchor, so it asserts
     // digitalSignature as well as certificate signing -- a CA certificate restricted to signing
     // certificates may not sign a JWS, and the verifier is right to refuse one that tries.
@@ -157,9 +166,11 @@ async function mint(o) {
   // signWithRoot / x5cSelfOnly sign with the ROOT's key, which is always EC here, so those vectors
   // keep ECDSA regardless of the leaf's algorithm.
   var signWithRootKey = o.signWithRoot || o.x5cSelfOnly;
-  var sig = Buffer.from(await pki.webcrypto.subtle.sign(
-    signWithRootKey ? { name: "ECDSA", hash: "SHA-256" } : signRow.sign,
-    (signWithRootKey ? root.kp : leaf.kp).privateKey, Buffer.from(h64 + "." + p64, "ascii")));
+  var sig = o.x5cSelfOnly && o.selfOnlyKey
+    ? crypto.sign("sha256", Buffer.from(h64 + "." + p64, "ascii"), { key: o.selfOnlyKey.keyObject, dsaEncoding: "ieee-p1363" })
+    : Buffer.from(await pki.webcrypto.subtle.sign(
+      signWithRootKey ? { name: "ECDSA", hash: "SHA-256" } : signRow.sign,
+      (signWithRootKey ? root.kp : leaf.kp).privateKey, Buffer.from(h64 + "." + p64, "ascii")));
   // signerKey is the leaf's private half: a consumer that mutates the payload can re-sign, so a
   // mutation arrives past the signature gate instead of being rejected ahead of the payload reader.
   return { blob: Buffer.from(h64 + "." + p64 + "." + b64u(o.badSig ? Buffer.alloc(sig.length, 9) : sig), "utf8"),

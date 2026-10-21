@@ -208,6 +208,18 @@ function run() {
       hasOwn.call(setErr, "then") && setErr.then === undefined &&
       setErr instanceof Error && setErr.message === "carrier two" && setErr.measured === 5);
 
+    /* The descriptors carry no prototype. A literal descriptor inherits `get` from Object.prototype,
+       and defineProperty refuses a descriptor that has both a getter and a value. */
+    var underGet = null, getThrew = null;
+    try {
+      Object.defineProperty(Object.prototype, "get", { configurable: true, writable: true, value: function () { return "inherited"; } });
+      underGet = { set: verdict.set({}, "k", 1), of: verdict.of({ a: 2 }), shield: verdict.shield({ b: 3 }) };
+    } catch (e) { getThrew = e; }
+    finally { delete Object.prototype.get; }
+    check("40. set, of and shield work while Object.prototype carries a get (" + (getThrew && getThrew.message) + ")",
+      getThrew === null && underGet.set.k === 1 && underGet.of.a === 2 && underGet.shield.b === 3 &&
+      hasOwn.call(underGet.set, "then") && hasOwn.call(underGet.of, "then") && hasOwn.call(underGet.shield, "then"));
+
     console.log("CHECKS " + helpers.getChecks());
   })();
 }

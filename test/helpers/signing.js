@@ -38,6 +38,65 @@ function minimalCert(spki, opts) {
   return b.sequence([b.sequence(tbsFields), alg, b.bitString(Buffer.from([0, 0, 0, 0]), 0)]);
 }
 
+var _EC_WIDTH = { prime256v1: 32, secp384r1: 48, secp521r1: 66, secp256k1: 32 };
+var _EC_JWK_CURVE = { prime256v1: "P-256", secp384r1: "P-384", secp521r1: "P-521", secp256k1: "secp256k1" };
+
+// smallScalarKey(curve, d) -> { spki, key (PKCS#8 DER), keyObject } for the EC key whose private key is
+// the integer `d` (a BigInt). A key with d below 256, or within 256 of the group order, is one every
+// verb in the toolkit refuses as compromised.
+function smallScalarKey(curve, d) {
+  var hex = d.toString(16);
+  while (hex.length < _EC_WIDTH[curve] * 2) hex = "0" + hex;
+  var ecdh = crypto.createECDH(curve);
+  ecdh.setPrivateKey(Buffer.from(hex, "hex"));
+  var pub = ecdh.getPublicKey();
+  var w = _EC_WIDTH[curve];
+  var keyObject = crypto.createPrivateKey({ format: "jwk", key: { kty: "EC", crv: _EC_JWK_CURVE[curve],
+    x: pub.subarray(1, 1 + w).toString("base64url"), y: pub.subarray(1 + w).toString("base64url"),
+    d: Buffer.from(hex, "hex").toString("base64url") } });
+  return { spki: crypto.createPublicKey(keyObject).export({ type: "spki", format: "der" }),
+    key: keyObject.export({ type: "pkcs8", format: "der" }), keyObject: keyObject };
+}
+
+// rawSignedCert(o) -> a v3 certificate DER, signed with o.issuerKey (an Ed25519 or EC KeyObject) but
+// built here rather than by pki.x509.sign, which refuses to certify a compromised key or sign with one.
+// o: { subject (a CN string or Name DER), issuerName (the same; default the subject), spki, issuerKey,
+// serial (default 1), ca (adds a critical basicConstraints cA and keyUsage keyCertSign + cRLSign),
+// keyUsageByte (the keyUsage bits ca sets, as one byte, default 0x06), san (a list of { dNSName } /
+// { iPAddress: "a.b.c.d" } entries for a subjectAltName), exts (further Extension DER), notBefore,
+// notAfter }.
+function rawSignedCert(o) {
+  function nameOf(v) { return Buffer.isBuffer(v) ? v : b.sequence([b.set([b.sequence([b.oid(O("commonName")), b.utf8(v)])])]); }
+  var subject = nameOf(o.subject);
+  var issuer = o.issuerName === undefined ? subject : nameOf(o.issuerName);
+  var hash = null, alg;
+  if (o.issuerKey.asymmetricKeyType === "ed25519") alg = b.sequence([b.oid(O("Ed25519"))]);
+  else if (o.issuerKey.asymmetricKeyType === "ec") {
+    hash = { prime256v1: "sha256", secp256k1: "sha256", secp384r1: "sha384", secp521r1: "sha512" }[o.issuerKey.asymmetricKeyDetails.namedCurve];
+    alg = b.sequence([b.oid(O({ sha256: "ecdsaWithSHA256", sha384: "ecdsaWithSHA384", sha512: "ecdsaWithSHA512" }[hash]))]);
+  } else throw new Error("rawSignedCert: unsupported issuer key type " + o.issuerKey.asymmetricKeyType);
+  var validity = b.sequence([b.utcTime(o.notBefore || new Date("2026-01-01T00:00:00Z")), b.utcTime(o.notAfter || new Date("2030-01-01T00:00:00Z"))]);
+  var fields = [b.explicit(0, b.integer(2n)), b.integer(BigInt(o.serial || 1)), alg, issuer, validity, subject, b.raw(o.spki)];
+  var exts = [];
+  if (o.ca) {
+    exts.push(b.sequence([b.oid(O("basicConstraints")), b.boolean(true), b.octetString(b.sequence([b.boolean(true)]))]));
+    var ku = o.keyUsageByte || 0x06, unused = 0;
+    while (unused < 7 && !(ku & (1 << unused))) unused++;   // DER: the unused bits are the trailing zero bits
+    exts.push(b.sequence([b.oid(O("keyUsage")), b.boolean(true), b.octetString(b.bitString(Buffer.from([ku]), unused))]));
+  }
+  if (o.san) {
+    var names = o.san.map(function (n) {
+      return n.dNSName !== undefined ? b.contextPrimitive(2, Buffer.from(n.dNSName, "ascii"))
+        : b.contextPrimitive(7, Buffer.from(n.iPAddress.split(".").map(Number)));
+    });
+    exts.push(b.sequence([b.oid(O("subjectAltName")), b.octetString(b.sequence(names))]));
+  }
+  if (o.exts) exts = exts.concat(o.exts);
+  if (exts.length) fields.push(b.explicit(3, b.sequence(exts)));
+  var tbs = b.sequence(fields);
+  return b.sequence([tbs, alg, b.bitString(crypto.sign(hash, tbs, o.issuerKey), 0)]);
+}
+
 // makeSigner(alg, opts) -> { cert (DER Buffer), key (PKCS#8 DER Buffer), keyObject, spki }.
 // alg: "rsa" | "rsa-pss" | "ec-p256" | "ec-p384" | "ec-p521" | "ed25519" | "ed448".
 // opts.pssHash pins the id-RSASSA-PSS key's permitted hash in its SPKI params (e.g. "sha384").
@@ -166,4 +225,4 @@ function makeTsa(alg, opts) {
   return { cert: s.cert, key: s.key };
 }
 
-module.exports = { makeSigner: makeSigner, makeTsa: makeTsa, minimalCert: minimalCert, makeCompositeSigner: makeCompositeSigner, makeRecipient: makeRecipient, keyUsageExt: keyUsageExt, signerOf: signerOf };
+module.exports = { makeSigner: makeSigner, makeTsa: makeTsa, minimalCert: minimalCert, smallScalarKey: smallScalarKey, rawSignedCert: rawSignedCert, makeCompositeSigner: makeCompositeSigner, makeRecipient: makeRecipient, keyUsageExt: keyUsageExt, signerOf: signerOf };

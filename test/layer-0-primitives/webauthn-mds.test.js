@@ -20,7 +20,8 @@ async function codeOf(fn) { try { await fn(); return "NO-THROW"; } catch (e) { r
 // The BLOB fixture builder is a shared helper: the doc-example harness verifies the same minted
 // BLOB, so the documented example and these vectors cannot drift apart.
 var mint = require("../helpers/mds-blob").mint;
-var minimalCert = require("../helpers/signing").minimalCert;
+var signing = require("../helpers/signing");
+var minimalCert = signing.minimalCert;
 
 async function run() {
   async function codeFor(mintOpts, over) {
@@ -1138,6 +1139,18 @@ async function run() {
       return pki.webauthn.verifyMetadataBlob(soleAnchor.blob,
         { rootCertificates: [soleAnchor.rootDer], time: T, distrustedKeys: [pki.trust.spkiDigest(soleAnchor.rootDer)] });
     })) === "webauthn/metadata-untrusted");
+  // The same route with no list: the sole anchor's P-256 private key is 23, so it is compromised.
+  var compromisedAnchor = await mint({ x5cSelfOnly: true, selfOnlyKey: signing.smallScalarKey("prime256v1", 23n) });
+  var compromisedFault = "";
+  check("mds: an x5c consisting only of an anchor whose key is compromised is refused with no list given",
+    (await codeOf(function () {
+      return pki.webauthn.verifyMetadataBlob(compromisedAnchor.blob, { rootCertificates: [compromisedAnchor.rootDer], time: T })
+        .catch(function (e) { compromisedFault = String(e.cause && e.cause.message); throw e; });
+    })) === "webauthn/metadata-untrusted");
+  check("mds: ...and the refusal says the anchor's key is compromised", compromisedFault.indexOf("is a compromised key") !== -1);
+  var ordinaryAnchor = await mint({ x5cSelfOnly: true, selfOnlyKey: signing.smallScalarKey("prime256v1", 23n + (1n << 200n)) });
+  check("mds: CONTROL the same fixture with an ordinary key is trusted",
+    (await pki.webauthn.verifyMetadataBlob(ordinaryAnchor.blob, { rootCertificates: [ordinaryAnchor.rootDer], time: T })).no === 42);
   check("mds: a malformed distrust list is bad-input, not an untrusted chain",
     (await codeOf(function () {
       return pki.webauthn.verifyMetadataBlob(distrustBase.blob,
