@@ -4,6 +4,35 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.9.7 — 2026-10-21
+
+Refuse a key whose private key is public wherever it appears, with no option to turn the refusal off.
+
+### Added
+
+- `pki.trust.knownCompromisedKeys()`: the built-in list, one frozen `{ spkiSha256, name, reason, sources }` record per key, in a new array on every call. It holds the eight eMudhra keys; the Superfish root and the twelve other roots installed by products built on the Komodia interception library; the PrivDog root; the ten Adguard CA keys; eDellRoot and DSDTestProvider; the bealocalhost.de root of the German Federal Bar's beA client; and the AMI test UEFI Secure Boot platform key (PKfail, CVE-2024-8105). Each private key was obtained from a published source and checked against the public key.
+- `lint/key-compromise/known-compromised-key` reports a certificate or request whose subject key is on that list. It runs in the default certificate and request rule sets and in the `key-compromise` profile.
+
+### Changed
+
+- `lint/key-compromise/small-ec-private-key` also reports a key whose algorithm identifier is id-ecDH or id-ecMQV.
+- A test fixture that certifies a small-scalar elliptic curve key through `pki.x509.sign` or requests one through `pki.csr.sign` now fails with `x509/compromised-key` or `csr/compromised-key`. Build such a fixture outside the signing verbs.
+
+### Fixed
+
+- Every `pki.errors` error now defines its `name`, `code`, `isPkiError`, `permanent`, class flag and `cause` as own properties instead of assigning them. A setter for one of those names inherited from `Object.prototype` ran on every construction, and a setter that threw turned the construction of any toolkit error into that throw; inside the TLS identity check it escaped as an uncaught exception. The descriptors those defines use, and the ones the verdict objects use, carry no prototype, so an inherited `get` no longer makes them throw.
+- A `tls.checkServerIdentity` hook that throws now refuses the server with `transport/server-auth-failed`. Node calls the hook without a `try`, so the throw escaped as an uncaught exception and a process with no `uncaughtException` handler exited.
+- A CMP `rootCaKeyUpdate` whose old root key is listed in `distrustedKeys` is now refused with `cmp/bad-info-value`. Only the new root key was checked, and the old root's signature on `newWithOld` is what authorizes the new key.
+- `pki.asn1.build.oid`, and every verb that encodes an OID through it, split the dotted form with the live `String.prototype.split` and assembled the arcs with a concat that reads `Symbol.isConcatSpreadable`. A replaced `split` changed the OID encoded (`1.2.840.10045.4.3.3`, ecdsa-with-SHA384, was encoded as `2.5.4.3`), and a false spreading hook threw an untyped `TypeError`. The encoder now scans the dotted form and copies the arcs itself.
+
+### Security
+
+- `pki.path.validate` and `pki.path.build` fail a path whose trust anchor, intermediate or target carries a compromised key with `path/compromised-key`, in a `compromisedKey` row on the certificate that carries it or a `compromisedIssuerKey` row on the certificate the anchor issued, and ask no revocation status at or below it. A key is compromised when it is listed in `pki.trust.knownCompromisedKeys()`, or when it is an elliptic curve key on P-256, P-384, P-521 or secp256k1 whose private key is an integer below 256 or within 256 of the group order. A listed key is matched however a certificate encodes it, the way a `distrustedKeys` entry is. The check runs with or without a `distrustedKeys` list, and no option turns it off.
+- The verbs that validate a chain on a caller's behalf refuse a compromised key through the same check: `pki.cms.verify`, `pki.smime.verify`, `pki.tsp.verify`, `pki.cmp`, `pki.possession.verifyRequest`, `pki.webauthn`, `pki.sigstore.verifyBundle` and `pki.ocsp.verify`. The routes that validate no chain refuse it too: a FIDO metadata BLOB whose signing chain is the trust anchor itself (`webauthn/metadata-untrusted`), a CMP `rootCaKeyUpdate` whose new root key or old root key is compromised (`cmp/bad-info-value`), a certificate a CMP session with no trust anchors is issued for a compromised key (`cmp/bad-cert-response`), and a CMP key generation authority accepted under `authorizedBySharedSecret` (`cmp/unauthorized-kga`). A compromised issuing CA authorizes no OCSP responder, a delegated responder with a compromised key is not an authorized one, and `pki.path.crlChecker` and `pki.path.fetchingChecker` answer `"unknown"` for a compromised issuer without fetching.
+- `pki.transport.https` and the ACME, EST, SCEP, CMP and CT clients refuse a server whose certificate chain carries a compromised key, on every connection and hop, with `transport/server-key-compromised` (`acme/server-key-compromised` and so on from a client), and a proxy with `transport/proxy-key-compromised`. With no `tls.distrustedKeys`, the check reads the chain node reports and refuses on a hit; it does not prove the links of that chain. It reads the chain before a `tls.checkServerIdentity` hook runs, and refuses a chain longer than `C.LIMITS.PATH_MAX_CERTS` with the same code. A non-empty `tls.distrustedKeys` turns on the proven walk, which refuses a compromised key as well as a listed one. A `tls.anchors` or `proxy.tls.anchors` certificate with a compromised key is refused with `transport/bad-input` or `transport/bad-proxy` before any connection, and under `useSystemStore` such a certificate in the platform store is left out of the certificates the connection trusts.
+- `pki.trust.systemAnchors` skips a certificate with a compromised key with the reason `trust/compromised-key`, and does not return it as an intermediate.
+- `pki.x509.sign` refuses to certify a compromised subject key, issue under a compromised issuer key, or bind a compromised alternative key, with `x509/compromised-key`. `pki.csr.sign` refuses a compromised subject key or possession-statement certificate key with `csr/compromised-key`, and `pki.crmf.build` refuses a compromised `certTemplate.publicKey` or statement-of-possession key with `crmf/compromised-key`. CA/Browser Forum TLS BR 6.1.1.3 forbids a CA to issue a certificate for such a key.
+
 ## v0.9.6 — 2026-10-21
 
 Refuse a distrusted CA key wherever it appears, and trust only the platform store under useSystemStore.

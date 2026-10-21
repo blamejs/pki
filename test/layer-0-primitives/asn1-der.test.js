@@ -954,6 +954,26 @@ function testSetSorted() {
   check("CONTROL the replaced slice is live too", sliceLive === true);
   check("and a replaced Array.prototype.slice cannot either", underSlice === want);
 
+  /* An OID's sub-identifiers are assembled without reading a spreading hook or the live split and
+     slice. A false `Symbol.isConcatSpreadable` inherited by every array nested the arcs a captured
+     concat assembled, and the encoder refused a valid OID. */
+  var oidWant = hex(b.oid("1.2.840.10045.4.3.3"));
+  var spreadReads = 0, underSpread;
+  Object.defineProperty(Array.prototype, Symbol.isConcatSpreadable, {
+    configurable: true, get: function () { spreadReads += 1; return false; },
+  });
+  try { underSpread = hex(b.oid("1.2.840.10045.4.3.3")); }
+  catch (e) { underSpread = "THREW " + e.code; }
+  finally { delete Array.prototype[Symbol.isConcatSpreadable]; }
+  check("an OID encodes to the same bytes with a spreading hook installed, and the hook is never read",
+    underSpread === oidWant && spreadReads === 0);
+  var realSplit = String.prototype.split, splitUnder;
+  try {
+    String.prototype.split = function () { return ["2", "5", "4", "3"]; };
+    splitUnder = hex(b.oid("1.2.840.10045.4.3.3"));
+  } finally { String.prototype.split = realSplit; }
+  check("and a replaced String.prototype.split cannot change the arcs it encodes", splitUnder === oidWant);
+
   /* The COMPARATOR is the third operation in that sentence and the one that answers "before". The copy
      and the sort were captured while `Buffer.compare` was still read at the call, so a replacement
      reversing the answer reversed the SET's order. */

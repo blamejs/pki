@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.9.6",
+  "packageVersion": "0.9.7",
   "surface": {
     "C": {
       "kind": "object",
@@ -4415,6 +4415,10 @@
           "kind": "function",
           "arity": 1
         },
+        "knownCompromisedKeys": {
+          "kind": "function",
+          "arity": 0
+        },
         "parseCcadbCsv": {
           "kind": "function",
           "arity": 1
@@ -4927,6 +4931,7 @@
     "pki.trust.parseTrustAnchorList": "0.8.13",
     "pki.trust.discoversBundles": "0.8.15",
     "pki.trust.spkiDigest": "0.9.6",
+    "pki.trust.knownCompromisedKeys": "0.9.7",
     "pki.trust.systemAnchors": "0.8.15",
     "pki.trustanchor.build": "0.8.13",
     "pki.tsp.sign": "0.2.15",
@@ -5365,11 +5370,13 @@
     "crmf/bad-reg-info",
     "crmf/bad-validity",
     "crmf/bad-version",
+    "crmf/compromised-key",
     "csr/ambiguous-extension-request",
     "csr/bad-attribute-value",
     "csr/bad-attributes",
     "csr/bad-cri",
     "csr/bad-input",
+    "csr/compromised-key",
     "csr/not-a-certification-request",
     "csr/profile-violation",
     "csrattrs/bad-attr-or-oid",
@@ -5610,6 +5617,7 @@
     "path/bad-tls-feature",
     "path/build-limit",
     "path/composite-key-usage",
+    "path/compromised-key",
     "path/ct-policy-not-met",
     "path/ct-required",
     "path/distrusted-after",
@@ -5989,6 +5997,7 @@
     "x509/bad-tbs",
     "x509/bad-validity",
     "x509/bad-version",
+    "x509/compromised-key",
     "x509/not-a-certificate",
     "x509/profile-violation"
   ],

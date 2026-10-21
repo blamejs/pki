@@ -1038,6 +1038,20 @@ security-only patches after the next major releases.
   `pki.sigstore.verifyBundle`, `pki.ocsp.verify`) accept the same option and
   apply it to every chain they validate. Use it for a CA key that a root program
   has distrusted while the anchor set you validate against still carries it.
+- **Keys whose private key is public (CWE-321 / CWE-295).** Every verb refuses a
+  key on the built-in list `pki.trust.knownCompromisedKeys()` returns, and an
+  elliptic curve key on P-256, P-384, P-521 or secp256k1 whose private key is an
+  integer below 256 or within 256 of the group order. No option turns the
+  refusal off, and it applies whether or not a `distrustedKeys` list is given.
+  Path validation and the verbs built on it fail with `path/compromised-key`;
+  the revocation checkers answer `"unknown"` for a compromised issuer;
+  `pki.trust.systemAnchors` skips such a certificate with `trust/compromised-key`;
+  and `pki.x509.sign`, `pki.csr.sign` and `pki.crmf.build` refuse to certify,
+  sign with or request a certificate for one (`x509/compromised-key`,
+  `csr/compromised-key`, `crmf/compromised-key`). The routes that validate no
+  chain refuse it too: a FIDO metadata BLOB signed by its own anchor, a CMP
+  `rootCaKeyUpdate`, and a CMP key generation authority under the shared-secret
+  exemption.
 - **Trust-anchor misuse and revocation-scope confusion.** A `pki.trust` anchor
   carries the root program's own constraints, and `pki.path.validate` enforces
   them when the caller names the purpose being validated for. Pass `checkPurpose:
@@ -2161,6 +2175,18 @@ security-only patches after the next major releases.
   default's, so a per-request list cannot remove a default entry. The ACME, EST,
   SCEP, CMP and CT clients carry the list to every request they make, including
   a cross-origin redirect.
+- **Compromised keys on the TLS connection (CWE-321 / CWE-295).** Every
+  connection and hop refuses a certificate chain that carries a key whose
+  private key is public (see `pki.trust.knownCompromisedKeys`) with
+  `transport/server-key-compromised`, or `transport/proxy-key-compromised` for a
+  proxy. With no `tls.distrustedKeys` the transport reads the chain node reports
+  and refuses on a hit, without proving that chain's links, so a server that
+  sends a decoy certificate with the same name as a compromised intermediate can
+  hide it from this check. A non-empty `tls.distrustedKeys` turns on the proven
+  walk described above, which refuses a compromised key as well as a listed one.
+  A `tls.anchors` or `proxy.tls.anchors` certificate with a compromised key is
+  refused before any connection, and under `useSystemStore` such a certificate in
+  the platform store is left out of the certificates the connection trusts.
 - **CT log-list fetch verifies before it parses (CWE-345 / CWE-347 / CWE-295 /
   CWE-770).** `pki.ct.fetchLogList` fetches the `log_list.json` and its detached
   `log_list.sig` over the same fail-closed `pki.transport` (`rejectUnauthorized`
@@ -2274,10 +2300,14 @@ embedding it is responsible for.
       distrusts a CA key, add its SubjectPublicKeyInfo SHA-256 to the
       `distrustedKeys` you pass to path validation and to `tls.distrustedKeys`.
       Node's compiled-in roots and a host's CA bundle change only when Node or
-      the host package is upgraded.
+      the host package is upgraded. Keys whose private key is public are refused
+      without a list (`pki.trust.knownCompromisedKeys`); the list is for a key a
+      root program distrusts for another reason. Pass a non-empty
+      `tls.distrustedKeys` to have the transport prove the chain it checks.
 - [ ] **Lint the certificates and requests you issue for.** `pki.lint.certificate`
       and `pki.lint.csr` report an elliptic curve key whose private scalar is a
-      small integer (`lint/key-compromise/small-ec-private-key`).
+      small integer (`lint/key-compromise/small-ec-private-key`) and a key on the
+      built-in compromised-key list (`lint/key-compromise/known-compromised-key`).
 - [ ] **Compare the signed bytes, not a re-derived copy.** When verifying a
       signature, hash the `tbsBytes` the parser returns. Do not re-encode the
       parsed fields and sign or verify over the re-encoding.

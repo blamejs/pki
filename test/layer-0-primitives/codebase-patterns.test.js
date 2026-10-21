@@ -4718,7 +4718,7 @@ function testGuardReadsRuntimeLive() {
      *  copies were an admission, but the 57 counted here are the live prototype reads elsewhere in
      *  it, which item 0v7 carries. */
     "lib/path-validate.js": 24,
-    "lib/asn1-der.js": 66,
+    "lib/asn1-der.js": 62,
     "lib/schema-engine.js": 15,
     "lib/cms-sign.js": 26,
     "lib/attrcert-sign.js": 51,

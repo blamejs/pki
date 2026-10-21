@@ -19,6 +19,7 @@ var crypto = require("crypto");
 var helpers = require("../helpers");
 var pki = helpers.pki;
 var check = helpers.check;
+var signing = require("../helpers/signing");
 
 var EM_DV_TLS_CA_G3B = [
   "-----BEGIN CERTIFICATE-----",
@@ -46,47 +47,38 @@ var EM_DV_TLS_CA_G3B = [
 ].join("\n");
 
 var ID = "lint/key-compromise/small-ec-private-key";
-var WIDTH = { prime256v1: 32, secp384r1: 48, secp521r1: 66, secp256k1: 32 };
 var ORDER = {
   secp384r1: BigInt("0xffffffffffffffffffffffffffffffffffffffffffffffffc7634d81f4372ddf581a0db248b0a77aecec196accc52973"),
 };
 
 function has(report, id) { return report.findings.some(function (f) { return f.id === id; }); }
 
-function keyFromScalar(curve, d) {
-  var hex = d.toString(16);
-  while (hex.length < WIDTH[curve] * 2) hex = "0" + hex;
-  var ecdh = crypto.createECDH(curve);
-  ecdh.setPrivateKey(Buffer.from(hex, "hex"));
-  var pub = ecdh.getPublicKey();
-  var jwk = { kty: "EC", crv: { prime256v1: "P-256", secp384r1: "P-384", secp521r1: "P-521", secp256k1: "secp256k1" }[curve],
-    x: pub.subarray(1, 1 + WIDTH[curve]).toString("base64url"), y: pub.subarray(1 + WIDTH[curve]).toString("base64url"),
-    d: Buffer.from(hex, "hex").toString("base64url") };
-  var priv = crypto.createPrivateKey({ key: jwk, format: "jwk" });
-  return {
-    spki: crypto.createPublicKey(priv).export({ type: "spki", format: "der" }),
-    pkcs8: priv.export({ type: "pkcs8", format: "der" }),
-  };
-}
+// pki.x509.sign and pki.csr.sign refuse a small-scalar key, so the fixtures are built and signed
+// outside them.
+function keyFromScalar(curve, d) { return signing.smallScalarKey(curve, d); }
 
 var ISSUER = null;
-async function issuer() {
+function issuer() {
   if (ISSUER) return ISSUER;
   var kp = crypto.generateKeyPairSync("ed25519");
-  var key = kp.privateKey.export({ type: "pkcs8", format: "der" });
-  var cert = await pki.x509.sign({ subject: "Small Scalar Test CA", subjectPublicKey: kp.publicKey.export({ type: "spki", format: "der" }),
-    notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"),
-    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] } }, { key: key });
-  ISSUER = { cert: cert, key: key };
+  ISSUER = { keyObject: kp.privateKey, cert: signing.rawSignedCert({ subject: "Small Scalar Test CA",
+    spki: kp.publicKey.export({ type: "spki", format: "der" }), issuerKey: kp.privateKey, ca: true }) };
   return ISSUER;
 }
 
-async function certFor(curve, d) {
-  var k = keyFromScalar(curve, d);
-  var ca = await issuer();
-  return pki.x509.sign({ subject: "small-scalar-" + curve, subjectPublicKey: k.spki,
-    notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z") },
-    { cert: ca.cert, key: ca.key });
+function certWithSpki(spki) {
+  return signing.rawSignedCert({ subject: "small-scalar", issuerName: "Small Scalar Test CA", spki: spki, issuerKey: issuer().keyObject, serial: 2 });
+}
+
+function certFor(curve, d) { return certWithSpki(keyFromScalar(curve, d).spki); }
+
+// A PKCS#10 request for `key`, signed with it (ECDSA with SHA-384) and built outside pki.csr.sign.
+function csrFor(key) {
+  var b = pki.asn1.build;
+  var name = b.sequence([b.set([b.sequence([b.oid(pki.oid.byName("commonName")), b.utf8("small-csr.example")])])]);
+  var info = b.sequence([b.integer(0n), name, b.raw(key.spki), b.contextConstructed(0, Buffer.alloc(0))]);
+  var alg = b.sequence([b.oid(pki.oid.byName("ecdsaWithSHA384"))]);
+  return b.sequence([info, alg, b.bitString(crypto.sign("sha384", info, key.keyObject), 0)]);
 }
 
 async function run() {
@@ -118,11 +110,6 @@ async function run() {
   // a compressed point and a hybrid point. A point that is not on the curve is not a key, and the
   // linter reports nothing about it rather than throwing.
   var b = pki.asn1.build;
-  var ca = await issuer();
-  async function certWithSpki(spki) {
-    return pki.x509.sign({ subject: "small-scalar-encoding", subjectPublicKey: spki,
-      notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z") }, { cert: ca.cert, key: ca.key });
-  }
   var named = keyFromScalar("secp384r1", 11n).spki;
   var namedPoint = pki.asn1.read.bitString(pki.asn1.decode(named).children[1]).bytes;
   var explicitParams = pki.asn1.decode(crypto.generateKeyPairSync("ec", { namedCurve: "secp384r1", paramEncoding: "explicit",
@@ -148,7 +135,7 @@ async function run() {
     offThrew === false && offReport !== null && !has(offReport, ID));
 
   var small = keyFromScalar("secp384r1", 9n);
-  var csr = await pki.csr.sign({ subject: "small-csr.example", subjectPublicKey: small.spki }, { key: small.pkcs8 });
+  var csr = csrFor(small);
   check("K8. a certification request for such a key is reported by the default request rule set", has(pki.lint.csr(csr), ID));
   check("K8b. ...and by the key-compromise request profile", has(pki.lint.csr(csr, { profile: "key-compromise" }), ID));
 

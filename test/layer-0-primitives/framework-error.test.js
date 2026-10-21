@@ -109,6 +109,31 @@ function testTransientCodes() {
   // The flag stays on the documented shape either way.
   check("permanent is always a boolean",
     typeof new TransportError("transport/timeout", "x").permanent === "boolean");
+
+  // Every field is defined on the error, so a setter inherited from Object.prototype is not run.
+  // Assigned, a setter that throws turned the construction of every error into that throw.
+  var fields = ["name", "code", "isPkiError", "permanent", "isTransportError", "cause"];
+  var built = null, thrown = null;
+  try {
+    fields.forEach(function (k) {
+      Object.defineProperty(Object.prototype, k, { configurable: true, set: function () { throw new Error("setter " + k); } });
+    });
+    built = new TransportError("transport/timeout", "x", new Error("inner"));
+  } catch (e) { thrown = e; }
+  finally { fields.forEach(function (k) { delete Object.prototype[k]; }); }
+  check("an error is built with throwing setters inherited for each of its fields (" + (thrown && thrown.message) + ")",
+    thrown === null && built.code === "transport/timeout" && built.name === "TransportError" && built.isPkiError === true &&
+    built.isTransportError === true && built.permanent === false && built.cause.message === "inner");
+  check("and its fields are own enumerable data properties, as an assignment made them",
+    fields.every(function (k) { var d = Object.getOwnPropertyDescriptor(built, k); return d && d.enumerable && d.writable && "value" in d; }));
+  var underGet = null, getThrew = null;
+  try {
+    Object.defineProperty(Object.prototype, "get", { configurable: true, writable: true, value: function () { return 1; } });
+    underGet = new TransportError("transport/timeout", "x", new Error("inner"));
+  } catch (e) { getThrew = e; }
+  finally { delete Object.prototype.get; }
+  check("an error is built while Object.prototype carries a get, which a literal descriptor would inherit (" + (getThrew && getThrew.message) + ")",
+    getThrew === null && underGet.code === "transport/timeout" && underGet.cause.message === "inner");
 }
 
 module.exports = { run: run };

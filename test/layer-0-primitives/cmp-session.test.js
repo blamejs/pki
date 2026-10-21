@@ -595,6 +595,21 @@ async function run() {
     sleep: function () { return Promise.resolve(); } });
   check("6t10. and it resumes under the same secret",
     (await s6macR.resumePoll(JSON.parse(JSON.stringify(macTok)))).outcome === "issued");
+  // A shared-secret session with no anchors validates no chain for the issued certificate, so a grant
+  // for a compromised key is refused on its own. The resumed token names the key the request asked for.
+  function macResumeFor(key) {
+    var leaf = signing.rawSignedCert({ subject: "leaf", spki: key.spki, issuerKey: key.keyObject });
+    var tk = JSON.parse(JSON.stringify(macTok));
+    tk.requestedSpki = key.spki.toString("base64");
+    return pki.cmp.session({ url: URL, mac: { secret: MAC_SECRET },
+      transport: H.fakeCa(pki, [H.pollRep(0, 1), H.ip(0, 0, leaf), H.pkiconf()], { macSecret: MAC_SECRET }).transport,
+      sleep: function () { return Promise.resolve(); } }).resumePoll(tk);
+  }
+  check("6t10e. CONTROL a resumed shared-secret grant for an ordinary key is issued",
+    (await macResumeFor(signing.smallScalarKey("prime256v1", 41n + (1n << 200n)))).outcome === "issued");
+  var c6t10f = await codeOf(macResumeFor(signing.smallScalarKey("prime256v1", 41n)));
+  check("6t10f. a resumed shared-secret grant for a compromised key is refused with no anchors given (" + c6t10f + ")",
+    c6t10f === "cmp/bad-cert-response");
   // How a transaction authenticates is fixed when it opens. The two flavors bind a response by different
   // things, the pinned signer identity and the shared secret, so neither resumes the other's transaction.
   check("6t10b. a shared-secret token names its protection", macTok.protection === "mac");
@@ -2842,6 +2857,28 @@ async function run() {
   check("177m2. CONTROL under the exemption an unrelated list delivers the key",
     (await macDkSession([dkUnrelated], { authorizedBySharedSecret: true })
       .enroll(H.irCentralRequest(pki))).outcome === "issued");
+  // A key generation authority whose P-256 private key is 31: refused with no list given, through the
+  // chain the session validates and through the shared-secret exemption that validates none.
+  var kgaSmall = await H.centralKeyGeneration(pki, CLIENT, { password: KGA_MAC_SECRET, kgaKey: signing.smallScalarKey("prime256v1", 31n) });
+  var kgaPlain = await H.centralKeyGeneration(pki, CLIENT, { password: KGA_MAC_SECRET, kgaKey: signing.smallScalarKey("prime256v1", 31n + (1n << 200n)) });
+  function macKgaSession(kga, extra) {
+    return pki.cmp.session(Object.assign({ url: URL, mac: { secret: KGA_MAC_SECRET },
+      transport: H.fakeCa(pki, [H.ip(0, 0, kga.deliveredCert, { privateKey: kga.container }), H.pkiconf()],
+        { macSecret: KGA_MAC_SECRET }).transport,
+      sleep: function () { return Promise.resolve(); }, acceptCentralKeyGeneration: true,
+      trustAnchors: [kga.anchor] }, extra || {}));
+  }
+  check("177q. CONTROL an authority certificate built the same way with an ordinary key delivers the key",
+    (await macKgaSession(kgaPlain).enroll(H.irCentralRequest(pki))).outcome === "issued");
+  check("177q2. CONTROL ...and so it does under the exemption",
+    (await macKgaSession(kgaPlain, { authorizedBySharedSecret: true }).enroll(H.irCentralRequest(pki))).outcome === "issued");
+  var c177r = await codeOf(macKgaSession(kgaSmall).enroll(H.irCentralRequest(pki)));
+  check("177r. a key generation authority whose key is compromised is refused with no list given (" + c177r + ")", c177r === "cmp/unauthorized-kga");
+  var m177s = "";
+  var c177s = await macKgaSession(kgaSmall, { authorizedBySharedSecret: true }).enroll(H.irCentralRequest(pki))
+    .then(function () { return "NO-THROW"; }, function (e) { m177s = String(e.message); return e.code; });
+  check("177s. ...and under the shared-secret exemption, which validates no chain (" + c177s + ")",
+    c177s === "cmp/unauthorized-kga" && m177s.indexOf("is a compromised key") !== -1);
   // A root key update installs a new root, so a listed new root key is refused like a listed key on
   // any chain the session validates.
   check("177o. a rootCaKeyUpdate whose new root key is listed is refused",
@@ -2850,6 +2887,39 @@ async function run() {
   check("177o2. CONTROL the same update with an unrelated list is answered",
     (await mk([H.genpOf("rootCaKeyUpdate", rootUpd)], { distrustedKeys: [dkUnrelated] })
       .session.info({ rootCaCert: OLD_ROOT })).outcome === "answered");
+  // A new root whose P-256 private key is 29 is refused with no list given. pki.x509.sign refuses to
+  // certify such a key, so both certificates are built outside it.
+  var SMALLK = signing.smallScalarKey("prime256v1", 29n);
+  var SMALL_ROOT = signing.rawSignedCert({ subject: "root-new", spki: SMALLK.spki, issuerKey: SMALLK.keyObject, ca: true,
+    notBefore: VALID.notBefore, notAfter: VALID.notAfter });
+  var SMALL_WITH_OLD = signing.rawSignedCert({ subject: "root-new", issuerName: pki.schema.x509.parse(OLD_ROOT).subject.bytes,
+    spki: SMALLK.spki, issuerKey: OLDK.keyObject, serial: 3, ca: true, notBefore: VALID.notBefore, notAfter: VALID.notAfter });
+  var smallUpd = B.sequence([B.raw(SMALL_ROOT), B.explicit(0, B.raw(SMALL_WITH_OLD))]);
+  var c177p = "", m177p = "";
+  await mk([H.genpOf("rootCaKeyUpdate", smallUpd)]).session.info({ rootCaCert: OLD_ROOT })
+    .then(function () { c177p = "NO-THROW"; }, function (e) { c177p = e.code; m177p = String(e.message); });
+  check("177p. a rootCaKeyUpdate whose new root key is compromised is refused with no list given (" + c177p + ")",
+    c177p === "cmp/bad-info-value" && m177p.indexOf("is a compromised key") !== -1);
+  // The old root's signature on newWithOld is what authorizes the new root, and a holder of a
+  // compromised old key can make that signature for any key, so the update is refused.
+  function rolloverFrom(oldKey, extra) {
+    var oldRoot = signing.rawSignedCert({ subject: "root-old", spki: oldKey.spki, issuerKey: oldKey.keyObject, ca: true,
+      notBefore: VALID.notBefore, notAfter: VALID.notAfter });
+    var newWithOld = signing.rawSignedCert({ subject: pki.schema.x509.parse(NEW_ROOT).subject.bytes, issuerName: "root-old",
+      spki: NEWK.spki, issuerKey: oldKey.keyObject, serial: 4, ca: true, notBefore: VALID.notBefore, notAfter: VALID.notAfter });
+    return mk([H.genpOf("rootCaKeyUpdate", B.sequence([B.raw(NEW_ROOT), B.explicit(0, B.raw(newWithOld))]))], extra)
+      .session.info({ rootCaCert: oldRoot });
+  }
+  var listedOld = signing.smallScalarKey("prime256v1", 47n + (1n << 200n));
+  var c177t2 = await codeOf(rolloverFrom(listedOld, { distrustedKeys: [crypto.createHash("sha256").update(listedOld.spki).digest("hex")] }));
+  check("177t2. a rootCaKeyUpdate from an old root whose key is listed is refused (" + c177t2 + ")", c177t2 === "cmp/bad-info-value");
+  check("177q0. CONTROL a rollover from an ordinary old root built the same way is answered",
+    (await rolloverFrom(signing.smallScalarKey("prime256v1", 43n + (1n << 200n)))).outcome === "answered");
+  var m177t = "";
+  var c177t = await rolloverFrom(signing.smallScalarKey("prime256v1", 43n))
+    .then(function () { return "NO-THROW"; }, function (e) { m177t = String(e.message); return e.code; });
+  check("177t. a rootCaKeyUpdate from an old root whose key is compromised is refused (" + c177t + ")",
+    c177t === "cmp/bad-info-value" && m177t.indexOf("old root key is a compromised key") !== -1);
   check("177n2. a shared-secret session with no anchors accepts an empty list, which refuses nothing",
     codeOfSync(function () {
       pki.cmp.session({ url: URL, mac: { secret: KGA_MAC_SECRET }, transport: mk([]).transport,
