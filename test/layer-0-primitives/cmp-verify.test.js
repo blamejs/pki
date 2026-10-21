@@ -2156,10 +2156,21 @@ async function run() {
     (await codeOf(pki.cmp.openKeyPackage(chainedContainer, dkOpen(["nope"])))) === "cmp/bad-input");
   check("27o. and before a container that does not decode is reported",
     (await codeOf(pki.cmp.openKeyPackage(Buffer.from([0x30, 0x82, 0xff]), dkOpen(["nope"])))) === "cmp/bad-input");
-  check("27p. a list beside the shared-secret exemption is refused, no chain being validated",
-    (await codeOf(pki.cmp.openKeyPackage(
-      await sealed(keyPackage([deliveredPkcs8]), [{ password: "hunter2" }]),
-      { password: "hunter2", authorizedBySharedSecret: true, distrustedKeys: [dkUnrelated] }))) === "cmp/bad-input");
+  // The exemption replaces the authority's chain check, not the check of its key: a listed
+  // authority key is refused whichever rule authorized it.
+  var exemptContainer = await sealed(keyPackage([deliveredPkcs8]), [{ password: "hunter2" }]);
+  var exemptOk = await pki.cmp.openKeyPackage(exemptContainer, { password: "hunter2", authorizedBySharedSecret: true, distrustedKeys: [dkUnrelated] });
+  check("27p. CONTROL under the shared-secret exemption an unrelated list delivers the key", exemptOk.keys.length === 1);
+  check("27p2. under the exemption a listed authority key is refused",
+    (await codeOf(pki.cmp.openKeyPackage(exemptContainer,
+      { password: "hunter2", authorizedBySharedSecret: true, distrustedKeys: [pki.trust.spkiDigest(exemptOk.kga)] }))) === "cmp/unauthorized-kga");
+  // An empty list refuses nothing, so it is accepted where a non-empty one has no chain to act on.
+  check("27q. an empty list on a PBMAC1-protected message is accepted",
+    (await codeOf(pki.cmp.verify(macDer, { sharedSecret: "hunter2", distrustedKeys: [] }))) !== "cmp/bad-input");
+  check("27r. an empty list on a KEM-protected message is accepted",
+    (await codeOf(pki.cmp.verify(kemMsg, { kem: { sharedSecret: kemEncap.ss }, distrustedKeys: [] }))) !== "cmp/bad-input");
+  check("27s. an empty list with a signer certificate and no anchors is accepted",
+    (await codeOf(pki.cmp.verify(tightMsg, { signerCert: leafCert, distrustedKeys: [] }))) !== "cmp/bad-input");
 
   // ===== 22. PBMAC1 dispatches on the immutable OID, not the mutable registry display name (LAST: mutates oid) =====
   var oidMsg = await buildMac("hunter2");

@@ -2850,6 +2850,11 @@ async function run() {
   check("177o2. CONTROL the same update with an unrelated list is answered",
     (await mk([H.genpOf("rootCaKeyUpdate", rootUpd)], { distrustedKeys: [dkUnrelated] })
       .session.info({ rootCaCert: OLD_ROOT })).outcome === "answered");
+  check("177n2. a shared-secret session with no anchors accepts an empty list, which refuses nothing",
+    codeOfSync(function () {
+      pki.cmp.session({ url: URL, mac: { secret: KGA_MAC_SECRET }, transport: mk([]).transport,
+        authorizedBySharedSecret: true, acceptCentralKeyGeneration: true, distrustedKeys: [] });
+    }) === "NO-THROW");
   check("177n. a shared-secret session with no anchors validates no path, so a list is refused when it is built",
     codeOfSync(function () {
       pki.cmp.session({ url: URL, mac: { secret: KGA_MAC_SECRET }, transport: mk([]).transport,
