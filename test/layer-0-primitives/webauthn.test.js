@@ -1277,6 +1277,45 @@ async function testCallerAnchors() {
       return pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash,
         { metadata: verifiedScheduled, time: new Date("2027-06-01T00:00:00Z") });
     })) === "webauthn/metadata-status");
+
+  // ---- opts.distrustedKeys refuses a listed key on every anchoring route ----
+  // The u2f trust path is [attestation certificate] under the root, so the root key is the anchor's
+  // and the attestation certificate key is the target's.
+  var dRoot = pki.trust.spkiDigest(u2f.rootDer);
+  var dAtt = pki.trust.spkiDigest(u2f.attCertDer);
+  var dUnrelated = pki.trust.spkiDigest(other.rootDer);
+  async function anchorCode(o) {
+    try { return await pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash, o); }
+    catch (e) { return e.code || e.constructor.name; }
+  }
+  var dControl = await anchorCode({ rootCertificates: [u2f.rootDer], time: T, distrustedKeys: [dUnrelated] });
+  check("distrust: CONTROL a list naming no key on the path still anchors to the pinned root",
+    dControl && dControl.anchoredTo === "rootCertificates");
+  check("distrust: a listed root key refuses the rootCertificates route",
+    (await anchorCode({ rootCertificates: [u2f.rootDer], time: T, distrustedKeys: [dRoot] })) === "webauthn/metadata-untrusted");
+  check("distrust: a listed attestation certificate key refuses the rootCertificates route",
+    (await anchorCode({ rootCertificates: [u2f.rootDer], time: T, distrustedKeys: [Buffer.from(dAtt, "hex")] })) === "webauthn/metadata-untrusted");
+  var dMdControl = await anchorCode({ metadata: verifiedMeta, time: T, distrustedKeys: [dUnrelated] });
+  check("distrust: CONTROL the metadata route still anchors with an unrelated key listed",
+    dMdControl && dMdControl.anchoredTo === "metadata");
+  check("distrust: a listed root key refuses the metadata route",
+    (await anchorCode({ metadata: verifiedMeta, time: T, distrustedKeys: [dRoot] })) === "webauthn/metadata-untrusted");
+  check("distrust: a listed attestation certificate key refuses the metadata route",
+    (await anchorCode({ metadata: verifiedMeta, time: T, distrustedKeys: [dAtt] })) === "webauthn/metadata-untrusted");
+  check("distrust: a listed key refuses the pinned roots a catalogue miss falls through to",
+    (await anchorCode({ metadata: verifiedOther, rootCertificates: [u2f.rootDer], time: T, distrustedKeys: [dRoot] })) === "webauthn/metadata-untrusted");
+  check("distrust: a malformed list is bad-input on the rootCertificates route",
+    (await anchorCode({ rootCertificates: [u2f.rootDer], time: T, distrustedKeys: ["nope"] })) === "webauthn/bad-input");
+  check("distrust: a malformed list is bad-input on the metadata route",
+    (await anchorCode({ metadata: verifiedMeta, time: T, distrustedKeys: ["nope"] })) === "webauthn/bad-input");
+  check("distrust: a malformed list is bad-input with no anchoring route asked for",
+    (await anchorCode({ time: T, distrustedKeys: { length: 1, 0: dRoot } })) === "webauthn/bad-input");
+  var dMoving = [dUnrelated];
+  var dMovingPromise = pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash,
+    { rootCertificates: [u2f.rootDer], time: T, distrustedKeys: dMoving });
+  dMoving[0] = dRoot;
+  check("distrust: the list is read at the call, so an edit while the verdict is pending changes nothing",
+    (await dMovingPromise).anchoredTo === "rootCertificates");
 }
 
 // ---- the ceremony boundary (WebAuthn sec. 7.1) ------------------------------------------------
@@ -2200,6 +2239,22 @@ async function testAndroidSafetyNet() {
   var secondOk = await pki.webauthn.verify(multi.attObj, multi.cdh,
     { verifySafetyNetJws: true, safetyNetRoots: [spare.rootDer, multi.rootDer], time: SN_TIME });
   check("safetynet: a later root in the list still anchors the chain", secondOk.attestationVerified === true);
+
+  // opts.distrustedKeys reaches the x5c chain this format anchors through safetyNetRoots.
+  var snDistrust = await mint({});
+  async function snCode(extra) {
+    try {
+      return await pki.webauthn.verify(snDistrust.attObj, snDistrust.cdh,
+        Object.assign({ verifySafetyNetJws: true, safetyNetRoots: [snDistrust.rootDer], time: SN_TIME }, extra));
+    } catch (e) { return e.code || e.constructor.name; }
+  }
+  var snControl = await snCode({ distrustedKeys: [pki.trust.spkiDigest(spare.rootDer)] });
+  check("safetynet: CONTROL a distrust list naming no key on the chain still anchors it",
+    snControl && snControl.attestationVerified === true && snControl.anchoredTo === "safetyNetRoots");
+  check("safetynet: a listed root key refuses the x5c chain",
+    (await snCode({ distrustedKeys: [pki.trust.spkiDigest(snDistrust.rootDer)] })) === "webauthn/safetynet-cert-untrusted");
+  check("safetynet: a malformed distrust list is bad-input, not an untrusted chain",
+    (await snCode({ distrustedKeys: ["nope"] })) === "webauthn/bad-input");
 }
 
 // ---- clientDataJSON (WebAuthn sec. 5.8.1 / 7.1 / 7.2) -----------------------------------------

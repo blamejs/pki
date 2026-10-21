@@ -1390,6 +1390,49 @@ async function runReaders() {
     await code(function () { return pki.ct.addChain(Object.assign(v2.o, { chain: [Buffer.from("c")] })); }) === "ct/bad-sct");
 }
 
+/* tls.distrustedKeys is typed at the door and handed to the transport as a frozen copy. */
+async function runDistrust() {
+  var log = makeLog(), t = tree(3);
+  var hex = crypto.createHash("sha256").update(log.spki).digest("hex");
+  var routes = { [u("get-sth")]: resp(200, sthBody(log, 3, t.root), "application/json") };
+  var c0 = opts(log, routes);
+  var sth0 = await pki.ct.getSth(c0.o);
+  check("D1: CONTROL with no list the request carries no distrust list",
+    sth0.treeSize === 3n && c0.transport.calls.length === 1 && (c0.transport.calls[0].tls || {}).distrustedKeys == null);
+  var list = [hex.toUpperCase()];
+  var c1 = opts(log, routes, { tls: { anchors: [Buffer.from("A")], distrustedKeys: list } });
+  await pki.ct.getSth(c1.o);
+  var sent = c1.transport.calls.length === 1 ? c1.transport.calls[0].tls.distrustedKeys : null;
+  check("D2: getSth forwards tls.distrustedKeys to the transport", Array.isArray(sent) && sent.length === 1 && sent[0] === hex);
+  check("D2: the forwarded list is a frozen copy, not the caller's array", sent !== list && Object.isFrozen(sent));
+  var c2 = opts(log, { [u("get-roots")]: resp(200, JSON.stringify({ certificates: [] }), "application/json") }, { tls: { distrustedKeys: [hex] } });
+  await code(function () { return pki.ct.getRoots(c2.o); });
+  check("D3: getRoots forwards the list", c2.transport.calls.length === 1 && Array.isArray(c2.transport.calls[0].tls.distrustedKeys) && c2.transport.calls[0].tls.distrustedKeys[0] === hex);
+  var c3 = opts(log, routes, { tls: { distrustedKeys: ["nope"] } });
+  check("D4: a malformed list is ct/bad-input", await code(function () { return pki.ct.getSth(c3.o); }) === "ct/bad-input");
+  check("D4: and no request was sent", c3.transport.calls.length === 0);
+  var accessorList = [];
+  Object.defineProperty(accessorList, "0", { enumerable: true, configurable: true, get: function () { return hex; } });
+  var c4 = opts(log, routes, { tls: { distrustedKeys: accessorList } });
+  check("D5: a list entry backed by an accessor is ct/bad-input", await code(function () { return pki.ct.getSth(c4.o); }) === "ct/bad-input" && c4.transport.calls.length === 0);
+
+  /* A misspelled setting in the tls bag is refused at the door, before any request goes out. */
+  var misNames = ["distrustKeys", "distrustedKey"];
+  for (var di = 0; di < misNames.length; di++) {
+    var misTls = { anchors: [Buffer.from("A")] };
+    misTls[misNames[di]] = [hex];
+    var cm = opts(log, routes, { tls: misTls });
+    check("D6: tls." + misNames[di] + " is ct/bad-input on getSth and no request was sent",
+      await code(function () { return pki.ct.getSth(cm.o); }) === "ct/bad-input" && cm.transport.calls.length === 0);
+  }
+  var c6r = opts(log, { [u("get-roots")]: resp(200, JSON.stringify({ certificates: [] }), "application/json") }, { tls: { anchors: [Buffer.from("A")], distrustKeys: [hex] } });
+  check("D6: getRoots refuses the misspelled setting the same way",
+    await code(function () { return pki.ct.getRoots(c6r.o); }) === "ct/bad-input" && c6r.transport.calls.length === 0);
+  var c6n = opts(log, routes, { tls: null });
+  await pki.ct.getSth(c6n.o);
+  check("D6: CONTROL a null tls is accepted", c6n.transport.calls.length === 1);
+}
+
 function testSurface() {
   ["sthSignedData", "verifySth", "getSth", "getProofByHash", "getSthConsistency", "getEntries",
     "getRoots", "addChain", "addPreChain"].forEach(function (n) {
@@ -1406,6 +1449,7 @@ async function run() {
   await runAddChain();
   await runShared();
   await runReaders();
+  await runDistrust();
   console.log("CHECKS " + helpers.getChecks());
 }
 

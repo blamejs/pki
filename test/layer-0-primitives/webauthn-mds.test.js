@@ -1108,6 +1108,59 @@ async function run() {
       return pki.webauthn.verifyMetadataBlob(soleAnchor.blob, { rootCertificates: [soleAnchor.otherDer], time: T });
     })) === "webauthn/metadata-untrusted");
 
+  // ---- opts.distrustedKeys refuses a listed key on the BLOB signing chain ----
+  // The chain is [signer leaf, root]. A listed root key, a listed signer key, and a listed key on a
+  // chain that IS the anchor (the route that strips the anchor and validates nothing) each refuse.
+  var distrustBase = await mint({});
+  var distrustLeafDer = Buffer.from(JSON.parse(Buffer.from(distrustBase.blob.toString("ascii").split(".")[0]
+    .replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")).x5c[0], "base64");
+  var dRootKey = pki.trust.spkiDigest(distrustBase.rootDer);
+  var dLeafKey = pki.trust.spkiDigest(distrustLeafDer);
+  var dOtherKey = pki.trust.spkiDigest(distrustBase.otherDer);
+  check("mds: CONTROL a distrust list naming no key on the chain still verifies the BLOB",
+    (await pki.webauthn.verifyMetadataBlob(distrustBase.blob,
+      { rootCertificates: [distrustBase.rootDer], time: T, distrustedKeys: [dOtherKey] })).no === 42);
+  check("mds: a listed root key refuses the BLOB signing chain",
+    (await codeOf(function () {
+      return pki.webauthn.verifyMetadataBlob(distrustBase.blob,
+        { rootCertificates: [distrustBase.rootDer], time: T, distrustedKeys: [dRootKey] });
+    })) === "webauthn/metadata-untrusted");
+  check("mds: a listed signer key refuses the BLOB signing chain",
+    (await codeOf(function () {
+      return pki.webauthn.verifyMetadataBlob(distrustBase.blob,
+        { rootCertificates: [distrustBase.rootDer], time: T, distrustedKeys: [Buffer.from(dLeafKey, "hex")] });
+    })) === "webauthn/metadata-untrusted");
+  check("mds: CONTROL an x5c consisting only of the anchor is trusted with an unrelated key listed",
+    (await pki.webauthn.verifyMetadataBlob(soleAnchor.blob,
+      { rootCertificates: [soleAnchor.rootDer], time: T, distrustedKeys: [pki.trust.spkiDigest(soleAnchor.otherDer)] })).no === 42);
+  check("mds: an x5c consisting only of a listed anchor is refused, though no path is left to validate",
+    (await codeOf(function () {
+      return pki.webauthn.verifyMetadataBlob(soleAnchor.blob,
+        { rootCertificates: [soleAnchor.rootDer], time: T, distrustedKeys: [pki.trust.spkiDigest(soleAnchor.rootDer)] });
+    })) === "webauthn/metadata-untrusted");
+  check("mds: a malformed distrust list is bad-input, not an untrusted chain",
+    (await codeOf(function () {
+      return pki.webauthn.verifyMetadataBlob(distrustBase.blob,
+        { rootCertificates: [distrustBase.rootDer], time: T, distrustedKeys: ["nope"] });
+    })) === "webauthn/bad-input");
+  check("mds: a distrust list that is not an array is bad-input",
+    (await codeOf(function () {
+      return pki.webauthn.verifyMetadataBlob(distrustBase.blob,
+        { rootCertificates: [distrustBase.rootDer], time: T, distrustedKeys: dRootKey });
+    })) === "webauthn/bad-input");
+  var dHoled = [dOtherKey]; dHoled.length = 2;
+  check("mds: a distrust list with a hole is bad-input",
+    (await codeOf(function () {
+      return pki.webauthn.verifyMetadataBlob(distrustBase.blob,
+        { rootCertificates: [distrustBase.rootDer], time: T, distrustedKeys: dHoled });
+    })) === "webauthn/bad-input");
+  var dMoving = [dOtherKey];
+  var dMovingPromise = pki.webauthn.verifyMetadataBlob(distrustBase.blob,
+    { rootCertificates: [distrustBase.rootDer], time: T, distrustedKeys: dMoving });
+  dMoving[0] = dRootKey;
+  check("mds: the distrust list is read at the call, so a later edit does not change the verdict",
+    (await dMovingPromise).no === 42);
+
   // ---- a verified catalogue expires at the point of USE, not only at parse ----
   // The result is a plain object a caller may hold indefinitely, so a catalogue fetched while fresh
   // and reused after its nextUpdate would keep authorizing an authenticator whose status reports

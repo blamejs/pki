@@ -2009,6 +2009,36 @@ async function runRekorV2() {
   check("V29: an anchor that is neither a Buffer nor { der } is refused at the door",
     await codeOf(pki.sigstore.verifyBundle(badShape.bundle,
       _assignTrust(badShape.trust, { tsaRoots: [{ nope: 1 }] }))) === "sigstore/bad-input");
+
+  /* opts.distrustedKeys reaches both chains: the Fulcio chain and the timestamp authority's. */
+  var dist = await buildV2Bundle({});
+  var dFulcioRoot = pki.trust.spkiDigest(dist.trust.fulcioRoots[0].der);
+  var dFulcioLeaf = pki.trust.spkiDigest(dist.keys.leafDer);
+  var dTsa = pki.trust.spkiDigest(dist.keys.tsaDer);
+  var dUnrelated = pki.trust.spkiDigest(foreignAnchor.keys.tsaDer);
+  var dControl = await pki.sigstore.verifyBundle(dist.bundle, _assignTrust(dist.trust, { distrustedKeys: [dUnrelated] }));
+  check("V30: CONTROL a distrust list naming no key on either chain still verifies, dated by the token",
+    dControl.verified === true && dControl.timestampSource === "rfc3161");
+  check("V31: a listed timestamp-authority key leaves the token unable to date the bundle",
+    await codeOf(pki.sigstore.verifyBundle(dist.bundle,
+      _assignTrust(dist.trust, { distrustedKeys: [dTsa] }))) === "sigstore/no-attested-time");
+  check("V32: a listed Fulcio root key refuses the Fulcio chain",
+    await codeOf(pki.sigstore.verifyBundle(dist.bundle,
+      _assignTrust(dist.trust, { time: dist.genTime, distrustedKeys: [dFulcioRoot] }))) === "sigstore/chain-invalid");
+  check("V33: a listed Fulcio leaf key refuses the Fulcio chain",
+    await codeOf(pki.sigstore.verifyBundle(dist.bundle,
+      _assignTrust(dist.trust, { time: dist.genTime, distrustedKeys: [Buffer.from(dFulcioLeaf, "hex")] }))) === "sigstore/chain-invalid");
+  check("V34: a malformed distrust list is bad-input where a token failure would otherwise be passed over",
+    await codeOf(pki.sigstore.verifyBundle(dist.bundle,
+      _assignTrust(dist.trust, { distrustedKeys: ["nope"] }))) === "sigstore/bad-input");
+  check("V35: a malformed distrust list is bad-input with a caller instant and no timestamp leg",
+    await codeOf(pki.sigstore.verifyBundle(dist.bundle,
+      { fulcioRoots: dist.trust.fulcioRoots, rekorKeys: dist.trust.rekorKeys, time: dist.genTime,
+        distrustedKeys: dFulcioRoot })) === "sigstore/bad-input");
+  var dV1 = buildSynBundle({});
+  check("V36: a listed Fulcio root key refuses a v1 bundle's chain",
+    await codeOf(pki.sigstore.verifyBundle(dV1.bundle,
+      _assignTrust(dV1.trust, { distrustedKeys: [pki.trust.spkiDigest(dV1.trust.fulcioRoots[0].der)] }))) === "sigstore/chain-invalid");
 }
 
 /** Copy a trust bundle with overrides, so a vector changes one pinned thing. */

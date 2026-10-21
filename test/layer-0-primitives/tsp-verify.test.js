@@ -856,6 +856,64 @@ async function run() {
   await testBuilderCoverage();
   await testChainAndBindings();
   await testImprintDigestStrength();
+  await testVerifyDistrustedKeys();
+}
+
+// ---- opts.distrustedKeys: a listed SubjectPublicKeyInfo digest anywhere on the TSA chain (the
+// leaf, an intermediate, or the anchor) makes the TSA untrusted; a malformed list is
+// tsp/bad-input, never the tsp/untrusted-tsa verdict the path step's throws are folded into ----
+async function testVerifyDistrustedKeys() {
+  var bcCA = extDer(pki.oid.byName("basicConstraints"), true, b.sequence([b.boolean(true)]));
+  var rootKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var interKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var leafKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var otherKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var rootCert = signedCert("DkRoot", "DkRoot", rootKp, rootKp, [bcCA]);
+  var interCert = signedCert("DkInter", "DkRoot", interKp, rootKp, [bcCA]);
+  var leafCert = signedCert("DkLeaf", "DkInter", leafKp, interKp, [ekuExt([TS_EKU], true)]);
+  var otherCert = signedCert("DkOther", "DkOther", otherKp, otherKp, [bcCA]);
+  var rootP = pki.schema.x509.parse(rootCert);
+  var anchor = { name: rootP.subject, publicKey: rootP.subjectPublicKeyInfo.bytes, algorithm: rootP.subjectPublicKeyInfo.algorithm.oid };
+  var tok = spliceCert(await pki.tsp.sign(imprint("sha256"), { cert: leafCert, key: leafKp.privateKey.export({ format: "der", type: "pkcs8" }) },
+    { policy: "1.2.3.4.1", serialNumber: 1, genTime: GENTIME }), interCert);
+
+  var control = await pki.tsp.verify(tok, DATA, { trustAnchors: anchor });
+  check("DK1. control: the chained TSA is valid and trusted with no distrust list",
+    control.valid === true && control.trusted === true);
+  async function settle(p) { try { return await p; } catch (e) { return { valid: "THREW " + e.code, trusted: "THREW" }; } }
+  var unrelated = await settle(pki.tsp.verify(tok, DATA, { trustAnchors: anchor, distrustedKeys: [pki.trust.spkiDigest(otherCert)] }));
+  check("DK2. a list naming a key off the path leaves the TSA trusted",
+    unrelated.valid === true && unrelated.trusted === true);
+  var byInter = await settle(pki.tsp.verify(tok, DATA, { trustAnchors: anchor, distrustedKeys: [pki.trust.spkiDigest(interCert)] }));
+  check("DK3. a listed intermediate key makes the TSA untrusted",
+    byInter.valid === false && byInter.trusted === false && byInter.code === "tsp/untrusted-tsa");
+  var byAnchor = await settle(pki.tsp.verify(tok, DATA, { trustAnchors: anchor, distrustedKeys: [pki.trust.spkiDigest(rootCert)] }));
+  check("DK4. a listed anchor key makes the TSA untrusted",
+    byAnchor.valid === false && byAnchor.trusted === false && byAnchor.code === "tsp/untrusted-tsa");
+  var byLeaf = await settle(pki.tsp.verify(tok, DATA, { trustAnchors: anchor,
+    distrustedKeys: [Buffer.from(pki.trust.spkiDigest(leafCert), "hex")] }));
+  check("DK5. a listed TSA key, given as 32 bytes, makes the TSA untrusted",
+    byLeaf.valid === false && byLeaf.trusted === false && byLeaf.code === "tsp/untrusted-tsa");
+
+  // The refusal names the option, so it is the typed list's own refusal and not the unknown-option one.
+  async function refusesList(label, fn) {
+    var e = null;
+    try { await fn(); } catch (err) { e = err; }
+    check(label + " -> tsp/bad-input naming opts.distrustedKeys",
+      e !== null && e.code === "tsp/bad-input" && String(e.message).indexOf("opts.distrustedKeys") !== -1);
+  }
+  await refusesList("DK6. a malformed distrust list with anchors",
+    function () { return pki.tsp.verify(tok, DATA, { trustAnchors: anchor, distrustedKeys: ["nope"] }); });
+  await refusesList("DK7. a distrust list that is not an array",
+    function () { return pki.tsp.verify(tok, DATA, { trustAnchors: anchor, distrustedKeys: pki.trust.spkiDigest(interCert) }); });
+  await refusesList("DK8. a malformed distrust list with no anchors",
+    function () { return pki.tsp.verify(tok, DATA, { distrustedKeys: [1] }); });
+  var holed = [pki.trust.spkiDigest(otherCert)];
+  holed[2] = pki.trust.spkiDigest(interCert);
+  await refusesList("DK9. a distrust list with a hole",
+    function () { return pki.tsp.verify(tok, DATA, { trustAnchors: anchor, distrustedKeys: holed }); });
+  var nulled = await settle(pki.tsp.verify(tok, DATA, { trustAnchors: anchor, distrustedKeys: null }));
+  check("DK10. a null distrust list is read as no list", nulled.valid === true && nulled.trusted === true);
 }
 
 // The imprint is the ONLY thing binding a token to the data it timestamps, so the digest that computes

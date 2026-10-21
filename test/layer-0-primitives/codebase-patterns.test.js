@@ -2835,6 +2835,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/cms-sign.js:_attachTimestamp", "lib/cms-sign.js:_timestampImprint",
         "lib/ocsp.js:_buildRequest",
         "lib/revocation-fetch.js:fetchingChecker", "lib/tuf.js:checkExpiry", "lib/tuf.js:verifySignatures",
+        "lib/path-validate.js:verifyOcspResponse",
       ],
       reason: "The options door a public verb opens with: settle the caller's options object, then refuse any key the verb does not accept. Both steps ARE the shared primitives, already factored into guard-identifier, so what repeats is the pair of calls and nothing else; the arguments differ at every site, since each verb has its own accepted-key table and its own label. Settling has to happen at the verb, before it reads anything, so the call cannot move inside the key check. family-subset so any 3+ match as more verbs adopt the door.",
     },

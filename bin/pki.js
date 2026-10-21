@@ -17,15 +17,25 @@
  *              | --csr <req>) [--ca]
  *              [--issuer-cert <c> --issuer-key <k>] [--days N] [--serial HEX] [--san a,b] [--out F] [--pem]
  *   pki fetch <https-url> --anchor <c>    the chain a live endpoint presents; NOT a verification
- *              [--system] [--out F] [--der]
+ *              [--system] [--distrusted-key H[,H...]] [--out F] [--der]
+ *              --system reads the platform certificate store only, without Node's bundled roots,
+ *              and fails when that store is empty and no --anchor is given
  *   pki lint <file> [--profile P]         lint the structure the file holds; exit non-zero on an error finding
  *              [--severity S] [--json]
  *   pki convert <file> --to der|pem       transcode a DER/PEM file between the two encodings
  *              [--label LABEL]
  *   pki verify <cert>... --anchor <cert>  validate an ordered certification path (anchor->target)
- *              [--time ISO]
+ *              [--time ISO] [--distrusted-key H[,H...]]
  *   pki sign <file> --cert <c> --key <k>  produce a CMS SignedData over the file (pki.cms.sign)
  *              [--detached] [--pss] [--digest D] [--pem] [--out F]
+ *
+ * H in --distrusted-key is the SHA-256 digest of a certificate's DER SubjectPublicKeyInfo, as 64
+ * hexadecimal characters. The flag repeats, and one value may hold several digests separated by
+ * commas. fetch refuses an endpoint whose chain carries a listed key, and verify reports a path that
+ * carries one as invalid.
+ *
+ * A flag the verb does not take, and the --name=value form, exit non-zero with a message naming
+ * the flag and the verb's usage on stderr. A flag's value is the next argument.
  *
  * The CLI is a thin operator convenience over the library surface: it validates its
  * arguments (the entry-point tier, where bad input exits non-zero with a message) and never does
@@ -84,24 +94,65 @@ function _onOutputError(stream, e) {
 process.stdout.on("error", function (e) { _onOutputError("stdout", e); });
 process.stderr.on("error", function (e) { _onOutputError("stderr", e); });
 
-// Minimal flag parser: `--flag value` for value-taking flags, `--flag` for booleans, the
-// rest are positionals in `_`. A value-taking flag whose value is absent or is itself another
-// flag is a usage error (never silently coerced to `true`, which would make e.g. `--time`
-// parse as `new Date(true)` = a real 1970 timestamp). No clustering, no `=value`.
-var VALUE_FLAGS = { to: 1, profile: 1, severity: 1, label: 1, anchor: 1, time: 1, cert: 1, key: 1,
-  digest: 1, out: 1, alg: 1, pub: 1, subject: 1, san: 1, days: 1, serial: 1, csr: 1,
-  "issuer-cert": 1, "issuer-key": 1 };
-function parseArgs(argv) {
+// The flags each verb takes, by verb, in the order its usage line names them. "value" takes the
+// next argument, "list" takes the next argument and may repeat (each occurrence is appended to an
+// array), and "switch" takes none. `--help` and `-h` are answered by `main` before any verb parses
+// its arguments, so they are not listed here.
+var VERB_FLAGS = {
+  version: {},
+  oid:     {},
+  parse:   {},
+  inspect: { asn1: "switch" },
+  keygen:  { out: "value", pub: "value", alg: "value", pem: "switch" },
+  csr:     { key: "value", subject: "value", san: "value", out: "value", pem: "switch" },
+  issue:   { key: "value", subject: "value", csr: "value", "issuer-cert": "value", "issuer-key": "value",
+    days: "value", serial: "value", ca: "switch", san: "value", out: "value", pem: "switch",
+    "copy-requested-san": "switch", "ignore-requested-extensions": "switch" },
+  fetch:   { anchor: "value", system: "switch", "distrusted-key": "list", out: "value", der: "switch" },
+  lint:    { profile: "value", severity: "value", json: "switch" },
+  convert: { to: "value", label: "value" },
+  verify:  { anchor: "value", time: "value", "distrusted-key": "list" },
+  sign:    { cert: "value", key: "value", detached: "switch", pss: "switch", digest: "value",
+    pem: "switch", out: "value" },
+};
+
+// A refused command line: the reason on one line, then the verb's usage, on stderr, and a non-zero
+// exit. The usage is this file's own text and is written as it is; the reason names what the
+// caller typed and goes through the same escaper as every other report.
+function usageError(verb, message) {
+  var usage = _usageFor(verb);
+  process.stderr.write("pki: " + _oneLine(message) + "\n" +
+    (usage === null ? "" : (usage.charAt(usage.length - 1) === "\n" ? usage : usage + "\n")));
+  process.exit(1);
+}
+
+// Flag parser for one verb: `--flag value` for a value or list flag, `--flag` for a switch, and
+// every other argument a positional in `_`. A flag the verb does not take is a usage error, and so
+// is the `--flag=value` form, which this parser does not read. A value flag whose value is absent
+// or is itself another flag is a usage error, never coerced to `true` (`--time` would otherwise
+// parse as `new Date(true)`, a real 1970 timestamp). Short options are not clustered.
+function parseArgs(argv, verb) {
+  var flags = VERB_FLAGS[verb];
   var out = { _: [] };
   for (var i = 0; i < argv.length; i++) {
     var a = argv[i];
-    if (a.indexOf("--") === 0) {
-      var key = a.slice(2);
-      if (VALUE_FLAGS[key]) {
-        if (i + 1 >= argv.length || argv[i + 1].indexOf("--") === 0) fail("--" + key + " requires a value");
-        out[key] = argv[++i];
-      } else { out[key] = true; }
-    } else { out._.push(a); }
+    if (a.indexOf("--") !== 0) { out._.push(a); continue; }
+    var key = a.slice(2);
+    var eq = key.indexOf("=");
+    if (eq !== -1) {
+      var name = key.slice(0, eq);
+      usageError(verb, "pki " + verb + " does not read --" + name + "=<value>; " +
+        "write the value as the next argument: --" + name + " <value>");
+    }
+    if (!Object.prototype.hasOwnProperty.call(flags, key)) {
+      usageError(verb, "pki " + verb + " does not take --" + key + "; it takes " +
+        Object.keys(flags).map(function (f) { return "--" + f; }).concat(["--help"]).join(", "));
+    }
+    var kind = flags[key];
+    if (kind === "switch") { out[key] = true; continue; }
+    if (i + 1 >= argv.length || argv[i + 1].indexOf("--") === 0) fail("--" + key + " requires a value");
+    if (kind === "list") { (out[key] = out[key] || []).push(argv[++i]); }
+    else { out[key] = argv[++i]; }
   }
   return out;
 }
@@ -116,6 +167,16 @@ function readFileBytes(file) {
 function usageOrArg(arg, usage) {
   if (!arg) return fail(usage);
   return arg;
+}
+
+// The digests every --distrusted-key occurrence names, split at commas, or undefined when the flag is
+// absent. An empty entry is kept, so the library refuses it as a malformed digest.
+function distrustedKeysArg(args) {
+  var given = args["distrusted-key"];
+  if (given === undefined) return undefined;
+  var list = [];
+  given.forEach(function (v) { list = list.concat(v.split(",")); });
+  return list;
 }
 
 // For the library entry points (parse / inspect / lint / verify) that accept EITHER a DER
@@ -775,7 +836,8 @@ function cmdIssue(args) {
   }).then(undefined, function (e) { return fail((e.code || "x509/sign-error") + ": " + e.message); });
 }
 
-var FETCH_USAGE = "usage: pki fetch <https-url> [--anchor <cert>] [--system] [--out <file>] [--der]\n" +
+var FETCH_USAGE = "usage: pki fetch <https-url> [--anchor <cert>] [--system] [--distrusted-key <hex>[,<hex>...]]\n" +
+  "                 [--out <file>] [--der]\n" +
   "  Prints the certificate chain the TLS session resolved, leaf first, as PEM. The chain is\n" +
   "  completed from the anchors in scope, so an entry above the leaf may come from a configured\n" +
   "  anchor rather than from the endpoint; the leaf is the one the endpoint certainly sent.\n" +
@@ -783,7 +845,12 @@ var FETCH_USAGE = "usage: pki fetch <https-url> [--anchor <cert>] [--system] [--
   "  a configured anchor and that its name matches the URL; it checked no revocation status, no\n" +
   "  policy, and nothing about what the certificate is authorized to do. pki verify is the verb\n" +
   "  that validates a path.\n" +
-  "  An anchor is required: --anchor names one, --system uses the platform's store.\n" +
+  "  An anchor is required: --anchor names one, and --system uses the platform certificate store only.\n" +
+  "  Node's bundled roots are not included under --system, and an empty platform store with no\n" +
+  "  --anchor fails with transport/no-trust-anchors.\n" +
+  "  --distrusted-key takes the SHA-256 digest of a certificate's DER SubjectPublicKeyInfo as 64\n" +
+  "  hexadecimal characters. Repeat the flag or separate digests with commas. An endpoint whose\n" +
+  "  chain carries a listed key fails with transport/server-key-distrusted.\n" +
   "  --der writes one certificate. A chain of several is refused under it, several concatenated DER\n" +
   "  certificates not being a DER document that pki parse can read back.";
 
@@ -796,6 +863,8 @@ function cmdFetch(args) {
   var tlsOpts = {};
   if (anchors) tlsOpts.anchors = anchors;
   if (args.system) tlsOpts.useSystemStore = true;
+  var distrusted = distrustedKeysArg(args);
+  if (distrusted !== undefined) tlsOpts.distrustedKeys = distrusted;
   return pki.transport.peerChain({ url: url }, { tls: tlsOpts }).then(function (channel) {
     var chain = channel.peerChain || [];
     if (!chain.length) return fail("fetch: the endpoint presented no certificate");
@@ -844,7 +913,10 @@ function cmdConvert(args) {
 
 // pki verify <cert>... --anchor <cert> -- validate an ordered certification path
 // (anchor->target) against a trust anchor via pki.path.validate (RFC 5280 sec. 6.1).
-var VERIFY_USAGE = "usage: pki verify <cert>... --anchor <anchor-cert> [--time ISO]";
+var VERIFY_USAGE = "usage: pki verify <cert>... --anchor <anchor-cert> [--time ISO] [--distrusted-key <hex>[,<hex>...]]\n" +
+  "  --distrusted-key takes the SHA-256 digest of a certificate's DER SubjectPublicKeyInfo as 64\n" +
+  "  hexadecimal characters. Repeat the flag or separate digests with commas. A path that carries a\n" +
+  "  listed key at the anchor, an intermediate or the target is invalid with path/distrusted-key.";
 function cmdVerify(args) {
   var certFiles = args._, anchorFile = args.anchor;
   if (!certFiles.length || !anchorFile) fail(VERIFY_USAGE);
@@ -856,10 +928,13 @@ function cmdVerify(args) {
   var time = args.time ? new Date(args.time) : new Date();
   if (isNaN(time.getTime())) fail("verify: --time must be an ISO-8601 date");
   var spki = anchor.subjectPublicKeyInfo;
-  return pki.path.validate(certs, {
+  var validateOpts = {
     time: time,
     trustAnchors: { name: anchor.subject, publicKey: spki.bytes, algorithm: spki.algorithm.oid, parameters: spki.algorithm.parameters },
-  }).then(function (res) {
+  };
+  var distrusted = distrustedKeysArg(args);
+  if (distrusted !== undefined) validateOpts.distrustedKeys = distrusted;
+  return pki.path.validate(certs, validateOpts).then(function (res) {
     process.stdout.write(res.valid ? "valid\n" : "invalid\n");
     if (!res.valid) {
       (res.results || []).forEach(function (r, i) {
@@ -925,19 +1000,20 @@ function main(argv) {
     process.stdout.write(verbUsage.charAt(verbUsage.length - 1) === "\n" ? verbUsage : verbUsage + "\n");
     return;
   }
+  var rest = argv.slice(1);
   switch (cmd) {
-    case "version": case "--version": case "-v": return cmdVersion();
-    case "oid":     return cmdOid(argv[1]);
-    case "parse":   return cmdParse(argv[1]);
-    case "inspect": return cmdInspect(parseArgs(argv.slice(1)));
-    case "keygen":  return cmdKeygen(parseArgs(argv.slice(1)));
-    case "csr":     return cmdCsr(parseArgs(argv.slice(1)));
-    case "issue":   return cmdIssue(parseArgs(argv.slice(1)));
-    case "fetch":   return cmdFetch(parseArgs(argv.slice(1)));
-    case "lint":    return cmdLint(parseArgs(argv.slice(1)));
-    case "convert": return cmdConvert(parseArgs(argv.slice(1)));
-    case "verify":  return cmdVerify(parseArgs(argv.slice(1)));
-    case "sign":    return cmdSign(parseArgs(argv.slice(1)));
+    case "version": case "--version": case "-v": parseArgs(rest, "version"); return cmdVersion();
+    case "oid":     return cmdOid(parseArgs(rest, "oid")._[0]);
+    case "parse":   return cmdParse(parseArgs(rest, "parse")._[0]);
+    case "inspect": return cmdInspect(parseArgs(rest, "inspect"));
+    case "keygen":  return cmdKeygen(parseArgs(rest, "keygen"));
+    case "csr":     return cmdCsr(parseArgs(rest, "csr"));
+    case "issue":   return cmdIssue(parseArgs(rest, "issue"));
+    case "fetch":   return cmdFetch(parseArgs(rest, "fetch"));
+    case "lint":    return cmdLint(parseArgs(rest, "lint"));
+    case "convert": return cmdConvert(parseArgs(rest, "convert"));
+    case "verify":  return cmdVerify(parseArgs(rest, "verify"));
+    case "sign":    return cmdSign(parseArgs(rest, "sign"));
     case undefined: case "help": case "--help": case "-h":
       process.stdout.write(USAGE);
       return;

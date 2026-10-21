@@ -1023,6 +1023,21 @@ security-only patches after the next major releases.
   `revoked: false`. Post-quantum SLH-DSA signatures (all twelve FIPS 205
   parameter sets) verify on this path over the exact signed bytes, alongside
   ML-DSA and the classical set.
+- **Compromised CA keys (CWE-295).** `distrustedKeys` takes SHA-256 digests of
+  SubjectPublicKeyInfo values (`pki.trust.spkiDigest` computes one from a
+  certificate) and refuses a listed key wherever it appears: the trust anchor, an
+  intermediate, the target, or a delegated OCSP responder. `pki.path.validate`
+  reports `path/distrusted-key` and asks no revocation status below the listed
+  key. Every certificate that carries a listed key is refused, including each
+  cross-certificate issued for it under another root, and a certificate that
+  encodes the key another way (a compressed EC point, RSA parameters without
+  NULL). A listed issuing CA authorizes no OCSP responder, its own or a delegate
+  it certified, and signs no CRL that `pki.path.crlChecker` takes. The verbs that validate a
+  chain on a caller's behalf (`pki.cms.verify`, `pki.smime.verify`,
+  `pki.tsp.verify`, `pki.cmp`, `pki.possession.verifyRequest`, `pki.webauthn`,
+  `pki.sigstore.verifyBundle`, `pki.ocsp.verify`) accept the same option and
+  apply it to every chain they validate. Use it for a CA key that a root program
+  has distrusted while the anchor set you validate against still carries it.
 - **Trust-anchor misuse and revocation-scope confusion.** A `pki.trust` anchor
   carries the root program's own constraints, and `pki.path.validate` enforces
   them when the caller names the purpose being validated for. Pass `checkPurpose:
@@ -2115,6 +2130,37 @@ security-only patches after the next major releases.
 
 ### Network fetches that could widen trust
 
+- **The platform store means the platform store (CWE-295).** `tls.useSystemStore`
+  trusts `tls.getCACertificates("system")` and nothing else; Node's compiled-in
+  root set is not added to it. When the platform store is empty, a request that
+  names no `tls.anchors` is refused with `transport/no-trust-anchors` before a
+  socket opens. A TLS connection handed an empty CA list would otherwise use
+  Node's default store, which includes `NODE_EXTRA_CA_CERTS`. The same rules
+  apply to an https proxy's `proxy.tls`. `pki.trust.systemAnchors` returns only
+  self-issued certificates as anchors. The rest of a host store, such as the
+  Windows intermediate cache in a `certutil` export, comes back in
+  `intermediates` for `pki.path.build` to use as candidates.
+- **Distrusted keys on the TLS connection (CWE-295).** `tls.distrustedKeys`
+  refuses a server whose verified chain carries a listed key, at any position
+  including the root, with `transport/server-key-distrusted`. The transport checks
+  the chain as a path of its own: each link signed by the certificate above it,
+  each certificate in its validity period, each issuer a CA, and the top a
+  configured anchor's key. Where an anchor certificate that is not a root (an
+  intermediate or cross-certificate, as the Windows platform store holds) issues a
+  certificate on that chain, the branch up through the anchors is checked too. A
+  certificate the server sends with a listed intermediate's name, or a second path
+  it sends to a root the client does not trust, therefore does not hide the chain
+  the session was verified through. Node does not expose the chain OpenSSL
+  verified, so while a list is set the transport refuses a session when any chain
+  it could have been verified through carries a listed key or fails these checks. A misspelled key in a `tls` bag is refused with
+  `transport/bad-input` rather than ignored. It applies to the
+  direct connection, `pki.transport.peerChain`, the origin inside a CONNECT
+  tunnel, and the connection to an https proxy, where a key listed for the origin
+  or in `proxy.tls.distrustedKeys` is refused with
+  `transport/proxy-key-distrusted`. A request's list is added to the transport
+  default's, so a per-request list cannot remove a default entry. The ACME, EST,
+  SCEP, CMP and CT clients carry the list to every request they make, including
+  a cross-origin redirect.
 - **CT log-list fetch verifies before it parses (CWE-345 / CWE-347 / CWE-295 /
   CWE-770).** `pki.ct.fetchLogList` fetches the `log_list.json` and its detached
   `log_list.sig` over the same fail-closed `pki.transport` (`rejectUnauthorized`
@@ -2224,6 +2270,14 @@ embedding it is responsible for.
 - [ ] **Pin your trust anchors explicitly.** Validate chains only against a trust
       anchor set you control. Never treat a certificate's own asserted issuer,
       self-signature, or embedded chain as trust.
+- [ ] **Keep a distrust list for compromised CA keys.** When a root program
+      distrusts a CA key, add its SubjectPublicKeyInfo SHA-256 to the
+      `distrustedKeys` you pass to path validation and to `tls.distrustedKeys`.
+      Node's compiled-in roots and a host's CA bundle change only when Node or
+      the host package is upgraded.
+- [ ] **Lint the certificates and requests you issue for.** `pki.lint.certificate`
+      and `pki.lint.csr` report an elliptic curve key whose private scalar is a
+      small integer (`lint/key-compromise/small-ec-private-key`).
 - [ ] **Compare the signed bytes, not a re-derived copy.** When verifying a
       signature, hash the `tbsBytes` the parser returns. Do not re-encode the
       parsed fields and sign or verify over the re-encoding.

@@ -282,6 +282,11 @@ async function testLoopback(fx) {
     var out = await pki.ct.fetchLogList({ url: base + "/log_list.json", signerKey: fx.signerKey, tls: { anchors: [tls.certPem], servername: "localhost" } });
     check("19. a full round-trip over the real node:https transport recovers the trusted set", out && out.logs.length === 1 && out.logs[0].key.equals(fx.spki));
     check("19. the negotiated TLS is surfaced", out.tls && /^TLSv1\.[23]$/.test(out.tls.protocol));
+    var dkCode = await code(function () {
+      return pki.ct.fetchLogList({ url: base + "/log_list.json", signerKey: fx.signerKey,
+        tls: { anchors: [tls.certPem], servername: "localhost", distrustedKeys: [pki.trust.spkiDigest(tls.certPem)] } });
+    });
+    check("19. a distributor whose key is listed in tls.distrustedKeys is refused (" + dkCode + ")", dkCode === "ct/server-key-distrusted");
   } finally { s.srv.close(); }
   // (b) a stalled server: the wall-clock timeout fires and the socket is destroyed -> ct/timeout.
   var stall = await startServer(tls, function () { /* never respond */ });
@@ -441,6 +446,47 @@ async function testLoopback(fx) {
   check("24. and nothing was fetched under it (" + JSON.stringify(objSigSeen) + ")",
     objSigSeen.length === 0);
 
+  /* tls.distrustedKeys is typed at the door and both GETs are made under the same frozen copy. */
+  var dkHex = crypto.createHash("sha256").update(fx.signerKey).digest("hex");
+  var dkList = [dkHex.toUpperCase()];
+  var dkSeen = [];
+  var dkT = function (req) { dkSeen.push((req.tls || {}).distrustedKeys); return Promise.resolve(ctx.okRoutes(fx)[String(req.url)]); };
+  var dkOut = await got(function () {
+    return pki.ct.fetchLogList({ url: JSON_URL, signerKey: fx.signerKey, transport: dkT, tls: { distrustedKeys: dkList } });
+  });
+  check("25. both GETs carry the typed distrust list",
+    dkOut && Array.isArray(dkOut.logs) && dkSeen.length === 2 && dkSeen.every(function (d) { return Array.isArray(d) && d.length === 1 && d[0] === dkHex && d !== dkList && Object.isFrozen(d); }));
+  var dkBadSeen = [];
+  var dkBad = await code(function () {
+    return pki.ct.fetchLogList({ url: JSON_URL, signerKey: fx.signerKey, transport: tlsSeen(dkBadSeen), tls: { distrustedKeys: ["nope"] } });
+  });
+  check("25. a malformed list is ct/bad-input (" + dkBad + ")", dkBad === "ct/bad-input");
+  check("25. and nothing was fetched under it", dkBadSeen.length === 0);
+
+  /* A misspelled setting in the tls bag is refused at the door, before either GET. */
+  var misSeen = [];
+  var misOut = await code(function () {
+    return pki.ct.fetchLogList({ url: JSON_URL, signerKey: fx.signerKey, transport: tlsSeen(misSeen), tls: { anchors: [Buffer.alloc(1)], distrustKeys: [dkHex] } });
+  });
+  check("26. tls.distrustKeys is ct/bad-input (" + misOut + ")", misOut === "ct/bad-input");
+  check("26. and nothing was fetched under it", misSeen.length === 0);
+  var mis2Seen = [];
+  var mis2Out = await code(function () {
+    return pki.ct.fetchLogList({ url: JSON_URL, signerKey: fx.signerKey, transport: tlsSeen(mis2Seen), tls: { anchors: [Buffer.alloc(1)], distrustedKey: [dkHex] } });
+  });
+  check("26. tls.distrustedKey is ct/bad-input (" + mis2Out + ")", mis2Out === "ct/bad-input" && mis2Seen.length === 0);
+  var spelledSeen = [];
+  var spelledT = function (req) { spelledSeen.push((req.tls || {}).distrustedKeys); return Promise.resolve(ctx.okRoutes(fx)[String(req.url)]); };
+  var spelledOut = await got(function () {
+    return pki.ct.fetchLogList({ url: JSON_URL, signerKey: fx.signerKey, transport: spelledT, tls: { anchors: [Buffer.alloc(1)], distrustedKeys: [dkHex] } });
+  });
+  check("26. CONTROL the correctly spelled bag is accepted and both GETs carry the list",
+    spelledOut && spelledSeen.length === 2 && spelledSeen.every(function (d) { return Array.isArray(d) && d[0] === dkHex; }));
+  var nullSeen = [];
+  var nullOut = await got(function () {
+    return pki.ct.fetchLogList({ url: JSON_URL, signerKey: fx.signerKey, transport: function (req) { nullSeen.push(req); return Promise.resolve(ctx.okRoutes(fx)[String(req.url)]); }, tls: null });
+  });
+  check("26. CONTROL a null tls is accepted", nullOut && nullSeen.length === 2);
 }
 
 run().then(null, function (e) { console.error(helpers.formatErr ? helpers.formatErr(e) : (e && e.stack || e)); process.exit(1); });

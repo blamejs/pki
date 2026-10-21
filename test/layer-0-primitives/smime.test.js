@@ -1336,6 +1336,54 @@ async function run() {
       (await arm[2](await arm[1](live, hostileCt(live, arm[3])))).indexOf(payload) !== -1);
   }
 
+  // ---- opts.distrustedKeys reaches the CMS verify beneath, on both signed forms ----
+  // A listed SubjectPublicKeyInfo digest on the signer's chain, the intermediate or the anchor,
+  // leaves the signature valid and the signer untrusted. A malformed list is smime/bad-input.
+  var dkNB = new Date("2026-01-01T00:00:00Z"), dkNA = new Date("2036-01-01T00:00:00Z");
+  async function dkMint(name, issuer, ca, serial) {
+    var pair = await pki.key.generate("Ed25519");
+    var key = await pki.key.export(pair.privateKey);
+    var ext = ca ? { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: true }
+      : { keyUsage: ["digitalSignature"], extendedKeyUsage: ["emailProtection"], subjectKeyIdentifier: true,
+        subjectAltName: [{ rfc822Name: "dk@corp.example" }] };
+    if (issuer) ext.authorityKeyIdentifier = true;
+    var der = await pki.x509.sign({ subject: name, subjectPublicKey: await pki.key.export(pair.publicKey),
+      serialNumber: serial, notBefore: dkNB, notAfter: dkNA, extensions: ext },
+    issuer ? { key: issuer.key, cert: issuer.der } : { key: key });
+    return { der: der, key: key };
+  }
+  var dkRoot = await dkMint("DK Root", null, true, 1);
+  var dkInter = await dkMint("DK Inter", dkRoot, true, 2);
+  var dkLeaf = await dkMint("DK Leaf", dkInter, false, 3);
+  var dkForms = [
+    ["multipart/signed", await pki.smime.sign(MSG, [{ cert: dkLeaf.der, key: dkLeaf.key }], { form: "multipart" })],
+    ["pkcs7-mime", await pki.smime.sign(MSG, [{ cert: dkLeaf.der, key: dkLeaf.key }], { form: "pkcs7-mime" })],
+  ];
+  var dkBase = { trustAnchors: [dkRoot.der], certs: [dkInter.der], time: new Date("2026-06-01T00:00:00Z") };
+  async function dkSettle(p) { try { return await p; } catch (e) { return { valid: "THREW " + e.code, trusted: "THREW" }; } }
+  async function dkRefuses(label, p) {
+    var e = null;
+    try { await p; } catch (err) { e = err; }
+    check(label + " -> smime/bad-input naming opts.distrustedKeys",
+      e !== null && e.code === "smime/bad-input" && String(e.message).indexOf("opts.distrustedKeys") !== -1);
+  }
+  for (var dfi = 0; dfi < dkForms.length; dfi++) {
+    var dkName = dkForms[dfi][0], dkMsg = dkForms[dfi][1];
+    var dkControl = await pki.smime.verify(dkMsg, dkBase);
+    check("DK1. " + dkName + " CONTROL: the signer chains through the intermediate with no distrust list",
+      dkControl.valid === true && dkControl.trusted === true);
+    var dkByInter = await dkSettle(pki.smime.verify(dkMsg, Object.assign({}, dkBase, { distrustedKeys: [pki.trust.spkiDigest(dkInter.der)] })));
+    check("DK2. " + dkName + " a listed intermediate key leaves the signature valid and the signer untrusted",
+      dkByInter.valid === true && dkByInter.trusted === false);
+    var dkByAnchor = await dkSettle(pki.smime.verify(dkMsg, Object.assign({}, dkBase, { distrustedKeys: [pki.trust.spkiDigest(dkRoot.der)] })));
+    check("DK3. " + dkName + " a listed anchor key leaves the signer untrusted",
+      dkByAnchor.valid === true && dkByAnchor.trusted === false);
+    await dkRefuses("DK4. " + dkName + " a malformed list with anchors",
+      pki.smime.verify(dkMsg, Object.assign({}, dkBase, { distrustedKeys: ["nope"] })));
+    await dkRefuses("DK5. " + dkName + " a malformed list with no anchors",
+      pki.smime.verify(dkMsg, { distrustedKeys: [pki.trust.spkiDigest(dkRoot.der).slice(1)] }));
+  }
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

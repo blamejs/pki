@@ -183,6 +183,42 @@ async function run() {
     vAnchored.signers[0].signatureTimeStamps[0].valid === true &&
     vAnchored.signers[0].signatureTimeStamps[0].trusted === true);
 
+  // CT-DK: one opts.distrustedKeys applies to the signer chain and to the TSA chain of every
+  // timestamp row. A malformed list is cms/bad-input, never a row, although every throw from the
+  // timestamp verify is otherwise turned into one.
+  async function settleV(p) {
+    try { return await p; } catch (e) { return { trusted: "THREW " + e.code, signers: [{ trusted: "THREW", signatureTimeStamps: [{}] }] }; }
+  }
+  var bothAnchors = { certs: [signer.cert], content: CONTENT, trustAnchors: [signer.cert], timestampTrustAnchors: [tsa.cert] };
+  var dkControl = await pki.cms.verify(attached, bothAnchors);
+  check("CT-DK1 CONTROL with no distrust list the signer and the timestamp row are both trusted",
+    dkControl.signers[0].trusted === true && dkControl.signers[0].signatureTimeStamps[0].trusted === true);
+  var dkTsa = await settleV(pki.cms.verify(attached,
+    Object.assign({}, bothAnchors, { distrustedKeys: [pki.trust.spkiDigest(tsa.cert)] })));
+  var dkTsaRow = dkTsa.signers[0].signatureTimeStamps[0];
+  check("CT-DK2 a listed TSA key fails the timestamp row and leaves the signer trusted",
+    dkTsaRow.valid === false && dkTsaRow.trusted === false && dkTsaRow.code === "tsp/untrusted-tsa" &&
+    dkTsa.signers[0].trusted === true);
+  var dkTsaOnly = await settleV(pki.cms.verify(attached, { certs: [signer.cert], content: CONTENT,
+    timestampTrustAnchors: [tsa.cert], distrustedKeys: [pki.trust.spkiDigest(tsa.cert)] }));
+  check("CT-DK3 the list reaches the TSA chain when only the TSA is anchored",
+    dkTsaOnly.signers[0].signatureTimeStamps[0].trusted === false &&
+    dkTsaOnly.signers[0].signatureTimeStamps[0].code === "tsp/untrusted-tsa");
+  var dkSigner = await settleV(pki.cms.verify(attached,
+    Object.assign({}, bothAnchors, { distrustedKeys: [pki.trust.spkiDigest(signer.cert)] })));
+  check("CT-DK4 a listed signer key leaves the signer untrusted and the timestamp row trusted",
+    dkSigner.signers[0].trusted === false && dkSigner.signers[0].signatureTimeStamps[0].trusted === true);
+  async function refusesListCms(label, p) {
+    var e = null;
+    try { await p; } catch (err) { e = err; }
+    check(label + " -> cms/bad-input naming opts.distrustedKeys",
+      e !== null && e.code === "cms/bad-input" && String(e.message).indexOf("opts.distrustedKeys") !== -1);
+  }
+  await refusesListCms("CT-DK5 a malformed list with only the TSA anchored",
+    pki.cms.verify(attached, { certs: [signer.cert], content: CONTENT, timestampTrustAnchors: [tsa.cert], distrustedKeys: ["nope"] }));
+  await refusesListCms("CT-DK6 a malformed list with both anchored",
+    pki.cms.verify(attached, Object.assign({}, bothAnchors, { distrustedKeys: [Buffer.alloc(31)] })));
+
   // CT-5: two instances of the attribute, from two TSAs, as two rows.
   var token2 = await mintToken(tsa2, sigOctets, { genTime: new Date("2027-07-01T00:00:00Z"), serialNumber: 9 });
   var twice = await pki.cms.attachTimestamp(attached, token2);

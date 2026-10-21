@@ -1449,6 +1449,68 @@ async function run() {
   await testBadInput();
   await testMalformedCountersignatureValue();
   await testWeakDigestPolicy();
+  await testDistrustedKeys();
+}
+
+// opts.distrustedKeys on the signer chain: a listed SubjectPublicKeyInfo digest on the signer's
+// path, the intermediate or the anchor, leaves the signature sound and the signer untrusted. The
+// list is typed at the door, so a malformed one is cms/bad-input on every route, including one
+// where no signer reaches the path builder.
+async function testDistrustedKeys() {
+  var NB = new Date("2026-01-01T00:00:00Z"), NA = new Date("2036-01-01T00:00:00Z");
+  var crypto = require("crypto");
+  async function mint(name, issuer, ca, serial) {
+    var kp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+    var key = kp.privateKey.export({ format: "der", type: "pkcs8" });
+    var ext = ca ? { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: true }
+      : { keyUsage: ["digitalSignature"], subjectKeyIdentifier: true };
+    if (issuer) ext.authorityKeyIdentifier = true;
+    var der = await pki.x509.sign({
+      subject: [{ commonName: name }], subjectPublicKey: kp.publicKey.export({ format: "der", type: "spki" }),
+      serialNumber: serial, notBefore: NB, notAfter: NA, extensions: ext,
+    }, issuer ? { key: issuer.key, cert: issuer.der } : { key: key });
+    return { der: der, key: key };
+  }
+  var root = await mint("cms-dk-root.example", null, true, 1);
+  var inter = await mint("cms-dk-inter.example", root, true, 2);
+  var leaf = await mint("cms-dk-leaf.example", inter, false, 3);
+  var other = await mint("cms-dk-other.example", null, true, 4);
+  var signed = await pki.cms.sign(CONTENT, { cert: leaf.der, key: leaf.key });
+  var base = { trustAnchors: [root.der], certs: [inter.der], time: new Date("2026-06-01T00:00:00Z") };
+  function withList(list) { return Object.assign({}, base, { distrustedKeys: list }); }
+  async function settle(p) { try { return await p; } catch (e) { return { valid: "THREW " + e.code, trusted: "THREW", signers: [{}] }; } }
+
+  var control = await pki.cms.verify(signed, base);
+  check("CDK1. control: the signer chains through the intermediate with no distrust list",
+    control.valid === true && control.trusted === true && control.signers[0].trusted === true);
+  var unrelated = await settle(pki.cms.verify(signed, withList([pki.trust.spkiDigest(other.der)])));
+  check("CDK2. a list naming a key off the path leaves the signer trusted",
+    unrelated.valid === true && unrelated.trusted === true);
+  var byInter = await settle(pki.cms.verify(signed, withList([pki.trust.spkiDigest(inter.der)])));
+  check("CDK3. a listed intermediate key leaves the signature valid and the signer untrusted",
+    byInter.valid === true && byInter.trusted === false && byInter.signers[0].trusted === false);
+  var byAnchor = await settle(pki.cms.verify(signed, withList([pki.trust.spkiDigest(root.der)])));
+  check("CDK4. a listed anchor key leaves the signer untrusted",
+    byAnchor.valid === true && byAnchor.trusted === false && byAnchor.signers[0].trusted === false);
+  var byLeaf = await settle(pki.cms.verify(signed, withList([Buffer.from(pki.trust.spkiDigest(leaf.der), "hex")])));
+  check("CDK5. a listed signer key, given as 32 bytes, leaves the signer untrusted",
+    byLeaf.valid === true && byLeaf.trusted === false && byLeaf.signers[0].trusted === false);
+
+  async function refusesList(label, fn) {
+    var e = null;
+    try { await fn(); } catch (err) { e = err; }
+    check(label + " -> cms/bad-input naming opts.distrustedKeys",
+      e !== null && e.code === "cms/bad-input" && String(e.message).indexOf("opts.distrustedKeys") !== -1);
+  }
+  await refusesList("CDK6. a malformed distrust list with anchors",
+    function () { return pki.cms.verify(signed, withList(["nope"])); });
+  await refusesList("CDK7. a malformed distrust list with no anchors",
+    function () { return pki.cms.verify(signed, { distrustedKeys: ["nope"] }); });
+  var detached = await pki.cms.sign(CONTENT, { cert: leaf.der, key: leaf.key }, { detached: true });
+  await refusesList("CDK8. a malformed distrust list where no signer verifies, so none reaches the path builder",
+    function () { return pki.cms.verify(detached, Object.assign(withList({ length: 1 }), { content: Buffer.from("other") })); });
+  var nulled = await settle(pki.cms.verify(signed, withList(null)));
+  check("CDK9. a null distrust list is read as no list", nulled.valid === true && nulled.trusted === true);
 }
 
 // pki.cms.sign refuses to PRODUCE a SHA-1 signature ("unsupported RSA digest algorithm"),
