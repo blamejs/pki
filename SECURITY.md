@@ -306,7 +306,7 @@ security-only patches after the next major releases.
   processes a prefix as though it were the whole message. The shared primitive
   probes each algorithm once at startup, handing it a frame with the last two
   bytes cut, and drops any decompressor that returns anything at all rather than
-  faulting, so that algorithm is neither offered nor accepted. At the Node 24.21
+  faulting, so that algorithm is neither offered nor accepted. At the Node 24.22.1
   engine floor zlib, brotli and zstd all fault on a cut frame, so all three are
   offered; on a runtime where one returns instead, that algorithm is dropped.
 - **Unbounded certificate-entry allocation (CWE-770).** A TLS Certificate

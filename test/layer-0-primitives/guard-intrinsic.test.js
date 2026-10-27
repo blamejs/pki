@@ -655,7 +655,7 @@ async function testSelectionsConsultNoConstructionProtocol() {
   // capturing `split` does not close it. Hard rule 11 bans `split` in lib/ for that reason.
   //
   // Whether a captured `split` ACTUALLY performs that lookup is a property of the engine, not of
-  // this code: Node 24.21, the supported runtime, dispatches to the hook, and Node 26.9 fast-paths
+  // this code: Node 24.22.1, the supported runtime, dispatches to the hook, and Node 26.9 fast-paths
   // a primitive-string separator past it. So nothing here asserts what `split` does -- an assertion
   // about that is an assertion about the RUNNER, and one written that way failed on CI while passing
   // locally. What is asserted is the subject: `splitChar` consults nothing, on every runtime.

@@ -146,7 +146,7 @@ async function run() {
   check("0t. CONTROL: a callable descriptor with a fit certificate signs",
     (await codeOf(function () { return pki.smime.sign(MSG, [callableFit]); })) === "NO-THROW");
   /* WHICH own names a function carries is the engine's choice, and the descriptor copier has to
-     treat all of them as machinery or the unknown-field door refuses the copy. On Node 24.21.0,
+     treat all of them as machinery or the unknown-field door refuses the copy. On Node 24.22.1,
      the version `engines.node` floors at, every non-strict function carries own `arguments` and
      `caller`; on 26.9.0 none does. So the shape is MINTED here rather than declared, and this
      vector holds on either engine: a function declared in this file is strict and would carry

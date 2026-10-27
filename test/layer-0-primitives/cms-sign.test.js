@@ -665,7 +665,7 @@ async function testBadInput() {
      nothing about the other. A PLAIN strict function -- what every `"use strict"` file and every ES
      module produces, and what this file produces -- owns neither `arguments` nor `caller`, and
      `Function.prototype` carries both as the restricted accessors, so a check that walks the
-     prototype chain finds them there. On the Node 24.21.0 floor a non-strict function owns both
+     prototype chain finds them there. On the Node 24.22.1 floor a non-strict function owns both
      outright, which is the shape minted below. Measured: the minted shape passed while the plain
      one was refused for `arguments` at both direct `pki.cms` doors, and the first version of this
      vector minted and so never asked.

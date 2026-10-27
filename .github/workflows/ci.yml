@@ -42,10 +42,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Node 24.21.0 LTS
+      - name: Set up Node 24.22.1 LTS
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
-          node-version: '24.21.0'
+          node-version: '24.22.1'
 
       - name: Show Node + npm version
         run: node --version && npm --version
@@ -86,10 +86,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Node 24.21.0 LTS
+      - name: Set up Node 24.22.1 LTS
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
-          node-version: '24.21.0'
+          node-version: '24.22.1'
 
       - name: Install devDependencies
         run: npm ci --no-audit --no-fund
@@ -150,10 +150,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Node 24.21.0 LTS
+      - name: Set up Node 24.22.1 LTS
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
-          node-version: '24.21.0'
+          node-version: '24.22.1'
 
       - name: Install devDependencies
         run: npm ci --no-audit --no-fund

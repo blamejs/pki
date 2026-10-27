@@ -30,7 +30,7 @@ function read(rel) {
   return fs.readFileSync(p, "utf8");
 }
 
-// The floor, as the package declares it. ">=24.21.0" -> {major:24, minor:21, patch:0}
+// The floor, as the package declares it. ">=24.22.1" -> {major:24, minor:22, patch:1}
 function parseFloor() {
   var pkg = JSON.parse(read("package.json"));
   var spec = pkg && pkg.engines && pkg.engines.node;
