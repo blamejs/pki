@@ -380,6 +380,17 @@ function testIdentifiers() {
   // a label over 63 octets is invalid (RFC 1035 sec. 2.3.4).
   check("53c. over-long dns label rejected", code(function () { dns(new Array(65).join("a") + ".example"); }) === "acme/bad-identifier");
   check("53d. 63-octet label accepted", dns(new Array(64).join("a") + ".example").status === "pending");
+  // A value whose last label is a number is an IPv4 address to a resolver and to WHATWG URL
+  // (127.0.0.1, 0x7f.0.0.1, 0177.0.0.1, 127.1), so it is no domain name. An address takes the
+  // "ip" identifier type (RFC 8738 sec. 3); as a "dns" identifier, a dNSName SAN would prove it.
+  ["127.0.0.1", "0x7f.0.0.1", "0177.0.0.1", "127.1", "2130706433", "a.0x1", "example.123"].forEach(function (v) {
+    check("53e. an address as a dns identifier is rejected: " + v, code(function () { dns(v); }) === "acme/bad-identifier");
+    check("53f. and as a dns order identifier: " + v,
+      code(function () { pki.acme.validate("order", Object.assign({}, ORDER, { identifiers: [{ type: "dns", value: v }] })); }) === "acme/bad-identifier");
+  });
+  check("53g. a wildcard over an address is rejected as an order identifier",
+    code(function () { pki.acme.validate("order", Object.assign({}, ORDER, { identifiers: [{ type: "dns", value: "*.0.0.1" }] })); }) === "acme/bad-identifier");
+  check("53h. CONTROL: a numeric label that is not the last is an ordinary name", dns("123.example").status === "pending" && dns("0x7f.example").status === "pending");
   // 54. ip canonical round-trip (RFC 8738 / RFC 5952).
   function ip(v) { return pki.acme.validate("authorization", { identifier: { type: "ip", value: v }, status: "pending", challenges: [{ type: "http-01", url: "https://ca/c", status: "pending", token: "DGyRejmCefe7v4NfDGDKfA" }] }); }
   check("54a. IPv4 leading-zero rejected", code(function () { ip("192.168.001.001"); }) === "acme/bad-identifier");
@@ -480,6 +491,10 @@ async function testChallenges() {
   // a full validation cert verifies; a 31/33-byte Authorization is rejected.
   var goodCert = makeValidationCert([acmeIdExt(digest32, true), sanExt([dnsName("pkijs.com")], false)]);
   check("60b. valid tls-alpn cert verifies", (await acode(function () { return pki.acme.verifyTlsAlpn01(goodCert, TOKEN, jwk, { type: "dns", value: "pkijs.com" }); })) === "NO-THROW");
+  // A dNSName SAN never proves an address: a "dns" identifier that is one is refused before the SAN is read.
+  var addrCert = makeValidationCert([acmeIdExt(digest32, true), sanExt([dnsName("127.0.0.1")], false)]);
+  check("60b1. a dns identifier that is an address is refused, whatever the dNSName says",
+    (await acode(function () { return pki.acme.verifyTlsAlpn01(addrCert, TOKEN, jwk, { type: "dns", value: "127.0.0.1" }); })) === "acme/bad-identifier");
   check("60c. 33-byte Authorization rejected", (await acode(function () { return pki.acme.verifyTlsAlpn01(makeValidationCert([acmeIdExt(Buffer.alloc(33), true), sanExt([dnsName("pkijs.com")], false)]), TOKEN, jwk, { type: "dns", value: "pkijs.com" }); })) === "acme/bad-tlsalpn");
   // 61. non-critical acmeIdentifier + a two-entry SAN each rejected.
   check("61a. non-critical acmeIdentifier rejected", (await acode(function () { return pki.acme.verifyTlsAlpn01(makeValidationCert([acmeIdExt(digest32, false), sanExt([dnsName("pkijs.com")], false)]), TOKEN, jwk, { type: "dns", value: "pkijs.com" }); })) === "acme/bad-tlsalpn");

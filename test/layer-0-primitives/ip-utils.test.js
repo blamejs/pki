@@ -24,6 +24,23 @@ function run() {
   check("isIPv4 rejects a five-octet address", ip.isIPv4("1.2.3.4.5") === false);
   check("isIPv4 rejects a non-string", ip.isIPv4(1234) === false);
 
+  // --- endsInANumber: the WHATWG URL host parser's IPv4 trigger ---
+  var yes = ["127.0.0.1", "127.0.0.1.", "0x7f.0.0.1", "0X7F.0.0.1", "0177.0.0.1", "0127.0.0.1", "127.1", "2130706433",
+    "a.0x1", "a.0x", "a.0X", "example.123", "999.999.999.999", "1.2.3.0xff"];
+  var no = ["", ".", "example.com", "example.com.", "123.example", "0x7f.example", "a.0xg", "a.1x", "a.x1", "a..", "localhost"];
+  yes.forEach(function (s) { check("endsInANumber(" + JSON.stringify(s) + ") is true", ip.endsInANumber(s) === true); });
+  no.forEach(function (s) { check("endsInANumber(" + JSON.stringify(s) + ") is false", ip.endsInANumber(s) === false); });
+  check("endsInANumber rejects a non-string", ip.endsInANumber(127) === false);
+  // Parity with the platform's own WHATWG URL: a host this answers true for is either refused by URL
+  // or rewritten to a dotted quad; one it answers false for keeps its spelling.
+  yes.concat(no).forEach(function (s) {
+    if (s === "" || s === "." || s === "a..") return;
+    var host;
+    try { host = new URL("http://" + s + "/").hostname; } catch (_e) { host = null; }
+    var urlSaysV4 = host === null || net.isIP(host) === 4;
+    check("endsInANumber(" + JSON.stringify(s) + ") agrees with WHATWG URL", ip.endsInANumber(s) === urlSaysV4);
+  });
+
   // --- expandIpv6Hex: RFC 4291 forms + null on malformed ---
   check("expandIpv6Hex expands ::1", ip.expandIpv6Hex("::1") === "00000000000000000000000000000001");
   check("expandIpv6Hex expands a full form", ip.expandIpv6Hex("2001:db8:0:0:0:0:0:1") === "20010db8000000000000000000000001");

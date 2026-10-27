@@ -1,0 +1,18 @@
+{
+  "version": "0.9.9",
+  "date": "2026-10-27",
+  "headline": "Refuse an IPv4 address spelled as a host name wherever a certificate identity is matched, whatever the Node version.",
+  "summary": "A host whose last label is a number, such as `0x7f.0.0.1`, `0177.0.0.1`, `127.1`, `2130706433` or `127.0.0.1.`, is an IPv4 address to a resolver and to WHATWG URL. `pki.identity.match` and `pki.path.validate` compared such a reference identity as a domain name, so a certificate whose only subject alternative name was the dNSName `127.0.0.1` or `*.0.0.1` authenticated an address, and an `iPAddress` name constraint did not apply to it. This is the class Node fixed in `tls.checkServerIdentity` in 24.22.1 (CVE-2026-106072, CVE-2026-106069, CVE-2026-105483); the toolkit's own matcher had the same gap on every Node version. Such a value is now refused wherever the toolkit reads a host name.",
+  "sections": {
+    "Security": [
+      "`pki.identity.match` refuses a reference identity whose last label is a number, or `0x` followed by hex digits, with `identity/bad-reference`, as a string and as the value of a `dns`, `srv` or `uri` record. Before, `0127.0.0.1`, `0177.0.0.1` and `0x7f.0.0.1` were matched by the dNSName `*.0.0.1`, `127.0.0.1.` by `127.0.0.1`, and `127.1` by `*.1`, and a `dns` record carrying the canonical `127.0.0.1` was matched by the dNSName `127.0.0.1`. An address is passed as the canonical dotted quad or as octets, which is compared only against `iPAddress` entries. A domain reference must also be made of letters, digits, hyphens, dots and underscores, so `127.0.0.%31` (which WHATWG URL decodes to 127.0.0.1), `::1` and `[::1]` are refused rather than compared against dNSName entries.",
+      "`pki.path.validate` refuses such an `opts.identity` with `path/bad-input`. Before, a leaf whose only subject alternative name was the dNSName `*.0.0.1` validated for identity `0x7f.0.0.1` under an excluded `iPAddress` subtree of 127.0.0.0/8, because the subtree applies only to `iPAddress` entries.",
+      "`pki.transport.https` and `pki.transport.peerChain`, and every client built on them, refuse a `tls.servername` that is such a value with `transport/bad-input`, and a `proxy.tls.servername` with `transport/bad-proxy`. A servername holding any character other than a letter, digit, hyphen, dot or underscore, including a fullwidth digit, a NUL, a percent escape or a bracketed IPv6 address, is refused the same way; a canonical address literal is still accepted. Node below 24.22.1 matched `0x7f.0.0.1` or `127` written in fullwidth digits against the dNSName `127.0.0.1`.",
+      "The ACME verbs refuse such a value as a `dns` identifier with `acme/bad-identifier`, in an authorization, an order, the subject `commonName` of a finalize CSR and `pki.acme.verifyTlsAlpn01`, so a finalize CSR naming one in a dNSName matches no order identifier. An address takes the `ip` identifier type (RFC 8738 sec. 3); as a `dns` identifier, a validation certificate's dNSName would prove it.",
+      "A URI name constraint, and the presented host of a uniformResourceIdentifier name, no longer read a host such as `0x7f.0.0.1` as a domain name. A constraint base of that form is refused as an address."
+    ],
+    "Changed": [
+      "A reference identity such as `999.999.999.999`, which is neither an address nor a domain name, is refused with `identity/bad-reference` instead of being compared against dNSName entries."
+    ]
+  }
+}
