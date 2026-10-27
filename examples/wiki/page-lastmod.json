@@ -50,7 +50,7 @@
   "lib/guard-all.js": "2026-10-21",
   "lib/guard-async.js": "2026-10-06",
   "lib/guard-bytes.js": "2026-10-08",
-  "lib/guard-compress.js": "2026-09-06",
+  "lib/guard-compress.js": "2026-10-27",
   "lib/guard-crypto.js": "2026-10-07",
   "lib/guard-der.js": "2026-10-07",
   "lib/guard-distrust.js": "2026-10-21",

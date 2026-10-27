@@ -8,9 +8,9 @@
  *
  *   1. the output cap is applied AT the decompressor, so a bomb is refused as its output would
  *      exceed the bound rather than after the memory is committed; and
- *   2. the whole input must be exactly one compressed frame, because every decompressor stops at
- *      the first frame's end and silently ignores the rest -- which would give one content
- *      unboundedly many encodings.
+ *   2. the whole input must be exactly one compressed frame. zlib and brotli stop at the first
+ *      frame's end and silently ignore the rest; zstd on Node 24.22.1+ decodes further frames and
+ *      skips skippable ones. Either would give one content unboundedly many encodings.
  *
  * The guard is @internal, so this file drives it directly to pin its OWN contract; the shipped
  * consumers (pki.cms.decompress, pki.tls.decompressCertificate) carry the behavioral vectors.
@@ -75,6 +75,63 @@ function run() {
       return codeOf(function () { return guard.compress.bounded(a.name, big, 1024, E, CODES, "input"); });
     })() === CODES.tooLarge);
   });
+
+  // ==== zstd: one frame, whatever the decoder does with the rest ============================
+  // A zstd decoder that follows RFC 8878 decodes every concatenated frame and skips skippable
+  // frames (magic 0x184D2A50..5F), consuming the whole input. Node 24.22.1 does both, so the
+  // consumed-length check alone accepts an empty frame or a skippable frame of arbitrary bytes
+  // around the real one: identical output, unboundedly many encodings.
+  if (SAFE.indexOf("zstd") !== -1) {
+    var zf = zlib.zstdCompressSync(PAYLOAD);
+    var skip = Buffer.from([0x50, 0x2a, 0x4d, 0x18, 0x03, 0x00, 0x00, 0x00, 0xde, 0xad, 0xbf]);
+    var zcode = function (buf) { return codeOf(function () { return guard.compress.bounded("zstd", buf, 4096, E, CODES, "input"); }); };
+    check("7. zstd: an empty frame appended -> the caller's failed code",
+      zcode(Buffer.concat([zf, zlib.zstdCompressSync(Buffer.alloc(0))])) === CODES.failed);
+    check("7a. zstd: an empty frame prepended -> the caller's failed code",
+      zcode(Buffer.concat([zlib.zstdCompressSync(Buffer.alloc(0)), zf])) === CODES.failed);
+    check("7b. zstd: a skippable frame appended -> the caller's failed code",
+      zcode(Buffer.concat([zf, skip])) === CODES.failed);
+    check("7c. zstd: a skippable frame prepended -> the caller's failed code",
+      zcode(Buffer.concat([skip, zf])) === CODES.failed);
+    check("7d. zstd: a skippable frame alone -> the caller's failed code", zcode(skip) === CODES.failed);
+    check("7e. zstd: a frame whose header is cut -> the caller's failed code", zcode(zf.subarray(0, 5)) === CODES.failed);
+    check("7f. zstd: a frame with a content checksum still round-trips", (function () {
+      var p = {}; p[zlib.constants.ZSTD_c_checksumFlag] = 1;
+      var withSum = zlib.zstdCompressSync(PAYLOAD, { params: p });
+      return guard.compress.bounded("zstd", withSum, 4096, E, CODES, "input").equals(PAYLOAD) &&
+        zcode(Buffer.concat([withSum, zlib.zstdCompressSync(Buffer.alloc(0))])) === CODES.failed;
+    })());
+    check("7g. zstd: a multi-block frame round-trips", (function () {
+      var big = Buffer.alloc(400 * 1024);
+      for (var i = 0; i < big.length; i++) big[i] = (i * 2654435761) >>> 24;
+      return guard.compress.bounded("zstd", zlib.zstdCompressSync(big), big.length, E, CODES, "input").equals(big);
+    })());
+    // Frames minted from RFC 8878 sec. 3.1.1: magic, Frame_Header_Descriptor, optional
+    // Window_Descriptor / Frame_Content_Size, then 3-byte little-endian block headers
+    // (bit 0 Last_Block, bits 1-2 Block_Type, bits 3-23 Block_Size).
+    var MAGIC = [0x28, 0xb5, 0x2f, 0xfd];
+    var mint = function (rest) { return Buffer.from(MAGIC.concat(rest)); };
+    var ok = function (buf, want) {
+      return guard.compress.bounded("zstd", buf, 4096, E, CODES, "input").toString() === want;
+    };
+    check("7h. zstd: a single-segment frame of one raw block decodes",
+      ok(mint([0x20, 0x03, 0x19, 0x00, 0x00, 0x61, 0x62, 0x63]), "abc"));
+    check("7i. zstd: a frame of one RLE block decodes",
+      ok(mint([0x20, 0x05, 0x2b, 0x00, 0x00, 0x7a]), "zzzzz"));
+    check("7j. zstd: a frame with a Window_Descriptor and a raw block then a last raw block decodes",
+      ok(mint([0x00, 0x00, 0x10, 0x00, 0x00, 0x61, 0x62, 0x09, 0x00, 0x00, 0x63]), "abc"));
+    check("7k. zstd: the reserved Frame_Header_Descriptor bit set -> the caller's failed code",
+      zcode(mint([0x28, 0x03, 0x19, 0x00, 0x00, 0x61, 0x62, 0x63])) === CODES.failed);
+    check("7l. zstd: a reserved Block_Type -> the caller's failed code",
+      zcode(mint([0x20, 0x03, 0x07, 0x00, 0x00, 0x61, 0x62, 0x63])) === CODES.failed);
+    check("7m. zstd: a block that runs past the end -> the caller's failed code",
+      zcode(mint([0x20, 0x03, 0x19, 0x00, 0x00, 0x61, 0x62])) === CODES.failed);
+    check("7n. zstd: no block marked last -> the caller's failed code",
+      zcode(mint([0x20, 0x03, 0x18, 0x00, 0x00, 0x61, 0x62, 0x63])) === CODES.failed);
+    check("7o. zstd: a content checksum cut short -> the caller's failed code",
+      zcode(mint([0x24, 0x03, 0x19, 0x00, 0x00, 0x61, 0x62, 0x63, 0x00, 0x00])) === CODES.failed);
+    check("7p. zstd: the frame magic alone -> the caller's failed code", zcode(Buffer.from(MAGIC)) === CODES.failed);
+  }
 
   // ==== the cap is the caller's, and every fault carries the CALLER's codes =================
   check("4. each consumer keeps its own domain codes", (function () {
