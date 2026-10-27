@@ -720,7 +720,7 @@ async function testResolutionFilterUnits() {
   // `Symbol.split` method up on that separator and call it, so the separator's prototype chain is
   // part of the operation and taking the split from a capture does not close it. A hook answering
   // with a public address's octets clears this refusal for a loopback literal. MEASURED: this is
-  // engine-dependent -- Node 24.21 performs the lookup and Node 26.9 fast-paths a primitive-string
+  // engine-dependent -- Node 24.22.1 performs the lookup and Node 26.9 fast-paths a primitive-string
   // separator past it -- so the assertion is on the verdict, which must hold on either.
   var realSplitHook = Object.getOwnPropertyDescriptor(String.prototype, Symbol.split);
   var hookedV4, hookedV6;

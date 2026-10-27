@@ -930,7 +930,7 @@ async function testConsumersFailClosed() {
 // guard.identifier.isOwnMachineryName answers, for a reader that COPIES a value's own keys, which
 // of those keys the value carries by construction rather than because a caller assigned it. The
 // callable arm is derived from the engine, because which names a function makes OWN is the engine's
-// choice: on Node 24.21.0, the version engines.node floors at, every non-strict function carries
+// choice: on Node 24.22.1, the version engines.node floors at, every non-strict function carries
 // own `arguments` and `caller`, and on 26.9.0 none does. These mint the shape rather than declaring
 // a function, so they answer the same on either engine.
 function testOwnMachineryName() {

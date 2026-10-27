@@ -291,14 +291,18 @@ security-only patches after the next major releases.
   `C.LIMITS.TLS_CERT_MSG_MAX_BYTES` (2^24-1) and by any tighter caller cap, and
   throws `tls/too-large`. Every other malformed, truncated, or corrupt stream
   collapses to a uniform per-domain code, with no per-errno telemetry.
-- **Compressed-stream malleability (CWE-20).** A decompressor stops at the end of
-  the first complete frame and silently ignores anything after it. Appended
-  bytes, or a whole second frame, would recover identical content and give one
-  content unboundedly many encodings, breaking any digest taken over the
-  compressed object. The shared primitive requires the whole input to be exactly
-  one frame: the consumed input length must equal the input length, or the stream
-  is refused (`cms/decompress-failed`, `tls/decompress-failed`). This is the same
-  rule the DER layer applies when it rejects trailing bytes.
+- **Compressed-stream malleability (CWE-20).** A zlib or brotli decompressor
+  stops at the end of the first complete frame and silently ignores anything
+  after it. The zstd decompressor in Node 24.22.1 and later decodes every
+  concatenated frame and skips skippable frames, so an empty frame or a skippable
+  frame of arbitrary bytes before or after the real one adds no output. Either
+  way, extra bytes or frames would recover identical content and give one content
+  unboundedly many encodings, breaking any digest taken over the compressed
+  object. The shared primitive requires the whole input to be exactly one frame:
+  a zstd input must parse as exactly one RFC 8878 frame before it is decoded, and
+  for every algorithm the consumed input length must equal the input length, or
+  the stream is refused (`cms/decompress-failed`, `tls/decompress-failed`). This
+  is the same rule the DER layer applies when it rejects trailing bytes.
 - **Silent frame truncation (CWE-354).** A decompressor must fault on a frame it
   could not finish. Some runtimes instead return a short result and report the
   whole input as consumed, so neither the output nor a consumed-length check can
@@ -306,7 +310,7 @@ security-only patches after the next major releases.
   processes a prefix as though it were the whole message. The shared primitive
   probes each algorithm once at startup, handing it a frame with the last two
   bytes cut, and drops any decompressor that returns anything at all rather than
-  faulting, so that algorithm is neither offered nor accepted. At the Node 24.21
+  faulting, so that algorithm is neither offered nor accepted. At the Node 24.22.1
   engine floor zlib, brotli and zstd all fault on a cut frame, so all three are
   offered; on a runtime where one returns instead, that algorithm is dropped.
 - **Unbounded certificate-entry allocation (CWE-770).** A TLS Certificate

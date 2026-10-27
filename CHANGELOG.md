@@ -4,6 +4,22 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.9.8 — 2026-10-27
+
+Require Node 24.22.1, which fixes the Brotli decoder memory corruption in CVE-2026-111497.
+
+### Changed
+
+- `engines.node` is `>=24.22.1`. On a lower version npm reports the mismatch as EBADENGINE, and refuses the install where engine-strict is set. Node 24.22.1 ships OpenSSL 3.5.9.
+
+### Fixed
+
+- A zstd-compressed input to `pki.tls.decompressCertificate`, or to any toolkit decompression, must be exactly one Zstandard frame, and anything else is refused with `tls/decompress-failed`. The zstd decoder in Node 24.22.1 and later decodes every concatenated frame and skips skippable frames (RFC 8878 sec. 3.1.2). An empty frame or a skippable frame of arbitrary bytes before or after the real one added no output and passed the declared-length check, so one certificate chain had unboundedly many compressed encodings. A skippable frame on its own decoded to empty output.
+
+### Security
+
+- The supported Node floor moves to 24.22.1. Node 24.22.0 and earlier bundle a Brotli decoder in which malformed input can corrupt process memory, which can crash the process and may allow code execution (CVE-2026-111497). `pki.tls` passes a peer's Brotli-compressed certificate message (RFC 8879, algorithm 2) to that decoder, and the size cap the toolkit applies to the output does not protect against a fault inside the decoder. The fix is in the Node runtime, and updating an npm package does not replace it. Node 26 releases before 26.12.1 carry the same decoder and still satisfy `>=24.22.1`, so on Node 26 run 26.12.1 or later.
+
 ## v0.9.7 — 2026-10-21
 
 Refuse a key whose private key is public wherever it appears, with no option to turn the refusal off.

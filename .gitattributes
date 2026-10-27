@@ -13,7 +13,7 @@ lib/vendor/** -text binary
 *.sh text eol=lf
 
 # The version-manager files are read as a bare version string. nvm and asdf take
-# the whole line, so a CRLF checkout hands them "24.21.0\r" and the install fails
+# the whole line, so a CRLF checkout hands them "24.22.1\r" and the install fails
 # on a version that does not exist.
 .nvmrc text eol=lf
 .node-version text eol=lf

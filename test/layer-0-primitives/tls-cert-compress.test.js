@@ -260,6 +260,20 @@ function run() {
     codeOf(function () { return pki.tls.decompressCertificate(buildCC(1, MSG.length, Buffer.concat([good, Buffer.from("junk")]))); }) === "tls/decompress-failed");
   check("8e. a second complete frame appended -> tls/decompress-failed",
     codeOf(function () { return pki.tls.decompressCertificate(buildCC(1, MSG.length, Buffer.concat([good, zlib.deflateSync(Buffer.from("x"))]))); }) === "tls/decompress-failed");
+  // A zstd decoder reads past the first frame: an empty frame or a skippable frame adds no
+  // output, so the declared uncompressed_length cannot see it.
+  if (ALGS.some(function (a) { return a.name === "zstd"; })) {
+    var zgood = zlib.zstdCompressSync(MSG);
+    var zskip = Buffer.from([0x5f, 0x2a, 0x4d, 0x18, 0x02, 0x00, 0x00, 0x00, 0x01, 0x02]);
+    check("8e1. zstd: an empty second frame -> tls/decompress-failed",
+      codeOf(function () { return pki.tls.decompressCertificate(buildCC(3, MSG.length, Buffer.concat([zgood, zlib.zstdCompressSync(Buffer.alloc(0))]))); }) === "tls/decompress-failed");
+    check("8e2. zstd: a skippable frame appended -> tls/decompress-failed",
+      codeOf(function () { return pki.tls.decompressCertificate(buildCC(3, MSG.length, Buffer.concat([zgood, zskip]))); }) === "tls/decompress-failed");
+    check("8e3. zstd: a skippable frame prepended -> tls/decompress-failed",
+      codeOf(function () { return pki.tls.decompressCertificate(buildCC(3, MSG.length, Buffer.concat([zskip, zgood]))); }) === "tls/decompress-failed");
+    check("8e4. zstd: the single frame is accepted",
+      pki.tls.decompressCertificate(buildCC(3, MSG.length, zgood)).algorithmName === "zstd");
+  }
   check("8f. a body that is not the declared codec -> tls/decompress-failed",
     codeOf(function () { return pki.tls.decompressCertificate(buildCC(1, MSG.length, zlib.brotliCompressSync(MSG))); }) === "tls/decompress-failed");
   check("8g. a corrupt stream -> tls/decompress-failed", (function () {
