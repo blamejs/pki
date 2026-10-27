@@ -242,9 +242,11 @@ async function testUriId() {
   check("54. a URI with no authority carries no host and is ignored",
     vMailto.matched === false && vMailto.ignored.length === 1 && /no host/.test(vMailto.ignored[0].reason));
   var cV6 = await certWithSanDer([uriEntry("https://[2001:db8::1]/")]);
-  var vV6 = pki.identity.match(cV6, { type: "uri", scheme: "https", value: "2001:db8::1" });
+  var vV6 = pki.identity.match(cV6, { type: "uri", scheme: "https", value: "x.example" });
   check("55. a bracketed address is not a reg-name, so the entry is ignored",
     vV6.matched === false && vV6.ignored.length === 1 && /IP literal/.test(vV6.ignored[0].reason));
+  check("55a. an IPv6 address as a uri record's value is no domain -> identity/bad-reference",
+    code(function () { pki.identity.match(cV6, { type: "uri", scheme: "https", value: "2001:db8::1" }); }) === "identity/bad-reference");
   var cPct = await certWithSanDer([uriEntry("https://ex%61mple.com/")]);
   var vPct = pki.identity.match(cPct, { type: "uri", scheme: "https", value: "example.com" });
   check("56. a percent-escaped host is not decoded before comparison, and the entry is ignored",
@@ -261,8 +263,9 @@ async function testUriId() {
   check("53c. ...and opts.wildcards false turns it off here too",
     pki.identity.match(cWildUri, ref, { wildcards: false }).ignored.length === 1);
   var cWildIp = await certWithSanDer([uriEntry("https://*.0.2.1/")]);
-  check("53d. a wildcard does not make an address into a reg-name",
-    pki.identity.match(cWildIp, { type: "uri", scheme: "https", value: "192.0.2.1" }).matched === false);
+  check("53d. an address as a uri record's value is refused, so no wildcard can make it a reg-name",
+    code(function () { pki.identity.match(cWildIp, { type: "uri", scheme: "https", value: "192.0.2.1" }); }) === "identity/bad-reference" &&
+    pki.identity.match(cWildIp, { type: "uri", scheme: "https", value: "a.example" }).matched === false);
   var cSip = await certWithSanDer([uriEntry("sip:voice.example.com")]);
   var vSip = pki.identity.match(cSip, { type: "uri", scheme: "sip", value: "voice.example.com" });
   check("57. a sip URI written with no authority is ignored, which is what sec. 7.2 directs",
@@ -361,6 +364,70 @@ async function testDoors() {
 }
 
 // ---- The path.validate gate (RFC 9525 sec. 1.2, sec. 6.6) -------------
+// ---- an address in another spelling is never a DNS-ID ----------------------
+// A resolver (inet_aton) and WHATWG URL read a host whose last label is a number as IPv4:
+// 0177.0.0.1, 0x7f.0.0.1, 127.1, 2130706433 and 127.0.0.1. all reach 127.0.0.1, and 0127.0.0.1
+// reaches 87.0.0.1 under URL but 127.0.0.1 on macOS. Compared as a DNS-ID, each was authenticated
+// by a dNSName such as 127.0.0.1 or *.0.0.1, so a name authenticated an address.
+var NONCANONICAL_V4 = ["0127.0.0.1", "0177.0.0.1", "087.0.0.1", "0x7f.0.0.1", "0X7F.0.0.1",
+  "127.0.0.1.", "0127.0.0.1.", "127.1", "2130706433", "127.0.1", "1.2.3.0x4", "a.0.0.1", "a.0x1"];
+async function testNonCanonicalAddressReference() {
+  var cert = await certWithDns("127.0.0.1", "*.0.0.1", "*.1", "127.1", "2130706433", "0x7f.0.0.1",
+    "*.0x1", "127.0.1", "1.2.3.0x4");
+  NONCANONICAL_V4.forEach(function (ref) {
+    check("A. " + JSON.stringify(ref) + " as a string reference -> identity/bad-reference",
+      code(function () { return pki.identity.match(cert, ref); }) === "identity/bad-reference");
+    check("A1. " + JSON.stringify(ref) + " as a dns record -> identity/bad-reference",
+      code(function () { return pki.identity.match(cert, { type: "dns", value: ref }); }) === "identity/bad-reference");
+    check("A2. " + JSON.stringify(ref) + " as an srv record -> identity/bad-reference",
+      code(function () { return pki.identity.match(cert, { type: "srv", service: "_x", value: ref }); }) === "identity/bad-reference");
+    check("A3. " + JSON.stringify(ref) + " as a uri record -> identity/bad-reference",
+      code(function () { return pki.identity.match(cert, { type: "uri", scheme: "https", value: ref }); }) === "identity/bad-reference");
+  });
+  // A host name is letters, digits, hyphens, dots and underscores. A percent escape is decoded by
+  // WHATWG URL (127.0.0.%31 is 127.0.0.1) and a colon or bracket spells an IPv6 address, so none of
+  // them is a domain, in any reference form.
+  var cOdd = await certWithDns("127.0.0.%31", "%31%32%37.%30.%30.%31", "[::1]", "::1", "a%2eexample");
+  ["127.0.0.%31", "%31%32%37.%30.%30.%31", "[::1]", "a%2eexample", "a/b.example", "a@b.example"].forEach(function (ref) {
+    check("A3a. " + JSON.stringify(ref) + " as a string reference -> identity/bad-reference",
+      code(function () { return pki.identity.match(cOdd, ref); }) === "identity/bad-reference");
+  });
+  ["127.0.0.%31", "[::1]", "::1", "a%2eexample"].forEach(function (ref) {
+    check("A3b. " + JSON.stringify(ref) + " as a dns record -> identity/bad-reference",
+      code(function () { return pki.identity.match(cOdd, { type: "dns", value: ref }); }) === "identity/bad-reference");
+    check("A3c. " + JSON.stringify(ref) + " as an srv record -> identity/bad-reference",
+      code(function () { return pki.identity.match(cOdd, { type: "srv", service: "_imap", value: ref }); }) === "identity/bad-reference");
+  });
+  var cUnd = await certWithDns("_dmarc.example");
+  check("A3d. CONTROL: an underscore label is still a name", pki.identity.match(cUnd, "_dmarc.example").matched === true);
+  check("A4. the canonical address in a dns record is no name -> identity/bad-reference",
+    code(function () { return pki.identity.match(cert, { type: "dns", value: "127.0.0.1" }); }) === "identity/bad-reference");
+  check("A5. CONTROL: the canonical address string is an IP-ID, and no dNSName answers it",
+    pki.identity.match(cert, "127.0.0.1").matched === false);
+  var cUri = await certWithSanDer([uriEntry("https://0x7f.0.0.1/")]);
+  check("A6. a presented URI whose host is a hex-spelled address names no host",
+    pki.identity.match(cUri, { type: "uri", scheme: "https", value: "x.example" }).matched === false);
+  var cOk = await certWithDns("123.example", "0x7f.example");
+  check("A7. CONTROL: a numeric label that is not the last is an ordinary name",
+    pki.identity.match(cOk, "123.example").matched === true && pki.identity.match(cOk, "0x7f.example").matched === true);
+
+  // The consumer path: a name constraint on iPAddress does not see a dNSName, so the identity
+  // check was the only thing between an excluded address and a VALID verdict.
+  var leaf = await certWithDns("*.0.0.1");
+  var excluded = [{ tag: 7, base: Buffer.from([127, 0, 0, 0, 255, 0, 0, 0]) }];
+  var pvOpts = function (ref) {
+    return { trustAnchors: [leaf], time: new Date("2026-06-01T00:00:00Z"), identity: ref, initialExcludedSubtrees: excluded };
+  };
+  var refsA8 = ["0127.0.0.1", "0177.0.0.1", "0x7f.0.0.1", "127.0.0.1."];
+  for (var ai = 0; ai < refsA8.length; ai++) {
+    check("A8. path.validate with identity " + JSON.stringify(refsA8[ai]) + " under an excluded 127/8 -> path/bad-input",
+      (await codeAsync(function () { return pki.path.validate([leaf], pvOpts(refsA8[ai])); })) === "path/bad-input");
+  }
+  check("A9. CONTROL: the same leaf validates for a name its dNSName covers",
+    (await pki.path.validate([leaf], pvOpts("a.b.0.0.1.example"))).valid === false &&
+    (await pki.path.validate([leaf], { trustAnchors: [leaf], time: new Date("2026-06-01T00:00:00Z"), initialExcludedSubtrees: excluded })).valid === true);
+}
+
 async function testPathGate() {
   var caKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   var caKey = caKp.privateKey.export({ format: "der", type: "pkcs8" });
@@ -571,12 +638,11 @@ async function testEveryRefusalAndSkip() {
   refuse("R11. a uri record with no scheme", { type: "uri", value: "example.com" }, "identity/bad-reference");
   refuse("R12. a uri record whose scheme carries its colon",
     { type: "uri", scheme: "https:", value: "example.com" }, "identity/bad-reference");
-  // RFC 9525 sec. 3 classifies IPv4 first and considers everything it refuses as a domain.
-  // `999.999.999.999` is no address, so it is a name, and a name is compared only against
-  // dNSName entries.
-  check("R13. a dotted-decimal string that is no address is classified as a name",
-    pki.identity.match(await certWithDns("999.999.999.999"), "999.999.999.999.").matched === true &&
-    pki.identity.match(await certWithSanDer([ipEntry(Buffer.from([1, 2, 3, 4]))]), "999.999.999.999").matched === false);
+  // `999.999.999.999` is no address, and it is no domain name either: its last label is a number,
+  // so WHATWG URL refuses it as a failed IPv4 parse, and no top-level domain is all digits
+  // (RFC 3696 sec. 2). It is refused rather than compared against dNSName entries.
+  refuse("R13. a dotted-decimal string that is no address is not a name either", "999.999.999.999",
+    "identity/bad-reference");
   check("R14. an ip record wrapping a textual address reads as an IP-ID",
     pki.identity.match(await certWithSanDer([ipEntry(Buffer.from([10, 0, 0, 7]))]),
       { type: "ip", value: "10.0.0.7" }).matched === true);
@@ -671,6 +737,7 @@ async function run() {
   await testDnsId();
   await testWildcards();
   await testIpId();
+  await testNonCanonicalAddressReference();
   await testSubjectIsNeverIdentity();
   await testSrvId();
   await testUriId();

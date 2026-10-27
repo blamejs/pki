@@ -673,6 +673,13 @@ function testUriHostIsReadByLabel() {
   check("and so is one at the end", fqdn("bad-.com") === false);
   check("CONTROL: a hyphen inside a label is ordinary", fqdn("ba-d.com") === true);
   check("a non-string is not a host", fqdn(null) === false && fqdn(undefined) === false);
+  // A resolver and WHATWG URL read a host whose last label is a number (decimal, octal or 0x-hex)
+  // as an IPv4 address: 0x7f.0.0.1, 0177.0.0.1 and 127.1 all reach 127.0.0.1. Such a host is an
+  // address in another spelling, so it is no host name either.
+  check("a hex-spelled IPv4 address is not a host", fqdn("0x7f.0.0.1") === false && fqdn("0X7F.0.0.1") === false);
+  check("a host whose last label is 0x-hex is not one", fqdn("a.0x10") === false && fqdn("a.0x") === false);
+  check("a host whose last label is all digits is not one", fqdn("example.123") === false);
+  check("CONTROL: a numeric label that is not the last is ordinary", fqdn("123.example") === true && fqdn("0x7f.example") === true);
 
   // The door and the comparison read one rule. A base the door accepts is one the comparison can
   // use, and a base it refuses is one the comparison would have no verdict for.
@@ -681,6 +688,10 @@ function testUriHostIsReadByLabel() {
   check("and the subtree form of it", refusal(6, ".com") === null);
   check("CONTROL: it still accepts a two-label base", refusal(6, "example.com") === null);
   check("it still refuses an address", typeof refusal(6, "192.0.2.1") === "string");
+  check("it refuses a hex-spelled address, naming it an address", (function () {
+    var r = refusal(6, "0x7f.0.0.1");
+    return typeof r === "string" && r.indexOf("rather than an address") !== -1;
+  })());
   check("it still refuses an empty label", typeof refusal(6, "a..b.com") === "string");
   check("it still refuses a hyphen at a label edge", typeof refusal(6, "bad-.com") === "string");
   // One trailing dot makes a name absolute; two leave an empty label. The base is stripped of its

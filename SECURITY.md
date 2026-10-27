@@ -1027,6 +1027,22 @@ security-only patches after the next major releases.
   `revoked: false`. Post-quantum SLH-DSA signatures (all twelve FIPS 205
   parameter sets) verify on this path over the exact signed bytes, alongside
   ML-DSA and the classical set.
+- **An address spelled as a name (CWE-297).** A resolver and WHATWG URL read a
+  host whose last label is a number as IPv4: `0x7f.0.0.1`, `0177.0.0.1`,
+  `127.1`, `2130706433` and `127.0.0.1.` all reach 127.0.0.1, and `0127.0.0.1`
+  reaches 87.0.0.1 under URL but 127.0.0.1 under some resolvers. Compared as a
+  domain name, such a host is authenticated by a `dNSName` such as `127.0.0.1`
+  or `*.0.0.1`, so a name certifies an address and an `iPAddress` name
+  constraint never sees it (the class of CVE-2026-106072, CVE-2026-106069 and
+  CVE-2026-105483 in Node's `tls.checkServerIdentity`). A percent escape
+  (`127.0.0.%31`) and an IPv6 spelling (`::1`, `[::1]`) are addresses in the same
+  way. `pki.identity.match` and
+  `pki.path.validate` refuse such a reference in every form
+  (`identity/bad-reference`, `path/bad-input`), `pki.transport.https` refuses it
+  as `tls.servername` or `proxy.tls.servername` (`transport/bad-input`,
+  `transport/bad-proxy`), the ACME verbs refuse it as a `dns` identifier
+  (`acme/bad-identifier`), and a URI name constraint reads no such host as a
+  domain. The check is the toolkit's own and does not depend on the Node version.
 - **Compromised CA keys (CWE-295).** `distrustedKeys` takes SHA-256 digests of
   SubjectPublicKeyInfo values (`pki.trust.spkiDigest` computes one from a
   certificate) and refuses a listed key wherever it appears: the trust anchor, an

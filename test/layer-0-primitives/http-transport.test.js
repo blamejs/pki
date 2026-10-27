@@ -93,6 +93,22 @@ async function testConfigGates() {
     (await codeOf(t({ method: "GET", url: "https://ca.example/x", tls: { anchors: [Buffer.from("x")], servername: twoFacedSni } }))) === "transport/bad-input");
   check("6b2 and so is one supplied as a transport default",
     (await codeOf(pki.transport.https({ tls: { anchors: [Buffer.from("x")], servername: twoFacedSni } })({ method: "GET", url: "https://ca.example/x" }))) === "transport/bad-input");
+  // A servername that a resolver or WHATWG URL reads as IPv4 (its last label a number) but that is
+  // not the canonical dotted quad was matched against certificate dNSNames on Node below 24.22.1
+  // (CVE-2026-106072 / CVE-2026-105483), so DNS:127.0.0.1 authenticated 0x7f.0.0.1. The toolkit
+  // refuses it itself rather than relying on the runtime.
+  var badSnis = ["0x7f.0.0.1", "0177.0.0.1", "0127.0.0.1", "127.1", "2130706433", "127.0.0.1.", "a.0x1",
+    String.fromCharCode(0xff11, 0xff12, 0xff17) + ".0.0.1", "a" + String.fromCharCode(0) + ".example",
+    "127.0.0.%31", "%31%32%37.%30.%30.%31", "[::1]", "a/b.example"];
+  for (var bi = 0; bi < badSnis.length; bi++) {
+    check("6b3." + bi + " tls.servername " + JSON.stringify(badSnis[bi]) + " is refused at request init",
+      (await codeOf(t({ method: "GET", url: "https://ca.example/x", tls: { anchors: [Buffer.from("x")], servername: badSnis[bi] } }))) === "transport/bad-input");
+    check("6b4." + bi + " proxy.tls.servername " + JSON.stringify(badSnis[bi]) + " is refused at config time",
+      (await codeOf(t({ method: "GET", url: "https://ca.example/x", tls: { useSystemStore: true }, proxy: { url: "https://p:8080", tls: { useSystemStore: true, servername: badSnis[bi] } } }))) === "transport/bad-proxy");
+  }
+  check("6b5 CONTROL: a DNS servername and a canonical address servername are accepted at request init",
+    (await codeOf(t({ method: "GET", url: "https://ca.example/x", tls: { anchors: [Buffer.from("x")], servername: "0x7f.example" } }))) !== "transport/bad-input" &&
+    (await codeOf(t({ method: "GET", url: "https://ca.example/x", tls: { anchors: [Buffer.from("x")], servername: "127.0.0.1" } }))) !== "transport/bad-input");
   check("6b a missing request object is refused (bad-url)", (await codeOf(t())) === "transport/bad-url");
   check("6c a malformed trust anchor fails closed at request init", (await codeOf(t({ method: "GET", url: "https://ca.example/x", tls: { anchors: [undefined] } }))) === "transport/transport-error");
 }
