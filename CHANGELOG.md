@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.9.10 — 2026-10-28
+
+The first compromised-key check on an elliptic curve now takes a few milliseconds instead of up to half a second.
+
+### Fixed
+
+- The first compromised-key check on each elliptic curve no longer spends up to half a second building its small-scalar table. The check runs in `pki.x509.sign`, `pki.csr.sign`, `pki.crmf.build`, `pki.path.validate` and every verb built on it, `tls.anchors`, `pki.trust.systemAnchors` and `pki.lint.certificate`. Measured on Node 26.12.1 and 24.22.1, the first build on P-521 fell from 241 to 277 ms to 4 to 6 ms, and P-384 and secp256k1 fell from about 110 ms and 50 ms to 2 to 3 ms. Every entry of the table equals the x-coordinate node's own scalar multiplication produces for d from 1 to 255 on P-256, P-384, P-521 and secp256k1 (#415).
+
 ## v0.9.9 — 2026-10-27
 
 Refuse an IPv4 address spelled as a host name wherever a certificate identity is matched, whatever the Node version.

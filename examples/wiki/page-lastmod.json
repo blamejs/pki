@@ -53,7 +53,7 @@
   "lib/guard-compress.js": "2026-10-27",
   "lib/guard-crypto.js": "2026-10-07",
   "lib/guard-der.js": "2026-10-07",
-  "lib/guard-distrust.js": "2026-10-21",
+  "lib/guard-distrust.js": "2026-10-28",
   "lib/guard-encoding.js": "2026-10-06",
   "lib/guard-header.js": "2026-09-24",
   "lib/guard-identifier.js": "2026-10-27",

@@ -23,7 +23,45 @@ function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return e.code |
 function keys(v) { return distrust.keys(v, E, "test/bad-input", "opts.distrustedKeys"); }
 function sha(b) { return nodeCrypto.createHash("sha256").update(b).digest("hex"); }
 
+// The small-scalar table: d*G for d = 1..255 on every covered curve, built by point addition from G.
+// Every entry is compared with node's own scalar multiplication, so a wrong field prime, a wrong
+// coefficient or a wrong formula fails here.
+var SS_CURVES = [["P-256", "prime256v1", 32], ["P-384", "secp384r1", 48], ["P-521", "secp521r1", 66], ["secp256k1", "secp256k1", 32]];
+function testSmallScalarTable() {
+  SS_CURVES.forEach(function (row) {
+    var xs = distrust.smallScalarXs(row[0]);
+    var bad = [];
+    for (var d = 1; d < 256; d++) {
+      var ecdh = nodeCrypto.createECDH(row[1]);
+      var s = Buffer.alloc(row[2]);
+      s[row[2] - 1] = d;
+      ecdh.setPrivateKey(s);
+      if (xs[d - 1] !== ecdh.getPublicKey("hex", "uncompressed").slice(2, 2 + 2 * row[2])) bad.push(d);
+    }
+    check("SS1. " + row[0] + ": all 255 x-coordinates equal setPrivateKey's, in order of d",
+      xs.length === 255 && Object.isFrozen(xs) && bad.length === 0);
+    var n1 = nodeCrypto.createECDH(row[1]);
+    var top = Buffer.alloc(row[2]);
+    top[row[2] - 1] = 255;
+    n1.setPrivateKey(top);
+    var spki = nodeCrypto.createPublicKey({ key: { kty: "EC", crv: row[0],
+      x: n1.getPublicKey().subarray(1, 1 + row[2]).toString("base64url"),
+      y: n1.getPublicKey().subarray(1 + row[2]).toString("base64url") }, format: "jwk" }).export({ format: "der", type: "spki" });
+    check("SS2. " + row[0] + ": a key with private scalar 255 is caught", distrust.smallEcScalar(spki) === row[1]);
+  });
+  check("SS3. an uncovered curve has no table", distrust.smallScalarXs("X25519") === null && distrust.smallScalarXs("constructor") === null &&
+    distrust.smallScalarXs(undefined) === null);
+  // Ten fresh P-521 tables. Measured: about 50 ms built by point addition (4 to 6 ms each on Node
+  // 26.12.1 and 24.22.1), against 241 to 277 ms EACH built by 255 scalar multiplications, about 2.5 s
+  // for ten. The bound sits twenty times above the first and well below the second.
+  var t0 = Date.now();
+  for (var k = 0; k < 10; k++) distrust.smallScalarXs("P-521");
+  var ms = Date.now() - t0;
+  check("SS4. ten P-521 tables build in under 1000 ms (took " + ms + " ms)", ms < 1000);
+}
+
 function run() {
+  testSmallScalarTable();
   var spkiA = Buffer.from("3059301306072a8648ce3d020106082a8648ce3d03010703420004" + "11".repeat(64), "hex");
   var spkiB = Buffer.from("3059301306072a8648ce3d020106082a8648ce3d03010703420004" + "22".repeat(64), "hex");
   var hexA = sha(spkiA), hexB = sha(spkiB);

@@ -1,0 +1,11 @@
+{
+  "version": "0.9.10",
+  "date": "2026-10-28",
+  "headline": "The first compromised-key check on an elliptic curve now takes a few milliseconds instead of up to half a second.",
+  "summary": "The small-scalar key check keeps, per curve, the x-coordinates of d*G for d from 1 to 255. The first check on each curve built that table with 255 scalar multiplications: about 250 ms on P-521, 110 ms on P-384 and 50 ms on secp256k1, and the sum for a CA bundle holding keys on several curves. The table is now built from one scalar multiplication, 253 point additions and one batched inversion, which takes 2 to 6 ms per curve. Which keys are refused has not changed (#415).",
+  "sections": {
+    "Fixed": [
+      "The first compromised-key check on each elliptic curve no longer spends up to half a second building its small-scalar table. The check runs in `pki.x509.sign`, `pki.csr.sign`, `pki.crmf.build`, `pki.path.validate` and every verb built on it, `tls.anchors`, `pki.trust.systemAnchors` and `pki.lint.certificate`. Measured on Node 26.12.1 and 24.22.1, the first build on P-521 fell from 241 to 277 ms to 4 to 6 ms, and P-384 and secp256k1 fell from about 110 ms and 50 ms to 2 to 3 ms. Every entry of the table equals the x-coordinate node's own scalar multiplication produces for d from 1 to 255 on P-256, P-384, P-521 and secp256k1 (#415)."
+    ]
+  }
+}
