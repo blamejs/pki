@@ -44,3 +44,15 @@ updates:
     labels:
       - "deps"
       - "docker"
+
+  # Keeps the digest-pinned Chainguard node base in examples/wiki/Dockerfile
+  # current. A build with no BASE_RUNTIME build-arg (the pkijs.com deploy)
+  # uses this pin, so its Node version is the pinned image's Node version.
+  - package-ecosystem: "docker"
+    directory: "/examples/wiki"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    labels:
+      - "deps"
+      - "docker"

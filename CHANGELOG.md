@@ -4,6 +4,18 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.9.11 — 2026-10-31
+
+The documentation site image now builds on Node 26.12.1, and its build stops on a base image whose Node predates the CVE-2026-111497 fix.
+
+### Changed
+
+- The documentation site image build stops when the base image's Node is older than the first patched release on its major line, or when its major line has no entry. The `NODE_FLOORS` build-arg lists those releases and defaults to `24.22.1,26.12.1`. A failed build prints the Node version it found and the release it expected.
+
+### Security
+
+- The default `BASE_RUNTIME` in `examples/wiki/Dockerfile` is `cgr.dev/chainguard/node:latest` at a digest that carries Node 26.12.1. The previous default carried Node 26.4.0, which bundles the Brotli decoder affected by CVE-2026-111497. Rebuild any image you built from this Dockerfile without a `BASE_RUNTIME` build-arg.
+
 ## v0.9.10 — 2026-10-28
 
 The first compromised-key check on an elliptic curve now takes a few milliseconds instead of up to half a second.

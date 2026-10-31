@@ -56,6 +56,16 @@ function sites(f) {
       find: function (s) { var j = JSON.parse(s); return [j.packages && j.packages[""] && j.packages[""].engines && j.packages[""].engines.node]; } },
     { file: "examples/wiki/package-lock.json", want: ">=" + f.full,
       find: function (s) { var j = JSON.parse(s); return [j.packages && j.packages[""] && j.packages[""].engines && j.packages[""].engines.node]; } },
+    // The site image refuses a base whose Node is below the entry for its major.
+    // The entry for the engines.node major is the floor itself; other majors carry
+    // their own patched release and are not compared here.
+    { file: "examples/wiki/Dockerfile", want: f.full,
+      find: function (s) {
+        return matchAll(s, /^ARG NODE_FLOORS=(\S+)/gm).map(function (list) {
+          var hit = list.split(",").filter(function (v) { return Number(v.split(".")[0]) === f.major; });
+          return hit.length === 1 ? hit[0] : "no single " + f.major + ".x entry in " + list;
+        });
+      } },
     { file: "docker-compose.test.yml", want: "node:" + f.full + "-alpine",
       find: function (s) { return matchAll(s, /image:\s*(node:[^\s]+)/g); } },
     { file: ".github/workflows/ci.yml", want: f.full, find: findNodeVersions },
