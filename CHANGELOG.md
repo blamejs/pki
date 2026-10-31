@@ -4,7 +4,7 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.9.11 — 2026-10-31
+## v0.9.12 — 2026-10-31
 
 The documentation site image now builds on Node 26.12.1, and its build stops on a base image whose Node predates the CVE-2026-111497 fix.
 

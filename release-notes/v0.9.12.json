@@ -1,5 +1,5 @@
 {
-  "version": "0.9.11",
+  "version": "0.9.12",
   "date": "2026-10-31",
   "headline": "The documentation site image now builds on Node 26.12.1, and its build stops on a base image whose Node predates the CVE-2026-111497 fix.",
   "summary": "`examples/wiki/Dockerfile` pinned a default base image that carries Node 26.4.0. That release bundles the Brotli decoder affected by CVE-2026-111497, and it satisfies `>=24.22.1`, so the engines floor did not catch it. The default base now carries Node 26.12.1. The image build compares the base image's Node against the first patched release on its major line and stops when it is older. The GHCR image resolves the current base when it is built and does not use this default. The code in the npm package has not changed.",
