@@ -87,7 +87,7 @@
   "devDependencies": {
     "c8": "12.0.0",
     "esbuild": "0.28.2",
-    "eslint": "10.13.0"
+    "eslint": "10.14.0"
   },
   "overrides": {
     "glob": "14.0.3",
