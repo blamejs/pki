@@ -19,7 +19,7 @@
 # BASE_RUNTIME build-arg (so the scanned image == the published one and
 # always carries current CVE patches); a plain local `docker build` uses
 # the pinned default below. Dependabot's docker updater bumps the pin.
-ARG BASE_RUNTIME=cgr.dev/chainguard/node:latest@sha256:6cb70d6b2a324e491263949ea9f58938ed19031ef478e0bdb0b1810f96f8b400
+ARG BASE_RUNTIME=cgr.dev/chainguard/node:latest@sha256:3fb5318a58807dec0f2ece547efbe8d62c67b7b2fd91a16795b98651d6385dbe
 
 FROM ${BASE_RUNTIME} AS runtime
 
@@ -32,7 +32,7 @@ USER 65532:65532
 # stops when the base image's Node is older than the entry for its major, or
 # when its major has no entry. scripts/check-engine-floor.js requires the
 # entry for the engines.node major to equal engines.node.
-ARG NODE_FLOORS=24.22.1,26.12.1
+ARG NODE_FLOORS=26.13.1
 RUN ["node", "-e", "var v=process.versions.node;var f=(process.env.NODE_FLOORS||'').split(',').filter(function(s){return s.split('.')[0]===v.split('.')[0]})[0];function n(s){var p=s.split('.').map(Number);return p[0]*1e8+p[1]*1e4+p[2]}var m=!f?'NODE_FLOORS states no patched release for Node '+v.split('.')[0]:n(v)<n(f)?'Node '+v+' is older than '+f+', the patched release for its line':'';if(m){console.error(m+'. Update BASE_RUNTIME or NODE_FLOORS in examples/wiki/Dockerfile.');process.exit(1)}console.log('Node '+v+' meets floor '+f)"]
 
 # Non-secret defaults baked into the image. WIKI_PORT MUST agree with

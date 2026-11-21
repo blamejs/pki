@@ -30,7 +30,7 @@ function read(rel) {
   return fs.readFileSync(p, "utf8");
 }
 
-// The floor, as the package declares it. ">=24.22.1" -> {major:24, minor:22, patch:1}
+// The floor, as the package declares it. ">=26.13.1" -> {major:26, minor:13, patch:1}
 function parseFloor() {
   var pkg = JSON.parse(read("package.json"));
   var spec = pkg && pkg.engines && pkg.engines.node;
@@ -71,6 +71,10 @@ function sites(f) {
     { file: ".github/workflows/ci.yml", want: f.full, find: findNodeVersions },
     { file: ".github/workflows/npm-publish.yml", want: f.full, find: findNodeVersions },
     { file: ".github/workflows/release-container.yml", want: f.full, find: findNodeVersions },
+    // These jobs pin a bare major. The major must be the floor's.
+    { file: ".github/workflows/cflite_pr.yml", want: String(f.major), find: findNodeMajors },
+    { file: ".github/workflows/cflite_batch.yml", want: String(f.major), find: findNodeMajors },
+    { file: ".github/workflows/snyk.yml", want: String(f.major), find: findNodeMajors },
   ];
 }
 
@@ -80,15 +84,23 @@ function matchAll(s, re) {
   return out;
 }
 
-// setup-node pins. A bare major ('24') states no minor, so only fully-qualified
-// values are held to the floor.
+// setup-node pins. A bare major ('26') states no minor, so only fully-qualified
+// values are held to the full floor.
 function findNodeVersions(s) {
   return matchAll(s, /node-version:\s*'?"?([0-9][^'"\s]*)'?"?/g)
     .filter(function (v) { return v.split(".").length >= 3; });
 }
 
-// Prose and comments that name a Node version. Any 24.x that is not the floor is
-// stale. A bare major does not state a minor and is left alone.
+// setup-node pins in a file that pins a bare major. Every pin is reduced to its
+// major, so a full version on another major line is reported too.
+function findNodeMajors(s) {
+  return matchAll(s, /node-version:\s*'?"?([0-9][^'"\s]*)'?"?/g)
+    .map(function (v) { return v.split(".")[0]; });
+}
+
+// Prose and comments that name a Node version. Any version on the floor's major
+// line whose minor differs from the floor's is stale. A bare major does not state
+// a minor and is left alone.
 var PROSE = [
   "README.md", "CONTRIBUTING.md", "SUPPORT.md", "SECURITY.md", "LTS-CALENDAR.md",
   "lib/vendor/README.md", "lib/vendor/MANIFEST.json", "lib/tls-cert-compress.js",

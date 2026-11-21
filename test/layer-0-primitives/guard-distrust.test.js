@@ -52,7 +52,7 @@ function testSmallScalarTable() {
   check("SS3. an uncovered curve has no table", distrust.smallScalarXs("X25519") === null && distrust.smallScalarXs("constructor") === null &&
     distrust.smallScalarXs(undefined) === null);
   // Ten fresh P-521 tables. Measured: about 50 ms built by point addition (4 to 6 ms each on Node
-  // 26.12.1 and 24.22.1), against 241 to 277 ms EACH built by 255 scalar multiplications, about 2.5 s
+  // 26.12.1, 26.13.1 and 24.22.1), against 241 to 277 ms EACH built by 255 scalar multiplications, about 2.5 s
   // for ten. The bound sits twenty times above the first and well below the second.
   var t0 = Date.now();
   for (var k = 0; k < 10; k++) distrust.smallScalarXs("P-521");

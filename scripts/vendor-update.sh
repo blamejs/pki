@@ -5,7 +5,7 @@
 #   @blamejs/pki ships ZERO npm runtime dependencies and currently vendors
 #   NOTHING. Its cryptography runs entirely on Node's built-in node:crypto
 #   (OpenSSL 3.5 — the classical set AND the FIPS 203/204/205 post-quantum
-#   algorithms via the engine floor, Node >=24.18). A platform built-in
+#   algorithms via the engine floor, Node >=26.13.1). A platform built-in
 #   ships zero bytes, has nothing to hash-pin, and is interoperable by
 #   construction — so there is no reason to vendor a crypto library.
 #
@@ -135,7 +135,7 @@ VER="${2:-latest}"
 echo "=== Vendoring $PKG@$VER ==="
 echo ""
 echo "REMINDER (lib/vendor/README.md): vendoring is the exception to native-first."
-echo "Only vendor an operation confirmed MISSING from the engine floor (Node >=24.18,"
+echo "Only vendor an operation confirmed MISSING from the engine floor (Node >=26.13.1,"
 echo "OpenSSL 3.5). Record the reason + re-open condition beside the MANIFEST entry and"
 echo "add attribution to NOTICE. Ctrl-C now if node:crypto already provides this."
 echo ""

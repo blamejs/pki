@@ -146,16 +146,16 @@ async function run() {
   check("0t. CONTROL: a callable descriptor with a fit certificate signs",
     (await codeOf(function () { return pki.smime.sign(MSG, [callableFit]); })) === "NO-THROW");
   /* WHICH own names a function carries is the engine's choice, and the descriptor copier has to
-     treat all of them as machinery or the unknown-field door refuses the copy. On Node 24.22.1,
-     the version `engines.node` floors at, every non-strict function carries own `arguments` and
-     `caller`; on 26.9.0 none does. So the shape is MINTED here rather than declared, and this
+     treat all of them as machinery or the unknown-field door refuses the copy. On Node 24.22.1
+     every non-strict function carried own `arguments` and `caller`; on Node 26.13.1, the version
+     `engines.node` floors at, no function does. So the shape is MINTED here rather than declared, and this
      vector holds on either engine: a function declared in this file is strict and would carry
      neither, which is exactly how the gap reached a release. */
   function asDescriptor(fn) { fn.cert = fit.cert; fn.key = fit.key; return fn; }
-  /* The own `arguments` and `caller` every non-strict function carries on the engine floor, minted
-     so the vector holds on either engine. A function declared in this file is strict and carries
+  /* The own `arguments` and `caller` every non-strict function carried on Node 24, minted so the
+     vector holds on either engine. A function declared in this file is strict and carries
      neither, which is how the gap reached a release. */
-  function withFloorShape(fn) {
+  function withOwnArgumentsCaller(fn) {
     ["arguments", "caller"].forEach(function (n) {
       Object.defineProperty(fn, n, { value: null, writable: false, enumerable: false, configurable: true });
     });
@@ -169,8 +169,8 @@ async function run() {
      deeply to copy. */
   var CALLABLE_KINDS = [
     ["ordinary", function () { return asDescriptor(function () {}); }],
-    ["ordinary carrying the engine floor's own arguments and caller",
-      function () { return asDescriptor(withFloorShape(function () {})); }],
+    ["ordinary carrying own arguments and caller (the Node 24 non-strict shape)",
+      function () { return asDescriptor(withOwnArgumentsCaller(function () {})); }],
     ["generator", function () { return asDescriptor(function* () { yield 1; }); }],
     ["async", function () { return asDescriptor(async function () { return 1; }); }],
     ["async generator", function () { return asDescriptor(async function* () { yield 1; }); }],

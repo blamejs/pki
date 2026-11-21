@@ -9,7 +9,7 @@
  *   1. the output cap is applied AT the decompressor, so a bomb is refused as its output would
  *      exceed the bound rather than after the memory is committed; and
  *   2. the whole input must be exactly one compressed frame. zlib and brotli stop at the first
- *      frame's end and silently ignore the rest; zstd on Node 24.22.1+ decodes further frames and
+ *      frame's end and silently ignore the rest; zstd on Node 26.13.1 decodes further frames and
  *      skips skippable ones. Either would give one content unboundedly many encodings.
  *
  * The guard is @internal, so this file drives it directly to pin its OWN contract; the shipped
@@ -78,7 +78,7 @@ function run() {
 
   // ==== zstd: one frame, whatever the decoder does with the rest ============================
   // A zstd decoder that follows RFC 8878 decodes every concatenated frame and skips skippable
-  // frames (magic 0x184D2A50..5F), consuming the whole input. Node 24.22.1 does both, so the
+  // frames (magic 0x184D2A50..5F), consuming the whole input. Node 26.13.1 does both, so the
   // consumed-length check alone accepts an empty frame or a skippable frame of arbitrary bytes
   // around the real one: identical output, unboundedly many encodings.
   if (SAFE.indexOf("zstd") !== -1) {

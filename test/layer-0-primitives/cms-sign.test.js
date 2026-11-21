@@ -665,8 +665,9 @@ async function testBadInput() {
      nothing about the other. A PLAIN strict function -- what every `"use strict"` file and every ES
      module produces, and what this file produces -- owns neither `arguments` nor `caller`, and
      `Function.prototype` carries both as the restricted accessors, so a check that walks the
-     prototype chain finds them there. On the Node 24.22.1 floor a non-strict function owns both
-     outright, which is the shape minted below. Measured: the minted shape passed while the plain
+     prototype chain finds them there. On Node 24 every non-strict function owned both outright,
+     which is the shape minted below; on the Node 26.13.1 floor no function owns either, and a
+     caller can still define both. Measured: the minted shape passed while the plain
      one was refused for `arguments` at both direct `pki.cms` doors, and the first version of this
      vector minted and so never asked.
 
@@ -678,7 +679,7 @@ async function testBadInput() {
      matrix is every kind crossed with every door, in both directions. */
   function fitted(fn) { fn.cert = rsa.cert; fn.key = rsa.key; return fn; }
   function plainSigner() { return fitted(function () { return 0; }); }
-  function floorShapedSigner() {
+  function ownArgumentsCallerSigner() {
     var fn = plainSigner();
     ["arguments", "caller"].forEach(function (n) {
       Object.defineProperty(fn, n, { value: null, writable: false, enumerable: false, configurable: true });
@@ -694,7 +695,7 @@ async function testBadInput() {
   ];
   var CALLABLE_KINDS = [
     ["plain strict", plainSigner],
-    ["engine-floor own arguments/caller", floorShapedSigner],
+    ["own arguments/caller (the Node 24 non-strict shape)", ownArgumentsCallerSigner],
     ["generator", function () { return fitted(function* () { yield 1; }); }],
     ["async", function () { return fitted(async function () { return 1; }); }],
     ["async generator", function () { return fitted(async function* () { yield 1; }); }],
@@ -732,7 +733,7 @@ async function testBadInput() {
      `then` is the narrower case and is included to pin which shape it admits: the non-thenable mask
      `guard.verdict.shield` leaves is `then: undefined`, and that is what passes. An own
      `then: 42` is a field the caller wrote and is refused by name, which the next vector asserts. */
-  var beside = floorShapedSigner();
+  var beside = ownArgumentsCallerSigner();
   Object.defineProperty(beside, "caller", { value: 42, writable: true, enumerable: false, configurable: true });
   Object.defineProperty(beside, "then", { value: undefined, writable: true, enumerable: false, configurable: true });
   beside.digestAlgorithm = "sha384";
@@ -740,13 +741,13 @@ async function testBadInput() {
   check("an exempted name does not stop a real field beside it being carried out",
     pki.schema.cms.parse(besideDer).signerInfos[0].digestAlgorithm.name === "sha384");
   await rejects("a misspelled field beside an exempted name", function () {
-    var fn = floorShapedSigner();
+    var fn = ownArgumentsCallerSigner();
     Object.defineProperty(fn, "caller", { value: 42, writable: true, enumerable: false, configurable: true });
     fn.digestAlgoritm = "sha384";
     return pki.cms.sign(CONTENT, fn);
   }, "cms/bad-input");
   await rejects("an own `then` holding a value is a field the caller wrote, not the shield's mask", function () {
-    var fn = floorShapedSigner();
+    var fn = ownArgumentsCallerSigner();
     Object.defineProperty(fn, "then", { value: 42, writable: true, enumerable: false, configurable: true });
     return pki.cms.sign(CONTENT, fn);
   }, "cms/bad-input");

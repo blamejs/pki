@@ -6,7 +6,7 @@
 // the codebase has settled conventions documented in CONTRIBUTING.md
 // that ESLint shouldn't second-guess.
 //
-// Target: Node 24 LTS, CommonJS modules, ES2024 syntax. Vendored
+// Target: Node 26 LTS, CommonJS modules, ES2024 syntax. Vendored
 // dependencies under lib/vendor/ and any node_modules are excluded.
 //
 // Standalone (no @eslint/js / globals npm dependency) so this lints
@@ -34,7 +34,7 @@ const NODE_GLOBALS = {
   queueMicrotask:   "readonly",
   performance:      "readonly",
   structuredClone:  "readonly",
-  // Web-platform APIs that Node 24 ships
+  // Web-platform APIs that Node 26 ships
   fetch:            "readonly",
   crypto:           "readonly",
   URL:              "readonly",
