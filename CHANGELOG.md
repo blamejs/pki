@@ -4,7 +4,7 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.9.13 — 2026-11-20
+## v0.9.13 — 2026-11-21
 
 Require Node 26.13.1, the current LTS, which fixes TLS and HTTP flaws in the modules the toolkit's network clients run on.
 

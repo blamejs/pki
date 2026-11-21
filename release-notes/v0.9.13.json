@@ -1,6 +1,6 @@
 {
   "version": "0.9.13",
-  "date": "2026-11-20",
+  "date": "2026-11-21",
   "headline": "Require Node 26.13.1, the current LTS, which fixes TLS and HTTP flaws in the modules the toolkit's network clients run on.",
   "summary": "The supported Node floor moves from 24.22.1 to 26.13.1, and Node 24 is no longer supported. `pki.transport` and every client built on it send requests through `node:https` and `node:tls`. Node 26.13.1 is a security release that fixes, among others, nested HTTP parser execution from empty writes (CVE-2026-123864), TLS resumption, renegotiation or HelloRetryRequest changing the server name (CVE-2026-123872), and proxy credentials written into an invalid proxy URL error (CVE-2026-123871). Upgrade Node to 26.13.1 or later.",
   "sections": {
