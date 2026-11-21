@@ -4,6 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.9.13 — 2026-11-21
+
+Require Node 26.13.1, the current LTS, which fixes TLS and HTTP flaws in the modules the toolkit's network clients run on.
+
+### Changed
+
+- `engines.node` is `>=26.13.1`. Node 24 is no longer supported. On a lower version npm reports the mismatch as EBADENGINE, and refuses the install where engine-strict is set. Node 26.13.1 ships OpenSSL 3.5.9.
+- The documentation site image build accepts only a Node 26 base image at 26.13.1 or later. The `NODE_FLOORS` build-arg defaults to `26.13.1`, and the default `BASE_RUNTIME` in `examples/wiki/Dockerfile` is `cgr.dev/chainguard/node:latest` at a digest that carries Node 26.13.1.
+
+### Security
+
+- The supported Node floor moves to 26.13.1. `pki.transport.https`, `pki.transport.peerChain` the ACME, EST, SCEP and CMP clients, and the OCSP and CRL fetches in path validation run on `node:https` and `node:tls`. Node 26.13.1 fixes nested HTTP parser execution from empty writes (CVE-2026-123864, High), a session resumption, renegotiation or HelloRetryRequest that changes the server name, and resumption of an mTLS session with no session ID context (CVE-2026-123872, High), Agent TLS policy keys shared across differing options (CVE-2026-123877, Medium), and proxy credentials written into the error for an invalid proxy URL (CVE-2026-123871, Medium). It also updates the bundled Brotli decoder to 1.2.1, which `pki.tls` uses for RFC 8879 certificate decompression. These fixes are in the Node runtime, and updating an npm package does not replace them.
+
 ## v0.9.12 — 2026-10-31
 
 The documentation site image now builds on Node 26.12.1, and its build stops on a base image whose Node predates the CVE-2026-111497 fix.

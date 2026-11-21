@@ -735,11 +735,13 @@ async function testResolutionFilterUnits() {
   // The literal is divided into octets, and dividing a string on a separator is specified to look a
   // `Symbol.split` method up on that separator and call it, so the separator's prototype chain is
   // part of the operation and taking the split from a capture does not close it. A hook answering
-  // with a public address's octets clears this refusal for a loopback literal. MEASURED: this is
-  // engine-dependent -- Node 24.22.1 performs the lookup and Node 26.9 fast-paths a primitive-string
-  // separator past it -- so the assertion is on the verdict, which must hold on either.
+  // with a public address's octets clears this refusal for a loopback literal. MEASURED: the hook
+  // lookup is engine-dependent (Node 24.22.1 performed it for a primitive-string separator and Node
+  // 26.13.1 does not), so the assertion is on the verdict, which must hold on either. A replaced
+  // `String.prototype.split` steers an uncaptured call on every engine, so the second arm can fail
+  // on the floor.
   var realSplitHook = Object.getOwnPropertyDescriptor(String.prototype, Symbol.split);
-  var hookedV4, hookedV6;
+  var hookedV4, hookedV6, replacedV4, replacedV6;
   try {
     Object.defineProperty(String.prototype, Symbol.split, {
       value: function () { return ["93", "184", "216", "34"]; }, configurable: true,
@@ -752,6 +754,18 @@ async function testResolutionFilterUnits() {
   }
   check("isBlockedIp: an installed @@split hook cannot clear the refusal for a loopback literal", hookedV4 === true);
   check("isBlockedIp: nor for a unique-local IPv6 literal", hookedV6 === true);
+  var realSplitFn = Object.getOwnPropertyDescriptor(String.prototype, "split");
+  try {
+    Object.defineProperty(String.prototype, "split", {
+      value: function () { return ["93", "184", "216", "34"]; }, writable: true, configurable: true,
+    });
+    replacedV4 = ht.isBlockedIp("127.0.0.1");
+    replacedV6 = ht.isBlockedIp("fc00::1");
+  } finally {
+    Object.defineProperty(String.prototype, "split", realSplitFn);
+  }
+  check("isBlockedIp: a replaced String.prototype.split cannot clear the refusal for a loopback literal", replacedV4 === true);
+  check("isBlockedIp: nor for a unique-local IPv6 literal under a replaced split", replacedV6 === true);
   check("isBlockedIp: v4 global public allowed (range edges)", !ht.isBlockedIp("8.8.8.8") && !ht.isBlockedIp("172.32.0.1") && !ht.isBlockedIp("192.169.0.1") && !ht.isBlockedIp("100.128.0.1") && !ht.isBlockedIp("198.20.0.1"));
   check("isBlockedIp: v6 non-global (loopback/ULA/link-local/site-local/multicast) + in-2000::/3 special-use (6to4/IETF/doc) blocked", ["::1", "::", "::ffff:127.0.0.1", "fc00::1", "fe80::1", "fec0::1", "feff::1", "ff02::1", "2001:db8::1", "2002::1", "2001:2::1", "2001::1", "3fff::1", "3fff:fff::1"].every(ht.isBlockedIp));
   check("isBlockedIp: v6 true global unicast allowed (outside every special-use prefix) + a non-IP is not classified", !ht.isBlockedIp("2606:4700::1") && !ht.isBlockedIp("2001:4860:4860::8888") && !ht.isBlockedIp("3fff:1000::1") && !ht.isBlockedIp("example.com"));

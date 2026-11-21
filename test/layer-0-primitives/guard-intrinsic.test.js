@@ -655,11 +655,13 @@ async function testSelectionsConsultNoConstructionProtocol() {
   // capturing `split` does not close it. Hard rule 11 bans `split` in lib/ for that reason.
   //
   // Whether a captured `split` ACTUALLY performs that lookup is a property of the engine, not of
-  // this code: Node 24.22.1, the supported runtime, dispatches to the hook, and Node 26.9 fast-paths
-  // a primitive-string separator past it. So nothing here asserts what `split` does -- an assertion
+  // this code: Node 24.22.1 dispatched to the hook for a primitive-string separator, and Node 26.13.1
+  // does not. So nothing here asserts what `split` does with a primitive separator -- an assertion
   // about that is an assertion about the RUNNER, and one written that way failed on CI while passing
-  // locally. What is asserted is the subject: `splitChar` consults nothing, on every runtime.
-  var hookedScan, hookedObjSep;
+  // locally. What is asserted is the subject: `splitChar` consults nothing, on every runtime. A
+  // replaced `String.prototype.split` steers an uncaptured call on every engine, so that arm can
+  // fail on the floor if `splitChar` ever delegates to a live `split`.
+  var hookedScan, hookedObjSep, replacedScan;
   try {
     Object.defineProperty(String.prototype, Symbol.split, {
       value: function () { return ["HOOKED"]; }, configurable: true,
@@ -668,6 +670,17 @@ async function testSelectionsConsultNoConstructionProtocol() {
   } finally {
     delete String.prototype[Symbol.split];
   }
+  var realSplit = Object.getOwnPropertyDescriptor(String.prototype, "split");
+  try {
+    Object.defineProperty(String.prototype, "split", {
+      value: function () { return ["REPLACED"]; }, writable: true, configurable: true,
+    });
+    replacedScan = intrinsic.splitChar("127.0.0.1", 46);
+  } finally {
+    Object.defineProperty(String.prototype, "split", realSplit);
+  }
+  check("intrinsic: splitChar does not call a replaced String.prototype.split",
+    replacedScan.length === 4 && replacedScan[0] === "127" && replacedScan[3] === "1");
   // The dispatch mechanism is live in every engine for an OBJECT separator, which is what makes the
   // string-separator fast path an optimisation rather than a guarantee.
   hookedObjSep = "127.0.0.1".split({ [Symbol.split]: function () { return ["HOOKED"]; } });
